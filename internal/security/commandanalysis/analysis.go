@@ -33,10 +33,42 @@ type Analysis struct {
 	AllowAlways   bool      `json:"allow_always_available,omitempty"`
 }
 
+// defaultSafeBins are single-capability, read-only-ish binaries eligible for
+// allow-always. Multi-capability tools (git, find, sed, env) were intentionally
+// removed: they can read arbitrary secrets, write files via flags, execute helper
+// programs, or inject config/hooks, so "allow always by name" is unsafe for them.
 var defaultSafeBins = map[string]bool{
-	"cat": true, "cd": true, "egrep": true, "env": true, "fgrep": true, "find": true,
-	"git": true, "grep": true, "head": true, "ls": true, "pwd": true, "rg": true,
-	"sed": true, "sort": true, "tail": true, "test": true, "true": true, "wc": true,
+	"cat": true, "cd": true, "egrep": true, "fgrep": true,
+	"grep": true, "head": true, "ls": true, "pwd": true, "rg": true,
+	"sort": true, "tail": true, "test": true, "true": true, "wc": true,
+}
+
+// unsafeBinFlags maps a binary to argument flags that grant it state-changing or
+// command-executing capability. When present, the invocation is never eligible for
+// allow-always even if the binary is otherwise considered safe. Entries for bins
+// that are no longer in defaultSafeBins (find/sed/git) are retained as defense in
+// depth in case they are ever re-added.
+var unsafeBinFlags = map[string][]string{
+	"sort": {"-o", "--output"},
+	"find": {"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprintf", "-fls"},
+	"sed":  {"-i", "--in-place"},
+	"git":  {"-c", "-C", "--exec-path", "--upload-pack", "--receive-pack"},
+}
+
+// binHasUnsafeArgs reports whether argv contains a capability-granting flag for bin.
+func binHasUnsafeArgs(bin string, argv []string) bool {
+	flags, ok := unsafeBinFlags[bin]
+	if !ok || len(argv) <= 1 {
+		return false
+	}
+	for _, a := range argv[1:] {
+		for _, f := range flags {
+			if a == f || strings.HasPrefix(a, f+"=") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var dangerousPatterns = []struct {
@@ -103,7 +135,16 @@ func Analyze(commandText string, argv []string) Analysis {
 			}
 		}
 	}
-	out.SafeBin = len(out.Segments) == 1 && len(out.Segments[0].Argv) > 0 && defaultSafeBins[base(out.Segments[0].Argv[0])] && !out.UnsafeWrapper && !out.InlineEval && !out.PipeToShell
+	singleSeg := len(out.Segments) == 1 && len(out.Segments[0].Argv) > 0
+	bin0 := ""
+	if singleSeg {
+		bin0 = base(out.Segments[0].Argv[0])
+	}
+	unsafeArgs := bin0 != "" && binHasUnsafeArgs(bin0, out.Segments[0].Argv)
+	if unsafeArgs {
+		warn(fmt.Sprintf("%s invoked with state-changing or command-executing flags", bin0))
+	}
+	out.SafeBin = singleSeg && defaultSafeBins[bin0] && !unsafeArgs && !out.UnsafeWrapper && !out.InlineEval && !out.PipeToShell
 	out.AllowAlways = out.SafeBin
 	out.Signature = StableSignature(out)
 	out.Summary = summarize(out)

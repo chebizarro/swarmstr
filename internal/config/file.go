@@ -693,6 +693,8 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 					if v, ok := am["behavior"].(string); ok {
 						ap.Behavior = strings.TrimSpace(v)
 					}
+					ap.AllowedTools = toStringSlice(am["allowed_tools"])
+					ap.AllowCategories = toStringSlice(am["allow_categories"])
 					ap.DenyPatterns = toStringSlice(am["deny_patterns"])
 					ap.AskPatterns = toStringSlice(am["ask_patterns"])
 					perm.Agents[agentID] = ap

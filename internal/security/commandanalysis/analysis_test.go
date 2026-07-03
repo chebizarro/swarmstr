@@ -27,11 +27,51 @@ func TestAnalyzeDetectsPipeToShell(t *testing.T) {
 }
 
 func TestAnalyzeSafeBin(t *testing.T) {
-	a := Analyze("", []string{"git", "status", "--short"})
+	a := Analyze("", []string{"cat", "README.md"})
 	if !a.SafeBin || !IsAllowAlwaysSafe(a) {
 		t.Fatalf("expected safe-bin allow-always, got %+v", a)
 	}
 	if a.Signature == "" {
 		t.Fatalf("expected signature")
+	}
+}
+
+func TestAnalyzeMultiCapabilityBinsNotAllowAlways(t *testing.T) {
+	// git, find, and sed are multi-capability: they can read secrets, write files,
+	// execute helpers, or inject config. They must never be allow-always by name.
+	for _, argv := range [][]string{
+		{"git", "status", "--short"},
+		{"find", ".", "-name", "*.go"},
+		{"sed", "s/a/b/", "file.txt"},
+		{"env"},
+	} {
+		a := Analyze("", argv)
+		if a.SafeBin || a.AllowAlways || IsAllowAlwaysSafe(a) {
+			t.Fatalf("%v must not be allow-always: %+v", argv, a)
+		}
+	}
+}
+
+func TestAnalyzeSafeBinWithDangerousArgsDemoted(t *testing.T) {
+	// sort is a safe bin, but `sort -o` writes to an arbitrary file. Argument-aware
+	// analysis must demote it from allow-always.
+	dangerous := Analyze("", []string{"sort", "-o", "/etc/passwd", "input.txt"})
+	if dangerous.SafeBin || dangerous.AllowAlways || IsAllowAlwaysSafe(dangerous) {
+		t.Fatalf("sort -o must not be allow-always: %+v", dangerous)
+	}
+	if len(dangerous.Warnings) == 0 {
+		t.Fatalf("expected a warning about state-changing flags: %+v", dangerous)
+	}
+	// A plain sort with no capability-granting flags stays eligible.
+	safe := Analyze("", []string{"sort", "input.txt"})
+	if !safe.SafeBin || !IsAllowAlwaysSafe(safe) {
+		t.Fatalf("plain sort should remain allow-always: %+v", safe)
+	}
+}
+
+func TestAnalyzeDangerousFindExecNotAllowAlways(t *testing.T) {
+	a := Analyze("", []string{"find", ".", "-exec", "rm", "{}", "+"})
+	if a.SafeBin || a.AllowAlways {
+		t.Fatalf("find -exec must not be allow-always: %+v", a)
 	}
 }

@@ -59,6 +59,20 @@ func TestLimiter_Disabled(t *testing.T) {
 	}
 }
 
+func TestLimiter_DisabledFailClosed(t *testing.T) {
+	l := NewLimiter(Config{Burst: 1, Rate: 0.001, Enabled: false, FailClosed: true})
+	for i := 0; i < 5; i++ {
+		if l.Allow("key") {
+			t.Fatalf("disabled fail-closed limiter must deny (iteration %d)", i)
+		}
+	}
+	// Sanity: without FailClosed a disabled limiter still defaults open.
+	open := NewLimiter(Config{Enabled: false})
+	if !open.Allow("key") {
+		t.Fatal("disabled limiter without FailClosed should default open")
+	}
+}
+
 func TestLimiter_Reset(t *testing.T) {
 	l := NewLimiter(Config{Burst: 1, Rate: 0.001, Enabled: true})
 	l.Allow("key") // drain

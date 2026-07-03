@@ -7,9 +7,15 @@
 //
 //	{
 //	  "token": "123456:ABC-DEF...",           // required: Telegram bot token
-//	  "webhook_url": "https://yourhost/...",  // optional: use webhook instead of polling
+//	  "webhook_url": "https://yourhost/...",  // preferred: event-driven webhook delivery
+//	  "allow_polling": true,                  // dev-only fallback: enable long-polling
 //	  "allowed_users": [123456789]            // optional: restrict by Telegram user ID
 //	}
+//
+// Delivery mode: webhook (event-driven) is the default and preferred transport.
+// Long-polling (getUpdates) is a wait-and-check loop that violates the repo's
+// event-driven guardrails, so it is disabled unless config.allow_polling is set
+// explicitly as a development fallback.
 //
 // Inbound webhook endpoint: <admin_addr>/webhooks/telegram/<channel_id>
 // When config.webhook_url is set, point it at that admin endpoint.
@@ -69,7 +75,11 @@ func (t *TelegramPlugin) ConfigSchema() map[string]any {
 			},
 			"webhook_url": map[string]any{
 				"type":        "string",
-				"description": "Optional: HTTPS webhook URL to register with Telegram (typically <admin_addr>/webhooks/telegram/<channel_id>). If absent, long-polling is used.",
+				"description": "Preferred: HTTPS webhook URL to register with Telegram (typically <admin_addr>/webhooks/telegram/<channel_id>) for event-driven delivery.",
+			},
+			"allow_polling": map[string]any{
+				"type":        "boolean",
+				"description": "Development-only fallback: when true and no webhook_url is set, use long-polling (getUpdates). Polling is not event-driven and should not be used in production.",
 			},
 			"allowed_users": map[string]any{
 				"type":        "array",
@@ -167,6 +177,7 @@ func (t *TelegramPlugin) Connect(
 	}
 	webhookURL, _ := cfg["webhook_url"].(string)
 	webhookURL = strings.TrimSpace(webhookURL)
+	allowPolling, _ := cfg["allow_polling"].(bool)
 	defaultParseMode, _ := cfg["default_parse_mode"].(string)
 	defaultParseMode = strings.TrimSpace(defaultParseMode)
 
@@ -202,11 +213,17 @@ func (t *TelegramPlugin) Connect(
 		return bot, nil
 	}
 
+	if !allowPolling {
+		// No webhook handler was registered on this path, so there is nothing to
+		// unregister; just refuse to silently start a polling loop.
+		return nil, fmt.Errorf("telegram channel %q: no webhook_url configured; set webhook_url for event-driven delivery, or set allow_polling=true to enable long-polling as a development fallback", channelID)
+	}
+
 	if err := bot.deleteWebhook(ctx); err != nil {
 		log.Printf("telegram: failed clearing webhook before polling channel=%s: %v", channelID, err)
 	}
 	go bot.poll(ctx)
-	log.Printf("telegram: polling started for channel %s", channelID)
+	log.Printf("telegram: WARNING channel=%s using long-polling fallback (allow_polling=true); this is a non-event-driven dev-only mode, prefer webhook_url", channelID)
 	return bot, nil
 }
 

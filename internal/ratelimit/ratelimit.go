@@ -80,8 +80,13 @@ type Config struct {
 	// Rate is the refill speed in tokens per second.  Default 1.
 	Rate float64
 	// Enabled controls whether the limiter is active.  When false, Allow
-	// always returns true.
+	// returns true (default-open) unless FailClosed is set.
 	Enabled bool
+	// FailClosed makes a disabled limiter deny instead of allow. Security-sensitive
+	// call sites that require rate limiting should set this so an accidentally
+	// disabled or unconfigured limiter fails closed rather than silently allowing
+	// unlimited requests.
+	FailClosed bool
 }
 
 // DefaultConfig returns a sensible default: burst=5, rate=1 msg/s.
@@ -111,10 +116,11 @@ func NewLimiter(cfg Config) *Limiter {
 }
 
 // Allow returns true if the key is allowed to proceed.
-// When the limiter is disabled it always returns true.
+// When the limiter is disabled it returns true (default-open) unless the config
+// sets FailClosed, in which case a disabled limiter denies all requests.
 func (l *Limiter) Allow(key string) bool {
 	if !l.cfg.Enabled {
-		return true
+		return !l.cfg.FailClosed
 	}
 	l.mu.Lock()
 	b, ok := l.buckets[key]

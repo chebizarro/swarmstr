@@ -172,8 +172,24 @@ func TestRealtimeVoiceWebSocketProviderElevenLabsAndUnconfigured(t *testing.T) {
 	if _, err := p.CreateBridge(context.Background(), BridgeConfig{}); err == nil {
 		t.Fatal("expected unconfigured error")
 	}
-	if voices, err := p.ListVoices(context.Background()); err != nil || voices != nil {
-		t.Fatalf("ListVoices default = %+v %v", voices, err)
+	if voices, err := p.ListVoices(context.Background()); err == nil || voices != nil {
+		t.Fatalf("expected explicit unsupported error for ElevenLabs ListVoices, got voices=%+v err=%v", voices, err)
+	}
+}
+
+func TestRealtimeVoiceWebSocketProviderOpenAIListsVoices(t *testing.T) {
+	p := NewOpenAIRealtimeProvider()
+	voices, err := p.ListVoices(context.Background())
+	if err != nil {
+		t.Fatalf("OpenAI ListVoices error: %v", err)
+	}
+	if len(voices) == 0 {
+		t.Fatal("expected a non-empty fixed OpenAI realtime voice set")
+	}
+	for _, v := range voices {
+		if strings.TrimSpace(v.ID) == "" {
+			t.Fatalf("voice with empty ID: %+v", v)
+		}
 	}
 }
 

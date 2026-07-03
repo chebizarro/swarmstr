@@ -1562,6 +1562,65 @@ func TestRunAgenticLoop_ForceSummary(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_ForceSummaryProviderErrorPropagates(t *testing.T) {
+	provider := &erroringForceSummaryProvider{}
+	executor := &mockToolExecutor{}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "summarize"}},
+		Tools:           []ToolDefinition{{Name: "tool"}},
+		Executor:        executor,
+		MaxIterations:   2,
+		ForceText:       true,
+		LogPrefix:       "test",
+	})
+	if err == nil {
+		t.Fatal("expected forced-summary provider error to propagate, got nil error")
+	}
+	if !strings.Contains(err.Error(), "force-summary") {
+		t.Fatalf("expected wrapped force-summary error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "authentication_error") {
+		t.Fatalf("expected underlying provider error to be preserved, got: %v", err)
+	}
+	// The generic "looping" text must NOT be returned as a successful answer.
+	if resp != nil && strings.Contains(resp.Content, "kept looping without producing a result") {
+		t.Fatalf("provider failure disguised as generic success response: %q", resp.Content)
+	}
+	// The response must not be classified as any success outcome.
+	if resp != nil {
+		switch resp.Outcome {
+		case TurnOutcomeForcedSummary, TurnOutcomeCompleted, TurnOutcomeCompletedWithTools:
+			t.Fatalf("provider failure classified as success outcome %q", resp.Outcome)
+		}
+	}
+}
+
+func TestRunAgenticLoop_ForceSummaryEmptyResponsePropagatesError(t *testing.T) {
+	provider := &emptyForceSummaryProvider{}
+	executor := &mockToolExecutor{}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "summarize"}},
+		Tools:           []ToolDefinition{{Name: "tool"}},
+		Executor:        executor,
+		MaxIterations:   2,
+		ForceText:       true,
+		LogPrefix:       "test",
+	})
+	if err == nil {
+		t.Fatal("expected empty forced-summary response to propagate as an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("expected empty-response error, got: %v", err)
+	}
+	if resp != nil && strings.Contains(resp.Content, "kept looping without producing a result") {
+		t.Fatalf("empty provider response disguised as generic success: %q", resp.Content)
+	}
+}
+
 func TestRunAgenticLoop_SteeringDrainInitialCall(t *testing.T) {
 	provider := &capturingChatProvider{
 		responses: []*LLMResponse{{Content: "direct answer", NeedsToolResults: false}},
@@ -1887,6 +1946,40 @@ func (p *capturingForceSummaryProvider) Chat(_ context.Context, messages []LLMMe
 	if tools == nil {
 		p.summaryMessages = append([]LLMMessage(nil), messages...)
 		return &LLMResponse{Content: "forced summary response"}, nil
+	}
+	return &LLMResponse{
+		ToolCalls:        []ToolCall{{ID: fmt.Sprintf("tc%d", p.callCount), Name: "tool"}},
+		NeedsToolResults: true,
+	}, nil
+}
+
+// erroringForceSummaryProvider requests tools until the loop is exhausted, then
+// fails the forced-summary (tools==nil) call, simulating an auth error/timeout.
+type erroringForceSummaryProvider struct {
+	callCount int
+}
+
+func (p *erroringForceSummaryProvider) Chat(_ context.Context, _ []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	p.callCount++
+	if tools == nil {
+		return nil, fmt.Errorf("provider request failed: 401 authentication_error")
+	}
+	return &LLMResponse{
+		ToolCalls:        []ToolCall{{ID: fmt.Sprintf("tc%d", p.callCount), Name: "tool"}},
+		NeedsToolResults: true,
+	}, nil
+}
+
+// emptyForceSummaryProvider returns empty content on the forced-summary call,
+// simulating a provider that returns a successful-but-empty response.
+type emptyForceSummaryProvider struct {
+	callCount int
+}
+
+func (p *emptyForceSummaryProvider) Chat(_ context.Context, _ []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	p.callCount++
+	if tools == nil {
+		return &LLMResponse{Content: ""}, nil
 	}
 	return &LLMResponse{
 		ToolCalls:        []ToolCall{{ID: fmt.Sprintf("tc%d", p.callCount), Name: "tool"}},

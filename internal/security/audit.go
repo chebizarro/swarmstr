@@ -94,6 +94,11 @@ type AuditOptions struct {
 	Suppressions []AuditSuppression
 	// ExpectedAttestation, when set, is compared to the generated attestation.
 	ExpectedAttestation string
+	// ProductionMode forces production-grade severity for advisory-only postures
+	// (default-allow tool policy, unenforced sandbox egress allowlists) even when
+	// the config carries no explicit production marker. Callers wiring the audit
+	// into startup/CI should set this and treat FailOnCritical as a hard gate.
+	ProductionMode bool
 }
 
 // Audit runs all security checks and returns a report.
@@ -121,6 +126,7 @@ func Audit(opts AuditOptions) AuditReport {
 	findings = append(findings, checkSandboxNopDriver(bs, opts.ConfigDoc)...)
 	findings = append(findings, checkDockerSandboxHardening(bs, opts.ConfigDoc)...)
 
+	production := opts.ProductionMode || isProductionDeployment(bs, opts.ConfigDoc)
 	if opts.ConfigDoc != nil {
 		findings = append(findings, checkControlAuthDisabled(bs, *opts.ConfigDoc)...)
 		findings = append(findings, checkControlLegacyTokenFallback(bs, *opts.ConfigDoc)...)
@@ -130,9 +136,9 @@ func Audit(opts AuditOptions) AuditReport {
 		findings = append(findings, checkChannelSecrets(*opts.ConfigDoc)...)
 		findings = append(findings, checkE2EChannelPolicy(*opts.ConfigDoc)...)
 		findings = append(findings, checkSecretRefsAndScopes(*opts.ConfigDoc)...)
-		findings = append(findings, checkToolPolicyConfig(*opts.ConfigDoc)...)
+		findings = append(findings, checkToolPolicyConfig(*opts.ConfigDoc, production)...)
 		findings = append(findings, checkManagedSettings(*opts.ConfigDoc)...)
-		findings = append(findings, checkSandboxEgressPolicy(*opts.ConfigDoc)...)
+		findings = append(findings, checkSandboxEgressPolicy(*opts.ConfigDoc, production)...)
 	}
 
 	active, suppressed := applySuppressions(findings, opts.Suppressions)
@@ -683,13 +689,21 @@ func checkSecretRefsAndScopes(cfg state.ConfigDoc) []Finding {
 	return findings
 }
 
-func checkToolPolicyConfig(cfg state.ConfigDoc) []Finding {
+func checkToolPolicyConfig(cfg state.ConfigDoc, production bool) []Finding {
 	if len(cfg.Permissions.Rules) == 0 && len(cfg.Permissions.Agents) == 0 {
-		return []Finding{{CheckID: "tool-policy-empty", Severity: SeverityInfo, Message: "no per-tool permission rules are configured", Remediation: "Configure permissions.rules with allow/ask/deny entries for dangerous tools and agent-scoped exceptions."}}
+		sev := SeverityInfo
+		if production {
+			sev = SeverityCritical
+		}
+		return []Finding{{CheckID: "tool-policy-empty", Severity: sev, Message: "no per-tool permission rules are configured", Remediation: "Configure permissions.rules with allow/ask/deny entries for dangerous tools and agent-scoped exceptions."}}
 	}
 	var findings []Finding
 	if strings.EqualFold(cfg.Permissions.DefaultBehavior, "allow") && len(cfg.Permissions.Rules) == 0 {
-		findings = append(findings, Finding{CheckID: "tool-policy-default-allow", Severity: SeverityWarn, Message: "tool permission default behavior is allow without explicit rules", Remediation: "Add deny/ask rules for exec, network, plugin, and MCP tools or set default_behavior to ask."})
+		sev := SeverityWarn
+		if production {
+			sev = SeverityCritical
+		}
+		findings = append(findings, Finding{CheckID: "tool-policy-default-allow", Severity: sev, Message: "tool permission default behavior is allow without explicit rules", Remediation: "Add deny/ask rules for exec, network, plugin, and MCP tools or set default_behavior to ask."})
 	}
 	for _, rule := range cfg.Permissions.Rules {
 		if strings.TrimSpace(rule.ID) == "" || strings.TrimSpace(rule.Tool) == "" || strings.TrimSpace(rule.Behavior) == "" {
@@ -710,7 +724,7 @@ func checkManagedSettings(cfg state.ConfigDoc) []Finding {
 	return nil
 }
 
-func checkSandboxEgressPolicy(cfg state.ConfigDoc) []Finding {
+func checkSandboxEgressPolicy(cfg state.ConfigDoc, production bool) []Finding {
 	sandboxMap := sandboxConfigMap(nil, &cfg)
 	if sandboxMap == nil || !(boolValue(sandboxMap["allow_network"]) || boolValue(sandboxMap["network_enabled"])) {
 		return nil
@@ -718,7 +732,11 @@ func checkSandboxEgressPolicy(cfg state.ConfigDoc) []Finding {
 	allowedDomains := stringSliceValue(firstPresent(sandboxMap, "allowed_domains", "egress_allowed_domains"))
 	allowedCIDRs := stringSliceValue(firstPresent(sandboxMap, "allowed_cidrs", "egress_allowed_cidrs"))
 	if len(allowedDomains) == 0 && len(allowedCIDRs) == 0 {
-		return []Finding{{CheckID: "sandbox-egress-unrestricted", Severity: SeverityWarn, Message: "Docker sandbox network access is enabled without an egress allowlist", Remediation: "Set extra.sandbox.allowed_domains/allowed_cidrs with an enforcing wrapper/proxy, or disable allow_network."}}
+		sev := SeverityWarn
+		if production {
+			sev = SeverityCritical
+		}
+		return []Finding{{CheckID: "sandbox-egress-unrestricted", Severity: sev, Message: "Docker sandbox network access is enabled without an egress allowlist", Remediation: "Set extra.sandbox.allowed_domains/allowed_cidrs with an enforcing wrapper/proxy, or disable allow_network."}}
 	}
 	var findings []Finding
 	policy, err := netpolicy.NormalizePolicy(netpolicy.Policy{AllowedDomains: allowedDomains, AllowedCIDRs: allowedCIDRs})
@@ -726,7 +744,11 @@ func checkSandboxEgressPolicy(cfg state.ConfigDoc) []Finding {
 		findings = append(findings, Finding{CheckID: "sandbox-egress-invalid-allowlist", Severity: SeverityWarn, Message: fmt.Sprintf("Docker sandbox egress allowlist is invalid: %v", err), Remediation: "Use valid domains and CIDR/IP entries in extra.sandbox.allowed_domains/allowed_cidrs."})
 	}
 	if !boolValue(sandboxMap["egress_enforced"]) {
-		findings = append(findings, Finding{CheckID: "sandbox-egress-allowlist-advisory", Severity: SeverityWarn, Message: "Docker sandbox egress allowlist is configured as metadata but no enforcing backend is declared", Remediation: "Set extra.sandbox.egress_enforced=true to enforce the allowlist with sandbox egress controls."})
+		sev := SeverityWarn
+		if production {
+			sev = SeverityCritical
+		}
+		findings = append(findings, Finding{CheckID: "sandbox-egress-allowlist-advisory", Severity: sev, Message: "Docker sandbox egress allowlist is configured as metadata but egress is not enforced (advisory-only)", Remediation: "Provide a real enforcing egress backend, or disable allow_network to fail closed. Note: egress_enforced is currently rejected by the sandbox until a real enforcement backend exists."})
 	}
 	for _, domain := range policy.Domains {
 		if domain == "*" || strings.HasPrefix(domain, "*.") {
@@ -832,6 +854,25 @@ func (r *AuditReport) recount() {
 			r.Info++
 		}
 	}
+}
+
+// FailOnCritical returns a non-nil error when the report contains any active
+// critical findings. This is the hard-fail gate for production startup / CI:
+// callers run Audit (typically with AuditOptions.ProductionMode) and abort when
+// this returns an error, so critical posture issues block deployment instead of
+// being reported as warnings only.
+func (r AuditReport) FailOnCritical() error {
+	if r.Critical == 0 {
+		return nil
+	}
+	ids := make([]string, 0, r.Critical)
+	for _, f := range r.Findings {
+		if f.Severity == SeverityCritical {
+			ids = append(ids, f.CheckID)
+		}
+	}
+	sort.Strings(ids)
+	return fmt.Errorf("security audit failed: %d critical finding(s): %s", r.Critical, strings.Join(ids, ", "))
 }
 
 func attestationHash(bs map[string]any, cfg *state.ConfigDoc, findings []Finding, suppressed []SuppressedFinding) string {

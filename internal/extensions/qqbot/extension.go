@@ -144,8 +144,14 @@ func (b *qqBot) SendTyping(ctx context.Context, durationMS int) error {
 	b.mu.Lock()
 	targetType, targetID := b.targetType, b.targetID
 	b.mu.Unlock()
-	if targetType != "c2c" || targetID == "" {
-		return nil
+	// The QQ input_notify (typing) API is only defined for c2c (private) chats.
+	// Report an explicit error for other target types instead of silently
+	// pretending success, so callers can gate on the failure.
+	if targetType != "c2c" {
+		return fmt.Errorf("qqbot %s: typing indicator is only supported in c2c chats (target_type=%q)", b.channelID, targetType)
+	}
+	if targetID == "" {
+		return fmt.Errorf("qqbot %s: typing indicator requires a known c2c target", b.channelID)
 	}
 	seconds := durationMS / 1000
 	if seconds <= 0 {

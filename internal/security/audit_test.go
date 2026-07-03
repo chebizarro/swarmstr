@@ -215,6 +215,42 @@ func TestAuditSandboxNopDriverFindings(t *testing.T) {
 	assertFindingSeverity(t, bootstrapExtraSandboxReport, "sandbox-nop-driver", SeverityCritical)
 }
 
+func TestAuditProductionModeFailsOnCriticalEgress(t *testing.T) {
+	// ua57: an advisory-only egress allowlist with network enabled is warn by
+	// default but must be critical (and fail closed) in production mode.
+	cfg := state.ConfigDoc{Extra: map[string]any{"sandbox": map[string]any{
+		"driver":          "docker",
+		"allow_network":   true,
+		"allowed_domains": []any{"api.example.com"},
+	}}}
+
+	dev := Audit(AuditOptions{ConfigDoc: &cfg})
+	assertFindingSeverity(t, dev, "sandbox-egress-allowlist-advisory", SeverityWarn)
+	if err := dev.FailOnCritical(); err != nil {
+		t.Fatalf("non-production audit should not hard-fail on this posture: %v", err)
+	}
+
+	prod := Audit(AuditOptions{ConfigDoc: &cfg, ProductionMode: true})
+	assertFindingSeverity(t, prod, "sandbox-egress-allowlist-advisory", SeverityCritical)
+	if err := prod.FailOnCritical(); err == nil {
+		t.Fatal("production audit must fail on the critical advisory-egress finding")
+	}
+}
+
+func TestAuditProductionModeFailsOnDefaultAllowToolPolicy(t *testing.T) {
+	// ywtn: an empty/default-allow tool policy is informational by default but
+	// critical in production mode, gating startup via FailOnCritical.
+	cfg := state.ConfigDoc{}
+	dev := Audit(AuditOptions{ConfigDoc: &cfg})
+	assertFindingSeverity(t, dev, "tool-policy-empty", SeverityInfo)
+
+	prod := Audit(AuditOptions{ConfigDoc: &cfg, ProductionMode: true})
+	assertFindingSeverity(t, prod, "tool-policy-empty", SeverityCritical)
+	if err := prod.FailOnCritical(); err == nil {
+		t.Fatal("production audit must fail on the critical empty tool-policy finding")
+	}
+}
+
 func testAuditPubKey(t *testing.T) string {
 	t.Helper()
 	sk, err := nostr.SecretKeyFromHex("1111111111111111111111111111111111111111111111111111111111111111")

@@ -367,8 +367,10 @@ func NewEngineFromStateConfig(baseDir string, cfg state.PermissionsConfig) (*Eng
 	// Build engine config
 	engineCfg := DefaultEngineConfig()
 
-	// Default to allow since profiles already filter tool availability
-	engineCfg.DefaultBehavior = BehaviorAllow
+	// Default to ask (fail-closed) so that a tool with no matching rule is never
+	// silently allowed. Callers must opt into allow explicitly, either via the
+	// config's default_behavior or via explicit allow rules/allowlists.
+	engineCfg.DefaultBehavior = BehaviorAsk
 	if cfg.DefaultBehavior != "" {
 		engineCfg.DefaultBehavior = Behavior(cfg.DefaultBehavior)
 	}
@@ -436,6 +438,21 @@ func applyStateAgentConfig(engine *Engine, agentID string, cfg state.AgentPermis
 		}
 	case "restrictive":
 		if err := engine.AskForAgent(agentID); err != nil {
+			return err
+		}
+	}
+
+	// Wire the restrictive allowlist. When AllowedTools/AllowCategories are set,
+	// only those tools/categories may run for this agent; everything else is
+	// denied before normal rule evaluation. This is enforced by the engine's
+	// allowlist gate, not by additive allow rules (which would leave non-listed
+	// tools to fall through to the default behavior).
+	if len(cfg.AllowedTools) > 0 || len(cfg.AllowCategories) > 0 {
+		cats := make([]ToolCategory, 0, len(cfg.AllowCategories))
+		for _, c := range cfg.AllowCategories {
+			cats = append(cats, ToolCategory(c))
+		}
+		if err := engine.SetAgentAllowlist(agentID, cfg.AllowedTools, cats); err != nil {
 			return err
 		}
 	}

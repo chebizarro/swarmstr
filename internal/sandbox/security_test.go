@@ -18,7 +18,10 @@ func TestValidateSandboxSecurityBlocksDangerousWorkspace(t *testing.T) {
 
 func TestValidateSandboxSecurityAllowsSafeConfig(t *testing.T) {
 	tmp := t.TempDir()
-	cfg := Config{WorkspaceDir: tmp, ContainerWorkdir: "/workspace", WorkspaceAccess: WorkspaceAccessReadOnly, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}, AllowedCIDRs: []string{"8.8.8.0/24"}}
+	// Network-disabled sandbox with a read-only workspace mount is the safe,
+	// fail-closed default. An allowlist without allow_network is inert metadata
+	// (no egress is possible), so it is permitted.
+	cfg := Config{WorkspaceDir: tmp, ContainerWorkdir: "/workspace", WorkspaceAccess: WorkspaceAccessReadOnly, AllowedDomains: []string{"api.example.com"}, AllowedCIDRs: []string{"8.8.8.0/24"}}
 	if err := ValidateSandboxSecurity(cfg); err != nil {
 		t.Fatalf("safe config rejected: %v", err)
 	}

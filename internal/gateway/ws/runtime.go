@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -31,6 +32,12 @@ const (
 
 	defaultClientEventBufferSize = 32
 )
+
+// ErrDisabled is returned by Start when no listen address is configured. It is a
+// sentinel so callers can distinguish an intentionally-disabled gateway from a
+// real startup failure via errors.Is, instead of receiving a misleading
+// (nil, nil) result that looks initialized while nothing is listening.
+var ErrDisabled = errors.New("gateway ws: disabled (no listen address configured)")
 
 type RequestHandler func(context.Context, protocol.RequestFrame) (any, *protocol.ErrorShape)
 
@@ -114,7 +121,7 @@ type eventSubscriptionRequest struct {
 
 func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	if strings.TrimSpace(opts.Addr) == "" {
-		return nil, nil
+		return nil, ErrDisabled
 	}
 	if strings.TrimSpace(opts.Path) == "" {
 		opts.Path = "/ws"

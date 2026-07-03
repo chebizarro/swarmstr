@@ -465,7 +465,21 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 
 	// Loop exhausted or blocked — attempt force-summary.
 	if cfg.ForceText && (resp == nil || resp.Content == "") {
-		summaryResp, summaryDelta := forceSummary(ctx, cfg, messages, calls, totalUsage)
+		summaryResp, summaryDelta, summaryErr := forceSummary(ctx, cfg, messages, calls, totalUsage)
+		if summaryErr != nil {
+			// The forced-summary provider call failed (auth error, timeout,
+			// empty response). Propagate the failure to the caller instead of
+			// masking it as a successful generic reply. Preserve the partial
+			// history (executed pending tool calls) alongside the error.
+			historyDelta = append(historyDelta, summaryDelta...)
+			historyDelta = compressLargeToolResults(historyDelta)
+			return &LLMResponse{
+				Usage:        totalUsage,
+				HistoryDelta: historyDelta,
+				Outcome:      blockedOutcome(loopBlocked),
+				StopReason:   blockedStopReason(loopBlocked),
+			}, summaryErr
+		}
 		if summaryResp != nil {
 			summaryResp.HistoryDelta = append(historyDelta, summaryDelta...)
 			if summaryResp.Content != "" {
@@ -1274,7 +1288,7 @@ func toolMutationDecisionFromError(err *DuplicateToolMutationError) ToolMutation
 // forceSummary makes a final LLM call with Tools=nil, forcing the model to
 // produce a text response. Any pending tool calls are executed first so the
 // model has their results as context.
-func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMessage, pendingCalls []ToolCall, usage ProviderUsage) (*LLMResponse, []ConversationMessage) {
+func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMessage, pendingCalls []ToolCall, usage ProviderUsage) (*LLMResponse, []ConversationMessage, error) {
 	log.Printf("%s: agentic loop exhausted, forcing summary", cfg.LogPrefix)
 
 	var summaryDelta []ConversationMessage
@@ -1324,10 +1338,13 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 	summaryResp, err := chatWithTurnSpan(ctx, cfg, "force_summary", 0, GuardToolResultMessages(messages, cfg.ContextWindowTokens), nil, opts)
 	if err != nil {
 		log.Printf("%s: force-summary error: %v", cfg.LogPrefix, err)
-		return nil, nil
+		// Surface the provider failure. Partial history (executed pending tool
+		// calls) is returned so the caller can preserve what actually happened
+		// instead of disguising the failure as a successful summary.
+		return nil, summaryDelta, fmt.Errorf("force-summary provider call failed: %w", err)
 	}
 	if summaryResp == nil || summaryResp.Content == "" {
-		return nil, nil
+		return nil, summaryDelta, fmt.Errorf("force-summary returned an empty response")
 	}
 
 	summaryResp.Usage = ProviderUsage{
@@ -1336,7 +1353,7 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 		CacheReadTokens:     usage.CacheReadTokens + summaryResp.Usage.CacheReadTokens,
 		CacheCreationTokens: usage.CacheCreationTokens + summaryResp.Usage.CacheCreationTokens,
 	}
-	return summaryResp, summaryDelta
+	return summaryResp, summaryDelta, nil
 }
 
 func getMaxToolUseConcurrency() int {

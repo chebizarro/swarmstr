@@ -165,8 +165,12 @@ func (p *MattermostPlugin) Connect(
 		log.Printf("mattermost: could not fetch bot user ID for channel %s: %v", channelID, err)
 	}
 
+	// NOTE: Mattermost exposes a real-time WebSocket events API (/api/v4/websocket)
+	// which would satisfy the event-driven guardrails, but that transport is not
+	// yet implemented here. Until then we poll /posts?since as a documented,
+	// non-event-driven fallback.
 	go bot.poll(ctx)
-	log.Printf("mattermost: polling started for channel %s (team=%s, channel=%s)", channelID, teamName, channelName)
+	log.Printf("mattermost: channel=%s using REST polling fallback (team=%s, channel=%s); the WebSocket events API is not yet implemented", channelID, teamName, channelName)
 	return bot, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -306,7 +307,7 @@ func TestGatewayMessage_DeliversMediaAndReply(t *testing.T) {
 	}
 }
 
-func TestFetchMessages_SkipsBotMessages(t *testing.T) {
+func TestGatewayMessage_SkipsBotMessages(t *testing.T) {
 	var delivered []sdk.InboundChannelMessage
 	b := &discordBot{
 		channelID:         "d1",
@@ -315,19 +316,28 @@ func TestFetchMessages_SkipsBotMessages(t *testing.T) {
 		onMessage:         func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
 		done:              make(chan struct{}),
 		channelMetaLoaded: true,
-		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return jsonResponse(req, `[
-				{"id":"1","content":"bot msg","timestamp":"2026-04-05T09:00:00Z","author":{"id":"b1","username":"bot","bot":true}},
-				{"id":"2","content":"human msg","timestamp":"2026-04-05T09:01:00Z","author":{"id":"u1","username":"alice","bot":false}}
-			]`), nil
-		})},
 	}
-	b.fetchMessages(context.Background())
+	// Bot-authored gateway event must be dropped to avoid reply loops.
+	b.handleGatewayMessage([]byte(`{"id":"1","channel_id":"ch-123","content":"bot msg","timestamp":"2026-04-05T09:00:00Z","author":{"id":"b1","username":"bot","bot":true}}`))
+	// Human-authored gateway event must be delivered.
+	b.handleGatewayMessage([]byte(`{"id":"2","channel_id":"ch-123","content":"human msg","timestamp":"2026-04-05T09:01:00Z","author":{"id":"u1","username":"alice","bot":false}}`))
 	if len(delivered) != 1 {
 		t.Fatalf("expected 1 delivered (bot filtered), got %d", len(delivered))
 	}
 	if delivered[0].Text != "human msg" {
 		t.Fatalf("unexpected text: %q", delivered[0].Text)
+	}
+}
+
+// TestDiscordNoRESTPoller guards the event-driven guardrail: the Discord bot
+// must not carry a REST message-polling loop alongside the real Gateway. If a
+// poll/fetchMessages method is ever reintroduced, this reflective check fails.
+func TestDiscordNoRESTPoller(t *testing.T) {
+	typ := reflect.TypeOf(&discordBot{})
+	for _, name := range []string{"poll", "fetchMessages"} {
+		if _, ok := typ.MethodByName(name); ok {
+			t.Fatalf("discordBot must not expose a REST poller method %q; the Gateway already delivers inbound events", name)
+		}
 	}
 }
 
@@ -471,7 +481,7 @@ func TestDiscordGatewayMethods_IncludeDepthActions(t *testing.T) {
 	}
 }
 
-func TestDiscordFetchMessages_PopulatesReplyAndThreadMetadata(t *testing.T) {
+func TestDiscordGatewayMessage_PopulatesReplyAndThreadMetadata(t *testing.T) {
 	var delivered []sdk.InboundChannelMessage
 	bot := &discordBot{
 		channelID:        "discord-main",
@@ -481,28 +491,21 @@ func TestDiscordFetchMessages_PopulatesReplyAndThreadMetadata(t *testing.T) {
 			delivered = append(delivered, msg)
 		},
 		done: make(chan struct{}),
-		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			switch {
-			case req.URL.Path == "/api/v10/channels/thread-123":
-				return jsonResponse(req, `{"id":"thread-123","type":11}`), nil
-			case strings.HasPrefix(req.URL.Path, "/api/v10/channels/thread-123/messages"):
-				return jsonResponse(req, `[
-					{
-						"id":"msg-2",
-						"content":"thread reply",
-						"timestamp":"2026-04-05T09:00:00Z",
-						"message_reference":{"message_id":"msg-1"},
-						"author":{"id":"user-1","username":"alice","bot":false}
-					}
-				]`), nil
-			default:
-				t.Fatalf("unexpected path: %s", req.URL.Path)
-				return nil, nil
-			}
-		})},
+		// isThreadChannel is normally seeded once by ensureChannelMetadata at
+		// gateway start; set it directly here to exercise the thread fallback in
+		// handleGatewayMessage without a REST poller.
+		channelMetaLoaded: true,
+		isThreadChannel:   true,
 	}
 
-	bot.fetchMessages(context.Background())
+	bot.handleGatewayMessage([]byte(`{
+		"id":"msg-2",
+		"channel_id":"thread-123",
+		"content":"thread reply",
+		"timestamp":"2026-04-05T09:00:00Z",
+		"message_reference":{"message_id":"msg-1"},
+		"author":{"id":"user-1","username":"alice","bot":false}
+	}`))
 
 	if len(delivered) != 1 {
 		t.Fatalf("expected 1 delivered message, got %d", len(delivered))

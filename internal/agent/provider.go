@@ -93,10 +93,27 @@ type HTTPProvider struct {
 	Client *http.Client
 }
 
-type httpRequest struct {
-	SessionID string `json:"session_id"`
-	Prompt    string `json:"prompt"`
-	Context   string `json:"context,omitempty"`
+// httpChatMessage is the wire form of a single conversation message sent to an
+// HTTP provider. Carrying tool_calls and tool_call_id lets the provider re-enter
+// inference over prior tool results.
+type httpChatMessage struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// httpChatRequest is the request body for the HTTP chat protocol. Messages
+// carries the full conversation (including tool results from prior loop
+// iterations) so the provider can reason over tool output instead of receiving a
+// single prompt. Prompt and Context are retained for backward compatibility with
+// servers that only read the flattened last-user/system fields.
+type httpChatRequest struct {
+	SessionID string            `json:"session_id,omitempty"`
+	Messages  []httpChatMessage `json:"messages"`
+	Tools     []ToolDefinition  `json:"tools,omitempty"`
+	Prompt    string            `json:"prompt,omitempty"`
+	Context   string            `json:"context,omitempty"`
 }
 
 type httpResponse struct {
@@ -104,19 +121,73 @@ type httpResponse struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
+// Generate drives the HTTP provider through the shared agentic loop so that when
+// the provider requests a tool call, the tool result is fed back to the provider
+// for a follow-up inference pass. This replaces the previous single-shot
+// behavior that executed tools once and fabricated a summary without a
+// re-inference step.
 func (p *HTTPProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
-	contextText := buildPromptAssembly("", turn.StaticSystemPrompt, turn.Context).Combined()
+	return generateWithAgenticLoop(ctx, p.chatProvider(turn.SessionID), turn, "", "http")
+}
+
+func (p *HTTPProvider) chatProvider(sessionID string) *HTTPChatProvider {
+	return &HTTPChatProvider{URL: p.URL, APIKey: p.APIKey, Client: p.Client, SessionID: sessionID}
+}
+
+// HTTPChatProvider adapts the simple HTTP JSON protocol to the ChatProvider
+// interface so HTTPProvider participates in the shared agentic tool loop. Each
+// Chat call sends the full message history (including tool results) and the
+// available tool definitions, and returns the model's text and/or tool calls.
+type HTTPChatProvider struct {
+	URL       string
+	APIKey    string
+	Client    *http.Client
+	SessionID string
+}
+
+func (p *HTTPChatProvider) Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, _ ChatOptions) (*LLMResponse, error) {
+	wireMsgs := make([]httpChatMessage, 0, len(messages))
+	var systemBuilder strings.Builder
+	var lastUser string
+	for _, m := range messages {
+		wireMsgs = append(wireMsgs, httpChatMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+		})
+		switch m.Role {
+		case "system":
+			if strings.TrimSpace(m.Content) != "" {
+				if systemBuilder.Len() > 0 {
+					systemBuilder.WriteString("\n\n")
+				}
+				systemBuilder.WriteString(m.Content)
+			}
+		case "user":
+			lastUser = m.Content
+		}
+	}
+
+	contextText := systemBuilder.String()
 	const maxContextBytes = 16 * 1024
 	if len(contextText) > maxContextBytes {
 		contextText = truncateUTF8ByBytes(contextText, maxContextBytes)
 	}
-	body, err := json.Marshal(httpRequest{SessionID: turn.SessionID, Prompt: turn.UserText, Context: contextText})
+
+	body, err := json.Marshal(httpChatRequest{
+		SessionID: p.SessionID,
+		Messages:  wireMsgs,
+		Tools:     tools,
+		Prompt:    lastUser,
+		Context:   contextText,
+	})
 	if err != nil {
-		return ProviderResult{}, err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bytes.NewReader(body))
 	if err != nil {
-		return ProviderResult{}, err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(p.APIKey) != "" {
@@ -129,20 +200,24 @@ func (p *HTTPProvider) Generate(ctx context.Context, turn Turn) (ProviderResult,
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ProviderResult{}, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return ProviderResult{}, fmt.Errorf("provider returned %s", resp.Status)
+		return nil, fmt.Errorf("provider returned %s", resp.Status)
 	}
 	var out httpResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return ProviderResult{}, err
+		return nil, err
 	}
 	if strings.TrimSpace(out.Text) == "" && len(out.ToolCalls) == 0 {
-		return ProviderResult{}, fmt.Errorf("provider returned empty response")
+		return nil, fmt.Errorf("provider returned empty response")
 	}
-	return ProviderResult{Text: out.Text, ToolCalls: out.ToolCalls}, nil
+	return &LLMResponse{
+		Content:          out.Text,
+		ToolCalls:        out.ToolCalls,
+		NeedsToolResults: len(out.ToolCalls) > 0,
+	}, nil
 }
 
 func truncateUTF8ByBytes(s string, maxBytes int) string {

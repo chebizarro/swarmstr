@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -22,6 +23,24 @@ func NewFixedWindowRateLimiter(max int, window time.Duration, now func() time.Ti
 		now = time.Now
 	}
 	return &FixedWindowRateLimiter{max: max, window: window, now: now}
+}
+
+// NewRequiredFixedWindowRateLimiter is like NewFixedWindowRateLimiter but returns
+// an error for invalid configuration instead of a nil (default-open) limiter.
+//
+// A nil *FixedWindowRateLimiter allows every request (see Allow). That is a
+// footgun for security-sensitive call sites: passing a zero/negative max or
+// window silently disables rate limiting. Such call sites must construct their
+// limiter with this function so misconfiguration fails closed at startup rather
+// than allowing unlimited requests at runtime.
+func NewRequiredFixedWindowRateLimiter(max int, window time.Duration, now func() time.Time) (*FixedWindowRateLimiter, error) {
+	if max <= 0 {
+		return nil, fmt.Errorf("acp rate limiter: max must be > 0, got %d", max)
+	}
+	if window <= 0 {
+		return nil, fmt.Errorf("acp rate limiter: window must be > 0, got %s", window)
+	}
+	return NewFixedWindowRateLimiter(max, window, now), nil
 }
 
 func (r *FixedWindowRateLimiter) Allow() bool {

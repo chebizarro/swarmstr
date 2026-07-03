@@ -133,8 +133,12 @@ func (e *EmailPlugin) Connect(
 		seenUIDs:       map[string]bool{},
 	}
 
+	// NOTE: IMAP IDLE would let the server push new-mail notifications, satisfying
+	// the event-driven guardrails, but IDLE is not yet implemented here. Until
+	// then we poll the mailbox with periodic IMAP SEARCH as a documented,
+	// non-event-driven fallback.
 	go b.poll(ctx)
-	log.Printf("email channel %s connected (host=%s user=%s poll=%ds)", channelID, imapHost, imapUser, pollSeconds)
+	log.Printf("email channel %s connected via IMAP SEARCH polling fallback (host=%s user=%s poll=%ds); IMAP IDLE push is not yet implemented", channelID, imapHost, imapUser, pollSeconds)
 	return b, nil
 }
 

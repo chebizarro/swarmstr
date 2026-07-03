@@ -5,8 +5,10 @@ go 1.25.0
 require (
 	fiatjaf.com/nostr v0.0.0-20260301124453-4dab261bdf5d
 	github.com/anthropics/anthropic-sdk-go v1.27.1
+	github.com/bufbuild/protocompile v0.14.1
 	github.com/coder/websocket v1.8.13
 	github.com/dop251/goja v0.0.0-20260305124333-6a7976c22267
+	github.com/fatih/color v1.19.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/github/copilot-sdk/go v0.1.32
 	github.com/google/jsonschema-go v0.4.2
@@ -37,7 +39,6 @@ require (
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
-	github.com/fatih/color v1.19.0 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
 	github.com/josharian/intern v1.0.0 // indirect

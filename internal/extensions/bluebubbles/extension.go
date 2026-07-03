@@ -1,8 +1,11 @@
 // Package bluebubbles implements a BlueBubbles (iMessage) channel extension for metiq.
 //
-// BlueBubbles is a self-hosted iMessage relay server.  This plugin connects
-// over its Socket.IO-compatible WebSocket API to receive new messages in
-// real time and sends replies via the REST API.
+// BlueBubbles is a self-hosted iMessage relay server.  BlueBubbles also exposes
+// a Socket.IO push endpoint, but this plugin currently receives new messages by
+// polling the REST API on a short interval (a documented fallback that avoids a
+// Socket.IO client dependency) and sends replies via the REST API.  Real-time
+// Socket.IO push is not yet implemented; see the tracking issue.  This polling
+// path is an intentional, documented exception to the event-driven guardrails.
 //
 // Registration: import _ "metiq/internal/extensions/bluebubbles" in the
 // daemon main.go to include this plugin in the binary.
@@ -16,8 +19,8 @@
 //	  "allowed_senders": []                           // optional: handle/number allowlist
 //	}
 //
-// No inbound webhook endpoint is required — this plugin uses an outbound
-// WebSocket connection to the BlueBubbles server.
+// No inbound webhook endpoint is required — this plugin makes outbound REST
+// calls to the BlueBubbles server (Socket.IO push is a future enhancement).
 package bluebubbles
 
 import (

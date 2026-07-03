@@ -650,6 +650,17 @@ type AgentPermissions struct {
 	// - restrictive: ask for everything
 	Behavior string `json:"behavior,omitempty"`
 
+	// AllowedTools, when non-empty, is an exclusive allowlist: only tools whose
+	// name matches one of these glob patterns may run for this agent; every other
+	// tool is denied. This is enforced regardless of Behavior (e.g. it still
+	// restricts an "autonomous" agent).
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+
+	// AllowCategories broadens the allowlist to whole capability categories
+	// (e.g. "filesystem", "exec"). Only meaningful alongside AllowedTools or on
+	// its own to permit entire categories while denying everything else.
+	AllowCategories []string `json:"allow_categories,omitempty"`
+
 	// DenyPatterns are content patterns that are always denied for this agent.
 	DenyPatterns []string `json:"deny_patterns,omitempty"`
 

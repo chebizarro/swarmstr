@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -93,13 +94,40 @@ func RestrictiveEngineConfig() EngineConfig {
 
 // Engine evaluates permission rules and makes decisions.
 type Engine struct {
-	mu       sync.RWMutex
-	cfg      EngineConfig
-	baseDir  string
-	ruleSet  *RuleSet
-	auditor  *Auditor
-	cache    map[string]*cachedDecision
-	classify *Classifier
+	mu         sync.RWMutex
+	cfg        EngineConfig
+	baseDir    string
+	ruleSet    *RuleSet
+	auditor    *Auditor
+	cache      map[string]*cachedDecision
+	classify   *Classifier
+	allowlists map[string]*agentAllowlist
+}
+
+// agentAllowlist is a restrictive per-agent tool allowlist. When configured for
+// an agent, only tools whose name matches one of the compiled patterns (or
+// whose capability category is explicitly allowed) may run; every other tool is
+// denied before normal rule evaluation. This makes AllowedTools an exclusive
+// allowlist rather than an additive set of allow rules.
+type agentAllowlist struct {
+	toolPatterns []*regexp.Regexp
+	categories   map[ToolCategory]bool
+}
+
+// permits reports whether the request is admitted by the allowlist.
+func (a *agentAllowlist) permits(req *ToolRequest) bool {
+	if a == nil {
+		return true
+	}
+	if req.Category != "" && a.categories[req.Category] {
+		return true
+	}
+	for _, re := range a.toolPatterns {
+		if re.MatchString(req.ToolName) {
+			return true
+		}
+	}
+	return false
 }
 
 // cachedDecision holds a cached permission decision.
@@ -111,10 +139,11 @@ type cachedDecision struct {
 // NewEngine creates a new permission engine.
 func NewEngine(baseDir string, cfg EngineConfig) *Engine {
 	e := &Engine{
-		cfg:     cfg,
-		baseDir: baseDir,
-		ruleSet: NewRuleSet(),
-		cache:   make(map[string]*cachedDecision),
+		cfg:        cfg,
+		baseDir:    baseDir,
+		ruleSet:    NewRuleSet(),
+		cache:      make(map[string]*cachedDecision),
+		allowlists: make(map[string]*agentAllowlist),
 	}
 
 	if cfg.AuditEnabled {
@@ -168,6 +197,12 @@ func (e *Engine) AddRule(rule *Rule) error {
 func (e *Engine) RemoveRule(ruleID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Immutable safety rules cannot be removed. This closes the removal path as a
+	// way to neutralize the non-overridable critical-deny layer.
+	if rule, ok := e.ruleSet.GetRule(ruleID); ok && rule.Immutable {
+		return false
+	}
 
 	removed := e.ruleSet.RemoveRule(ruleID)
 	if removed {
@@ -259,6 +294,33 @@ func (e *Engine) Evaluate(ctx context.Context, req *ToolRequest) *Decision {
 func (e *Engine) makeDecision(req *ToolRequest, matches []*Rule) *Decision {
 	decision := &Decision{
 		Timestamp: time.Now(),
+	}
+
+	// Non-overridable safety layer: an immutable deny always wins, regardless of
+	// scope precedence. This is evaluated BEFORE scope ordering so that a
+	// higher-scope allow (e.g. an agent/session allow-all) can never neutralize a
+	// critical safety deny.
+	for _, r := range matches {
+		if r.Immutable && r.Behavior == BehaviorDeny {
+			decision.Behavior = BehaviorDeny
+			decision.Scope = r.Scope
+			decision.MatchedRules = matches
+			decision.Reason = fmt.Sprintf("immutable safety rule %q denies this operation (non-overridable)", r.ID)
+			return decision
+		}
+	}
+
+	// Restrictive per-agent allowlist gate: if the requesting agent has an
+	// allowlist configured and the tool is not admitted by it, deny before any
+	// allow rule can take effect. An allowlist is necessary-but-not-sufficient:
+	// admitted tools still flow through normal rule evaluation below.
+	if al := e.allowlists[req.AgentID]; al != nil && !al.permits(req) {
+		decision.Behavior = BehaviorDeny
+		decision.Reason = fmt.Sprintf("tool %q is not in the allowlist for agent %q", req.ToolName, req.AgentID)
+		if len(matches) > 0 {
+			decision.MatchedRules = matches
+		}
+		return decision
 	}
 
 	if len(matches) == 0 {
@@ -681,36 +743,43 @@ func CriticalSafetyRules() []*Rule {
 		// Prevent recursive deletion from root
 		NewRule("safety-deny-rm-rf-root", ScopeGlobal, BehaviorDeny, "bash").
 			WithContentPattern(`rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|(-[a-zA-Z]*f[a-zA-Z]*r))\s+/[^.]`).
-			WithDescription("Block recursive deletion from root filesystem"),
+			WithDescription("Block recursive deletion from root filesystem").
+			AsImmutable(),
 
 		// Prevent disk formatting
 		NewRule("safety-deny-mkfs", ScopeGlobal, BehaviorDeny, "bash").
 			WithContentPattern(`mkfs\s`).
-			WithDescription("Block filesystem creation commands"),
+			WithDescription("Block filesystem creation commands").
+			AsImmutable(),
 
 		NewRule("safety-deny-fdisk", ScopeGlobal, BehaviorDeny, "bash").
 			WithContentPattern(`fdisk\s`).
-			WithDescription("Block partition table modifications"),
+			WithDescription("Block partition table modifications").
+			AsImmutable(),
 
 		// Prevent direct disk writes
 		NewRule("safety-deny-dd-disk", ScopeGlobal, BehaviorDeny, "bash").
 			WithContentPattern(`dd\s+.*of=/dev/[sh]d`).
-			WithDescription("Block direct disk writes with dd"),
+			WithDescription("Block direct disk writes with dd").
+			AsImmutable(),
 
 		// Prevent wiping boot sectors
 		NewRule("safety-deny-dd-zero", ScopeGlobal, BehaviorDeny, "bash").
 			WithContentPattern(`dd\s+.*if=/dev/zero.*of=/dev/`).
-			WithDescription("Block zeroing disk devices"),
+			WithDescription("Block zeroing disk devices").
+			AsImmutable(),
 
 		// Prevent chmod 777 on system directories
 		NewRule("safety-deny-chmod-777-system", ScopeGlobal, BehaviorDeny, "bash").
 			WithContentPattern(`chmod\s+(-[a-zA-Z]*R[a-zA-Z]*)?\s*777\s+/`).
-			WithDescription("Block recursive chmod 777 on root"),
+			WithDescription("Block recursive chmod 777 on root").
+			AsImmutable(),
 
 		// Prevent deleting critical system files
 		NewRule("safety-deny-rm-etc", ScopeGlobal, BehaviorDeny, "bash").
 			WithContentPattern(`rm\s+.*/(etc|boot|usr|lib|bin|sbin)/`).
-			WithDescription("Block deletion of system directories"),
+			WithDescription("Block deletion of system directories").
+			AsImmutable(),
 	}
 }
 
@@ -810,6 +879,47 @@ func (e *Engine) AllowCommandForSession(commandPattern string) error {
 			WithContentPattern(commandPattern).
 			WithDescription(fmt.Sprintf("Session override: allow commands matching %s", commandPattern)),
 	)
+}
+
+// ─── Per-Agent Allowlist ─────────────────────────────────────────────────────
+
+// SetAgentAllowlist installs a restrictive tool allowlist for a specific agent.
+// When set, only tools whose name matches one of the given glob patterns, or
+// whose capability category appears in categories, are permitted for that agent;
+// every other tool is denied before normal rule evaluation. Passing empty tools
+// and empty categories clears the allowlist for the agent (no restriction).
+//
+// The allowlist is necessary-but-not-sufficient: admitted tools still pass
+// through the normal rule pipeline (which may still ask or deny), and immutable
+// safety denies always win. This is how a state config's AllowedTools becomes an
+// exclusive allowlist rather than an additive set of allow rules.
+func (e *Engine) SetAgentAllowlist(agentID string, tools []string, categories []ToolCategory) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if len(tools) == 0 && len(categories) == 0 {
+		delete(e.allowlists, agentID)
+		e.clearCache()
+		return nil
+	}
+
+	al := &agentAllowlist{categories: make(map[ToolCategory]bool, len(categories))}
+	for _, pattern := range tools {
+		re, err := regexp.Compile("^" + globToRegex(pattern) + "$")
+		if err != nil {
+			return fmt.Errorf("invalid allowlist pattern %q for agent %s: %w", pattern, agentID, err)
+		}
+		al.toolPatterns = append(al.toolPatterns, re)
+	}
+	for _, cat := range categories {
+		if cat != "" {
+			al.categories[cat] = true
+		}
+	}
+
+	e.allowlists[agentID] = al
+	e.clearCache()
+	return nil
 }
 
 // ─── Per-Agent Configuration Helpers ─────────────────────────────────────────

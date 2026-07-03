@@ -27,7 +27,33 @@ func NewElevenLabsRealtimeProvider() *WebSocketProvider {
 func (p *WebSocketProvider) ID() string                                          { return p.id }
 func (p *WebSocketProvider) Name() string                                        { return p.name }
 func (p *WebSocketProvider) Configured() bool                                    { return strings.TrimSpace(os.Getenv(p.apiKeyEnv)) != "" }
-func (p *WebSocketProvider) ListVoices(ctx context.Context) ([]VoiceInfo, error) { return nil, nil }
+// openAIRealtimeVoices is the fixed, documented voice set exposed by the OpenAI
+// Realtime API. The realtime WebSocket transport has no voices-listing method,
+// so we return this known set rather than silently returning an empty list.
+var openAIRealtimeVoices = []VoiceInfo{
+	{ID: "alloy", Name: "Alloy", Language: "en"},
+	{ID: "ash", Name: "Ash", Language: "en"},
+	{ID: "ballad", Name: "Ballad", Language: "en"},
+	{ID: "coral", Name: "Coral", Language: "en"},
+	{ID: "echo", Name: "Echo", Language: "en"},
+	{ID: "sage", Name: "Sage", Language: "en"},
+	{ID: "shimmer", Name: "Shimmer", Language: "en"},
+	{ID: "verse", Name: "Verse", Language: "en"},
+}
+
+// ListVoices returns the provider's available voices. OpenAI Realtime exposes a
+// fixed documented voice set. Other realtime providers (e.g. ElevenLabs) publish
+// voices via a separate REST catalog that is not reachable over this WebSocket
+// transport, so we return an explicit unsupported error instead of a misleading
+// empty (nil, nil) result.
+func (p *WebSocketProvider) ListVoices(_ context.Context) ([]VoiceInfo, error) {
+	if p.openAI {
+		out := make([]VoiceInfo, len(openAIRealtimeVoices))
+		copy(out, openAIRealtimeVoices)
+		return out, nil
+	}
+	return nil, fmt.Errorf("%s: listing voices is not supported over the realtime transport; query the provider's voices REST API instead", p.id)
+}
 func (p *WebSocketProvider) CreateBridge(ctx context.Context, cfg BridgeConfig) (Bridge, error) {
 	key := strings.TrimSpace(os.Getenv(p.apiKeyEnv))
 	if key == "" {

@@ -317,7 +317,6 @@ type discordBot struct {
 	applicationID     string
 	slashCommand      string
 	onMessage         func(sdk.InboundChannelMessage)
-	lastMessageID     string
 	done              chan struct{}
 	httpClient        *http.Client
 	gatewayURL        string
@@ -530,15 +529,17 @@ func (b *discordBot) SendInThread(ctx context.Context, threadID, text string) er
 	return err
 }
 
-// SendAudio delivers an audio attachment URL as a Discord message. Discord voice
-// channel capture is outside the sdk.AudioHandle shape, so this method accepts
-// bytes for compatibility and posts a placeholder unless callers use
-// discord.send_media with a hosted audio URL.
-func (b *discordBot) SendAudio(ctx context.Context, _ []byte, format string) error {
+// SendAudio is intentionally unsupported: the Discord REST API has no raw-audio
+// message primitive (voice is a real-time voice-channel feature outside the
+// sdk.AudioHandle shape), and silently posting a text placeholder would drop the
+// caller's audio bytes. The plugin therefore advertises Audio:false and returns
+// an explicit error so callers fail loudly instead of losing data. To deliver
+// hosted audio, use the discord.send_media gateway method with a media_url.
+func (b *discordBot) SendAudio(_ context.Context, _ []byte, format string) error {
 	if strings.TrimSpace(format) == "" {
 		format = "audio"
 	}
-	return sendDiscordMessage(ctx, b.token, b.discordChannelID, fmt.Sprintf("[%s attachment omitted: upload via discord.send_media media_url]", format))
+	return fmt.Errorf("discord %s: raw %s audio delivery is not supported; use the discord.send_media gateway method with a hosted media_url", b.channelID, format)
 }
 
 func (b *discordBot) runGateway(ctx context.Context) {
@@ -551,6 +552,9 @@ func (b *discordBot) runGateway(ctx context.Context) {
 			return
 		default:
 		}
+		// Resolve channel metadata (e.g. thread type) once so gateway MESSAGE_CREATE
+		// handling can fall back to isThreadChannel without a REST poller.
+		b.ensureChannelMetadata(ctx)
 		if err := b.gatewaySession(ctx); err != nil {
 			log.Printf("discord gateway channel=%s disconnected: %v", b.channelID, err)
 		}
@@ -757,11 +761,6 @@ func (b *discordBot) handleGatewayMessage(raw json.RawMessage) {
 	if ts, err := time.Parse(time.RFC3339Nano, msg.Timestamp); err == nil {
 		createdAt = ts.Unix()
 	}
-	b.mu.Lock()
-	if msg.ID > b.lastMessageID {
-		b.lastMessageID = msg.ID
-	}
-	b.mu.Unlock()
 	b.onMessage(sdk.InboundChannelMessage{
 		ChannelID:      b.channelID,
 		SenderID:       senderID,
@@ -878,119 +877,6 @@ func (b *discordBot) registerApplicationCommands(ctx context.Context) error {
 	}
 	_, err := discordRESTJSONWithClient(ctx, b.client(15*time.Second), b.restScheduler, b.token, http.MethodPost, apiURL, payload)
 	return err
-}
-
-func (b *discordBot) poll(ctx context.Context) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-b.done:
-			return
-		case <-ticker.C:
-			b.fetchMessages(ctx)
-		}
-	}
-}
-
-func (b *discordBot) fetchMessages(ctx context.Context) {
-	b.ensureChannelMetadata(ctx)
-
-	b.mu.Lock()
-	afterID := b.lastMessageID
-	isThreadChannel := b.isThreadChannel
-	b.mu.Unlock()
-
-	url := fmt.Sprintf("%s/channels/%s/messages?limit=10", discordAPIBase, b.discordChannelID)
-	if afterID != "" {
-		url += "&after=" + afterID
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("Authorization", b.token)
-
-	resp, err := b.client(10 * time.Second).Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return
-	}
-
-	var messages []struct {
-		ID               string `json:"id"`
-		Content          string `json:"content"`
-		Timestamp        string `json:"timestamp"`
-		MessageReference *struct {
-			MessageID string `json:"message_id"`
-		} `json:"message_reference,omitempty"`
-		Author *struct {
-			ID       string `json:"id"`
-			Username string `json:"username"`
-			Bot      bool   `json:"bot"`
-		} `json:"author"`
-	}
-
-	if err := json.Unmarshal(raw, &messages); err != nil {
-		return
-	}
-
-	// Messages come newest-first; reverse to process in order.
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-
-	for _, msg := range messages {
-		// Skip bot messages to avoid reply loops.
-		if msg.Author != nil && msg.Author.Bot {
-			b.mu.Lock()
-			if msg.ID > b.lastMessageID {
-				b.lastMessageID = msg.ID
-			}
-			b.mu.Unlock()
-			continue
-		}
-
-		if msg.Content == "" {
-			continue
-		}
-
-		b.mu.Lock()
-		if msg.ID > b.lastMessageID {
-			b.lastMessageID = msg.ID
-		}
-		b.mu.Unlock()
-
-		senderID := ""
-		if msg.Author != nil {
-			senderID = msg.Author.Username + "#" + msg.Author.ID
-		}
-
-		replyToEventID := ""
-		if msg.MessageReference != nil && strings.TrimSpace(msg.MessageReference.MessageID) != "" {
-			replyToEventID = "discord-" + strings.TrimSpace(msg.MessageReference.MessageID)
-		}
-		threadID := ""
-		if isThreadChannel {
-			threadID = b.discordChannelID
-		}
-
-		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID:      b.channelID,
-			SenderID:       senderID,
-			Text:           msg.Content,
-			EventID:        "discord-" + msg.ID,
-			ThreadID:       threadID,
-			ReplyToEventID: replyToEventID,
-		})
-	}
 }
 
 func discordRequiredAuth(params map[string]any, method string) (string, string, error) {

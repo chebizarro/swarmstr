@@ -109,10 +109,14 @@ func (w *WhatsAppPlugin) ConfigSchema() map[string]any {
 // Capabilities declares the features supported by the WhatsApp Business channel.
 func (w *WhatsAppPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Typing:       true,
-		Reactions:    true,
-		Threads:      true,
-		Audio:        true,
+		Typing:    true,
+		Reactions: true,
+		Threads:   true,
+		// Audio is intentionally false: the AudioHandle raw-bytes contract is not
+		// supported (SendAudio returns an explicit error). Audio is still
+		// deliverable via the whatsapp.send_media gateway method with an uploaded
+		// media_id or URL.
+		Audio:        false,
 		Edit:         false,
 		MultiAccount: true,
 	}
@@ -473,7 +477,11 @@ func (b *whatsappBot) SendTyping(ctx context.Context, _ int) error {
 	messageID := b.lastInboundID
 	b.mu.Unlock()
 	if messageID == "" {
-		return nil
+		// The WhatsApp Cloud API only exposes typing via the read-receipt +
+		// typing_indicator payload, which requires a prior inbound message_id to
+		// mark as read. Without one there is no valid target, so fail explicitly
+		// instead of silently succeeding.
+		return fmt.Errorf("whatsapp %s: typing indicator requires a prior inbound message; none received yet", b.channelID)
 	}
 	payload := map[string]any{
 		"messaging_product": "whatsapp",

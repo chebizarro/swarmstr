@@ -136,8 +136,12 @@ func (p *SignalPlugin) Connect(
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
 	}
 
+	// NOTE: The signal-cli REST sidecar can stream inbound messages over a
+	// JSON-RPC WebSocket, which would satisfy the event-driven guardrails, but
+	// that transport is not yet implemented here. Until then we poll the REST
+	// receive endpoint as a documented, non-event-driven fallback.
 	go bot.poll(ctx)
-	log.Printf("signal: polling started for channel %s (account=%s, sidecar=%s)", channelID, account, apiURL)
+	log.Printf("signal: channel=%s using REST polling fallback (account=%s, sidecar=%s); signal-cli JSON-RPC WebSocket push is not yet implemented", channelID, account, apiURL)
 	return bot, nil
 }
 
@@ -165,8 +169,12 @@ func (b *signalBot) Close() {
 	}
 }
 
-// ─── Polling ──────────────────────────────────────────────────────────────────
-
+// ─── Polling (documented fallback) ──────────────────────────────────────────
+//
+// poll is a wait-and-check loop over the signal-cli REST receive endpoint. It is
+// a documented fallback for the not-yet-implemented signal-cli JSON-RPC
+// WebSocket push transport; prefer implementing push before relying on this in
+// production.
 func (b *signalBot) poll(ctx context.Context) {
 	backoff := b.pollInterval
 	if backoff <= 0 {

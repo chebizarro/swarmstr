@@ -40,6 +40,9 @@ func init() {
 		if !cfg.AllowUnsafeNop {
 			return nil, fmt.Errorf("sandbox driver \"nop\" requires explicit allow_unsafe_nop=true")
 		}
+		if cfg.EgressEnforced {
+			return nil, fmt.Errorf("sandbox driver \"nop\" cannot enforce egress: egress_enforced is unsupported without isolation (proxy env vars are trivially bypassable). Use driver=\"docker\" with an enforcing backend, or disable egress_enforced")
+		}
 		return &NopSandbox{cfg: cfg}, nil
 	}})
 }

@@ -19,8 +19,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"metiq/internal/netpolicy"
 )
 
 // ─── Result ──────────────────────────────────────────────────────────────────
@@ -262,24 +260,6 @@ type NopSandbox struct {
 
 func (s *NopSandbox) Driver() string { return "nop" }
 
-func (s *NopSandbox) restrictedEnv(env []string) []string {
-	if !s.cfg.EgressEnforced || (len(s.cfg.AllowedDomains) == 0 && len(s.cfg.AllowedCIDRs) == 0) {
-		return buildEnv(env)
-	}
-	guard := []string{
-		"HTTP_PROXY=http://127.0.0.1:9",
-		"HTTPS_PROXY=http://127.0.0.1:9",
-		"ALL_PROXY=socks5://127.0.0.1:9",
-		"http_proxy=http://127.0.0.1:9",
-		"https_proxy=http://127.0.0.1:9",
-		"all_proxy=socks5://127.0.0.1:9",
-		"NO_PROXY=" + strings.Join(append(cleanStrings(s.cfg.AllowedDomains), cleanStrings(s.cfg.AllowedCIDRs)...), ","),
-		"no_proxy=" + strings.Join(append(cleanStrings(s.cfg.AllowedDomains), cleanStrings(s.cfg.AllowedCIDRs)...), ","),
-		"METIQ_SANDBOX_EGRESS_ENFORCED=true",
-	}
-	return buildEnv(append(env, guard...))
-}
-
 func (s *NopSandbox) Run(ctx context.Context, cmd []string, env []string, workdir string) (Result, error) {
 	if len(cmd) == 0 {
 		return Result{}, fmt.Errorf("sandbox: empty command")
@@ -297,8 +277,11 @@ func (s *NopSandbox) Run(ctx context.Context, cmd []string, env []string, workdi
 		defer cancel()
 	}
 
+	// The nop backend provides no isolation and therefore cannot enforce
+	// egress. It never fabricates proxy env vars or advertises
+	// METIQ_SANDBOX_EGRESS_ENFORCED; EgressEnforced is rejected at construction.
 	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-	c.Env = s.restrictedEnv(env)
+	c.Env = buildEnv(env)
 	if workdir != "" {
 		c.Dir = workdir
 	}
@@ -346,7 +329,7 @@ func (s *DockerSandbox) Driver() string { return "docker" }
 func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, workdir string) []string {
 	dockerArgs := []string{"run", "--rm", "--interactive=false"}
 
-	if s.cfg.dockerNetworkDisabled() || (s.cfg.EgressEnforced && len(s.cfg.AllowedDomains) == 0 && len(s.cfg.AllowedCIDRs) == 0) {
+	if s.cfg.dockerNetworkDisabled() {
 		dockerArgs = append(dockerArgs, "--network=none")
 	}
 	if s.cfg.dockerReadOnlyRootFS() {
@@ -365,9 +348,12 @@ func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, 
 	if pids := s.cfg.dockerPidsLimit(); pids > 0 {
 		dockerArgs = append(dockerArgs, fmt.Sprintf("--pids-limit=%d", pids))
 	}
-	if s.cfg.EgressEnforced && (len(s.cfg.AllowedDomains) > 0 || len(s.cfg.AllowedCIDRs) > 0) {
-		dockerArgs = append(dockerArgs, "--cap-add=NET_ADMIN", "--user=0:0", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true")
-	} else if user := s.cfg.dockerUser(); user != "" {
+	// Egress enforcement previously dropped the container to in-container root
+	// (--user=0:0 --cap-add=NET_ADMIN) so it could run iptables. That weakened
+	// hardening and only provided brittle, bypassable enforcement. The container
+	// now always runs non-root; egress enforcement is rejected at validation time
+	// until a real external enforcement backend exists (see ValidateSandboxSecurity).
+	if user := s.cfg.dockerUser(); user != "" {
 		dockerArgs = append(dockerArgs, "--user="+user)
 	}
 	if s.cfg.MemoryLimit != "" {
@@ -405,49 +391,9 @@ func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, 
 	if workdir != "" {
 		dockerArgs = append(dockerArgs, "--workdir="+workdir)
 	}
-	if s.cfg.EgressEnforced && (len(s.cfg.AllowedDomains) > 0 || len(s.cfg.AllowedCIDRs) > 0) {
-		cmd = s.egressWrappedCommand(cmd)
-	}
 	dockerArgs = append(dockerArgs, image)
 	dockerArgs = append(dockerArgs, cmd...)
 	return dockerArgs
-}
-
-func (s *DockerSandbox) egressWrappedCommand(cmd []string) []string {
-	policy, _ := netpolicy.NormalizePolicy(netpolicy.Policy{AllowedDomains: s.cfg.AllowedDomains, AllowedCIDRs: s.cfg.AllowedCIDRs})
-	domains := strings.Join(policy.Domains, " ")
-	cidrs := make([]string, 0, len(policy.CIDRs))
-	for _, cidr := range policy.CIDRs {
-		cidrs = append(cidrs, cidr.String())
-	}
-	script := `set -eu
-if ! command -v iptables >/dev/null 2>&1; then
-	echo "metiq sandbox egress enforcement requires iptables in the container" >&2
-	exit 126
-fi
-iptables -P OUTPUT DROP
-iptables -A OUTPUT -o lo -j ACCEPT
-iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
-for cidr in ` + shellQuote(strings.Join(cidrs, " ")) + `; do
-	[ -n "$cidr" ] && iptables -A OUTPUT -d "$cidr" -j ACCEPT
-	done
-for domain in ` + shellQuote(domains) + `; do
-	[ -n "$domain" ] || continue
-	for ip in $(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u); do
-	iptables -A OUTPUT -d "$ip" -j ACCEPT
-	done
-	done
-exec "$@"`
-	return append([]string{"/bin/sh", "-c", script, "metiq-egress"}, cmd...)
-}
-
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func (s *DockerSandbox) Run(ctx context.Context, cmd []string, env []string, workdir string) (Result, error) {

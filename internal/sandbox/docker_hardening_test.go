@@ -57,29 +57,58 @@ func TestDockerRunArgs_ConfigurableHardening(t *testing.T) {
 	}
 }
 
-func TestDockerRunArgs_EnforcedEgressWrapsCommand(t *testing.T) {
+func TestDockerRunArgs_EnforcedEgressDoesNotDropToRoot(t *testing.T) {
+	// Egress enforcement must never weaken hardening by running the container as
+	// root with NET_ADMIN, and must not inject a bypassable in-container iptables
+	// wrapper. The container always runs non-root.
 	s := &DockerSandbox{cfg: Config{AllowNetwork: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}, AllowedCIDRs: []string{"203.0.113.0/24"}}}
 	args := s.dockerRunArgs("alpine:3", []string{"wget", "https://api.example.com"}, nil, "")
-	for _, want := range []string{"--cap-add=NET_ADMIN", "--user=0:0", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true"} {
-		if !contains(args, want) {
-			t.Fatalf("enforced egress args missing %s in %#v", want, args)
+	for _, forbidden := range []string{"--cap-add=NET_ADMIN", "--user=0:0", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true"} {
+		if contains(args, forbidden) {
+			t.Fatalf("enforced egress must not add %s: %#v", forbidden, args)
 		}
 	}
+	if !contains(args, "--user=65532:65532") {
+		t.Fatalf("container must run as the non-root default user: %#v", args)
+	}
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "iptables -P OUTPUT DROP") || !strings.Contains(joined, "api.example.com") || !strings.Contains(joined, "203.0.113.0/24") {
-		t.Fatalf("iptables egress wrapper missing from args: %#v", args)
+	if strings.Contains(joined, "iptables") {
+		t.Fatalf("in-container iptables egress wrapper must be removed: %#v", args)
 	}
 }
 
-func TestNopSandboxRestrictedEnvSetsProxyGuard(t *testing.T) {
-	s := &NopSandbox{cfg: Config{EgressEnforced: true, AllowedDomains: []string{"api.example.com"}}}
-	env := s.restrictedEnv([]string{"HTTP_PROXY=http://operator-proxy:8080"})
-	if !contains(env, "METIQ_SANDBOX_EGRESS_ENFORCED=true") || !contains(env, "NO_PROXY=api.example.com") {
-		t.Fatalf("restricted env missing guard entries: %#v", env)
+func TestValidateSandboxSecurity_EgressEnforcedFailsClosed(t *testing.T) {
+	cfg := Config{AllowNetwork: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}}
+	if err := ValidateSandboxSecurity(cfg); err == nil {
+		t.Fatal("egress_enforced must fail closed until a real enforcement backend exists")
 	}
-	if contains(env, "HTTP_PROXY=http://operator-proxy:8080") || !contains(env, "HTTP_PROXY=http://127.0.0.1:9") {
-		t.Fatalf("guard proxy should override caller env: %#v", env)
+}
+
+func TestValidateSandboxSecurity_AdvisoryAllowlistFailsClosed(t *testing.T) {
+	cfg := Config{AllowNetwork: true, AllowedDomains: []string{"api.example.com"}}
+	if err := ValidateSandboxSecurity(cfg); err == nil {
+		t.Fatal("allow_network with an unenforced allowlist must fail closed")
 	}
+}
+
+func TestNopBackendRejectsEgressEnforced(t *testing.T) {
+	_, err := NewBackendRunner(Config{Driver: "nop", AllowUnsafeNop: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}})
+	if err == nil {
+		t.Fatal("nop backend must reject egress_enforced")
+	}
+}
+
+func TestNopSandboxEnvDoesNotFabricateEnforcement(t *testing.T) {
+	s := &NopSandbox{cfg: Config{AllowedDomains: []string{"api.example.com"}}}
+	env := buildEnv([]string{"HTTP_PROXY=http://operator-proxy:8080"})
+	if contains(env, "METIQ_SANDBOX_EGRESS_ENFORCED=true") {
+		t.Fatalf("nop must not advertise egress enforcement: %#v", env)
+	}
+	// The caller-provided environment is preserved, never overridden with a black-hole proxy.
+	if !contains(env, "HTTP_PROXY=http://operator-proxy:8080") {
+		t.Fatalf("nop must preserve caller env: %#v", env)
+	}
+	_ = s
 }
 
 func TestNewFromMap_DockerHardeningConfig(t *testing.T) {

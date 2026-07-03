@@ -14,6 +14,7 @@ import (
 
 	"metiq/internal/config"
 
+	"github.com/bufbuild/protocompile"
 	"google.golang.org/grpc"
 	reflectionv1pb "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	reflectionv1alphapb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
@@ -70,7 +71,7 @@ func Discover(ctx context.Context, profile config.GRPCEndpointConfig, conn grpc.
 	case config.GRPCDiscoveryModeDescriptorSet:
 		return DiscoverFromDescriptorSet(profile)
 	case config.GRPCDiscoveryModeProtoFiles:
-		return nil, fmt.Errorf("gRPC proto_files discovery is not implemented yet; provide a descriptor_set or enable reflection")
+		return DiscoverFromProtoFiles(ctx, profile)
 	default:
 		return nil, fmt.Errorf("unsupported gRPC discovery mode %q", profile.Discovery.Mode)
 	}
@@ -250,6 +251,75 @@ func DiscoverFromDescriptorSet(profile config.GRPCEndpointConfig) ([]MethodSpec,
 		return nil, err
 	}
 	return DiscoverFromFileDescriptorSet(profile, fds)
+}
+
+// DiscoverFromProtoFiles compiles the profile's .proto source files into
+// descriptors using the pure-Go bufbuild/protocompile compiler and normalizes
+// the resulting services into MethodSpec values. Transitive imports are resolved
+// against the profile's import_paths, and the protoc well-known standard imports
+// (google/protobuf/*.proto) are always available.
+func DiscoverFromProtoFiles(ctx context.Context, profile config.GRPCEndpointConfig) ([]MethodSpec, error) {
+	protoFiles := trimmedNonEmptyStrings(profile.Discovery.ProtoFiles)
+	if len(protoFiles) == 0 {
+		return nil, fmt.Errorf("gRPC proto_files discovery requires at least one proto file")
+	}
+	importPaths := trimmedNonEmptyStrings(profile.Discovery.ImportPaths)
+
+	compiler := protocompile.Compiler{
+		Resolver: protocompile.WithStandardImports(&protocompile.SourceResolver{
+			ImportPaths: importPaths,
+		}),
+	}
+	compiled, err := compiler.Compile(ctx, protoFiles...)
+	if err != nil {
+		return nil, fmt.Errorf("compile gRPC proto files %v: %w", protoFiles, err)
+	}
+	if len(compiled) == 0 {
+		return nil, fmt.Errorf("gRPC proto_files discovery compiled no descriptors from %v", protoFiles)
+	}
+
+	descriptors := make([]protoreflect.FileDescriptor, 0, len(compiled))
+	for _, f := range compiled {
+		descriptors = append(descriptors, f)
+	}
+	fds := fileDescriptorSetFromDescriptors(descriptors)
+	return DiscoverFromFileDescriptorSet(profile, fds)
+}
+
+// fileDescriptorSetFromDescriptors flattens the transitive closure of the given
+// file descriptors (each file preceded by its imports) into a FileDescriptorSet
+// ordered so that protodesc.NewFiles can resolve every dependency.
+func fileDescriptorSetFromDescriptors(files []protoreflect.FileDescriptor) *descriptorpb.FileDescriptorSet {
+	seen := make(map[string]bool)
+	fds := &descriptorpb.FileDescriptorSet{}
+	var add func(fd protoreflect.FileDescriptor)
+	add = func(fd protoreflect.FileDescriptor) {
+		if fd == nil || seen[fd.Path()] {
+			return
+		}
+		seen[fd.Path()] = true
+		imports := fd.Imports()
+		for i := 0; i < imports.Len(); i++ {
+			add(imports.Get(i).FileDescriptor)
+		}
+		fds.File = append(fds.File, protodesc.ToFileDescriptorProto(fd))
+	}
+	for _, fd := range files {
+		add(fd)
+	}
+	return fds
+}
+
+// trimmedNonEmptyStrings returns values with surrounding whitespace removed,
+// dropping any that are empty after trimming.
+func trimmedNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if t := strings.TrimSpace(v); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // LoadDescriptorSetFile reads a protoc --descriptor_set_out style file.

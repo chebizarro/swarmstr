@@ -201,6 +201,12 @@ type Rule struct {
 	// AgentID restricts the rule to a specific agent (empty = all agents).
 	AgentID string `json:"agent_id,omitempty"`
 
+	// Immutable marks this rule as a non-overridable safety guarantee. An
+	// immutable deny always wins regardless of scope precedence and cannot be
+	// neutralized by higher-scope allow rules (e.g. an agent/session allow-all).
+	// Immutable rules are also protected from removal via RemoveRule.
+	Immutable bool `json:"immutable,omitempty"`
+
 	// Compiled patterns (not serialized)
 	toolRegex       *regexp.Regexp
 	contentRegex    *regexp.Regexp
@@ -210,6 +216,13 @@ type Rule struct {
 // ForAgent restricts the rule to a specific agent.
 func (r *Rule) ForAgent(agentID string) *Rule {
 	r.AgentID = agentID
+	return r
+}
+
+// AsImmutable marks the rule as a non-overridable safety guarantee. When set on
+// a deny rule, the deny always wins regardless of scope precedence.
+func (r *Rule) AsImmutable() *Rule {
+	r.Immutable = true
 	return r
 }
 
