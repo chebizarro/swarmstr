@@ -173,6 +173,38 @@ func TestRegisterCapabilities_SkipsPluginsWithoutCapabilities(t *testing.T) {
 	}
 }
 
+// TestRegisterCapabilities_OrderingWindowMustBeOpen locks the startup ordering
+// contract: RegisterCapabilities must be called before CloseRegistrationWindow,
+// because registerRegistrations returns "plugin registration window is closed"
+// once the window has been closed. This test would have caught the regression
+// where the call was placed after CloseRegistrationWindow in cmd/metiqd/main.go.
+func TestRegisterCapabilities_OrderingWindowMustBeOpen(t *testing.T) {
+	// --- part 1: succeeds and capability is resolvable when window is open ---
+	m := New(testHost())
+	m.plugins["voice-plugin"] = newCapabilityPlugin()
+	unified := registry.NewUnifiedRegistry()
+
+	if err := m.RegisterCapabilities(unified); err != nil {
+		t.Fatalf("RegisterCapabilities before CloseRegistrationWindow: %v", err)
+	}
+	if _, ok := unified.Capability("speech_provider", "elevenlabs"); !ok {
+		t.Fatalf("capability not resolvable when registered before CloseRegistrationWindow")
+	}
+
+	// --- part 2: fails when window is already closed ---
+	m2 := New(testHost())
+	m2.plugins["voice-plugin"] = newCapabilityPlugin()
+	unified2 := registry.NewUnifiedRegistry()
+	unified2.CloseRegistrationWindow()
+
+	if err := m2.RegisterCapabilities(unified2); err == nil {
+		t.Fatalf("RegisterCapabilities after CloseRegistrationWindow: expected error, got nil")
+	}
+	if _, ok := unified2.Capability("speech_provider", "elevenlabs"); ok {
+		t.Fatalf("capability must not be present when registered after window close")
+	}
+}
+
 func TestInvokeProvider_UnknownPlugin(t *testing.T) {
 	m := New(testHost())
 	if _, err := m.InvokeProvider(context.Background(), "nope", "speech_provider", "x", "m", nil); err == nil {

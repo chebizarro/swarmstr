@@ -1305,6 +1305,9 @@ func main() {
 					log.Printf("openclaw registration failed (%s): %v", result.PluginID, err)
 				}
 			}
+			if err := pluginMgr.RegisterCapabilities(unified); err != nil {
+				log.Printf("plugin capability registration warning: %v", err)
+			}
 			unified.CloseRegistrationWindow()
 			pluginServiceMgr = pluginservice.NewManager(unified.Services(), openClawHost)
 			if err := pluginServiceMgr.StartAll(ctx); err != nil {
