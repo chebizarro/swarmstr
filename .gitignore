@@ -16,3 +16,10 @@ scripts/docker/.env
 
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
+
+# Compiled daemon binaries — must never be committed (purged from history 2026-07)
+/cmd/metiqd/metiqd
+/cmd/metiqd/metiq
+/swarmstr
+/swarmstrd
+/swarmstrd_new
