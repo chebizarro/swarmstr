@@ -14,9 +14,11 @@
 //	  "require_mention": false                               // optional: only respond when mentioned
 //	}
 //
-// The plugin uses the Mattermost REST API (GET /api/v4/...) for polling and
-// POST /api/v4/posts for sending, with WebSocket for real-time events when
-// available.  Polling at 3s intervals serves as fallback.
+// Inbound messages are delivered event-driven via the Mattermost WebSocket
+// events API (/api/v4/websocket, "posted" events).  If that endpoint cannot be
+// reached, the plugin falls back to REST /posts?since polling at 3s intervals
+// as a documented, non-event-driven fallback.  Outbound sends use POST
+// /api/v4/posts.
 //
 // To add a Mattermost channel to your metiq config:
 //
@@ -45,6 +47,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	"metiq/internal/plugins/sdk"
 )
@@ -165,12 +170,12 @@ func (p *MattermostPlugin) Connect(
 		log.Printf("mattermost: could not fetch bot user ID for channel %s: %v", channelID, err)
 	}
 
-	// NOTE: Mattermost exposes a real-time WebSocket events API (/api/v4/websocket)
-	// which would satisfy the event-driven guardrails, but that transport is not
-	// yet implemented here. Until then we poll /posts?since as a documented,
-	// non-event-driven fallback.
-	go bot.poll(ctx)
-	log.Printf("mattermost: channel=%s using REST polling fallback (team=%s, channel=%s); the WebSocket events API is not yet implemented", channelID, teamName, channelName)
+	// Prefer the event-driven WebSocket events API; run() falls back to REST
+	// /posts polling (a documented, non-event-driven fallback) only if the
+	// WebSocket endpoint cannot be reached.
+	runCtx, cancel := context.WithCancel(ctx)
+	bot.cancel = cancel
+	go bot.run(runCtx)
 	return bot, nil
 }
 
@@ -194,12 +199,16 @@ type mmBot struct {
 	// lastSince is the cursor for polling (Unix ms).
 	lastSince  int64
 	done       chan struct{}
+	cancel     context.CancelFunc
 	httpClient *http.Client
 }
 
 func (b *mmBot) ID() string { return b.channelID }
 
 func (b *mmBot) Close() {
+	if b.cancel != nil {
+		b.cancel()
+	}
 	select {
 	case <-b.done:
 	default:
@@ -404,15 +413,8 @@ func (b *mmBot) fetchPosts(ctx context.Context) {
 	}
 
 	var result struct {
-		Order []string `json:"order"`
-		Posts map[string]struct {
-			ID       string `json:"id"`
-			UserID   string `json:"user_id"`
-			Message  string `json:"message"`
-			CreateAt int64  `json:"create_at"`
-			RootID   string `json:"root_id"`
-			DeleteAt int64  `json:"delete_at"`
-		} `json:"posts"`
+		Order []string          `json:"order"`
+		Posts map[string]mmPost `json:"posts"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return
@@ -441,34 +443,10 @@ func (b *mmBot) fetchPosts(ctx context.Context) {
 	var newSince int64
 	for _, postID := range result.Order {
 		post := result.Posts[postID]
-		senderUsername := usernameByID[post.UserID]
-		if post.DeleteAt > 0 {
-			continue
-		}
-		if post.CreateAt > newSince {
+		if post.DeleteAt == 0 && post.CreateAt > newSince {
 			newSince = post.CreateAt
 		}
-		if post.UserID == b.selfUserID {
-			continue
-		}
-		if post.Message == "" {
-			continue
-		}
-		if len(b.allowedSenders) > 0 {
-			if senderUsername == "" || !b.allowedSenders[senderUsername] {
-				continue
-			}
-		}
-		if b.requireMention && b.selfUsername != "" && !messageMentions(post.Message, b.selfUsername) {
-			continue
-		}
-
-		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID: b.channelID,
-			SenderID:  post.UserID,
-			Text:      post.Message,
-			EventID:   "mm-" + post.ID,
-		})
+		b.handlePost(post, usernameByID[post.UserID])
 	}
 
 	if newSince > 0 {
@@ -476,6 +454,220 @@ func (b *mmBot) fetchPosts(ctx context.Context) {
 		// +1 so we don't replay the last post.
 		b.lastSince = newSince + 1
 		b.mu.Unlock()
+	}
+}
+
+// ─── Event-driven inbound (WebSocket events API) ──────────────────────────────
+
+// mmPost is a Mattermost post as returned by the REST /posts endpoint and
+// embedded (JSON-encoded) inside WebSocket "posted" events.
+type mmPost struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	Message   string `json:"message"`
+	ChannelID string `json:"channel_id"`
+	CreateAt  int64  `json:"create_at"`
+	RootID    string `json:"root_id"`
+	DeleteAt  int64  `json:"delete_at"`
+}
+
+// handlePost applies sender/mention/self filtering and delivers a post to the
+// agent. It is shared by the WebSocket event path and the polling fallback.
+func (b *mmBot) handlePost(post mmPost, senderUsername string) {
+	if post.DeleteAt > 0 || post.ID == "" {
+		return
+	}
+	if post.UserID == b.selfUserID {
+		return
+	}
+	if post.Message == "" {
+		return
+	}
+	if len(b.allowedSenders) > 0 {
+		if senderUsername == "" || !b.allowedSenders[senderUsername] {
+			return
+		}
+	}
+	if b.requireMention && b.selfUsername != "" && !messageMentions(post.Message, b.selfUsername) {
+		return
+	}
+	b.onMessage(sdk.InboundChannelMessage{
+		ChannelID: b.channelID,
+		SenderID:  post.UserID,
+		Text:      post.Message,
+		EventID:   "mm-" + post.ID,
+	})
+}
+
+const mmMaxReconnects = 10
+
+// run prefers the event-driven WebSocket events API and falls back to REST
+// polling (a documented, non-event-driven fallback) if the WebSocket endpoint
+// cannot be reached.
+func (b *mmBot) run(ctx context.Context) {
+	conn, err := b.dialWS(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("mattermost: channel=%s WebSocket events API unavailable (%v); using REST /posts polling fallback (team=%s, channel=%s)", b.channelID, err, b.teamName, b.channelName)
+		b.poll(ctx)
+		return
+	}
+	log.Printf("mattermost: channel=%s connected to WebSocket events API (team=%s, channel=%s)", b.channelID, b.teamName, b.channelName)
+	b.serveWS(ctx, conn)
+}
+
+// mmWSFrame is a frame from the Mattermost WebSocket events API. Frames are
+// either events ({"event":...,"data":...,"broadcast":...}) or command replies
+// ({"status":...,"seq_reply":...}).
+type mmWSFrame struct {
+	Event     string          `json:"event"`
+	Data      json.RawMessage `json:"data"`
+	Broadcast struct {
+		ChannelID string `json:"channel_id"`
+	} `json:"broadcast"`
+	Seq      int    `json:"seq"`
+	Status   string `json:"status"`
+	SeqReply int    `json:"seq_reply"`
+	Error    *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (b *mmBot) wsURL() string {
+	u := b.baseURL
+	switch {
+	case strings.HasPrefix(u, "https://"):
+		u = "wss://" + strings.TrimPrefix(u, "https://")
+	case strings.HasPrefix(u, "http://"):
+		u = "ws://" + strings.TrimPrefix(u, "http://")
+	}
+	return u + "/api/v4/websocket"
+}
+
+// dialWS connects to the WebSocket events API, authenticates with the bot
+// token, and returns once the server confirms the connection (a "hello" event
+// or an OK status reply). A non-nil error means the WebSocket transport is
+// unavailable and callers should fall back to polling.
+func (b *mmBot) dialWS(ctx context.Context) (*websocket.Conn, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, b.wsURL(), nil)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetReadLimit(1 << 20)
+
+	challenge := map[string]any{
+		"seq":    1,
+		"action": "authentication_challenge",
+		"data":   map[string]any{"token": b.token},
+	}
+	if err := wsjson.Write(dialCtx, conn, challenge); err != nil {
+		conn.Close(websocket.StatusInternalError, "auth write")
+		return nil, err
+	}
+
+	// Wait for the server to confirm authentication: a "hello" event or an OK
+	// reply to seq 1.
+	for {
+		var frame mmWSFrame
+		if err := wsjson.Read(dialCtx, conn, &frame); err != nil {
+			conn.Close(websocket.StatusInternalError, "auth read")
+			return nil, err
+		}
+		if frame.Event == "hello" {
+			return conn, nil
+		}
+		if frame.SeqReply == 1 {
+			if strings.EqualFold(frame.Status, "OK") {
+				return conn, nil
+			}
+			msg := "authentication failed"
+			if frame.Error != nil && frame.Error.Message != "" {
+				msg = frame.Error.Message
+			}
+			conn.Close(websocket.StatusPolicyViolation, "auth failed")
+			return nil, fmt.Errorf("websocket auth: %s", msg)
+		}
+	}
+}
+
+// serveWS reads events from conn, reconnecting with backoff on failure. If it
+// cannot re-establish the WebSocket after mmMaxReconnects attempts it falls
+// back to REST polling.
+func (b *mmBot) serveWS(ctx context.Context, conn *websocket.Conn) {
+	backoff := time.Second
+	attempts := 0
+	for {
+		err := b.readWS(ctx, conn)
+		_ = conn.Close(websocket.StatusNormalClosure, "reconnect")
+		select {
+		case <-ctx.Done():
+			return
+		case <-b.done:
+			return
+		default:
+		}
+		log.Printf("mattermost: channel=%s WebSocket read ended (%v); reconnecting", b.channelID, err)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-b.done:
+				return
+			case <-time.After(backoff):
+			}
+			attempts++
+			newConn, derr := b.dialWS(ctx)
+			if derr == nil {
+				conn = newConn
+				backoff = time.Second
+				attempts = 0
+				break
+			}
+			log.Printf("mattermost: channel=%s WebSocket reconnect failed (%v)", b.channelID, derr)
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			if attempts >= mmMaxReconnects {
+				log.Printf("mattermost: channel=%s giving up on WebSocket after %d attempts; using REST /posts polling fallback", b.channelID, attempts)
+				b.poll(ctx)
+				return
+			}
+		}
+	}
+}
+
+// readWS reads and dispatches WebSocket frames until an error occurs.
+func (b *mmBot) readWS(ctx context.Context, conn *websocket.Conn) error {
+	for {
+		var frame mmWSFrame
+		if err := wsjson.Read(ctx, conn, &frame); err != nil {
+			return err
+		}
+		if frame.Event != "posted" {
+			continue
+		}
+		if frame.Broadcast.ChannelID != "" && frame.Broadcast.ChannelID != b.mmChannelID {
+			continue
+		}
+		var data struct {
+			Post       string `json:"post"`
+			SenderName string `json:"sender_name"`
+		}
+		if err := json.Unmarshal(frame.Data, &data); err != nil || data.Post == "" {
+			continue
+		}
+		var post mmPost
+		if err := json.Unmarshal([]byte(data.Post), &post); err != nil {
+			continue
+		}
+		if post.ChannelID != "" && post.ChannelID != b.mmChannelID {
+			continue
+		}
+		b.handlePost(post, strings.TrimPrefix(data.SenderName, "@"))
 	}
 }
 

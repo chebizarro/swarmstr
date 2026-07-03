@@ -133,12 +133,12 @@ func (e *EmailPlugin) Connect(
 		seenUIDs:       map[string]bool{},
 	}
 
-	// NOTE: IMAP IDLE would let the server push new-mail notifications, satisfying
-	// the event-driven guardrails, but IDLE is not yet implemented here. Until
-	// then we poll the mailbox with periodic IMAP SEARCH as a documented,
-	// non-event-driven fallback.
-	go b.poll(ctx)
-	log.Printf("email channel %s connected via IMAP SEARCH polling fallback (host=%s user=%s poll=%ds); IMAP IDLE push is not yet implemented", channelID, imapHost, imapUser, pollSeconds)
+	// Prefer event-driven IMAP IDLE; run() falls back to periodic IMAP SEARCH
+	// polling (a documented, non-event-driven fallback) when the server does not
+	// advertise the IDLE capability or the IDLE connection cannot be established.
+	runCtx, cancel := context.WithCancel(ctx)
+	b.cancel = cancel
+	go b.run(runCtx)
 	return b, nil
 }
 
@@ -161,6 +161,7 @@ type emailBot struct {
 	mu       sync.Mutex
 	seenUIDs map[string]bool
 	closed   bool
+	cancel   context.CancelFunc
 	// lastReplyTo tracks the most recent sender's address for outbound reply.
 	lastReplyTo  string
 	lastThreadID string
@@ -188,8 +189,18 @@ func (b *emailBot) SendTo(ctx context.Context, to, subject, text string) error {
 func (b *emailBot) Close() {
 	b.mu.Lock()
 	b.closed = true
+	cancel := b.cancel
 	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	log.Printf("email channel %s closed", b.channelID)
+}
+
+func (b *emailBot) isClosed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed
 }
 
 // ─── ThreadHandle ────────────────────────────────────────────────────────────
@@ -243,6 +254,12 @@ func (b *emailBot) checkMail(ctx context.Context) {
 		log.Printf("email channel %s: IMAP error: %v", b.channelID, err)
 		return
 	}
+	b.deliver(msgs)
+}
+
+// deliver applies allowlist filtering, dedups by UID, and delivers messages to
+// the agent. It is shared by the IMAP IDLE path and the polling fallback.
+func (b *emailBot) deliver(msgs []imapMessage) {
 	for _, m := range msgs {
 		uid := m.uid
 		b.mu.Lock()
@@ -278,6 +295,89 @@ func (b *emailBot) checkMail(ctx context.Context) {
 	}
 }
 
+// ─── Event-driven inbound (IMAP IDLE) ────────────────────────────────────
+
+// run prefers event-driven IMAP IDLE (RFC 2177) and falls back to periodic IMAP
+// SEARCH polling (a documented, non-event-driven fallback) when the server does
+// not advertise IDLE.
+func (b *emailBot) run(ctx context.Context) {
+	backoff := 2 * time.Second
+	for {
+		if ctx.Err() != nil || b.isClosed() {
+			return
+		}
+		unsupported, err := b.idleCycle(ctx)
+		if unsupported {
+			log.Printf("email channel %s: server does not advertise IMAP IDLE; using IMAP SEARCH polling fallback (host=%s user=%s poll=%s)", b.channelID, b.imapHost, b.imapUser, b.pollInterval)
+			b.poll(ctx)
+			return
+		}
+		if ctx.Err() != nil || b.isClosed() {
+			return
+		}
+		if err != nil {
+			log.Printf("email channel %s: IMAP IDLE session ended (%v); reconnecting in %s", b.channelID, err, backoff)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 60*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+// idleCycle connects, verifies IDLE support, and watches the mailbox using IMAP
+// IDLE until the session ends. It returns unsupported=true (with a nil error) if
+// the server does not advertise IDLE, signalling a permanent fallback to
+// polling.
+func (b *emailBot) idleCycle(ctx context.Context) (unsupported bool, err error) {
+	ic, err := imapDialLogin(ctx, b.imapHost, b.imapUser, b.imapPass)
+	if err != nil {
+		return false, err
+	}
+	defer ic.close()
+
+	caps, cerr := ic.capability()
+	if cerr != nil {
+		return false, cerr
+	}
+	if !hasCapability(caps, "IDLE") {
+		return true, nil
+	}
+	if err := ic.selectMailbox(b.mailbox); err != nil {
+		return false, err
+	}
+	log.Printf("email channel %s connected via IMAP IDLE push (host=%s user=%s mailbox=%s)", b.channelID, b.imapHost, b.imapUser, b.mailbox)
+
+	// Deliver any unseen messages already waiting before we start idling.
+	if msgs, ferr := ic.fetchUnseen(); ferr == nil {
+		b.deliver(msgs)
+	}
+
+	for {
+		if ctx.Err() != nil || b.isClosed() {
+			return false, ctx.Err()
+		}
+		changed, ierr := ic.idleOnce(ctx, 29*time.Minute)
+		if ierr != nil {
+			return false, ierr
+		}
+		if b.isClosed() {
+			return false, nil
+		}
+		if changed {
+			msgs, ferr := ic.fetchUnseen()
+			if ferr != nil {
+				return false, ferr
+			}
+			b.deliver(msgs)
+		}
+	}
+}
+
 // ─── Minimal IMAP client ──────────────────────────────────────────────────────
 
 type imapMessage struct {
@@ -294,17 +394,13 @@ type imapMessage struct {
 // imapFetchUnseen connects to the IMAP server over TLS and fetches unseen
 // messages from mailbox.  Returns a slice of messages (possibly empty).
 func imapFetchUnseen(ctx context.Context, host, user, pass, mailbox string) ([]imapMessage, error) {
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: 15 * time.Second},
-		Config:    &tls.Config{InsecureSkipVerify: false},
-	}
-	conn, err := dialer.DialContext(ctx, "tcp", host)
+	conn, err := imapDialContext(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("IMAP connect %s: %w", host, err)
 	}
 	defer conn.Close()
 
-	ic := &imapConn{conn: conn, tag: 1}
+	ic := &imapConn{conn: conn, raw: conn, tag: 1}
 
 	// Read greeting.
 	if _, err := ic.readLine(); err != nil {
@@ -347,13 +443,187 @@ func imapFetchUnseen(ctx context.Context, host, user, pass, mailbox string) ([]i
 	return msgs, nil
 }
 
+// imapDialContext establishes a TLS connection to an IMAP server. It is a
+// package variable so tests can substitute a fake (plaintext) server.
+var imapDialContext = func(ctx context.Context, host string) (net.Conn, error) {
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: 15 * time.Second},
+		Config:    &tls.Config{InsecureSkipVerify: false},
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", host)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
 // imapConn is a minimal IMAP connection over a net.Conn.
 type imapConn struct {
 	conn io.ReadWriter
+	raw  net.Conn
 	tag  int
 	buf  []byte
 	pos  int
 	end  int
+}
+
+// imapDialLogin opens a connection, reads the greeting, and logs in. The
+// returned connection is persistent (suitable for IDLE).
+func imapDialLogin(ctx context.Context, host, user, pass string) (*imapConn, error) {
+	conn, err := imapDialContext(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("IMAP connect %s: %w", host, err)
+	}
+	ic := &imapConn{conn: conn, raw: conn, tag: 1}
+	if _, err := ic.readLine(); err != nil {
+		ic.close()
+		return nil, fmt.Errorf("IMAP greeting: %w", err)
+	}
+	if _, err := ic.cmd(fmt.Sprintf("LOGIN %q %q", user, pass)); err != nil {
+		ic.close()
+		return nil, fmt.Errorf("IMAP LOGIN: %w", err)
+	}
+	return ic, nil
+}
+
+// close sends LOGOUT (best effort) and closes the underlying connection.
+func (c *imapConn) close() {
+	_, _ = c.cmd("LOGOUT")
+	if c.raw != nil {
+		_ = c.raw.Close()
+	}
+}
+
+// capability returns the server capability tokens.
+func (c *imapConn) capability() ([]string, error) {
+	lines, err := c.cmd("CAPABILITY")
+	if err != nil {
+		return nil, err
+	}
+	var caps []string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "* CAPABILITY") {
+			caps = append(caps, strings.Fields(strings.TrimPrefix(l, "* CAPABILITY"))...)
+		}
+	}
+	return caps, nil
+}
+
+func (c *imapConn) selectMailbox(mailbox string) error {
+	_, err := c.cmd(fmt.Sprintf("SELECT %q", mailbox))
+	return err
+}
+
+// fetchUnseen runs SEARCH UNSEEN + FETCH on a persistent connection.
+func (c *imapConn) fetchUnseen() ([]imapMessage, error) {
+	resp, err := c.cmd("SEARCH UNSEEN")
+	if err != nil {
+		return nil, err
+	}
+	uids := parseSearchResult(resp)
+	var msgs []imapMessage
+	for _, uid := range uids {
+		fetchResp, err := c.cmd(fmt.Sprintf("FETCH %s (BODY.PEEK[])", uid))
+		if err != nil {
+			continue
+		}
+		msgs = append(msgs, parseSimpleMessage(uid, fetchResp))
+	}
+	return msgs, nil
+}
+
+// idleOnce issues an IMAP IDLE command (RFC 2177) and waits up to refresh for a
+// mailbox change (untagged EXISTS/RECENT) or context cancellation. It always
+// ends the IDLE with DONE before returning. changed reports whether new mail was
+// signalled; a nil error with changed=false means the refresh interval elapsed
+// and the caller should IDLE again.
+func (c *imapConn) idleOnce(ctx context.Context, refresh time.Duration) (changed bool, err error) {
+	tag := fmt.Sprintf("T%04d", c.tag)
+	c.tag++
+	if _, err := io.WriteString(c.conn, tag+" IDLE\r\n"); err != nil {
+		return false, err
+	}
+
+	// Unblock the blocking read when the context is cancelled.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			if c.raw != nil {
+				_ = c.raw.SetReadDeadline(time.Now())
+			}
+		case <-stop:
+		}
+	}()
+
+	if c.raw != nil {
+		_ = c.raw.SetReadDeadline(time.Now().Add(refresh))
+	}
+
+	for {
+		line, rerr := c.readLine()
+		if rerr != nil {
+			// Timeout (refresh), context cancel, or connection error. End IDLE.
+			if c.raw != nil {
+				_ = c.raw.SetReadDeadline(time.Now().Add(5 * time.Second))
+			}
+			_, _ = io.WriteString(c.conn, "DONE\r\n")
+			_ = c.drainUntilTag(tag)
+			if c.raw != nil {
+				_ = c.raw.SetReadDeadline(time.Time{})
+			}
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			if ne, ok := rerr.(net.Error); ok && ne.Timeout() {
+				return false, nil
+			}
+			return false, rerr
+		}
+		if strings.HasPrefix(line, "+") {
+			// "+ idling" continuation.
+			continue
+		}
+		up := strings.ToUpper(strings.TrimSpace(line))
+		if strings.HasPrefix(line, "* ") && (strings.HasSuffix(up, " EXISTS") || strings.HasSuffix(up, " RECENT")) {
+			if c.raw != nil {
+				_ = c.raw.SetReadDeadline(time.Now().Add(5 * time.Second))
+			}
+			_, _ = io.WriteString(c.conn, "DONE\r\n")
+			derr := c.drainUntilTag(tag)
+			if c.raw != nil {
+				_ = c.raw.SetReadDeadline(time.Time{})
+			}
+			return true, derr
+		}
+		// Ignore other untagged responses during IDLE.
+	}
+}
+
+// drainUntilTag reads lines until the tagged completion for tag.
+func (c *imapConn) drainUntilTag(tag string) error {
+	for {
+		line, err := c.readLine()
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(line, tag+" OK") {
+			return nil
+		}
+		if strings.HasPrefix(line, tag+" NO") || strings.HasPrefix(line, tag+" BAD") {
+			return fmt.Errorf("IMAP IDLE: %s", line)
+		}
+	}
+}
+
+func hasCapability(caps []string, want string) bool {
+	for _, c := range caps {
+		if strings.EqualFold(c, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *imapConn) readLine() (string, error) {

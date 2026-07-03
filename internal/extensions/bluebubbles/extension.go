@@ -1,11 +1,11 @@
 // Package bluebubbles implements a BlueBubbles (iMessage) channel extension for metiq.
 //
-// BlueBubbles is a self-hosted iMessage relay server.  BlueBubbles also exposes
-// a Socket.IO push endpoint, but this plugin currently receives new messages by
-// polling the REST API on a short interval (a documented fallback that avoids a
-// Socket.IO client dependency) and sends replies via the REST API.  Real-time
-// Socket.IO push is not yet implemented; see the tracking issue.  This polling
-// path is an intentional, documented exception to the event-driven guardrails.
+// BlueBubbles is a self-hosted iMessage relay server.  This plugin receives new
+// messages event-driven via the BlueBubbles Socket.IO push endpoint
+// (Engine.IO v4 over WebSocket, "new-message" events) and sends replies via the
+// REST API.  If the Socket.IO endpoint cannot be reached, it falls back to
+// polling the REST message endpoint on a short interval — a documented,
+// non-event-driven fallback.
 //
 // Registration: import _ "metiq/internal/extensions/bluebubbles" in the
 // daemon main.go to include this plugin in the binary.
@@ -19,8 +19,9 @@
 //	  "allowed_senders": []                           // optional: handle/number allowlist
 //	}
 //
-// No inbound webhook endpoint is required — this plugin makes outbound REST
-// calls to the BlueBubbles server (Socket.IO push is a future enhancement).
+// No inbound webhook endpoint is required — the plugin opens an outbound
+// Socket.IO WebSocket to the BlueBubbles server for inbound push (with REST
+// polling as a fallback) and makes outbound REST calls to send.
 package bluebubbles
 
 import (
@@ -35,6 +36,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"metiq/internal/plugins/sdk"
 )
@@ -115,8 +118,9 @@ func (p *BlueBubblesPlugin) Connect(
 		httpClient:     &http.Client{Timeout: 20 * time.Second},
 	}
 
-	go bot.run(ctx)
-	log.Printf("bluebubbles: started polling channel=%s server=%s", channelID, serverURL)
+	runCtx, cancel := context.WithCancel(ctx)
+	bot.cancel = cancel
+	go bot.run(runCtx)
 	return bot, nil
 }
 
@@ -135,6 +139,7 @@ type bbBot struct {
 	allowedSenders map[string]bool
 	onMessage      func(sdk.InboundChannelMessage)
 	done           chan struct{}
+	cancel         context.CancelFunc
 	httpClient     *http.Client
 
 	mu          sync.Mutex
@@ -145,6 +150,9 @@ type bbBot struct {
 func (b *bbBot) ID() string { return b.channelID }
 
 func (b *bbBot) Close() {
+	if b.cancel != nil {
+		b.cancel()
+	}
 	select {
 	case <-b.done:
 	default:
@@ -152,17 +160,16 @@ func (b *bbBot) Close() {
 	}
 }
 
-// run polls the BlueBubbles REST API for new messages.
-// BlueBubbles also exposes a Socket.IO endpoint, but using polling avoids the
-// need for a Socket.IO client library while being equally reliable for typical
-// assistant response latencies.
+// run seeds dedup state, then prefers the event-driven Socket.IO push transport,
+// falling back to REST polling (a documented, non-event-driven fallback) if it
+// is unavailable.
 func (b *bbBot) run(ctx context.Context) {
 	b.mu.Lock()
 	b.seenGUIDs = map[string]struct{}{}
 	b.mu.Unlock()
 
-	// On first run, seed seenGUIDs with the latest 25 messages so we don't
-	// replay history on startup.
+	// Seed seenGUIDs with the latest 25 messages so we don't replay history on
+	// startup (applies to both the Socket.IO and polling paths).
 	if msgs, err := b.fetchMessages(ctx, 25); err == nil {
 		b.mu.Lock()
 		for _, m := range msgs {
@@ -171,6 +178,19 @@ func (b *bbBot) run(ctx context.Context) {
 		b.mu.Unlock()
 	}
 
+	if err := b.runSocket(ctx); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("bluebubbles: channel=%s Socket.IO push unavailable (%v); using REST polling fallback (server=%s)", b.channelID, err, b.serverURL)
+		b.pollLoop(ctx)
+	}
+}
+
+// pollLoop is the REST polling fallback: a wait-and-check ticker over the
+// BlueBubbles message endpoint. Prefer the Socket.IO push path; this exists
+// only for servers where Socket.IO cannot be reached.
+func (b *bbBot) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(bbPollInterval)
 	defer ticker.Stop()
 
@@ -235,46 +255,215 @@ func (b *bbBot) poll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	// msgs is newest-first; process in reverse to deliver oldest first.
 	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if _, seen := b.seenGUIDs[m.GUID]; seen {
-			continue
-		}
-		b.seenGUIDs[m.GUID] = struct{}{}
-
-		// Skip messages sent by the bot itself.
-		if m.IsFromMe {
-			continue
-		}
-
-		text := strings.TrimSpace(m.Text)
-		if text == "" {
-			continue
-		}
-
-		senderAddr := ""
-		if m.Handle != nil {
-			senderAddr = strings.ToLower(m.Handle.Address)
-		}
-
-		if len(b.allowedSenders) > 0 && !b.allowedSenders[senderAddr] {
-			continue
-		}
-
-		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID: b.channelID,
-			SenderID:  senderAddr,
-			Text:      text,
-			EventID:   m.GUID,
-			CreatedAt: m.DateCreated / 1000,
-		})
+		b.deliverMessage(msgs[i])
 	}
 	return nil
+}
+
+// deliverMessage dedups by GUID, applies self/allowlist filtering, and delivers
+// a message to the agent. It is shared by the Socket.IO push path and the
+// polling fallback.
+func (b *bbBot) deliverMessage(m bbMessage) {
+	b.mu.Lock()
+	if b.seenGUIDs == nil {
+		b.seenGUIDs = map[string]struct{}{}
+	}
+	if _, seen := b.seenGUIDs[m.GUID]; seen {
+		b.mu.Unlock()
+		return
+	}
+	b.seenGUIDs[m.GUID] = struct{}{}
+	b.mu.Unlock()
+
+	// Skip messages sent by the bot itself.
+	if m.IsFromMe {
+		return
+	}
+	text := strings.TrimSpace(m.Text)
+	if text == "" {
+		return
+	}
+	senderAddr := ""
+	if m.Handle != nil {
+		senderAddr = strings.ToLower(m.Handle.Address)
+	}
+	if len(b.allowedSenders) > 0 && !b.allowedSenders[senderAddr] {
+		return
+	}
+	b.onMessage(sdk.InboundChannelMessage{
+		ChannelID: b.channelID,
+		SenderID:  senderAddr,
+		Text:      text,
+		EventID:   m.GUID,
+		CreatedAt: m.DateCreated / 1000,
+	})
+}
+
+// ─── Socket.IO push (event-driven inbound) ────────────────────────────────
+
+func (b *bbBot) socketURL() string {
+	u := b.serverURL
+	switch {
+	case strings.HasPrefix(u, "https://"):
+		u = "wss://" + strings.TrimPrefix(u, "https://")
+	case strings.HasPrefix(u, "http://"):
+		u = "ws://" + strings.TrimPrefix(u, "http://")
+	}
+	return u + "/socket.io/?EIO=4&transport=websocket&password=" + url.QueryEscape(b.password)
+}
+
+// runSocket connects the Socket.IO client and serves events, reconnecting with
+// backoff. It returns an error (triggering the polling fallback) only if the
+// initial connection fails or reconnection is exhausted.
+func (b *bbBot) runSocket(ctx context.Context) error {
+	conn, err := b.socketConnect(ctx)
+	if err != nil {
+		return err
+	}
+	log.Printf("bluebubbles: channel=%s connected via Socket.IO push (server=%s)", b.channelID, b.serverURL)
+
+	backoff := time.Second
+	attempts := 0
+	for {
+		serr := b.socketServe(ctx, conn)
+		_ = conn.Close(websocket.StatusNormalClosure, "reconnect")
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-b.done:
+			return nil
+		default:
+		}
+		log.Printf("bluebubbles: channel=%s Socket.IO stream ended (%v); reconnecting", b.channelID, serr)
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-b.done:
+				return nil
+			case <-time.After(backoff):
+			}
+			attempts++
+			nc, derr := b.socketConnect(ctx)
+			if derr == nil {
+				conn = nc
+				backoff = time.Second
+				attempts = 0
+				break
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			if attempts >= bbMaxReconnects {
+				return fmt.Errorf("socket.io reconnect exhausted after %d attempts: %w", attempts, derr)
+			}
+		}
+	}
+}
+
+// socketConnect performs the Engine.IO v4 + Socket.IO handshake over WebSocket
+// and returns a connection ready to receive events.
+func (b *bbBot) socketConnect(ctx context.Context) (*websocket.Conn, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, b.socketURL(), nil)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetReadLimit(1 << 20)
+
+	// Engine.IO OPEN packet: "0{...}".
+	_, data, err := conn.Read(dialCtx)
+	if err != nil {
+		conn.Close(websocket.StatusInternalError, "handshake read")
+		return nil, err
+	}
+	if len(data) == 0 || data[0] != '0' {
+		conn.Close(websocket.StatusProtocolError, "bad handshake")
+		return nil, fmt.Errorf("unexpected engine.io handshake: %q", string(data))
+	}
+
+	// Socket.IO CONNECT to the default namespace: "40".
+	if err := conn.Write(dialCtx, websocket.MessageText, []byte("40")); err != nil {
+		conn.Close(websocket.StatusInternalError, "connect write")
+		return nil, err
+	}
+
+	// Await the Socket.IO CONNECT acknowledgement ("40..."), answering any
+	// Engine.IO pings ("2") in the meantime.
+	for {
+		_, d, err := conn.Read(dialCtx)
+		if err != nil {
+			conn.Close(websocket.StatusInternalError, "connect ack")
+			return nil, err
+		}
+		if len(d) == 0 {
+			continue
+		}
+		switch {
+		case d[0] == '2':
+			_ = conn.Write(dialCtx, websocket.MessageText, []byte("3"))
+		case len(d) >= 2 && d[0] == '4' && d[1] == '0':
+			return conn, nil
+		case len(d) >= 2 && d[0] == '4' && d[1] == '4':
+			conn.Close(websocket.StatusPolicyViolation, "connect error")
+			return nil, fmt.Errorf("socket.io connect error: %s", strings.TrimSpace(string(d[2:])))
+		}
+	}
+}
+
+// socketServe reads Engine.IO/Socket.IO frames and dispatches "new-message"
+// events until the connection fails.
+func (b *bbBot) socketServe(ctx context.Context, conn *websocket.Conn) error {
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return err
+		}
+		if len(data) == 0 {
+			continue
+		}
+		switch data[0] {
+		case '2': // Engine.IO PING → PONG
+			if err := conn.Write(ctx, websocket.MessageText, []byte("3")); err != nil {
+				return err
+			}
+		case '4': // Engine.IO MESSAGE → Socket.IO packet
+			b.handleSocketPacket(data[1:])
+		case '1': // Engine.IO CLOSE
+			return fmt.Errorf("server closed engine.io connection")
+		}
+	}
+}
+
+// handleSocketPacket parses a Socket.IO packet and delivers "new-message"
+// events. Only EVENT packets (type '2') in the default namespace are handled.
+func (b *bbBot) handleSocketPacket(p []byte) {
+	if len(p) == 0 || p[0] != '2' {
+		return
+	}
+	idx := bytes.IndexByte(p, '[')
+	if idx < 0 {
+		return
+	}
+	var evt []json.RawMessage
+	if err := json.Unmarshal(p[idx:], &evt); err != nil || len(evt) < 2 {
+		return
+	}
+	var name string
+	if err := json.Unmarshal(evt[0], &name); err != nil {
+		return
+	}
+	if name != "new-message" {
+		return
+	}
+	var m bbMessage
+	if err := json.Unmarshal(evt[1], &m); err != nil {
+		return
+	}
+	b.deliverMessage(m)
 }
 
 // Send posts a text message to the BlueBubbles chat via REST API.

@@ -42,6 +42,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -136,12 +139,12 @@ func (p *SignalPlugin) Connect(
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
 	}
 
-	// NOTE: The signal-cli REST sidecar can stream inbound messages over a
-	// JSON-RPC WebSocket, which would satisfy the event-driven guardrails, but
-	// that transport is not yet implemented here. Until then we poll the REST
-	// receive endpoint as a documented, non-event-driven fallback.
-	go bot.poll(ctx)
-	log.Printf("signal: channel=%s using REST polling fallback (account=%s, sidecar=%s); signal-cli JSON-RPC WebSocket push is not yet implemented", channelID, account, apiURL)
+	// Prefer the event-driven signal-cli JSON-RPC WebSocket receive stream;
+	// run() falls back to REST /v1/receive polling (a documented,
+	// non-event-driven fallback) only if the WebSocket cannot be reached.
+	runCtx, cancel := context.WithCancel(ctx)
+	bot.cancel = cancel
+	go bot.run(runCtx)
 	return bot, nil
 }
 
@@ -156,12 +159,16 @@ type signalBot struct {
 	pollInterval   time.Duration
 	onMessage      func(sdk.InboundChannelMessage)
 	done           chan struct{}
+	cancel         context.CancelFunc
 	httpClient     *http.Client
 }
 
 func (b *signalBot) ID() string { return b.channelID }
 
 func (b *signalBot) Close() {
+	if b.cancel != nil {
+		b.cancel()
+	}
 	select {
 	case <-b.done:
 	default:
@@ -264,29 +271,146 @@ func (b *signalBot) receive(ctx context.Context) error {
 	}
 
 	for _, env := range envelopes {
-		dm := env.Envelope.DataMessage
-		if dm == nil {
-			continue
-		}
-		sender := env.Envelope.Source
-		if len(b.allowedSenders) > 0 && !b.allowedSenders[sender] {
-			continue
-		}
-		text := strings.TrimSpace(dm.Message)
-		mediaURL, mediaMIME := firstSignalAttachment(dm.Attachments)
-		if text == "" && mediaURL == "" {
-			continue
-		}
-		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID: b.channelID,
-			SenderID:  sender,
-			Text:      text,
-			EventID:   fmt.Sprintf("signal-%s-%d", sender, env.Envelope.Timestamp),
-			MediaURL:  mediaURL,
-			MediaMIME: mediaMIME,
-		})
+		b.deliverEnvelope(env)
 	}
 	return nil
+}
+
+// deliverEnvelope applies allowlist filtering and delivers a Signal envelope to
+// the agent. It is shared by the JSON-RPC WebSocket path and the polling
+// fallback.
+func (b *signalBot) deliverEnvelope(env signalEnvelope) {
+	dm := env.Envelope.DataMessage
+	if dm == nil {
+		return
+	}
+	sender := env.Envelope.Source
+	if len(b.allowedSenders) > 0 && !b.allowedSenders[sender] {
+		return
+	}
+	text := strings.TrimSpace(dm.Message)
+	mediaURL, mediaMIME := firstSignalAttachment(dm.Attachments)
+	if text == "" && mediaURL == "" {
+		return
+	}
+	b.onMessage(sdk.InboundChannelMessage{
+		ChannelID: b.channelID,
+		SenderID:  sender,
+		Text:      text,
+		EventID:   fmt.Sprintf("signal-%s-%d", sender, env.Envelope.Timestamp),
+		MediaURL:  mediaURL,
+		MediaMIME: mediaMIME,
+	})
+}
+
+// ─── Event-driven receive (signal-cli JSON-RPC WebSocket) ─────────────────────
+
+const signalMaxReconnects = 10
+
+// run prefers the event-driven JSON-RPC WebSocket receive stream and falls back
+// to REST /v1/receive polling (a documented, non-event-driven fallback) if the
+// WebSocket cannot be reached.
+func (b *signalBot) run(ctx context.Context) {
+	conn, err := b.dialWS(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("signal: channel=%s JSON-RPC WebSocket receive unavailable (%v); using REST /v1/receive polling fallback (account=%s, sidecar=%s)", b.channelID, err, b.account, b.apiURL)
+		b.poll(ctx)
+		return
+	}
+	log.Printf("signal: channel=%s connected to signal-cli JSON-RPC WebSocket receive (account=%s, sidecar=%s)", b.channelID, b.account, b.apiURL)
+	b.serveWS(ctx, conn)
+}
+
+func (b *signalBot) wsURL() string {
+	u := b.apiURL
+	switch {
+	case strings.HasPrefix(u, "https://"):
+		u = "wss://" + strings.TrimPrefix(u, "https://")
+	case strings.HasPrefix(u, "http://"):
+		u = "ws://" + strings.TrimPrefix(u, "http://")
+	}
+	return u + "/v1/receive/" + b.account
+}
+
+func (b *signalBot) dialWS(ctx context.Context) (*websocket.Conn, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, b.wsURL(), nil)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetReadLimit(1 << 20)
+	return conn, nil
+}
+
+// serveWS reads streamed envelopes, reconnecting with backoff. After
+// signalMaxReconnects consecutive failures it falls back to REST polling.
+func (b *signalBot) serveWS(ctx context.Context, conn *websocket.Conn) {
+	backoff := b.pollInterval
+	if backoff <= 0 {
+		backoff = 3 * time.Second
+	}
+	attempts := 0
+	for {
+		err := b.readWS(ctx, conn)
+		_ = conn.Close(websocket.StatusNormalClosure, "reconnect")
+		select {
+		case <-ctx.Done():
+			return
+		case <-b.done:
+			return
+		default:
+		}
+		log.Printf("signal: channel=%s WebSocket receive ended (%v); reconnecting", b.channelID, err)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-b.done:
+				return
+			case <-time.After(backoff):
+			}
+			attempts++
+			newConn, derr := b.dialWS(ctx)
+			if derr == nil {
+				conn = newConn
+				attempts = 0
+				break
+			}
+			log.Printf("signal: channel=%s WebSocket reconnect failed (%v)", b.channelID, derr)
+			if attempts >= signalMaxReconnects {
+				log.Printf("signal: channel=%s giving up on WebSocket after %d attempts; using REST /v1/receive polling fallback", b.channelID, attempts)
+				b.poll(ctx)
+				return
+			}
+		}
+	}
+}
+
+// signalWSFrame accepts both a bare envelope ({"envelope":{...}}) and a
+// signal-cli JSON-RPC notification ({"jsonrpc":"2.0","method":"receive",
+// "params":{"envelope":{...}}}).
+type signalWSFrame struct {
+	Method string          `json:"method"`
+	Params *signalEnvelope `json:"params"`
+	signalEnvelope
+}
+
+func (b *signalBot) readWS(ctx context.Context, conn *websocket.Conn) error {
+	for {
+		var frame signalWSFrame
+		if err := wsjson.Read(ctx, conn, &frame); err != nil {
+			return err
+		}
+		env := frame.signalEnvelope
+		if frame.Params != nil {
+			env = *frame.Params
+		}
+		b.deliverEnvelope(env)
+	}
 }
 
 // ─── Send ─────────────────────────────────────────────────────────────────────
