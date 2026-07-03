@@ -15,7 +15,17 @@ import (
 // GoogleTTSProvider implements Provider using the Google Cloud TTS REST API.
 // Docs: https://cloud.google.com/text-to-speech/docs/reference/rest/v1/text/synthesize
 // Reads GOOGLE_API_KEY from the environment at call time.
-type GoogleTTSProvider struct{}
+type GoogleTTSProvider struct {
+	// baseURL overrides the default API endpoint (used in tests). Empty means
+	// the production Google Cloud TTS host is used.
+	baseURL string
+}
+
+// NewGoogleTTSProviderWithBaseURL creates a Google TTS provider that calls
+// baseURL instead of https://texttospeech.googleapis.com (useful for tests).
+func NewGoogleTTSProviderWithBaseURL(baseURL string) *GoogleTTSProvider {
+	return &GoogleTTSProvider{baseURL: strings.TrimRight(baseURL, "/")}
+}
 
 func (p *GoogleTTSProvider) ID() string   { return "google" }
 func (p *GoogleTTSProvider) Name() string { return "Google Cloud TTS" }
@@ -65,7 +75,11 @@ func (p *GoogleTTSProvider) Convert(ctx context.Context, text, voice string) ([]
 		return nil, "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("https://texttospeech.googleapis.com/v1/text:synthesize?key=%s", apiKey)
+	base := "https://texttospeech.googleapis.com"
+	if p.baseURL != "" {
+		base = p.baseURL
+	}
+	endpoint := fmt.Sprintf("%s/v1/text:synthesize?key=%s", base, apiKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, "", fmt.Errorf("create request: %w", err)

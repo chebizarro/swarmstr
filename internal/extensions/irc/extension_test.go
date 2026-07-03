@@ -1,6 +1,8 @@
 package irc
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -119,20 +121,39 @@ func newBot(allowedNicks ...string) (*ircBot, *[]sdk.InboundChannelMessage) {
 	return b, &msgs
 }
 
+// captureWriter attaches an in-memory writer to the bot so tests can assert the
+// exact bytes send() emits to the IRC connection.
+func captureWriter(b *ircBot) *bytes.Buffer {
+	var buf bytes.Buffer
+	b.writer = bufio.NewWriter(&buf)
+	return &buf
+}
+
 func TestHandleLine_PING(t *testing.T) {
 	b, _ := newBot()
-	// Should not panic; send is a no-op when conn/writer is nil.
+	buf := captureWriter(b)
+
 	joined := false
 	b.handleLine("PING :server.example.com", &joined)
+
+	// IRC PONG must echo the token from the PING, terminated by CRLF.
+	if got, want := buf.String(), "PONG :server.example.com\r\n"; got != want {
+		t.Fatalf("PING did not emit expected PONG: got %q, want %q", got, want)
+	}
 }
 
 func TestHandleLine_Welcome_JoinsChannels(t *testing.T) {
 	b, _ := newBot()
-	// send is nil-safe (writer == nil), so this just tests no panic.
+	buf := captureWriter(b)
+
 	joined := false
 	b.handleLine(":server.irc.net 001 swarmbot :Welcome to IRC", &joined)
 	if !joined {
 		t.Fatal("expected joined=true after 001")
+	}
+	// On welcome the bot must JOIN each configured channel.
+	if got, want := buf.String(), "JOIN #general\r\n"; got != want {
+		t.Fatalf("welcome did not emit expected JOIN: got %q, want %q", got, want)
 	}
 }
 

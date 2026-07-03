@@ -17,7 +17,17 @@ import (
 //
 // Voice IDs are ElevenLabs-specific UUIDs.  The Voices() method returns common
 // default voice names; use the ElevenLabs dashboard to obtain custom voice IDs.
-type ElevenLabsProvider struct{}
+type ElevenLabsProvider struct {
+	// baseURL overrides the default API endpoint (used in tests). Empty means
+	// the production ElevenLabs host is used.
+	baseURL string
+}
+
+// NewElevenLabsProviderWithBaseURL creates an ElevenLabs provider that calls
+// baseURL instead of https://api.elevenlabs.io (useful for tests).
+func NewElevenLabsProviderWithBaseURL(baseURL string) *ElevenLabsProvider {
+	return &ElevenLabsProvider{baseURL: strings.TrimRight(baseURL, "/")}
+}
 
 // Well-known ElevenLabs default voice IDs.
 var elevenLabsVoices = []struct {
@@ -89,7 +99,11 @@ func (p *ElevenLabsProvider) Convert(ctx context.Context, text, voice string) ([
 		return nil, "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s", voiceID)
+	base := "https://api.elevenlabs.io"
+	if p.baseURL != "" {
+		base = p.baseURL
+	}
+	endpoint := fmt.Sprintf("%s/v1/text-to-speech/%s", base, voiceID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, "", fmt.Errorf("create request: %w", err)

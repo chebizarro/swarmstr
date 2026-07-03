@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -270,17 +272,82 @@ func TestMimeTypeToAudioExt(t *testing.T) {
 // ─── PDFExtractorAvailable ───────────────────────────────────────────────────
 
 func TestPDFExtractorAvailable(t *testing.T) {
-	// We don't require pdftotext to be installed; just ensure the function returns without panic.
-	_ = PDFExtractorAvailable()
+	// Inject LookPath so both the "installed" and "missing" branches are
+	// exercised deterministically regardless of the host environment.
+	orig := LookPath
+	defer func() { LookPath = orig }()
+
+	LookPath = func(string) (string, error) { return "/usr/bin/pdftotext", nil }
+	if !PDFExtractorAvailable() {
+		t.Error("PDFExtractorAvailable should be true when LookPath resolves the binary")
+	}
+
+	LookPath = func(string) (string, error) { return "", errors.New("executable file not found in $PATH") }
+	if PDFExtractorAvailable() {
+		t.Error("PDFExtractorAvailable should be false when LookPath fails")
+	}
 }
 
 func TestExtractPDFText_NotAvailable(t *testing.T) {
-	if PDFExtractorAvailable() {
-		t.Skip("pdftotext is installed; skipping not-available test")
-	}
+	// Force the "binary missing" path deterministically via injection.
+	orig := LookPath
+	defer func() { LookPath = orig }()
+	LookPath = func(string) (string, error) { return "", errors.New("not found") }
+
 	_, err := ExtractPDFText(context.Background(), []byte("%PDF-1.4"))
 	if err == nil {
-		t.Error("expected error when pdftotext is not installed")
+		t.Fatal("expected error when pdftotext is not installed")
+	}
+	if !strings.Contains(err.Error(), "pdftotext not found") {
+		t.Errorf("expected 'pdftotext not found' error, got %v", err)
+	}
+}
+
+func TestExtractPDFText_InjectedSuccess(t *testing.T) {
+	// Simulate an installed pdftotext that writes extracted text to the output
+	// file. Asserts the full read-back + trim path deterministically.
+	origLook, origRun := LookPath, RunPDFExtract
+	defer func() { LookPath, RunPDFExtract = origLook, origRun }()
+
+	LookPath = func(string) (string, error) { return "/fake/pdftotext", nil }
+	var gotBin, gotIn, gotOut string
+	RunPDFExtract = func(_ context.Context, bin, inPath, outPath string) ([]byte, error) {
+		gotBin, gotIn, gotOut = bin, inPath, outPath
+		// pdftotext writes its result to outPath; mimic that.
+		return nil, os.WriteFile(outPath, []byte("  hello from pdf  \n"), 0o600)
+	}
+
+	text, err := ExtractPDFText(context.Background(), []byte("%PDF-1.4 real bytes"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "hello from pdf" {
+		t.Errorf("extracted text = %q, want %q (trimmed)", text, "hello from pdf")
+	}
+	if gotBin != "/fake/pdftotext" {
+		t.Errorf("runner invoked with bin %q, want /fake/pdftotext", gotBin)
+	}
+	if gotIn == "" || gotOut == "" || gotIn == gotOut {
+		t.Errorf("runner should receive distinct in/out temp paths, got in=%q out=%q", gotIn, gotOut)
+	}
+}
+
+func TestExtractPDFText_InjectedFailure(t *testing.T) {
+	// Simulate an installed pdftotext that fails on malformed input.
+	origLook, origRun := LookPath, RunPDFExtract
+	defer func() { LookPath, RunPDFExtract = origLook, origRun }()
+
+	LookPath = func(string) (string, error) { return "/fake/pdftotext", nil }
+	RunPDFExtract = func(_ context.Context, _, _, _ string) ([]byte, error) {
+		return []byte("Syntax Error: Couldn't find trailer dictionary"), errors.New("exit status 1")
+	}
+
+	_, err := ExtractPDFText(context.Background(), []byte("not a real PDF"))
+	if err == nil {
+		t.Fatal("expected error when pdftotext exits non-zero")
+	}
+	if !strings.Contains(err.Error(), "Syntax Error") {
+		t.Errorf("expected pdftotext stderr in error, got %v", err)
 	}
 }
 

@@ -8,9 +8,22 @@ import (
 	"strings"
 )
 
+// LookPath resolves the pdftotext binary. It is a variable (defaulting to
+// exec.LookPath) so tests can deterministically simulate the "installed" and
+// "missing" code paths without depending on the host environment.
+var LookPath = exec.LookPath
+
+// RunPDFExtract runs the extractor with the resolved binary and input/output
+// paths. It is a variable so tests can simulate success or failure without a
+// real pdftotext binary. On success the implementation is expected to have
+// written the extracted text to outPath.
+var RunPDFExtract = func(ctx context.Context, bin, inPath, outPath string) ([]byte, error) {
+	return exec.CommandContext(ctx, bin, inPath, outPath).CombinedOutput()
+}
+
 // PDFExtractorAvailable reports whether pdftotext is installed on this system.
 func PDFExtractorAvailable() bool {
-	_, err := exec.LookPath("pdftotext")
+	_, err := LookPath("pdftotext")
 	return err == nil
 }
 
@@ -19,7 +32,7 @@ func PDFExtractorAvailable() bool {
 // pdftotext is part of poppler-utils (Linux: apt install poppler-utils,
 // macOS: brew install poppler).
 func ExtractPDFText(ctx context.Context, data []byte) (string, error) {
-	path, err := exec.LookPath("pdftotext")
+	path, err := LookPath("pdftotext")
 	if err != nil {
 		return "", fmt.Errorf("pdftotext not found: install poppler-utils (brew install poppler / apt install poppler-utils)")
 	}
@@ -45,8 +58,7 @@ func ExtractPDFText(ctx context.Context, data []byte) (string, error) {
 	defer os.Remove(tmpOut.Name())
 
 	// pdftotext <input.pdf> <output.txt>
-	cmd := exec.CommandContext(ctx, path, tmpIn.Name(), tmpOut.Name())
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := RunPDFExtract(ctx, path, tmpIn.Name(), tmpOut.Name()); err != nil {
 		return "", fmt.Errorf("pdftotext failed: %s", strings.TrimSpace(string(out)))
 	}
 

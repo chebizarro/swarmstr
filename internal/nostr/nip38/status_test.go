@@ -145,17 +145,46 @@ func TestNewHeartbeat_InitialState(t *testing.T) {
 func TestSetStatus_Disabled_NoOp(t *testing.T) {
 	h, _ := NewHeartbeat(context.Background(), HeartbeatOptions{Enabled: false})
 	defer h.Stop()
-	// Should not panic
+
+	// A disabled heartbeat has no pool/ticker and starts no goroutine, so the
+	// setters must be pure no-ops: neither state nor infrastructure changes.
+	if h.pool != nil {
+		t.Error("disabled heartbeat should not allocate a relay pool")
+	}
+	if h.ticker != nil {
+		t.Error("disabled heartbeat should not allocate a ticker")
+	}
+
 	h.SetStatus(context.Background(), StatusTyping, "hello", 0)
 	h.SetIdle(context.Background())
 	h.SetTyping(context.Background(), "note")
 	h.SetUpdating(context.Background(), "running tool")
+
+	// Documented non-effect: current/currentMsg remain the zero value because
+	// SetStatus returns early when Enabled is false.
+	h.mu.Lock()
+	cur, msg := h.current, h.currentMsg
+	h.mu.Unlock()
+	if cur != "" {
+		t.Errorf("disabled heartbeat mutated status to %q; want no change", cur)
+	}
+	if msg != "" {
+		t.Errorf("disabled heartbeat mutated message to %q; want no change", msg)
+	}
 }
 
 func TestStop_Disabled_NoOp(t *testing.T) {
 	h, _ := NewHeartbeat(context.Background(), HeartbeatOptions{Enabled: false})
-	// Should not panic
+
+	// Stop on a disabled heartbeat must not publish (no pool) but must still
+	// cancel the context so any derived work unwinds.
+	if err := h.ctx.Err(); err != nil {
+		t.Fatalf("context should be live before Stop, got %v", err)
+	}
 	h.Stop()
+	if err := h.ctx.Err(); err == nil {
+		t.Error("Stop should cancel the heartbeat context")
+	}
 }
 
 func TestHeartbeatOptions_Defaults(t *testing.T) {
@@ -174,19 +203,35 @@ func TestHeartbeatOptions_Defaults(t *testing.T) {
 func TestSetIdle_Disabled(t *testing.T) {
 	h, _ := NewHeartbeat(context.Background(), HeartbeatOptions{Enabled: false})
 	defer h.Stop()
-	h.SetIdle(context.Background()) // no panic
+	h.SetIdle(context.Background())
+	if cur, msg := disabledState(h); cur != "" || msg != "" {
+		t.Errorf("SetIdle on disabled heartbeat changed state to (%q, %q); want unchanged", cur, msg)
+	}
 }
 
 func TestSetTyping_Disabled(t *testing.T) {
 	h, _ := NewHeartbeat(context.Background(), HeartbeatOptions{Enabled: false})
 	defer h.Stop()
-	h.SetTyping(context.Background(), "composing") // no panic
+	h.SetTyping(context.Background(), "composing")
+	if cur, msg := disabledState(h); cur != "" || msg != "" {
+		t.Errorf("SetTyping on disabled heartbeat changed state to (%q, %q); want unchanged", cur, msg)
+	}
 }
 
 func TestSetUpdating_Disabled(t *testing.T) {
 	h, _ := NewHeartbeat(context.Background(), HeartbeatOptions{Enabled: false})
 	defer h.Stop()
-	h.SetUpdating(context.Background(), "tool exec") // no panic
+	h.SetUpdating(context.Background(), "tool exec")
+	if cur, msg := disabledState(h); cur != "" || msg != "" {
+		t.Errorf("SetUpdating on disabled heartbeat changed state to (%q, %q); want unchanged", cur, msg)
+	}
+}
+
+// disabledState reads the (status, message) pair under the heartbeat lock.
+func disabledState(h *Heartbeat) (string, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.current, h.currentMsg
 }
 
 // ─── SetStatus on enabled heartbeat (state tracking) ─────────────────────────

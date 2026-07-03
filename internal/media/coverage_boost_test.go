@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -242,10 +243,14 @@ func TestOpenAITranscriber_DefaultModel(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func TestExtractPDFText_Available(t *testing.T) {
-	if !PDFExtractorAvailable() {
-		t.Skip("pdftotext not installed")
+	// Deterministically model an installed pdftotext that rejects invalid data.
+	origLook, origRun := LookPath, RunPDFExtract
+	defer func() { LookPath, RunPDFExtract = origLook, origRun }()
+	LookPath = func(string) (string, error) { return "/fake/pdftotext", nil }
+	RunPDFExtract = func(_ context.Context, _, _, _ string) ([]byte, error) {
+		return []byte("Error: May not be a PDF file"), errors.New("exit status 1")
 	}
-	// An empty/invalid PDF should produce an error from pdftotext
+
 	_, err := ExtractPDFText(context.Background(), []byte("not a real PDF"))
 	if err == nil {
 		t.Error("expected error for invalid PDF data")
@@ -253,9 +258,18 @@ func TestExtractPDFText_Available(t *testing.T) {
 }
 
 func TestExtractPDFText_CancelledContext(t *testing.T) {
-	if !PDFExtractorAvailable() {
-		t.Skip("pdftotext not installed")
+	// The runner observes the cancelled context and returns its error, mirroring
+	// what exec.CommandContext does when the context is already done.
+	origLook, origRun := LookPath, RunPDFExtract
+	defer func() { LookPath, RunPDFExtract = origLook, origRun }()
+	LookPath = func(string) (string, error) { return "/fake/pdftotext", nil }
+	RunPDFExtract = func(ctx context.Context, _, _, _ string) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
 	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := ExtractPDFText(ctx, []byte("data"))

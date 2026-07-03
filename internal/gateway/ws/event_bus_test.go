@@ -27,19 +27,89 @@ func (c *captureEmitter) Last() (string, any) {
 
 func (c *captureEmitter) Count() int { return len(c.events) }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// Compile-time guarantee that both emitters satisfy the interface.
+var (
+	_ EventEmitter = NoopEmitter{}
+	_ EventEmitter = (*RuntimeEmitter)(nil)
+)
 
-func TestNoopEmitter(t *testing.T) {
-	e := NoopEmitter{}
-	// Must not panic.
-	e.Emit(EventTick, TickPayload{TS: 1})
-	e.Emit(EventHealth, nil)
+// newRuntimeWithClient builds a minimal Runtime with a single client subscribed
+// to the given event, so tests can observe whether an emitter actually delivers
+// a frame to that client's queue.
+func newRuntimeWithClient(event string) (*Runtime, *client) {
+	c := &client{
+		id:            "c1",
+		subscriptions: map[string]struct{}{event: {}},
+		eventQueue:    make(chan any, 4),
+		eventDone:     make(chan struct{}),
+	}
+	r := &Runtime{
+		clients:      map[string]*client{"c1": c},
+		chatCoalesce: map[string]*chatChunkCoalescer{},
+	}
+	return r, c
 }
 
-func TestRuntimeEmitter_nilRuntime(t *testing.T) {
-	e := NewRuntimeEmitter(nil)
-	// Must not panic with nil runtime.
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+// TestRuntimeEmitter_DeliversToSubscribedClient asserts the emitter actually
+// forwards the event and payload through the runtime to a subscribed client.
+func TestRuntimeEmitter_DeliversToSubscribedClient(t *testing.T) {
+	r, c := newRuntimeWithClient(EventHealth)
+	e := NewRuntimeEmitter(r)
+
+	e.Emit(EventHealth, HealthPayload{OK: true})
+
+	select {
+	case frame := <-c.eventQueue:
+		m, ok := frame.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map frame, got %T", frame)
+		}
+		if m["event"] != EventHealth {
+			t.Errorf("delivered event = %v, want %q", m["event"], EventHealth)
+		}
+		p, ok := m["payload"].(HealthPayload)
+		if !ok {
+			t.Fatalf("payload type = %T, want HealthPayload", m["payload"])
+		}
+		if !p.OK {
+			t.Errorf("delivered payload OK = false, want true")
+		}
+	default:
+		t.Fatal("expected a frame delivered to the subscribed client")
+	}
+}
+
+// TestNoopEmitter verifies the no-op emitter never delivers anything to a
+// subscribed client (its whole contract is to discard events).
+func TestNoopEmitter(t *testing.T) {
+	_, c := newRuntimeWithClient(EventTick)
+	var e EventEmitter = NoopEmitter{}
+
 	e.Emit(EventTick, TickPayload{TS: 1})
+	e.Emit(EventHealth, nil)
+
+	select {
+	case frame := <-c.eventQueue:
+		t.Fatalf("NoopEmitter must not deliver anything, got %#v", frame)
+	default:
+	}
+}
+
+// TestRuntimeEmitter_nilRuntime verifies a nil-runtime emitter is a safe no-op
+// that delivers nothing (rather than panicking on a nil Broadcast receiver).
+func TestRuntimeEmitter_nilRuntime(t *testing.T) {
+	_, c := newRuntimeWithClient(EventTick)
+	e := NewRuntimeEmitter(nil)
+
+	e.Emit(EventTick, TickPayload{TS: 1})
+
+	select {
+	case frame := <-c.eventQueue:
+		t.Fatalf("nil-runtime emitter must not deliver anything, got %#v", frame)
+	default:
+	}
 }
 
 func TestAllPushEvents_containsCore(t *testing.T) {
