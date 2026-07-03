@@ -15,6 +15,7 @@
 //	  "space_name":           "spaces/XXXXXX",      // required: target Chat space
 //	  "webhook_path":         "/webhooks/googlechat/my-channel", // HTTP path for inbound
 //	  "allowed_senders":      [],                   // optional: email allowlist
+//	  "project_number":       "1234567890",        // required for inbound JWT aud check
 //	  "skip_jwt_verify":      false                 // set true in tests only
 //	}
 //
@@ -48,8 +49,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +90,10 @@ func (p *GoogleChatPlugin) ConfigSchema() map[string]any {
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
 				"description": "Optional allowlist of Google account email addresses.",
+			},
+			"project_number": map[string]any{
+				"type":        "string",
+				"description": "Google Cloud project number used as the audience for inbound Google Chat JWTs.",
 			},
 			"skip_jwt_verify": map[string]any{
 				"type":        "boolean",
@@ -139,16 +146,20 @@ func (p *GoogleChatPlugin) Connect(
 	if v, ok := cfg["skip_jwt_verify"].(bool); ok {
 		skipJWTVerify = v
 	}
+	projectNumber, _ := cfg["project_number"].(string)
 
 	bot := &gchatBot{
-		channelID:      channelID,
-		spaceName:      spaceName,
-		sa:             sa,
-		allowedSenders: allowedSenders,
-		skipJWTVerify:  skipJWTVerify,
-		onMessage:      onMessage,
-		done:           make(chan struct{}),
-		httpClient:     &http.Client{Timeout: 15 * time.Second},
+		channelID:        channelID,
+		spaceName:        spaceName,
+		sa:               sa,
+		allowedSenders:   allowedSenders,
+		skipJWTVerify:    skipJWTVerify,
+		projectNumber:    projectNumber,
+		inboundJWKSURL:   googleChatJWKSURL,
+		inboundJWKSCache: newInboundJWKSCache(),
+		onMessage:        onMessage,
+		done:             make(chan struct{}),
+		httpClient:       &http.Client{Timeout: 15 * time.Second},
 	}
 
 	registerWebhook(channelID, bot)
@@ -265,14 +276,17 @@ func HandleWebhook(channelID string, w http.ResponseWriter, r *http.Request) {
 // ─── Bot implementation ───────────────────────────────────────────────────────
 
 type gchatBot struct {
-	channelID      string
-	spaceName      string
-	sa             *serviceAccount
-	allowedSenders map[string]bool
-	skipJWTVerify  bool
-	onMessage      func(sdk.InboundChannelMessage)
-	done           chan struct{}
-	httpClient     *http.Client
+	channelID        string
+	spaceName        string
+	sa               *serviceAccount
+	allowedSenders   map[string]bool
+	skipJWTVerify    bool
+	projectNumber    string
+	inboundJWKSURL   string
+	inboundJWKSCache *inboundJWKSCache
+	onMessage        func(sdk.InboundChannelMessage)
+	done             chan struct{}
+	httpClient       *http.Client
 	// token cache
 	tokenMu     sync.Mutex
 	cachedToken string
@@ -294,57 +308,236 @@ func (b *gchatBot) Close() {
 
 // ─── Inbound JWT verification ─────────────────────────────────────────────────
 
-// verifyInboundJWT performs a basic check on the Google-signed JWT attached to
-// inbound push requests.  It decodes the payload and verifies:
-//   - iss is chat@system.gserviceaccount.com
-//   - aud matches the registered webhook URL (extracted from the request)
-//
-// Full cryptographic signature verification against Google's public keys is
-// omitted here; for production deployments fetch and cache Google's JWKS from
-// https://www.googleapis.com/service_accounts/v1/jwk/chat@system.gserviceaccount.com
-// and verify the RS256 signature.
+const (
+	googleChatJWTIssuer = "chat@system.gserviceaccount.com"
+	googleChatJWKSURL   = "https://www.googleapis.com/service_accounts/v1/jwk/chat@system.gserviceaccount.com"
+	inboundJWKSCacheTTL = time.Hour
+)
+
+type inboundJWKSCache struct {
+	mu      sync.Mutex
+	keys    map[string]*rsa.PublicKey
+	expires time.Time
+}
+
+func newInboundJWKSCache() *inboundJWKSCache {
+	return &inboundJWKSCache{keys: map[string]*rsa.PublicKey{}}
+}
+
+type inboundJWTHeader struct {
+	Alg string `json:"alg"`
+	Kid string `json:"kid"`
+	Typ string `json:"typ"`
+}
+
+type inboundJWTClaims struct {
+	Iss string `json:"iss"`
+	Aud string `json:"aud"`
+	Exp int64  `json:"exp"`
+}
+
+// verifyInboundJWT verifies Google Chat's project-number self-signed JWT. The
+// token must be RS256-signed by chat@system.gserviceaccount.com, target the
+// configured Google Cloud project number as aud, and be unexpired.
 func (b *gchatBot) verifyInboundJWT(r *http.Request) bool {
 	if b.skipJWTVerify {
 		return true
+	}
+	if b.projectNumber == "" {
+		log.Printf("googlechat: inbound JWT verification failed: project_number is not configured")
+		return false
 	}
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		return false
 	}
-	token := strings.TrimPrefix(authHeader, "Bearer ")
+	return b.verifyInboundJWTToken(r.Context(), strings.TrimPrefix(authHeader, "Bearer "))
+}
+
+func (b *gchatBot) verifyInboundJWTToken(ctx context.Context, token string) bool {
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return false
 	}
-	// Decode payload (add padding as needed).
-	payload := parts[1]
-	switch len(payload) % 4 {
-	case 2:
-		payload += "=="
-	case 3:
-		payload += "="
+
+	var header inboundJWTHeader
+	if !decodeJWTSegment(parts[0], &header) {
+		return false
 	}
-	raw, err := base64.StdEncoding.DecodeString(payload)
+	if header.Alg != "RS256" || header.Kid == "" {
+		return false
+	}
+
+	var claims inboundJWTClaims
+	if !decodeJWTSegment(parts[1], &claims) {
+		return false
+	}
+	if claims.Iss != googleChatJWTIssuer || claims.Aud != b.projectNumber {
+		return false
+	}
+	now := time.Now().Unix()
+	if claims.Exp == 0 || now > claims.Exp {
+		return false
+	}
+
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(sig) == 0 {
+		return false
+	}
+
+	key, err := b.inboundJWKSCacheOrDefault().publicKey(ctx, b.httpClientOrDefault(), b.inboundJWKSURLOrDefault(), header.Kid, false)
 	if err != nil {
-		raw, err = base64.URLEncoding.DecodeString(payload)
-		if err != nil {
-			return false
+		return false
+	}
+	if verifyRS256JWT(parts[0]+"."+parts[1], sig, key) {
+		return true
+	}
+
+	// If verification failed, refresh once in case Google rotated the key while
+	// this process still had a stale cached key with the same kid.
+	key, err = b.inboundJWKSCacheOrDefault().publicKey(ctx, b.httpClientOrDefault(), b.inboundJWKSURLOrDefault(), header.Kid, true)
+	if err != nil {
+		return false
+	}
+	return verifyRS256JWT(parts[0]+"."+parts[1], sig, key)
+}
+
+func decodeJWTSegment(segment string, out any) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(segment)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(raw, out) == nil
+}
+
+func verifyRS256JWT(signingInput string, sig []byte, key *rsa.PublicKey) bool {
+	digest := sha256.Sum256([]byte(signingInput))
+	return rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sig) == nil
+}
+
+func (b *gchatBot) inboundJWKSCacheOrDefault() *inboundJWKSCache {
+	if b.inboundJWKSCache == nil {
+		b.inboundJWKSCache = newInboundJWKSCache()
+	}
+	return b.inboundJWKSCache
+}
+
+func (b *gchatBot) inboundJWKSURLOrDefault() string {
+	if b.inboundJWKSURL != "" {
+		return b.inboundJWKSURL
+	}
+	return googleChatJWKSURL
+}
+
+func (b *gchatBot) httpClientOrDefault() *http.Client {
+	if b.httpClient != nil {
+		return b.httpClient
+	}
+	return http.DefaultClient
+}
+
+func (c *inboundJWKSCache) publicKey(ctx context.Context, client *http.Client, url, kid string, forceRefresh bool) (*rsa.PublicKey, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !forceRefresh && time.Now().Before(c.expires) {
+		if key := c.keys[kid]; key != nil {
+			return key, nil
 		}
 	}
-	var claims struct {
-		Iss string `json:"iss"`
-		Exp int64  `json:"exp"`
+
+	keys, ttl, err := fetchInboundJWKS(ctx, client, url)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(raw, &claims); err != nil {
-		return false
+	c.keys = keys
+	c.expires = time.Now().Add(ttl)
+	if key := c.keys[kid]; key != nil {
+		return key, nil
 	}
-	if claims.Iss != "chat@system.gserviceaccount.com" {
-		return false
+	return nil, fmt.Errorf("googlechat: jwks kid %q not found", kid)
+}
+
+func fetchInboundJWKS(ctx context.Context, client *http.Client, url string) (map[string]*rsa.PublicKey, time.Duration, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, 0, err
 	}
-	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
-		return false
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("fetch google chat jwks: %w", err)
 	}
-	return true
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, fmt.Errorf("fetch google chat jwks: status %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read google chat jwks: %w", err)
+	}
+	var jwks struct {
+		Keys []struct {
+			Kty string `json:"kty"`
+			Kid string `json:"kid"`
+			Use string `json:"use"`
+			Alg string `json:"alg"`
+			N   string `json:"n"`
+			E   string `json:"e"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(raw, &jwks); err != nil {
+		return nil, 0, fmt.Errorf("parse google chat jwks: %w", err)
+	}
+	keys := map[string]*rsa.PublicKey{}
+	for _, jwk := range jwks.Keys {
+		if jwk.Kty != "RSA" || jwk.Kid == "" || jwk.N == "" || jwk.E == "" {
+			continue
+		}
+		if jwk.Use != "" && jwk.Use != "sig" {
+			continue
+		}
+		if jwk.Alg != "" && jwk.Alg != "RS256" {
+			continue
+		}
+		key, err := rsaPublicKeyFromJWK(jwk.N, jwk.E)
+		if err != nil {
+			continue
+		}
+		keys[jwk.Kid] = key
+	}
+	if len(keys) == 0 {
+		return nil, 0, fmt.Errorf("google chat jwks contained no usable RSA keys")
+	}
+	return keys, jwksTTL(resp.Header), nil
+}
+
+func rsaPublicKeyFromJWK(nRaw, eRaw string) (*rsa.PublicKey, error) {
+	nBytes, err := base64.RawURLEncoding.DecodeString(nRaw)
+	if err != nil {
+		return nil, err
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(eRaw)
+	if err != nil {
+		return nil, err
+	}
+	e := new(big.Int).SetBytes(eBytes)
+	if !e.IsInt64() || e.Sign() <= 0 {
+		return nil, fmt.Errorf("invalid RSA exponent")
+	}
+	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: int(e.Int64())}, nil
+}
+
+func jwksTTL(h http.Header) time.Duration {
+	for _, directive := range strings.Split(h.Get("Cache-Control"), ",") {
+		directive = strings.TrimSpace(strings.ToLower(directive))
+		if strings.HasPrefix(directive, "max-age=") {
+			seconds, err := strconv.Atoi(strings.TrimPrefix(directive, "max-age="))
+			if err == nil && seconds > 0 {
+				return time.Duration(seconds) * time.Second
+			}
+		}
+	}
+	return inboundJWKSCacheTTL
 }
 
 // ─── Push handler ─────────────────────────────────────────────────────────────

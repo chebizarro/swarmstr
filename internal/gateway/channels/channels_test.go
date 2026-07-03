@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -186,6 +187,58 @@ func TestNewNIP29GroupChannel_badAddress(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected parse error for malformed group_address")
+	}
+}
+
+type channelFakePublisher struct {
+	results []nostr.PublishResult
+	relays  []string
+}
+
+func (f *channelFakePublisher) PublishMany(_ context.Context, relays []string, _ nostr.Event) chan nostr.PublishResult {
+	f.relays = append([]string(nil), relays...)
+	ch := make(chan nostr.PublishResult, len(f.results))
+	for _, result := range f.results {
+		ch <- result
+	}
+	close(ch)
+	return ch
+}
+
+func TestNIP29GroupChannelSendReturnsRelayRejection(t *testing.T) {
+	publisher := &channelFakePublisher{results: []nostr.PublishResult{
+		{RelayURL: "wss://relay.test", Error: errors.New("msg: restricted: not a member")},
+	}}
+	ch := &NIP29GroupChannel{
+		gad:       nip29.GroupAddress{Relay: "wss://relay.test", ID: "group"},
+		keyer:     testKeyer(t),
+		publisher: publisher,
+	}
+
+	err := ch.Send(context.Background(), "hello")
+	if err == nil {
+		t.Fatal("expected send error")
+	}
+	if !strings.Contains(err.Error(), "accepted=false") || !strings.Contains(err.Error(), "not a member") {
+		t.Fatalf("send error did not include relay rejection reason: %v", err)
+	}
+	if len(publisher.relays) != 1 || publisher.relays[0] != "wss://relay.test" {
+		t.Fatalf("unexpected publish relays: %v", publisher.relays)
+	}
+}
+
+func TestNIP29GroupChannelSendSucceedsWhenRelayAccepts(t *testing.T) {
+	publisher := &channelFakePublisher{results: []nostr.PublishResult{
+		{RelayURL: "wss://relay.test"},
+	}}
+	ch := &NIP29GroupChannel{
+		gad:       nip29.GroupAddress{Relay: "wss://relay.test", ID: "group"},
+		keyer:     testKeyer(t),
+		publisher: publisher,
+	}
+
+	if err := ch.Send(context.Background(), "hello"); err != nil {
+		t.Fatalf("Send returned error: %v", err)
 	}
 }
 

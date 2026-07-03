@@ -3,7 +3,9 @@ package dvm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,6 +252,58 @@ func TestDVMResubscribeWindowIs10Minutes(t *testing.T) {
 }
 
 // ── handleJob / publishResult / publishStatus ─────────────────────────────
+
+type dvmFakePublisher struct {
+	results []nostr.PublishResult
+}
+
+func (f dvmFakePublisher) PublishMany(context.Context, []string, nostr.Event) chan nostr.PublishResult {
+	ch := make(chan nostr.PublishResult, len(f.results))
+	for _, result := range f.results {
+		ch <- result
+	}
+	close(ch)
+	return ch
+}
+
+func testPublishHandler(t *testing.T, publisher dvmFakePublisher) *Handler {
+	t.Helper()
+	kr := testSigner(t)
+	pk, err := kr.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("public key: %v", err)
+	}
+	return &Handler{
+		keyer:     kr,
+		pubkey:    pk,
+		relays:    []string{"wss://relay.test"},
+		publisher: publisher,
+	}
+}
+
+func TestPublishResultReturnsErrorWhenAllRelaysReject(t *testing.T) {
+	h := testPublishHandler(t, dvmFakePublisher{results: []nostr.PublishResult{
+		{RelayURL: "wss://relay.test", Error: errors.New("msg: blocked: invalid event")},
+	}})
+
+	err := h.publishResult(context.Background(), "job1", strings.Repeat("1", 64), 6000, "result")
+	if err == nil {
+		t.Fatal("expected publish error")
+	}
+	if !strings.Contains(err.Error(), "accepted=false") || !strings.Contains(err.Error(), "blocked: invalid event") {
+		t.Fatalf("publish error did not include relay rejection message: %v", err)
+	}
+}
+
+func TestPublishStatusSucceedsWhenRelayAccepts(t *testing.T) {
+	h := testPublishHandler(t, dvmFakePublisher{results: []nostr.PublishResult{
+		{RelayURL: "wss://relay.test"},
+	}})
+
+	if err := h.publishStatus(context.Background(), "job1", strings.Repeat("1", 64), "success", ""); err != nil {
+		t.Fatalf("publishStatus returned error: %v", err)
+	}
+}
 
 func TestHandleJob_Success(t *testing.T) {
 	var calledJobID string

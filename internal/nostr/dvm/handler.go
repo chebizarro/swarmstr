@@ -15,6 +15,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
+	okpublish "metiq/internal/nostr/publish"
 	runtime "metiq/internal/nostr/runtime"
 )
 
@@ -43,6 +44,7 @@ type Handler struct {
 	keyer     nostr.Keyer
 	pubkey    nostr.PubKey
 	pool      *nostr.Pool
+	publisher okpublish.Publisher
 	ctx       context.Context
 	jobSem    chan struct{}
 	cancel    context.CancelFunc
@@ -91,11 +93,13 @@ func Start(ctx context.Context, opts HandlerOpts) (*Handler, error) {
 	copy(relays, opts.Relays)
 
 	ctx2, cancel := context.WithCancel(ctx)
+	pool := nostr.NewPool(runtime.PoolOptsNIP42(ks))
 	h := &Handler{
 		opts:      opts,
 		keyer:     ks,
 		pubkey:    pubkey,
-		pool:      nostr.NewPool(runtime.PoolOptsNIP42(ks)),
+		pool:      pool,
+		publisher: pool,
 		ctx:       ctx2,
 		jobSem:    make(chan struct{}, opts.MaxConcurrentJobs),
 		cancel:    cancel,
@@ -304,7 +308,9 @@ func (h *Handler) handleJob(ctx context.Context, ev nostr.Event) {
 	resultKind := reqKind + 1000 // 5000 → 6000, 5001 → 6001, etc.
 
 	// Publish processing status (kind:7000).
-	h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "processing", "")
+	if err := h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "processing", ""); err != nil {
+		log.Printf("dvm: publish processing status for job %s: %v", jobID, err)
+	}
 
 	// Extract input from "i" tags: ["i", content, type].
 	input := extractInput(ev)
@@ -316,21 +322,28 @@ func (h *Handler) handleJob(ctx context.Context, ev nostr.Event) {
 	result, err := h.opts.OnJob(jobCtx, jobID, reqKind, input)
 	if err != nil {
 		log.Printf("dvm: job %s error: %v", jobID, err)
-		h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "error", err.Error())
+		if pubErr := h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "error", err.Error()); pubErr != nil {
+			log.Printf("dvm: publish error status for job %s: %v", jobID, pubErr)
+		}
 		return
 	}
 
 	// Publish result (kind:6000-6999).
-	h.publishResult(ctx, jobID, ev.PubKey.Hex(), resultKind, result)
+	if err := h.publishResult(ctx, jobID, ev.PubKey.Hex(), resultKind, result); err != nil {
+		log.Printf("dvm: publish result for job %s: %v", jobID, err)
+		return
+	}
 	// Publish success status.
-	h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "success", "")
+	if err := h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "success", ""); err != nil {
+		log.Printf("dvm: publish success status for job %s: %v", jobID, err)
+	}
 }
 
 func (h *Handler) signEvent(ctx context.Context, evt *nostr.Event) error {
 	return h.keyer.SignEvent(ctx, evt)
 }
 
-func (h *Handler) publishResult(ctx context.Context, jobID, requesterPubkey string, kind int, content string) {
+func (h *Handler) publishResult(ctx context.Context, jobID, requesterPubkey string, kind int, content string) error {
 	evt := nostr.Event{
 		Kind:      nostr.Kind(kind),
 		Content:   content,
@@ -343,13 +356,12 @@ func (h *Handler) publishResult(ctx context.Context, jobID, requesterPubkey stri
 	}
 	evt.PubKey = h.pubkey
 	if err := h.signEvent(ctx, &evt); err != nil {
-		log.Printf("dvm: sign result: %v", err)
-		return
+		return fmt.Errorf("sign result: %w", err)
 	}
-	h.publish(ctx, evt)
+	return h.publish(ctx, evt)
 }
 
-func (h *Handler) publishStatus(ctx context.Context, jobID, requesterPubkey, status, extraMsg string) {
+func (h *Handler) publishStatus(ctx context.Context, jobID, requesterPubkey, status, extraMsg string) error {
 	content := status
 	if extraMsg != "" {
 		content = status + ": " + extraMsg
@@ -366,24 +378,22 @@ func (h *Handler) publishStatus(ctx context.Context, jobID, requesterPubkey, sta
 	}
 	evt.PubKey = h.pubkey
 	if err := h.signEvent(ctx, &evt); err != nil {
-		log.Printf("dvm: sign status: %v", err)
-		return
+		return fmt.Errorf("sign status: %w", err)
 	}
-	h.publish(ctx, evt)
+	return h.publish(ctx, evt)
 }
 
-func (h *Handler) publish(ctx context.Context, evt nostr.Event) {
+func (h *Handler) publish(ctx context.Context, evt nostr.Event) error {
+	publisher := h.publisher
+	if publisher == nil {
+		publisher = h.pool
+	}
 	ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	for _, relayURL := range h.currentRelays() {
-		r, err := h.pool.EnsureRelay(relayURL)
-		if err != nil {
-			continue
-		}
-		if err := r.Publish(ctx2, evt); err != nil {
-			log.Printf("dvm: publish to %s: %v", relayURL, err)
-		}
+	if _, err := okpublish.PublishToAny(ctx2, publisher, h.currentRelays(), evt); err != nil {
+		return fmt.Errorf("publish kind %d: %w", evt.Kind, err)
 	}
+	return nil
 }
 
 // extractInput pulls the first "i" tag content from a job request event.

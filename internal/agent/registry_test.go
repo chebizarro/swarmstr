@@ -281,23 +281,48 @@ func TestBuildRuntimeForModel_empty_errors(t *testing.T) {
 	}
 }
 
-func TestNewProviderFromEnv_missingConfigFallsBackToEcho(t *testing.T) {
+func TestNewProviderFromEnv_missingConfigRequiresEchoOptIn(t *testing.T) {
 	clearProviderCredentialEnv(t)
-	p, err := NewProviderFromEnv()
-	if err != nil {
-		t.Fatalf("expected fallback to EchoProvider, got error: %v", err)
+	_, err := NewProviderFromEnv()
+	if err == nil {
+		t.Fatal("expected missing provider config without echo opt-in to fail closed")
 	}
-	if _, ok := p.(EchoProvider); !ok {
-		t.Fatalf("expected EchoProvider when no credentials present, got %T", p)
+	if !strings.Contains(err.Error(), "METIQ_AGENT_ALLOW_ECHO=true") {
+		t.Fatalf("expected echo opt-in error, got: %v", err)
 	}
 }
 
-func TestNewProviderFromEnv_explicitEchoWorks(t *testing.T) {
+func TestNewProviderFromEnv_missingConfigWithEchoOptInReturnsEcho(t *testing.T) {
 	clearProviderCredentialEnv(t)
-	t.Setenv("METIQ_AGENT_PROVIDER", "echo")
+	t.Setenv("METIQ_AGENT_ALLOW_ECHO", "true")
 	p, err := NewProviderFromEnv()
 	if err != nil {
-		t.Fatalf("expected echo to work without opt-in: %v", err)
+		t.Fatalf("expected echo to work with opt-in: %v", err)
+	}
+	if _, ok := p.(EchoProvider); !ok {
+		t.Fatalf("expected EchoProvider when echo is opted in, got %T", p)
+	}
+}
+
+func TestNewProviderFromEnv_explicitEchoRequiresOptIn(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	t.Setenv("METIQ_AGENT_PROVIDER", "echo")
+	_, err := NewProviderFromEnv()
+	if err == nil {
+		t.Fatal("expected explicit echo without opt-in to fail closed")
+	}
+	if !strings.Contains(err.Error(), "METIQ_AGENT_ALLOW_ECHO=true") {
+		t.Fatalf("expected echo opt-in error, got: %v", err)
+	}
+}
+
+func TestNewProviderFromEnv_explicitEchoWithOptInReturnsEcho(t *testing.T) {
+	clearProviderCredentialEnv(t)
+	t.Setenv("METIQ_AGENT_PROVIDER", "echo")
+	t.Setenv("METIQ_AGENT_ALLOW_ECHO", "true")
+	p, err := NewProviderFromEnv()
+	if err != nil {
+		t.Fatalf("expected echo to work with opt-in: %v", err)
 	}
 	if _, ok := p.(EchoProvider); !ok {
 		t.Fatalf("expected EchoProvider, got %T", p)

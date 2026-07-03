@@ -84,7 +84,9 @@ func (h *Handler) PublishHandlerInformation(ctx context.Context, opts HandlerInf
 	if err := h.signEvent(ctx, &evt); err != nil {
 		return "", fmt.Errorf("dvm nip89: sign handler information: %w", err)
 	}
-	h.publish(ctx, evt)
+	if err := h.publish(ctx, evt); err != nil {
+		return "", fmt.Errorf("dvm nip89: publish handler information: %w", err)
+	}
 	return evt.ID.Hex(), nil
 }
 

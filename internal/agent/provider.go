@@ -179,7 +179,7 @@ func requireEchoProviderOptIn() error {
 	if echoProviderAllowed() {
 		return nil
 	}
-	return fmt.Errorf("METIQ_AGENT_PROVIDER=echo requires METIQ_AGENT_ALLOW_ECHO=true for explicit dev/test echo opt-in")
+	return fmt.Errorf("echo provider requires METIQ_AGENT_ALLOW_ECHO=true for explicit dev/test opt-in; configure METIQ_AGENT_PROVIDER and credentials for real inference")
 }
 
 func firstEnv(keys ...string) (value, key string) {
@@ -240,7 +240,7 @@ func requireOpenAICompatibleCredential(providerName, model string, apiKey string
 func NewProviderFromEnv() (Provider, error) {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("METIQ_AGENT_PROVIDER")))
 	switch mode {
-	case "", "echo":
+	case "":
 		// Fall through to key-based auto-detect: if ANTHROPIC_API_KEY is set,
 		// use Anthropic as the default provider instead of the echo stub.
 		if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
@@ -249,6 +249,14 @@ func NewProviderFromEnv() (Provider, error) {
 				model = "claude-sonnet-4-5"
 			}
 			return &AnthropicProvider{Model: model, APIKey: apiKey}, nil
+		}
+		if err := requireEchoProviderOptIn(); err != nil {
+			return nil, err
+		}
+		return EchoProvider{}, nil
+	case "echo":
+		if err := requireEchoProviderOptIn(); err != nil {
+			return nil, err
 		}
 		return EchoProvider{}, nil
 	case "anthropic":

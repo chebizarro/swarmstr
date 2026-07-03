@@ -2,12 +2,15 @@ package googlechat
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -178,47 +181,105 @@ func TestVerifyInboundJWT_SkipFlag(t *testing.T) {
 }
 
 func TestVerifyInboundJWT_MissingHeader(t *testing.T) {
-	bot := &gchatBot{skipJWTVerify: false}
+	bot := &gchatBot{skipJWTVerify: false, projectNumber: "1234567890"}
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	if bot.verifyInboundJWT(req) {
 		t.Fatal("expected false for missing Authorization header")
 	}
 }
 
-func TestVerifyInboundJWT_ValidIss(t *testing.T) {
-	payload := base64.RawURLEncoding.EncodeToString([]byte(
-		`{"iss":"chat@system.gserviceaccount.com","exp":9999999999}`))
-	token := "aaa." + payload + ".fakesig"
-	bot := &gchatBot{skipJWTVerify: false}
+func TestVerifyInboundJWT_ValidSignedToken(t *testing.T) {
+	bot, key := newJWKSBackedVerifier(t)
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+signInboundJWT(t, key, "kid-1", bot.projectNumber, googleChatJWTIssuer, time.Now().Add(time.Hour)))
 	if !bot.verifyInboundJWT(req) {
-		t.Fatal("expected true for valid iss JWT")
+		t.Fatal("expected true for valid signed Google Chat JWT")
 	}
 }
 
-func TestVerifyInboundJWT_WrongIss(t *testing.T) {
-	payload := base64.RawURLEncoding.EncodeToString([]byte(
-		`{"iss":"evil@attacker.com","exp":9999999999}`))
-	token := "aaa." + payload + ".fakesig"
-	bot := &gchatBot{skipJWTVerify: false}
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	if bot.verifyInboundJWT(req) {
-		t.Fatal("expected false for wrong iss")
+func TestVerifyInboundJWT_RejectsUnsignedAndTamperedTokens(t *testing.T) {
+	bot, key := newJWKSBackedVerifier(t)
+	valid := signInboundJWT(t, key, "kid-1", bot.projectNumber, googleChatJWTIssuer, time.Now().Add(time.Hour))
+	parts := strings.Split(valid, ".")
+
+	tamperedPayload := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"iss":"chat@system.gserviceaccount.com","aud":"1234567890","exp":9999999999,"extra":"tampered"}`))
+	unsigned := parts[0] + "." + parts[1] + "."
+	wrongKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate wrong key: %v", err)
+	}
+
+	cases := map[string]string{
+		"unsigned":    unsigned,
+		"tampered":    parts[0] + "." + tamperedPayload + "." + parts[2],
+		"wrong-key":   signInboundJWT(t, wrongKey, "kid-1", bot.projectNumber, googleChatJWTIssuer, time.Now().Add(time.Hour)),
+		"wrong-aud":   signInboundJWT(t, key, "kid-1", "9999999999", googleChatJWTIssuer, time.Now().Add(time.Hour)),
+		"wrong-iss":   signInboundJWT(t, key, "kid-1", bot.projectNumber, "evil@attacker.com", time.Now().Add(time.Hour)),
+		"expired":     signInboundJWT(t, key, "kid-1", bot.projectNumber, googleChatJWTIssuer, time.Now().Add(-time.Hour)),
+		"unknown-kid": signInboundJWT(t, key, "kid-2", bot.projectNumber, googleChatJWTIssuer, time.Now().Add(time.Hour)),
+	}
+	for name, token := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			if bot.verifyInboundJWT(req) {
+				t.Fatalf("expected %s token to be rejected", name)
+			}
+		})
 	}
 }
 
-func TestVerifyInboundJWT_Expired(t *testing.T) {
-	payload := base64.RawURLEncoding.EncodeToString([]byte(
-		`{"iss":"chat@system.gserviceaccount.com","exp":1}`))
-	token := "aaa." + payload + ".fakesig"
-	bot := &gchatBot{skipJWTVerify: false}
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	if bot.verifyInboundJWT(req) {
-		t.Fatal("expected false for expired token")
+func newJWKSBackedVerifier(t *testing.T) (*gchatBot, *rsa.PrivateKey) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
 	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]string{jwkForPublicKey("kid-1", &key.PublicKey)},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	bot := &gchatBot{
+		projectNumber:    "1234567890",
+		inboundJWKSURL:   srv.URL,
+		inboundJWKSCache: newInboundJWKSCache(),
+		httpClient:       srv.Client(),
+	}
+	return bot, key
+}
+
+func jwkForPublicKey(kid string, key *rsa.PublicKey) map[string]string {
+	return map[string]string{
+		"kty": "RSA",
+		"kid": kid,
+		"use": "sig",
+		"alg": "RS256",
+		"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+	}
+}
+
+func signInboundJWT(t *testing.T, key *rsa.PrivateKey, kid, aud, iss string, exp time.Time) string {
+	t.Helper()
+	header, _ := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT", "kid": kid})
+	payload, _ := json.Marshal(map[string]any{
+		"iss": iss,
+		"aud": aud,
+		"exp": exp.Unix(),
+		"iat": time.Now().Unix(),
+	})
+	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	digest := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign JWT: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
 // ── handlePush ────────────────────────────────────────────────────────────────

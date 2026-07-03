@@ -15,6 +15,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip29"
 
+	okpublish "metiq/internal/nostr/publish"
 	nostruntime "metiq/internal/nostr/runtime"
 )
 
@@ -168,17 +169,18 @@ type NIP29GroupChannelOptions struct {
 // NIP29GroupChannel subscribes to a NIP-29 relay-based group (kind 9) and
 // allows the agent to send messages back.
 type NIP29GroupChannel struct {
-	id       string
-	gad      nip29.GroupAddress
-	hub      *nostruntime.NostrHub // non-nil when using shared hub
-	pool     *nostr.Pool           // non-nil only in legacy (no-hub) mode
-	ownsPool bool                  // true when we created the pool ourselves
-	keyer    nostr.Keyer
-	ctx      context.Context
-	cancel   context.CancelFunc
-	onMsg    func(InboundMessage)
-	onErr    func(error)
-	pubkey   string
+	id        string
+	gad       nip29.GroupAddress
+	hub       *nostruntime.NostrHub // non-nil when using shared hub
+	pool      *nostr.Pool           // non-nil only in legacy (no-hub) mode
+	publisher okpublish.Publisher   // publish path; defaults to pool
+	ownsPool  bool                  // true when we created the pool ourselves
+	keyer     nostr.Keyer
+	ctx       context.Context
+	cancel    context.CancelFunc
+	onMsg     func(InboundMessage)
+	onErr     func(error)
+	pubkey    string
 
 	seen       *SeenCache
 	lastSeenMu sync.Mutex
@@ -226,18 +228,19 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 	ctx, cancel := context.WithCancel(parent)
 
 	ch := &NIP29GroupChannel{
-		id:       opts.GroupAddress,
-		gad:      gad,
-		hub:      hub,
-		pool:     pool,
-		ownsPool: ownsPool,
-		keyer:    keyer,
-		ctx:      ctx,
-		cancel:   cancel,
-		onMsg:    opts.OnMessage,
-		onErr:    opts.OnError,
-		pubkey:   pk.Hex(),
-		seen:     NewSeenCache(),
+		id:        opts.GroupAddress,
+		gad:       gad,
+		hub:       hub,
+		pool:      pool,
+		publisher: pool,
+		ownsPool:  ownsPool,
+		keyer:     keyer,
+		ctx:       ctx,
+		cancel:    cancel,
+		onMsg:     opts.OnMessage,
+		onErr:     opts.OnError,
+		pubkey:    pk.Hex(),
+		seen:      NewSeenCache(),
 	}
 
 	go ch.subscribeLoop(ctx)
@@ -269,12 +272,12 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 		return fmt.Errorf("sign group message: %w", err)
 	}
 
-	relay, err := c.pool.EnsureRelay(c.gad.Relay)
-	if err != nil {
-		return fmt.Errorf("connect to relay %s: %w", c.gad.Relay, err)
+	publisher := c.publisher
+	if publisher == nil {
+		publisher = c.pool
 	}
-	if err := relay.Publish(ctx, evt); err != nil {
-		return fmt.Errorf("publish to group %s: %w", c.gad, err)
+	if _, err := okpublish.PublishToAny(ctx, publisher, []string{c.gad.Relay}, evt); err != nil {
+		return fmt.Errorf("nip29 send to group %s: %w", c.gad, err)
 	}
 	return nil
 }
