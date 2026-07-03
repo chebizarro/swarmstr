@@ -42,12 +42,18 @@ func applyPromptEnvelopeToPreparedTurn(prepared preparedAgentRunTurn, params tur
 func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	agentID := defaultAgentID(params.AgentID)
 	currentGen := promptConfigGeneration.Load()
+	// The cached stable prompt bakes the effective thinking level into its
+	// Runtime section (the slow path folds SessionThinkingLevel into the stable
+	// context below). Key the cache on the session thinking level so a
+	// mid-session thinking-level change invalidates the warm entry instead of
+	// silently reusing the level captured at first cache fill (swarmstr-2yhb).
+	cacheKey := promptSectionCacheKey(agentID, params.SessionThinkingLevel)
 
 	// ── Fast path: check prompt section cache ───────────────────────────────
 	// The static system prompt (bootstrap + agent system prompt + stable
 	// runtime context) is identical between turns for the same agent unless
 	// config changes. Cache it to improve provider prompt cache hit rates.
-	if cached, ok := globalPromptSectionCache.get(agentID, currentGen); ok {
+	if cached, ok := globalPromptSectionCache.get(cacheKey, currentGen); ok {
 		// Cache hit — only recompute per-turn portions (tools, time).
 		contextBudget := agent.ComputeContextBudget(
 			agent.ProfileFromContextWindowTokens(cached.contextWindowTokens))
@@ -156,7 +162,7 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	stableStaticPrompt = joinPromptSections(stableStaticPrompt, buildTurnRuntimeStableContext(runtimeParams))
 
 	// Cache the stable portion for subsequent turns.
-	globalPromptSectionCache.set(agentID, promptSectionCacheEntry{
+	globalPromptSectionCache.set(cacheKey, promptSectionCacheEntry{
 		staticSystemPrompt:  stableStaticPrompt,
 		contextWindowTokens: modelProfile.ContextWindowTokens,
 		configGeneration:    currentGen,

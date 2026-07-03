@@ -85,13 +85,13 @@ func TestPluginProviderConfiguredFallbacks(t *testing.T) {
 
 func TestParseVideoResultAndHelpers(t *testing.T) {
 	cases := []any{
-		nil,
 		VideoGenerationResult{Videos: []GeneratedVideo{{URL: "https://v"}}},
 		map[string]any{"url": "https://v2"},
 		map[string]any{"video": map[string]any{"local_path": "/tmp/v.mp4"}},
+		map[string]any{"status": "processing", "job_id": "job-7"}, // in-flight async job is valid
 	}
 	for _, tc := range cases {
-		if _, err := parseResult(tc); err != nil {
+		if _, err := parseResult(tc, "x", "generate"); err != nil {
 			t.Fatalf("parseResult(%#v): %v", tc, err)
 		}
 	}
@@ -103,6 +103,84 @@ func TestParseVideoResultAndHelpers(t *testing.T) {
 	}
 	if !isMissingProviderMethod(errString("not a function")) || normalizeID(" X ") != "x" {
 		t.Fatal("helper predicate mismatch")
+	}
+}
+
+// TestVideoParseResultHardErrors locks in the parse-boundary contract: nil,
+// undecodable, and payloads with no video/job/status must be hard errors that
+// carry the provider and method (no silent empty success).
+func TestVideoParseResultHardErrors(t *testing.T) {
+	if _, err := parseResult(nil, "runway", "generate"); err == nil ||
+		!strings.Contains(err.Error(), "runway") || !strings.Contains(err.Error(), "generate") ||
+		!strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("nil response should be a contextual hard error, got %v", err)
+	}
+	if _, err := parseResult(map[string]any{"unrelated": "field"}, "pika", "check_job"); err == nil ||
+		!strings.Contains(err.Error(), "no video, job id, or status") || !strings.Contains(err.Error(), "pika") {
+		t.Fatalf("payload-less response should be a hard error, got %v", err)
+	}
+	if _, err := parseResult(make(chan int), "runway", "generate"); err == nil ||
+		!strings.Contains(err.Error(), "encoding") {
+		t.Fatalf("unmarshalable response should be a hard error, got %v", err)
+	}
+}
+
+// TestVideoGatewayAsyncLifecycleAndEmptyBody drives the generic gateway adapter
+// through a realistic async lifecycle: generate returns a pending job, CheckJob
+// polls it to completion. It asserts the outbound request shape at each step and
+// that an empty 200 body is a hard error.
+func TestVideoGatewayAsyncLifecycleAndEmptyBody(t *testing.T) {
+	var genReq VideoGenerationRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer key" {
+			t.Fatalf("missing auth header: %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/generate":
+			if r.Header.Get("Content-Type") != "application/json" {
+				t.Fatalf("expected json content-type, got %q", r.Header.Get("Content-Type"))
+			}
+			if err := json.NewDecoder(r.Body).Decode(&genReq); err != nil {
+				t.Fatalf("decode outbound body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "processing", "job_id": "job-42"})
+		case r.Method == http.MethodGet && r.URL.Path == "/jobs/job-42":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "videos": []map[string]any{{"url": "https://cdn/out.mp4", "format": "mp4", "width": 1280, "height": 720}}})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	p := NewPikaProvider()
+	t.Setenv("PIKA_API_KEY", "key")
+	t.Setenv("PIKA_BASE_URL", srv.URL)
+	if p.Name() != "Pika (gateway)" {
+		t.Fatalf("expected gateway-labeled name, got %q", p.Name())
+	}
+	pending, err := p.Generate(context.Background(), VideoGenerationRequest{Prompt: "a dog surfing", Resolution: "1080P", AspectRatio: "16:9", Duration: 5, FPS: 24})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if genReq.Prompt != "a dog surfing" || genReq.Resolution != "1080P" || genReq.AspectRatio != "16:9" || genReq.Duration != 5 || genReq.FPS != 24 {
+		t.Fatalf("outbound request body mismatch: %+v", genReq)
+	}
+	if pending.Provider != "pika" || pending.Status != "processing" || pending.JobID != "job-42" || len(pending.Videos) != 0 {
+		t.Fatalf("unexpected pending result: %+v", pending)
+	}
+	done, err := p.CheckJob(context.Background(), "job-42")
+	if err != nil {
+		t.Fatalf("CheckJob: %v", err)
+	}
+	if done.Status != "completed" || len(done.Videos) != 1 || done.Videos[0].URL != "https://cdn/out.mp4" || done.Videos[0].Width != 1280 {
+		t.Fatalf("unexpected completed result: %+v", done)
+	}
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer empty.Close()
+	t.Setenv("PIKA_BASE_URL", empty.URL)
+	if _, err := p.Generate(context.Background(), VideoGenerationRequest{Prompt: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "empty response body") {
+		t.Fatalf("empty 200 body should be a hard error, got %v", err)
 	}
 }
 
@@ -119,7 +197,7 @@ func TestHTTPVideoProviderGenerateAndCheckJob(t *testing.T) {
 	t.Setenv("RUNWAY_API_KEY", "test-key")
 	t.Setenv("RUNWAY_BASE_URL", srv.URL)
 	p := NewRunwayProvider()
-	if !p.Configured() || p.ID() != "runway" || p.Name() != "Runway" || !p.Capabilities().ImageToVideo {
+	if !p.Configured() || p.ID() != "runway" || p.Name() != "Runway (gateway)" || !p.Capabilities().ImageToVideo {
 		t.Fatalf("unexpected HTTP provider metadata")
 	}
 	if _, err := p.Generate(context.Background(), VideoGenerationRequest{Prompt: "x"}); err != nil {

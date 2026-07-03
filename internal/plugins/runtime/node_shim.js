@@ -53,12 +53,64 @@ function makeRegistrations() {
     hooks: [],
     channels: [],
     providers: [],
-    services: []
+    services: [],
+    // capabilities holds JSON-serialisable descriptors for media/search/memory
+    // providers so the Go host can see what was registered (surfaced via init).
+    capabilities: [],
+    // providerHandlers maps `${type}:${id}` -> the live provider object so the
+    // host can route invoke_provider calls to the registered handler methods.
+    providerHandlers: {}
   };
 }
 
 function ensureRegistrationOpen(name) {
   if (!registrationOpen) throw new Error(`plugin registration window is closed for ${name || 'registration'}`);
+}
+
+// providerMethodNames enumerates the invokable (function-valued) properties of a
+// provider object, walking the prototype chain so class instances are covered.
+function providerMethodNames(provider) {
+  const names = [];
+  if (!provider || (typeof provider !== 'object' && typeof provider !== 'function')) return names;
+  const seen = new Set();
+  let obj = provider;
+  while (obj && obj !== Object.prototype && obj !== Function.prototype) {
+    for (const key of Object.getOwnPropertyNames(obj)) {
+      if (key === 'constructor' || seen.has(key)) continue;
+      let value;
+      try { value = provider[key]; } catch (_) { continue; }
+      if (typeof value === 'function') { names.push(key); seen.add(key); }
+    }
+    obj = Object.getPrototypeOf(obj);
+  }
+  return names;
+}
+
+// addProviderLike captures a media/search/memory provider registration the same
+// way registerProvider/registerTool capture theirs: it persists a descriptor and
+// stores the live handler so the capability is actually invokable through the
+// host. It FAILS LOUDLY when the registration window is closed or the provider
+// has no id, so plugin authors are never silently misled.
+function addProviderLike(type, provider) {
+  ensureRegistrationOpen(type);
+  if (!provider || (typeof provider !== 'object' && typeof provider !== 'function')) {
+    throw new Error(`${type}: provider object is required`);
+  }
+  const id = provider.id || provider.ID || provider.name;
+  if (!id) throw new Error(`${type}: provider id is required`);
+  const key = `${type}:${id}`;
+  registrations.providerHandlers[key] = provider;
+  const descriptor = {
+    type,
+    id: String(id),
+    name: provider.name || String(id),
+    description: provider.description || '',
+    methods: providerMethodNames(provider)
+  };
+  if (provider.capabilities !== undefined) descriptor.capabilities = provider.capabilities;
+  if (provider.models !== undefined) descriptor.models = provider.models;
+  registrations.capabilities.push(descriptor);
+  return descriptor;
 }
 
 function createSDK() {
@@ -131,15 +183,15 @@ function createSDK() {
     registerMigrationProvider: () => {},
     registerAutoEnableProbe: () => {},
     registerModelCatalogProvider: () => {},
-    registerSpeechProvider: () => {},
-    registerRealtimeTranscriptionProvider: () => {},
-    registerRealtimeVoiceProvider: () => {},
-    registerMediaUnderstandingProvider: () => {},
-    registerImageGenerationProvider: () => {},
-    registerVideoGenerationProvider: () => {},
-    registerMusicGenerationProvider: () => {},
-    registerWebFetchProvider: () => {},
-    registerWebSearchProvider: () => {},
+    registerSpeechProvider: (provider) => addProviderLike('speech_provider', provider),
+    registerRealtimeTranscriptionProvider: (provider) => addProviderLike('transcription_provider', provider),
+    registerRealtimeVoiceProvider: (provider) => addProviderLike('voice_provider', provider),
+    registerMediaUnderstandingProvider: (provider) => addProviderLike('media_understanding_provider', provider),
+    registerImageGenerationProvider: (provider) => addProviderLike('image_gen_provider', provider),
+    registerVideoGenerationProvider: (provider) => addProviderLike('video_gen_provider', provider),
+    registerMusicGenerationProvider: (provider) => addProviderLike('music_gen_provider', provider),
+    registerWebFetchProvider: (provider) => addProviderLike('web_fetch_provider', provider),
+    registerWebSearchProvider: (provider) => addProviderLike('web_search_provider', provider),
     registerInteractiveHandler: () => {},
     onConversationBindingResolved: () => {},
     registerCommand: () => {},
@@ -171,7 +223,7 @@ function createSDK() {
     registerMemoryCorpusSupplement: () => {},
     registerMemoryFlushPlan: () => {},
     registerMemoryRuntime: () => {},
-    registerMemoryEmbeddingProvider: () => {}
+    registerMemoryEmbeddingProvider: (adapter) => addProviderLike('memory_embedding_provider', adapter)
   };
   return sdk;
 }
@@ -254,7 +306,7 @@ async function initialisePlugin(pluginPath) {
   sdk = createSDK();
   sdk.rootDir = pluginPath;
   sdk.resolvePath = (input) => path.resolve(pluginPath, input);
-  return { manifest };
+  return { manifest, capabilities: registrations.capabilities };
 }
 
 async function handleRequest(req) {
@@ -295,6 +347,29 @@ async function handleRequest(req) {
           ? await Promise.resolve(fn(tool, args || {}, sdk))
           : await Promise.resolve(fn(args || {}, sdk));
         sendResponse(id, value !== undefined ? value : null);
+        break;
+      }
+      case 'invoke_provider': {
+        if (!plugin) {
+          sendResponse(id, null, 'plugin not initialised');
+          return;
+        }
+        const capType = (params && (params.type || params.capability_type)) || '';
+        const providerID = (params && (params.provider_id || params.id)) || '';
+        const method = (params && params.method) || '';
+        const key = `${capType}:${providerID}`;
+        const provider = registrations.providerHandlers[key];
+        if (!provider) {
+          sendResponse(id, null, `provider "${key}" is not registered`);
+          return;
+        }
+        const providerFn = method ? provider[method] : null;
+        if (typeof providerFn !== 'function') {
+          sendResponse(id, null, `provider "${key}" has no method "${method}"`);
+          return;
+        }
+        const providerValue = await Promise.resolve(providerFn.call(provider, params.args || {}, sdk));
+        sendResponse(id, providerValue !== undefined ? providerValue : null);
         break;
       }
       case 'shutdown': {

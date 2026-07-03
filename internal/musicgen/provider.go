@@ -58,19 +58,25 @@ func (p *PluginProvider) Generate(ctx context.Context, req MusicGenerationReques
 	if err != nil {
 		return nil, err
 	}
-	out, err := parseResult(res)
+	out, err := parseResult(res, p.providerID, "generate")
 	if out != nil && out.Provider == "" {
 		out.Provider = p.providerID
 	}
 	return out, err
 }
-func parseResult(v any) (*MusicGenerationResult, error) {
+
+// parseResult converts a plugin/gateway response into a MusicGenerationResult.
+// A nil response, an undecodable payload, or a payload that carries no audio
+// (url/base64/local_path) is a HARD error: the generic gateway adapter must never
+// report a silent empty success. provider and method are woven into the error so
+// callers can tell which provider/method produced the bad response.
+func parseResult(v any, provider, method string) (*MusicGenerationResult, error) {
 	if v == nil {
-		return &MusicGenerationResult{}, nil
+		return nil, fmt.Errorf("musicgen %s: %s returned an empty response (no audio payload)", provider, method)
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("musicgen %s: encoding %s response: %w", provider, method, err)
 	}
 	var out MusicGenerationResult
 	if err := json.Unmarshal(data, &out); err == nil && (out.Audio.URL != "" || out.Audio.Base64 != "" || out.Audio.LocalPath != "") {
@@ -84,9 +90,21 @@ func parseResult(v any) (*MusicGenerationResult, error) {
 		Duration int    `json:"duration"`
 	}
 	if err := json.Unmarshal(data, &alt); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("musicgen %s: decoding %s response: %w", provider, method, err)
 	}
-	return &MusicGenerationResult{Audio: GeneratedAudio{URL: firstNonEmpty(alt.URL, alt.AudioURL), Base64: alt.Base64, Format: alt.Format}, Duration: alt.Duration}, nil
+	res := &MusicGenerationResult{Audio: GeneratedAudio{URL: firstNonEmpty(alt.URL, alt.AudioURL), Base64: alt.Base64, Format: alt.Format}, Duration: alt.Duration}
+	if res.Audio.URL == "" && res.Audio.Base64 == "" && res.Audio.LocalPath == "" {
+		return nil, fmt.Errorf("musicgen %s: %s response contained no audio payload (url/base64/local_path): %s", provider, method, truncateForError(data))
+	}
+	return res, nil
+}
+func truncateForError(data []byte) string {
+	const max = 256
+	s := strings.TrimSpace(string(data))
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 func normalizeID(id string) string { return strings.ToLower(strings.TrimSpace(id)) }
 func isMissingProviderMethod(err error) bool {
@@ -131,18 +149,29 @@ func cloneMap(in map[string]any) map[string]any {
 	return out
 }
 
-// HTTPProvider is a lightweight adapter for hosted music generation gateways
-// such as Suno/Udio-compatible HTTP APIs.
+// HTTPProvider is a GENERIC gateway adapter, not a native Suno/Udio SDK client.
+// It POSTs the internal MusicGenerationRequest as JSON to {BASE_URL}{GeneratePath}
+// with a Bearer token and expects the gateway to return an audio payload
+// (url/base64/local_path) synchronously. It performs no provider-specific
+// request/response mapping or async job polling, so it only works against a
+// Suno/Udio-*compatible* HTTP gateway that already speaks this request shape.
 type HTTPProvider struct {
 	IDValue, NameValue                  string
 	APIKeyEnv, BaseURLEnv, GeneratePath string
 }
 
+// NewSunoProvider returns a generic gateway adapter preset pointed at a
+// Suno-compatible HTTP endpoint (SUNO_API_KEY / SUNO_BASE_URL). It is NOT a
+// native Suno client and does no Suno-specific request/response mapping.
 func NewSunoProvider() *HTTPProvider {
-	return &HTTPProvider{IDValue: "suno", NameValue: "Suno", APIKeyEnv: "SUNO_API_KEY", BaseURLEnv: "SUNO_BASE_URL", GeneratePath: "/generate"}
+	return &HTTPProvider{IDValue: "suno", NameValue: "Suno (gateway)", APIKeyEnv: "SUNO_API_KEY", BaseURLEnv: "SUNO_BASE_URL", GeneratePath: "/generate"}
 }
+
+// NewUdioProvider returns a generic gateway adapter preset pointed at a
+// Udio-compatible HTTP endpoint (UDIO_API_KEY / UDIO_BASE_URL). It is NOT a
+// native Udio client and does no Udio-specific request/response mapping.
 func NewUdioProvider() *HTTPProvider {
-	return &HTTPProvider{IDValue: "udio", NameValue: "Udio", APIKeyEnv: "UDIO_API_KEY", BaseURLEnv: "UDIO_BASE_URL", GeneratePath: "/generate"}
+	return &HTTPProvider{IDValue: "udio", NameValue: "Udio (gateway)", APIKeyEnv: "UDIO_API_KEY", BaseURLEnv: "UDIO_BASE_URL", GeneratePath: "/generate"}
 }
 func (p *HTTPProvider) ID() string   { return p.IDValue }
 func (p *HTTPProvider) Name() string { return p.NameValue }
@@ -170,11 +199,18 @@ func (p *HTTPProvider) Generate(ctx context.Context, req MusicGenerationRequest)
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("%s music provider HTTP %s: %s", p.ID(), resp.Status, strings.TrimSpace(string(data)))
 	}
-	var v any
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return nil, err
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("musicgen %s: reading generate response: %w", p.ID(), err)
 	}
-	out, err := parseResult(v)
+	if strings.TrimSpace(string(raw)) == "" {
+		return nil, fmt.Errorf("musicgen %s: generate returned an empty response body (HTTP %s)", p.ID(), resp.Status)
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, fmt.Errorf("musicgen %s: decoding generate response: %w", p.ID(), err)
+	}
+	out, err := parseResult(v, p.ID(), "generate")
 	if out != nil && out.Provider == "" {
 		out.Provider = p.ID()
 	}

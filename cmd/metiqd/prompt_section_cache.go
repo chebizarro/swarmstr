@@ -17,6 +17,7 @@ package main
 // Ported from src/constants/systemPromptSections.ts.
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -50,6 +51,22 @@ var (
 	// an event occurs that should invalidate cached prompt sections.
 	promptConfigGeneration atomic.Uint64
 )
+
+// promptSectionCacheKey builds the map key for a cached static system prompt.
+// The session thinking level is folded into the key because the cached prompt
+// embeds the effective thinking level in its Runtime section: when the agent
+// config has no explicit thinking level, the per-session override is what lands
+// in the stable context. Keying on it ensures a session thinking-level change
+// misses the warm entry (forcing a rebuild) rather than reusing the level
+// captured at first cache fill, and also prevents cross-session bleed for two
+// sessions sharing one agent ID (swarmstr-2yhb).
+func promptSectionCacheKey(agentID, sessionThinkingLevel string) string {
+	lvl := strings.TrimSpace(sessionThinkingLevel)
+	if lvl == "" {
+		return agentID
+	}
+	return agentID + "\x1f" + lvl
+}
 
 // get returns a cached entry if it exists and its config generation matches.
 func (c *promptSectionCache) get(agentID string, currentGen uint64) (promptSectionCacheEntry, bool) {

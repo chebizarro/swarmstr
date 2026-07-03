@@ -298,6 +298,11 @@ type preparedAgentRunTurn struct {
 	TurnCtx            context.Context // Context with memory scope set; use this for ProcessTurn
 	SurfacedFileMemory map[string]string
 	MemoryRecallSample *state.MemoryRecallSample
+	// Scope is the resolved memory scope used to assemble this turn. It is
+	// populated by builders that resolve the scope internally (e.g.
+	// buildAutoJoinTurn) so the post-turn persistence pipeline can reuse it;
+	// callers that pass the scope in explicitly may leave it zero.
+	Scope memory.ScopedContext
 }
 
 func buildAgentRunTurn(ctx context.Context, req methods.AgentRequest, index memory.Store, scope memory.ScopedContext, workspaceDir string, sessionStore *state.SessionStore) preparedAgentRunTurn {

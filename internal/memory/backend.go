@@ -7,7 +7,8 @@
 // Built-in backends:
 //   - "memory"   – in-process JSON inverted index (default, zero config)
 //   - "json-fts" – alias for "memory" (same implementation, different name)
-//   - "lancedb"  – embedded LanceDB-compatible cosine vector index
+//   - "lancedb"  – local JSON cosine vector store (NOT a real LanceDB
+//     integration; the name is retained only for config compatibility)
 //
 // Third-party backends can register themselves via RegisterBackend before
 // the daemon initialises its index.
@@ -16,6 +17,8 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"sync"
 
@@ -149,9 +152,14 @@ func init() {
 	}
 	RegisterBackend("memory", factory)
 	RegisterBackend("json-fts", factory)
-	RegisterBackend("lancedb", func(path string) (Backend, error) {
+	// The "lancedb" backend is a LOCAL JSON cosine vector store, not a real
+	// LanceDB integration. "local-vector" is the honest, preferred name; the
+	// "lancedb" key is kept as a backward-compatible alias.
+	localVectorFactory := func(path string) (Backend, error) {
 		return OpenLanceDBBackend(path)
-	})
+	}
+	RegisterBackend("lancedb", localVectorFactory)
+	RegisterBackend("local-vector", localVectorFactory)
 }
 
 // IndexBackend adapts the existing *Index to the Backend interface.
@@ -203,27 +211,48 @@ func (b *IndexBackend) ListByTaskID(taskID string, limit int) []IndexedMemory {
 func (b *IndexBackend) Save() error  { return b.idx.Save() }
 func (b *IndexBackend) Close() error { return b.idx.Save() }
 
-// LanceDBBackend adapts the embedded LanceDB-compatible vector store to the
-// memory Backend interface. It uses the memory embedding provider contract so
-// stored documents carry vectors and searches embed the query text.
+// LanceDBBackend adapts the local JSON cosine vector store (see the lancedb
+// package — a dependency-free local store, NOT a real LanceDB integration) to
+// the memory Backend interface. It uses the memory embedding provider contract
+// so stored documents carry vectors and searches embed the query text.
+//
+// The embedding provider is resolved from configuration (see
+// ResolveMemoryEmbeddingProvider): the default is a real, semantic provider.
+// The non-semantic StaticMemoryEmbeddingProvider is opt-in only.
 type LanceDBBackend struct {
 	store    lancedb.Backend
 	provider MemoryEmbeddingProvider
 }
 
-// OpenLanceDBBackend opens the embedded LanceDB-compatible memory backend.
+// OpenLanceDBBackend opens the local JSON cosine vector memory backend using the
+// embedding provider selected by the environment. By default this is a real,
+// semantic provider (Ollama); the deterministic non-semantic
+// StaticMemoryEmbeddingProvider is used only when explicitly opted in via
+// METIQ_MEMORY_EMBEDDINGS=static, which logs a startup warning. This prevents
+// fake byte-bucket "embeddings" from silently becoming the production default.
 func OpenLanceDBBackend(path string) (*LanceDBBackend, error) {
+	provider, err := ResolveMemoryEmbeddingProvider(os.Getenv)
+	if err != nil {
+		return nil, fmt.Errorf("local-vector memory backend: %w", err)
+	}
+	log.Printf("memory: local-vector backend (local JSON cosine store, NOT LanceDB) using embedding provider %q model %q",
+		provider.EmbeddingProvider().ID, provider.EmbeddingProvider().Model)
+	return OpenLanceDBBackendWithProvider(path, provider)
+}
+
+// OpenLanceDBBackendWithProvider opens the local JSON cosine vector backend with
+// an explicit embedding provider. It is used for injection in tests and by
+// callers that construct their own provider. A nil provider is rejected so the
+// backend can never run with fake/absent embeddings.
+func OpenLanceDBBackendWithProvider(path string, provider MemoryEmbeddingProvider) (*LanceDBBackend, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("local-vector memory backend: embedding provider is required")
+	}
 	store, err := lancedb.New(lancedb.Options{Path: path})
 	if err != nil {
 		return nil, err
 	}
-	return &LanceDBBackend{
-		store: store,
-		provider: StaticMemoryEmbeddingProvider{
-			Provider: EmbeddingProvider{ID: "local", Model: "static-memory", Version: "v1"},
-			Dims:     1536,
-		},
-	}, nil
+	return &LanceDBBackend{store: store, provider: provider}, nil
 }
 
 func (b *LanceDBBackend) Add(doc state.MemoryDoc) { b.AddWithContext(context.Background(), doc) }
@@ -298,7 +327,7 @@ func (b *LanceDBBackend) ListByTaskID(taskID string, limit int) []IndexedMemory 
 }
 
 func (b *LanceDBBackend) Count() int {
-	docs, err := b.store.Search(context.Background(), oneHotQuery(), int(^uint(0)>>1))
+	docs, err := b.store.All(context.Background())
 	if err != nil {
 		return 0
 	}
@@ -364,14 +393,14 @@ func (b *LanceDBBackend) Close() error {
 
 func (b *LanceDBBackend) BackendStatus() BackendStatus {
 	if err := b.store.Health(context.Background()); err != nil {
-		return BackendStatus{Name: "lancedb", Available: false, LastError: err.Error()}
+		return BackendStatus{Name: "local-vector", Available: false, LastError: err.Error()}
 	}
-	return BackendStatus{Name: "lancedb", Available: true}
+	return BackendStatus{Name: "local-vector", Available: true}
 }
 
 func (b *LanceDBBackend) MemoryStatus() StoreStatus {
 	primary := b.BackendStatus()
-	return StoreStatus{Kind: "lancedb", Primary: primary}
+	return StoreStatus{Kind: "local-vector", Primary: primary}
 }
 
 func (b *LanceDBBackend) filter(keep func(IndexedMemory) bool, limit int) []IndexedMemory {
@@ -391,17 +420,11 @@ func (b *LanceDBBackend) filter(keep func(IndexedMemory) bool, limit int) []Inde
 }
 
 func (b *LanceDBBackend) allDocs() []lancedb.VectorDocument {
-	docs, err := b.store.Search(context.Background(), oneHotQuery(), int(^uint(0)>>1))
+	docs, err := b.store.All(context.Background())
 	if err != nil {
 		return nil
 	}
 	return docs
-}
-
-func oneHotQuery() []float32 {
-	v := make([]float32, 1536)
-	v[0] = 1
-	return v
 }
 
 func memoryDocMetadata(doc state.MemoryDoc) map[string]any {

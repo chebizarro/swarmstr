@@ -1979,7 +1979,23 @@ func main() {
 			TurnCtx:            turnCtx, // Pass the context with memory scope set
 			SurfacedFileMemory: surfacedFileMemory,
 			MemoryRecallSample: memoryRecallSample,
+			Scope:              scopeCtx,
 		}
+	}
+
+	// Shared post-turn persistence pipeline for auto-joined channel turns
+	// (NIP29/NIP28/chat). Without this, those paths replied but dropped turn
+	// history, tool traces, session-memory observation, and task-state that the
+	// DM path persists (swarmstr-nibw).
+	autoJoinPostTurnSvc := postTurnPersistenceServices{
+		transcriptRepo:       transcriptRepo,
+		contextEngine:        controlContextEngine,
+		sessionStore:         sessionStore,
+		sessionMemoryRuntime: sessionMemoryRuntime,
+		docsRepo:             docsRepo,
+		memoryRepo:           memoryRepo,
+		memoryIndex:          memoryIndex,
+		memoryTracker:        memoryTracker,
 	}
 
 	if anyEnabledNIP34AutoReviewFollowedOnly(configState.Get()) {
@@ -2026,6 +2042,19 @@ func main() {
 							return
 						}
 						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
+						// Persist/ingest turn history, tool traces, session-memory
+						// observation, and task-state — equivalent to the DM path so
+						// auto-joined channel turns are not lost (swarmstr-nibw).
+						persistPostTurn(autoJoinPostTurnSvc, postTurnPersistenceParams{
+							Ctx:       ctx,
+							Config:    configState.Get(),
+							Scope:     prepared.Scope,
+							Runtime:   filteredRuntime,
+							SessionID: sessionID,
+							EventID:   msg.EventID,
+							AgentID:   activeAgentID,
+							Result:    result,
+						})
 						replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
 						if !sendOK {
 							return
@@ -2093,6 +2122,19 @@ func main() {
 							return
 						}
 						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
+						// Persist/ingest turn history, tool traces, session-memory
+						// observation, and task-state — equivalent to the DM path so
+						// auto-joined channel turns are not lost (swarmstr-nibw).
+						persistPostTurn(autoJoinPostTurnSvc, postTurnPersistenceParams{
+							Ctx:       ctx,
+							Config:    configState.Get(),
+							Scope:     prepared.Scope,
+							Runtime:   filteredRuntime,
+							SessionID: sessionID,
+							EventID:   msg.EventID,
+							AgentID:   activeAgentID,
+							Result:    result,
+						})
 						replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
 						if !sendOK {
 							return
@@ -2166,6 +2208,19 @@ func main() {
 							return
 						}
 						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
+						// Persist/ingest turn history, tool traces, session-memory
+						// observation, and task-state — equivalent to the DM path so
+						// auto-joined channel turns are not lost (swarmstr-nibw).
+						persistPostTurn(autoJoinPostTurnSvc, postTurnPersistenceParams{
+							Ctx:       ctx,
+							Config:    configState.Get(),
+							Scope:     prepared.Scope,
+							Runtime:   filteredRuntime,
+							SessionID: sessionID,
+							EventID:   msg.EventID,
+							AgentID:   activeAgentID,
+							Result:    result,
+						})
 						replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
 						if !sendOK {
 							return

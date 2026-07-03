@@ -1,4 +1,11 @@
-// Package lancedb provides an embedded LanceDB-compatible vector memory backend.
+// Package lancedb implements a local, dependency-free JSON-backed cosine vector
+// store used as a memory backend.
+//
+// IMPORTANT: despite its name, this package is NOT a real LanceDB integration —
+// there is no LanceDB SDK or service involved. Vectors are held in memory and
+// persisted to a single JSON file, and nearest-neighbour search is a brute-force
+// cosine scan. The "lancedb" name is retained only for backward compatibility of
+// the existing memory backend key; treat it as a local JSON vector store.
 package lancedb
 
 import (
@@ -27,6 +34,10 @@ type Backend interface {
 	Upsert(ctx context.Context, docs []VectorDocument) error
 	Delete(ctx context.Context, ids []string) error
 	Search(ctx context.Context, vector []float32, limit int) ([]VectorDocument, error)
+	// All returns a copy of every stored document, regardless of vector
+	// dimensionality. Used for administrative operations (count, list, compact)
+	// that must not depend on a probe query matching the stored vector length.
+	All(ctx context.Context) ([]VectorDocument, error)
 	Health(ctx context.Context) error
 }
 
@@ -143,6 +154,20 @@ func (b *EmbeddedBackend) Search(ctx context.Context, vector []float32, limit in
 	out := make([]VectorDocument, len(scoredDocs))
 	for i, scored := range scoredDocs {
 		out[i] = scored.doc
+	}
+	return out, nil
+}
+
+// All returns a copy of every stored document. Order is unspecified.
+func (b *EmbeddedBackend) All(ctx context.Context) ([]VectorDocument, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]VectorDocument, 0, len(b.docs))
+	for _, doc := range b.docs {
+		out = append(out, cloneDoc(doc))
 	}
 	return out, nil
 }

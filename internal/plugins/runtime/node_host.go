@@ -37,13 +37,33 @@ var nodeShimJS []byte
 
 // NodePlugin manages a running Node.js subprocess hosting a plugin.
 type NodePlugin struct {
-	manifest sdk.Manifest
-	proc     *exec.Cmd
-	stdin    io.WriteCloser
-	mu       sync.Mutex
-	pending  map[int64]chan nodeResponse
-	nextID   atomic.Int64
-	closed   bool
+	manifest     sdk.Manifest
+	capabilities []NodeCapability
+	proc         *exec.Cmd
+	stdin        io.WriteCloser
+	mu           sync.Mutex
+	pending      map[int64]chan nodeResponse
+	nextID       atomic.Int64
+	closed       bool
+}
+
+// NodeCapability describes a media/search/memory provider registered by a
+// Node.js plugin through the shim (speech, transcription, voice, image/video/
+// music generation, web fetch/search, memory embedding). Descriptors are
+// captured at init time and their handler methods are invokable via
+// InvokeProvider — replacing the former silent no-op registration behaviour.
+type NodeCapability struct {
+	// Type is the capability namespace, e.g. "speech_provider",
+	// "image_gen_provider", "web_search_provider", "memory_embedding_provider".
+	Type string `json:"type"`
+	// ID is the provider identifier used to route InvokeProvider calls.
+	ID string `json:"id"`
+	// Name is a human-readable label (defaults to ID).
+	Name string `json:"name,omitempty"`
+	// Description is an optional human-readable description.
+	Description string `json:"description,omitempty"`
+	// Methods lists the invokable handler method names on the provider.
+	Methods []string `json:"methods,omitempty"`
 }
 
 type nodeRequest struct {
@@ -149,6 +169,7 @@ func LoadNodePlugin(ctx context.Context, installPath string) (*NodePlugin, error
 				return nil, fmt.Errorf("unmarshal node manifest: %w", err)
 			}
 		}
+		p.capabilities = parseNodeCapabilities(resultMap["capabilities"])
 	}
 	if strings.TrimSpace(p.manifest.ID) == "" {
 		base := filepath.Base(absPath)
@@ -171,6 +192,59 @@ func LoadNodePlugin(ctx context.Context, installPath string) (*NodePlugin, error
 
 // Manifest returns the plugin's declared tools.
 func (p *NodePlugin) Manifest() sdk.Manifest { return p.manifest }
+
+// Capabilities returns a snapshot of the media/search/memory provider
+// registrations captured from the plugin at init time.
+func (p *NodePlugin) Capabilities() []NodeCapability {
+	out := make([]NodeCapability, len(p.capabilities))
+	copy(out, p.capabilities)
+	return out
+}
+
+// InvokeProvider routes a call to a registered capability provider's handler
+// method and returns its result. capType and id must match a NodeCapability
+// reported by Capabilities(); method must be one of that capability's Methods.
+// It returns an error (rather than silently succeeding) when the provider or
+// method is not registered.
+func (p *NodePlugin) InvokeProvider(ctx context.Context, capType, id, method string, args map[string]any) (any, error) {
+	return p.call(ctx, "invoke_provider", map[string]any{
+		"type":        capType,
+		"provider_id": id,
+		"method":      method,
+		"args":        args,
+	})
+}
+
+// parseNodeCapabilities decodes the "capabilities" array reported in the shim's
+// init response into typed NodeCapability descriptors. Entries missing a type or
+// id are skipped. It is a pure function so the host contract can be tested
+// deterministically without a Node.js runtime.
+func parseNodeCapabilities(raw any) []NodeCapability {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	caps := make([]NodeCapability, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		b, err := json.Marshal(m)
+		if err != nil {
+			continue
+		}
+		var c NodeCapability
+		if err := json.Unmarshal(b, &c); err != nil {
+			continue
+		}
+		if strings.TrimSpace(c.Type) == "" || strings.TrimSpace(c.ID) == "" {
+			continue
+		}
+		caps = append(caps, c)
+	}
+	return caps
+}
 
 // Invoke calls a tool in the Node.js plugin and waits for the result.
 func (p *NodePlugin) Invoke(ctx context.Context, req sdk.InvokeRequest) (sdk.InvokeResult, error) {

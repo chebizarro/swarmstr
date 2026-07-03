@@ -1,8 +1,60 @@
 package main
 
 import (
+	"strings"
 	"testing"
+
+	"metiq/internal/store/state"
 )
+
+func TestPromptSectionCacheKey_IncludesThinkingLevel(t *testing.T) {
+	if got := promptSectionCacheKey("main", ""); got != "main" {
+		t.Errorf("empty thinking level should yield bare agent key, got %q", got)
+	}
+	if promptSectionCacheKey("main", "high") == promptSectionCacheKey("main", "low") {
+		t.Error("different thinking levels must produce different cache keys")
+	}
+	if promptSectionCacheKey("main", "high") == promptSectionCacheKey("main", "") {
+		t.Error("a set thinking level must differ from the unset key")
+	}
+	if promptSectionCacheKey("main", " high ") != promptSectionCacheKey("main", "high") {
+		t.Error("thinking level should be trimmed before keying")
+	}
+}
+
+// TestBuildTurnPromptEnvelope_SessionThinkingLevelAppliesAfterCacheWarm asserts
+// that changing a session's thinking level takes effect on the next turn even
+// after the prompt-section cache is warm (swarmstr-2yhb). Previously the cache
+// was keyed by agent/config generation only, so the first-seen thinking level
+// stuck for the life of the cache entry.
+func TestBuildTurnPromptEnvelope_SessionThinkingLevelAppliesAfterCacheWarm(t *testing.T) {
+	clearPromptSectionCache()
+
+	base := turnPromptBuilderParams{
+		Config:    state.ConfigDoc{},
+		SessionID: "sess-think",
+		AgentID:   "main",
+		Channel:   "nostr",
+	}
+
+	off := base
+	off.SessionThinkingLevel = "off"
+	first := buildTurnPromptEnvelope(off)
+	if !strings.Contains(first.StaticSystemPrompt, "thinking=off") {
+		t.Fatalf("expected first (cache-filling) prompt to reflect thinking=off, got: %q", first.StaticSystemPrompt)
+	}
+
+	// Cache is now warm for agent "main"; change the session thinking level.
+	high := base
+	high.SessionThinkingLevel = "high"
+	second := buildTurnPromptEnvelope(high)
+	if !strings.Contains(second.StaticSystemPrompt, "thinking=high") {
+		t.Fatalf("expected changed session thinking level to apply on a warm cache, got: %q", second.StaticSystemPrompt)
+	}
+	if strings.Contains(second.StaticSystemPrompt, "thinking=off") {
+		t.Fatalf("stale thinking=off leaked after level change: %q", second.StaticSystemPrompt)
+	}
+}
 
 func TestPromptSectionCache_GetMissOnEmpty(t *testing.T) {
 	cache := &promptSectionCache{

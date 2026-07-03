@@ -52,13 +52,77 @@ func TestMusicProviderFallbacksAndParseResult(t *testing.T) {
 		t.Fatal("configured false should be false")
 	}
 	for _, input := range []any{
-		nil,
 		MusicGenerationResult{Audio: GeneratedAudio{URL: "https://direct"}},
 		map[string]any{"url": "https://flat", "format": "wav"},
+		map[string]any{"audio_url": "https://alt"},
 	} {
-		if _, err := parseResult(input); err != nil {
+		if _, err := parseResult(input, "x", "generate"); err != nil {
 			t.Fatalf("parseResult(%#v): %v", input, err)
 		}
+	}
+}
+
+// TestMusicParseResultHardErrors locks in the parse-boundary contract: nil,
+// undecodable, and audio-less responses must be hard errors carrying the
+// provider and method for context (no silent empty success).
+func TestMusicParseResultHardErrors(t *testing.T) {
+	if _, err := parseResult(nil, "suno", "generate"); err == nil ||
+		!strings.Contains(err.Error(), "suno") || !strings.Contains(err.Error(), "generate") ||
+		!strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("nil response should be a contextual hard error, got %v", err)
+	}
+	if _, err := parseResult(map[string]any{"unrelated": "field"}, "udio", "generate"); err == nil ||
+		!strings.Contains(err.Error(), "no audio payload") || !strings.Contains(err.Error(), "udio") {
+		t.Fatalf("audio-less response should be a hard error, got %v", err)
+	}
+	if _, err := parseResult(make(chan int), "suno", "generate"); err == nil ||
+		!strings.Contains(err.Error(), "encoding") {
+		t.Fatalf("unmarshalable response should be a hard error, got %v", err)
+	}
+}
+
+// TestMusicGatewayRequestShapeAndEmptyBody exercises the generic gateway adapter
+// end to end: it asserts the outbound request shape (auth, path, JSON body) and
+// parsing of a realistic response, then verifies an empty 200 body is a hard
+// error rather than a silent empty success.
+func TestMusicGatewayRequestShapeAndEmptyBody(t *testing.T) {
+	var gotReq MusicGenerationRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/generate" {
+			t.Fatalf("unexpected request line: %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer key" || r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("unexpected headers: %v", r.Header)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode outbound body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"audio": map[string]any{"url": "https://cdn/track.mp3", "format": "mp3"}, "duration": 30})
+	}))
+	defer srv.Close()
+	p := NewSunoProvider()
+	t.Setenv("SUNO_API_KEY", "key")
+	t.Setenv("SUNO_BASE_URL", srv.URL)
+	res, err := p.Generate(context.Background(), MusicGenerationRequest{Prompt: "lofi beat", Duration: 20, Format: "mp3", Model: "v3", Genre: "lofi"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if gotReq.Prompt != "lofi beat" || gotReq.Duration != 20 || gotReq.Format != "mp3" || gotReq.Model != "v3" || gotReq.Genre != "lofi" {
+		t.Fatalf("outbound request body mismatch: %+v", gotReq)
+	}
+	if res.Provider != "suno" || res.Audio.URL != "https://cdn/track.mp3" || res.Audio.Format != "mp3" || res.Duration != 30 {
+		t.Fatalf("unexpected parsed result: %+v", res)
+	}
+	if p.Name() != "Suno (gateway)" {
+		t.Fatalf("expected gateway-labeled name, got %q", p.Name())
+	}
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer empty.Close()
+	t.Setenv("SUNO_BASE_URL", empty.URL)
+	if _, err := p.Generate(context.Background(), MusicGenerationRequest{Prompt: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "empty response body") {
+		t.Fatalf("empty 200 body should be a hard error, got %v", err)
 	}
 }
 
@@ -134,7 +198,7 @@ func TestMusicRegistryRuntimeAndMetadataBranches(t *testing.T) {
 		t.Fatal("expected missing provider error")
 	}
 	udio := NewUdioProvider()
-	if udio.Name() != "Udio" || udio.ID() != "udio" {
+	if udio.Name() != "Udio (gateway)" || udio.ID() != "udio" {
 		t.Fatal("udio metadata mismatch")
 	}
 	if _, err := NewPluginProvider("bad", nil, nil).Generate(context.Background(), MusicGenerationRequest{}); err == nil {

@@ -62,7 +62,7 @@ func (p *PluginProvider) Generate(ctx context.Context, req VideoGenerationReques
 	if err != nil {
 		return nil, err
 	}
-	out, err := parseResult(res)
+	out, err := parseResult(res, p.providerID, "generate")
 	if out != nil && out.Provider == "" {
 		out.Provider = p.providerID
 	}
@@ -76,20 +76,26 @@ func (p *PluginProvider) CheckJob(ctx context.Context, jobID string) (*VideoGene
 	if err != nil {
 		return nil, err
 	}
-	out, err := parseResult(res)
+	out, err := parseResult(res, p.providerID, "check_job")
 	if out != nil && out.Provider == "" {
 		out.Provider = p.providerID
 	}
 	return out, err
 }
 
-func parseResult(v any) (*VideoGenerationResult, error) {
+// parseResult converts a plugin/gateway response into a VideoGenerationResult.
+// A nil response, an undecodable payload, or a payload that carries no video,
+// job id, or status is a HARD error: the generic gateway adapter must never
+// report a silent empty success. A response that carries only a status/job_id
+// (an in-flight async job) is valid and returned as-is. provider and method are
+// woven into the error so callers can tell which provider/method misbehaved.
+func parseResult(v any, provider, method string) (*VideoGenerationResult, error) {
 	if v == nil {
-		return &VideoGenerationResult{}, nil
+		return nil, fmt.Errorf("videogen %s: %s returned an empty response (no video/job payload)", provider, method)
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("videogen %s: encoding %s response: %w", provider, method, err)
 	}
 	var out VideoGenerationResult
 	if err := json.Unmarshal(data, &out); err == nil && (out.Status != "" || len(out.Videos) > 0 || out.JobID != "") {
@@ -105,7 +111,7 @@ func parseResult(v any) (*VideoGenerationResult, error) {
 		JobID  string         `json:"job_id"`
 	}
 	if err := json.Unmarshal(data, &alt); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("videogen %s: decoding %s response: %w", provider, method, err)
 	}
 	out = VideoGenerationResult{Status: alt.Status, JobID: alt.JobID}
 	if alt.Video.URL != "" || alt.Video.Base64 != "" || alt.Video.LocalPath != "" {
@@ -116,7 +122,18 @@ func parseResult(v any) (*VideoGenerationResult, error) {
 	if out.Status == "" && len(out.Videos) > 0 {
 		out.Status = "completed"
 	}
+	if out.Status == "" && out.JobID == "" && len(out.Videos) == 0 {
+		return nil, fmt.Errorf("videogen %s: %s response contained no video, job id, or status: %s", provider, method, truncateForError(data))
+	}
 	return &out, nil
+}
+func truncateForError(data []byte) string {
+	const max = 256
+	s := strings.TrimSpace(string(data))
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 func parseCapabilities(raw map[string]any) ProviderCapabilities {
 	c := ProviderCapabilities{Generate: true, SupportsAsync: true}
@@ -235,9 +252,11 @@ func cloneMap(in map[string]any) map[string]any {
 	return out
 }
 
-// HTTPProvider is a lightweight adapter for hosted video generation gateways
-// such as Runway/Pika-compatible HTTP APIs. It supports async job status via
-// a configurable job endpoint.
+// HTTPProvider is a GENERIC gateway adapter, not a native Runway/Pika SDK client.
+// It POSTs the internal VideoGenerationRequest as JSON to {BASE_URL}{GeneratePath}
+// and polls {BASE_URL}{JobPath} for async job status, with a Bearer token. It does
+// no provider-specific request/response mapping, so it only works against a
+// Runway/Pika-*compatible* HTTP gateway that already speaks this request shape.
 type HTTPProvider struct {
 	IDValue, NameValue    string
 	APIKeyEnv, BaseURLEnv string
@@ -245,11 +264,18 @@ type HTTPProvider struct {
 	Caps                  ProviderCapabilities
 }
 
+// NewRunwayProvider returns a generic gateway adapter preset pointed at a
+// Runway-compatible HTTP endpoint (RUNWAY_API_KEY / RUNWAY_BASE_URL). It is NOT a
+// native Runway client and does no Runway-specific request/response mapping.
 func NewRunwayProvider() *HTTPProvider {
-	return &HTTPProvider{IDValue: "runway", NameValue: "Runway", APIKeyEnv: "RUNWAY_API_KEY", BaseURLEnv: "RUNWAY_BASE_URL", GeneratePath: "/v1/video/generations", JobPath: "/v1/video/generations/{job_id}", Caps: ProviderCapabilities{Generate: true, ImageToVideo: true, SupportsAsync: true, Resolutions: []string{"720P", "1080P"}, MaxDuration: 10}}
+	return &HTTPProvider{IDValue: "runway", NameValue: "Runway (gateway)", APIKeyEnv: "RUNWAY_API_KEY", BaseURLEnv: "RUNWAY_BASE_URL", GeneratePath: "/v1/video/generations", JobPath: "/v1/video/generations/{job_id}", Caps: ProviderCapabilities{Generate: true, ImageToVideo: true, SupportsAsync: true, Resolutions: []string{"720P", "1080P"}, MaxDuration: 10}}
 }
+
+// NewPikaProvider returns a generic gateway adapter preset pointed at a
+// Pika-compatible HTTP endpoint (PIKA_API_KEY / PIKA_BASE_URL). It is NOT a
+// native Pika client and does no Pika-specific request/response mapping.
 func NewPikaProvider() *HTTPProvider {
-	return &HTTPProvider{IDValue: "pika", NameValue: "Pika", APIKeyEnv: "PIKA_API_KEY", BaseURLEnv: "PIKA_BASE_URL", GeneratePath: "/generate", JobPath: "/jobs/{job_id}", Caps: ProviderCapabilities{Generate: true, ImageToVideo: true, SupportsAsync: true, Resolutions: []string{"720P", "1080P"}, MaxDuration: 10}}
+	return &HTTPProvider{IDValue: "pika", NameValue: "Pika (gateway)", APIKeyEnv: "PIKA_API_KEY", BaseURLEnv: "PIKA_BASE_URL", GeneratePath: "/generate", JobPath: "/jobs/{job_id}", Caps: ProviderCapabilities{Generate: true, ImageToVideo: true, SupportsAsync: true, Resolutions: []string{"720P", "1080P"}, MaxDuration: 10}}
 }
 func (p *HTTPProvider) ID() string   { return p.IDValue }
 func (p *HTTPProvider) Name() string { return p.NameValue }
@@ -258,12 +284,12 @@ func (p *HTTPProvider) Configured() bool {
 }
 func (p *HTTPProvider) Capabilities() ProviderCapabilities { return p.Caps }
 func (p *HTTPProvider) Generate(ctx context.Context, req VideoGenerationRequest) (*VideoGenerationResult, error) {
-	return p.do(ctx, http.MethodPost, p.GeneratePath, req)
+	return p.do(ctx, http.MethodPost, "generate", p.GeneratePath, req)
 }
 func (p *HTTPProvider) CheckJob(ctx context.Context, jobID string) (*VideoGenerationResult, error) {
-	return p.do(ctx, http.MethodGet, strings.ReplaceAll(p.JobPath, "{job_id}", jobID), nil)
+	return p.do(ctx, http.MethodGet, "check_job", strings.ReplaceAll(p.JobPath, "{job_id}", jobID), nil)
 }
-func (p *HTTPProvider) do(ctx context.Context, method, path string, body any) (*VideoGenerationResult, error) {
+func (p *HTTPProvider) do(ctx context.Context, method, op, path string, body any) (*VideoGenerationResult, error) {
 	if !p.Configured() {
 		return nil, fmt.Errorf("%s video provider is not configured (%s and %s)", p.ID(), p.APIKeyEnv, p.BaseURLEnv)
 	}
@@ -290,11 +316,18 @@ func (p *HTTPProvider) do(ctx context.Context, method, path string, body any) (*
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("%s video provider HTTP %s: %s", p.ID(), resp.Status, strings.TrimSpace(string(data)))
 	}
-	var v any
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return nil, err
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("videogen %s: reading %s response: %w", p.ID(), op, err)
 	}
-	out, err := parseResult(v)
+	if strings.TrimSpace(string(raw)) == "" {
+		return nil, fmt.Errorf("videogen %s: %s returned an empty response body (HTTP %s)", p.ID(), op, resp.Status)
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, fmt.Errorf("videogen %s: decoding %s response: %w", p.ID(), op, err)
+	}
+	out, err := parseResult(v, p.ID(), op)
 	if out != nil && out.Provider == "" {
 		out.Provider = p.ID()
 	}
