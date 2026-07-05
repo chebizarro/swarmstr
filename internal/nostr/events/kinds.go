@@ -1,5 +1,7 @@
 package events
 
+import cascadia "git.sharegap.net/cascadia/cascadia-nips/generated/go"
+
 // Kind represents a Nostr event kind number.
 type Kind int
 
@@ -20,23 +22,23 @@ const (
 
 	// CAS_AUDIT is the canonical audit trail / attestation kind.
 	// Append-only, immutable. Relays SHOULD enforce extended retention.
-	CAS_AUDIT Kind = 4903
+	CAS_AUDIT Kind = Kind(cascadia.CAS_AUDIT)
 
 	// CAS_WORKER_AD is the canonical worker advertisement kind.
 	// Replaceable (one per pubkey). Refreshes every 60-300 seconds.
-	CAS_WORKER_AD Kind = 10100
+	CAS_WORKER_AD Kind = Kind(cascadia.CAS_WORKER_AD)
 
 	// CAS_AGENT_HEARTBEAT is the canonical agent lifecycle heartbeat kind.
 	// Addressable (d=<agent_id>). Refreshes every 30-120 seconds.
-	CAS_AGENT_HEARTBEAT Kind = 30316
+	CAS_AGENT_HEARTBEAT Kind = Kind(cascadia.CAS_AGENT_HEARTBEAT)
 
 	// CAS_AGENT_CAPABILITY is the canonical agent capability descriptor kind.
 	// Addressable (d=<agent_id>:<capability_name>).
-	CAS_AGENT_CAPABILITY Kind = 30317
+	CAS_AGENT_CAPABILITY Kind = Kind(cascadia.CAS_AGENT_CAPABILITY)
 
 	// CAS_CP_STATE is the canonical control-plane state projection kind.
 	// Addressable (d=<domain>:<entity>:<id>). Latest-wins semantics.
-	CAS_CP_STATE Kind = 30900
+	CAS_CP_STATE Kind = Kind(cascadia.CAS_CP_STATE)
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// NIP-38 User Status
@@ -60,22 +62,22 @@ const (
 	// ─────────────────────────────────────────────────────────────────────────
 
 	// KindContextVM is the ephemeral ContextVM message kind (JSON-RPC 2.0).
-	KindContextVM Kind = 25910
+	KindContextVM Kind = Kind(cascadia.CAS_INTENT)
 
 	// KindContextVMServerAnnouncement is the server capability announcement.
-	KindContextVMServerAnnouncement Kind = 11316
+	KindContextVMServerAnnouncement Kind = Kind(cascadia.CTXVM_SERVER_ANNOUNCEMENT)
 
 	// KindContextVMToolsList is the tools list announcement.
-	KindContextVMToolsList Kind = 11317
+	KindContextVMToolsList Kind = Kind(cascadia.CTXVM_TOOLS_ANNOUNCEMENT)
 
 	// KindContextVMResourcesList is the resources list announcement.
-	KindContextVMResourcesList Kind = 11318
+	KindContextVMResourcesList Kind = Kind(cascadia.CTXVM_RESOURCES_ANNOUNCEMENT)
 
 	// KindContextVMResourceTemplatesList is the resource templates list announcement.
-	KindContextVMResourceTemplatesList Kind = 11319
+	KindContextVMResourceTemplatesList Kind = Kind(cascadia.CTXVM_RESOURCE_TEMPLATES_ANNOUNCEMENT)
 
 	// KindContextVMPromptsList is the prompts list announcement.
-	KindContextVMPromptsList Kind = 11320
+	KindContextVMPromptsList Kind = Kind(cascadia.CTXVM_PROMPTS_ANNOUNCEMENT)
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// NIP-60 Cashu Wallet Event Kinds

@@ -2,8 +2,12 @@ module metiq
 
 go 1.25.0
 
+// TODO(metiq): drop this local replace once generated/go/v0.1.0 network publish is verified.
+replace git.sharegap.net/cascadia/cascadia-nips/generated/go => ../cascadia-nips/generated/go
+
 require (
 	fiatjaf.com/nostr v0.0.0-20260301124453-4dab261bdf5d
+	git.sharegap.net/cascadia/cascadia-nips/generated/go v0.1.0
 	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/coder/websocket v1.8.13
