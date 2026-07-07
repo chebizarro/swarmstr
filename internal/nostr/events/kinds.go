@@ -1,6 +1,6 @@
 package events
 
-import cascadia "git.sharegap.net/cascadia/cascadia-nips/generated/go"
+import cascadia "git.sharegap.net/cascadia/cascadia-go"
 
 // Kind represents a Nostr event kind number.
 type Kind int
