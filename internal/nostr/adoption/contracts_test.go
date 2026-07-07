@@ -15,7 +15,7 @@ func TestContractEvents(t *testing.T) {
 	}
 
 	audit, err := TrajectoryAuditEvent(TrajectoryAuditContract{SessionID: "s", EventCounts: map[string]int{"tool": 1}})
-	if err != nil || KindTrajectoryAudit != 25910 || audit.Kind != KindTrajectoryAudit {
+	if err != nil || KindTrajectoryAudit != 4903 || audit.Kind != KindTrajectoryAudit {
 		t.Fatalf("bad audit: %+v %v", audit, err)
 	}
 	if audit.Tags[0][1] != TrajectoryAuditDTag("s") || !hasTag(audit.Tags, "domain", "agent") || !hasTag(audit.Tags, "type", "trajectory") {

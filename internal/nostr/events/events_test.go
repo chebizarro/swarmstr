@@ -172,7 +172,7 @@ func TestKindConstants_Values(t *testing.T) {
 		{"GiftWrap", KindGiftWrap, 1059},
 
 		// Cascadia Canonical Kinds
-		{"CAS_AUDIT", CAS_AUDIT, 25910},
+		{"CAS_AUDIT", CAS_AUDIT, 4903},
 		{"CAS_WORKER_AD", CAS_WORKER_AD, 10100},
 		{"CAS_AGENT_HEARTBEAT", CAS_AGENT_HEARTBEAT, 30316},
 		{"CAS_AGENT_CAPABILITY", CAS_AGENT_CAPABILITY, 30317},

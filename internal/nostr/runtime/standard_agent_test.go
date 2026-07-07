@@ -35,7 +35,7 @@ func hasTag(tags nostr.Tags, key string, values ...string) bool {
 }
 
 func TestGeneratedCascadiaKindConstants(t *testing.T) {
-	if events.CAS_AUDIT != 25910 || events.CAS_WORKER_AD != 10100 || events.KindContextVM != 25910 || events.CAS_AGENT_HEARTBEAT != 30316 || events.CAS_AGENT_CAPABILITY != 30317 {
+	if events.CAS_AUDIT != 4903 || events.CAS_WORKER_AD != 10100 || events.KindContextVM != 25910 || events.CAS_AGENT_HEARTBEAT != 30316 || events.CAS_AGENT_CAPABILITY != 30317 {
 		t.Fatalf("unexpected standard kinds: audit=%d worker=%d intent=%d heartbeat=%d capability=%d", events.CAS_AUDIT, events.CAS_WORKER_AD, events.KindContextVM, events.CAS_AGENT_HEARTBEAT, events.CAS_AGENT_CAPABILITY)
 	}
 }

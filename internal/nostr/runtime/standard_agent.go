@@ -124,7 +124,7 @@ func PublishWorkerAdvertisement(ctx context.Context, pool *nostr.Pool, keyer nos
 	return evt.ID.Hex(), nil
 }
 
-// AuditRecord is the standard kind:25910 CAS_AUDIT payload.
+// AuditRecord is the standard kind:4903 CAS_AUDIT payload.
 type AuditRecord struct {
 	Actor       string         `json:"actor"`
 	Action      string         `json:"action"`
@@ -176,7 +176,7 @@ func BuildAuditContent(record AuditRecord) string {
 	return string(raw)
 }
 
-// PublishAuditRecord signs and publishes a kind:25910 CAS_AUDIT record for consequential actions.
+// PublishAuditRecord signs and publishes a kind:4903 CAS_AUDIT record for consequential actions.
 func PublishAuditRecord(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publishRelays []string, record AuditRecord) (string, error) {
 	if pool == nil {
 		return "", fmt.Errorf("publish audit: pool is required")

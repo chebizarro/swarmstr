@@ -22,7 +22,7 @@ const (
 
 	// CAS_AUDIT is the canonical audit trail / attestation kind.
 	// Append-only, immutable. Relays SHOULD enforce extended retention.
-	CAS_AUDIT Kind = Kind(cascadia.CAS_INTENT)
+	CAS_AUDIT Kind = Kind(cascadia.CAS_AUDIT)
 
 	// CAS_WORKER_AD is the canonical worker advertisement kind.
 	// Replaceable (one per pubkey). Refreshes every 60-300 seconds.

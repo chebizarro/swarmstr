@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	fiatjaf.com/nostr v0.0.0-20260301124453-4dab261bdf5d
-	git.sharegap.net/cascadia/cascadia-go v0.2.0
+	git.sharegap.net/cascadia/cascadia-go v0.2.1
 	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/coder/websocket v1.8.13
