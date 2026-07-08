@@ -25,16 +25,20 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+	cascadia "git.sharegap.net/cascadia/cascadia-go"
+	casctx "git.sharegap.net/cascadia/cascadia-go/contextvm"
 )
 
-// Event kinds.
+// Event kinds come from cascadia-go. This package keeps swarmstr's fiatjaf-based
+// discovery/client transport as a thin compatibility layer until cascadia-go
+// exposes equivalent Pool/Keyer request-response helpers.
 const (
-	KindMessage            = 25910
-	KindServerAnnouncement = 11316
-	KindToolsList          = 11317
-	KindResourcesList      = 11318
-	KindResourceTemplates  = 11319
-	KindPromptsList        = 11320
+	KindMessage            = cascadia.CAS_INTENT
+	KindServerAnnouncement = cascadia.CTXVM_SERVER_ANNOUNCEMENT
+	KindToolsList          = cascadia.CTXVM_TOOLS_ANNOUNCEMENT
+	KindResourcesList      = cascadia.CTXVM_RESOURCES_ANNOUNCEMENT
+	KindResourceTemplates  = cascadia.CTXVM_RESOURCE_TEMPLATES_ANNOUNCEMENT
+	KindPromptsList        = cascadia.CTXVM_PROMPTS_ANNOUNCEMENT
 )
 
 // ServerInfo holds data from a ContextVM server announcement (kind 11316, CEP-6).
@@ -64,6 +68,8 @@ type CallResult struct {
 }
 
 // JSONRPCRequest is the ContextVM message envelope carried in kind 25910 events.
+// It mirrors cascadia-go/contextvm.Request while retaining swarmstr's legacy
+// IDOrNull method.
 type JSONRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc,omitempty"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -72,11 +78,7 @@ type JSONRPCRequest struct {
 }
 
 // JSONRPCError is a JSON-RPC 2.0 error object.
-type JSONRPCError struct {
-	Code    int            `json:"code"`
-	Message string         `json:"message"`
-	Data    map[string]any `json:"data,omitempty"`
-}
+type JSONRPCError = casctx.Error
 
 // JSONRPCResultResponse is a JSON-RPC 2.0 success response.
 type JSONRPCResultResponse struct {
@@ -121,12 +123,12 @@ func IDString(id json.RawMessage) string {
 
 // MarshalResultResponse wraps result in a JSON-RPC 2.0 response envelope.
 func MarshalResultResponse(id json.RawMessage, result any) ([]byte, error) {
-	return json.Marshal(JSONRPCResultResponse{JSONRPC: "2.0", ID: IDOrNull(id), Result: result})
+	return json.Marshal(casctx.NewResponse(IDOrNull(id), result))
 }
 
 // MarshalErrorResponse wraps err in a JSON-RPC 2.0 error response envelope.
 func MarshalErrorResponse(id json.RawMessage, err JSONRPCError) ([]byte, error) {
-	return json.Marshal(JSONRPCErrorResponse{JSONRPC: "2.0", ID: IDOrNull(id), Error: err})
+	return json.Marshal(casctx.Response{JSONRPC: casctx.JSONRPCVersion, ID: IDOrNull(id), Error: &err})
 }
 
 func bytesTrimSpace(in json.RawMessage) json.RawMessage {
