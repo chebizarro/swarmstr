@@ -13,7 +13,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore/slicestore"
 	"fiatjaf.com/nostr/keyer"
-	khatru "metiq/internal/third_party/fiatjaf-nostr-khatru"
+	"fiatjaf.com/nostr/khatru"
 )
 
 // NewTestRelay starts a fully-functional in-process nostr relay on a random port.
