@@ -1128,6 +1128,7 @@ func main() {
 	// Load MCP config from extra.mcp and register discovered tools after the
 	// secrets/auth controller is available.
 	mcpManager := mcppkg.NewManager()
+	memoryBootstrapper = &memorySessionBootstrapper{client: func() memoryBootstrapPromptClient { return mcpManager }}
 	toolbuiltin.RegisterMCPResourceTools(tools, toolbuiltin.MCPResourceToolOpts{
 		Manager: func() *mcppkg.Manager { return mcpManager },
 	})

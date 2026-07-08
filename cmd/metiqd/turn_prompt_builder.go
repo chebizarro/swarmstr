@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -116,7 +117,10 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 	bootstrapWarnings := make([]string, 0)
 	bootstrapFiles, warnings := agent.LoadWorkspaceBootstrapFiles(wsDir, agent.DefaultBootstrapFileNames())
 	bootstrapWarnings = append(bootstrapWarnings, warnings...)
-	var hm *hookspkg.Manager; if controlServices != nil { hm = controlServices.handlers.hooksMgr }
+	var hm *hookspkg.Manager
+	if controlServices != nil {
+		hm = controlServices.handlers.hooksMgr
+	}
 	if extraFiles, extraWarnings := loadBootstrapHookFiles(hm, params.SessionID, params.Config, wsDir); len(extraFiles) > 0 || len(extraWarnings) > 0 {
 		bootstrapWarnings = append(bootstrapWarnings, extraWarnings...)
 		bootstrapFiles = append(bootstrapFiles, extraFiles...)
@@ -134,6 +138,9 @@ func buildTurnPromptEnvelope(params turnPromptBuilderParams) builtTurnPrompt {
 
 	// Build the stable (tool-independent) static system prompt.
 	stableStaticPrompt := params.StaticSystemPrompt
+	if memoryBootstrapper != nil {
+		stableStaticPrompt = memoryBootstrapper.prepend(context.Background(), params.SessionID, agentID, stableStaticPrompt)
+	}
 	if bootstrapPrompt := agent.RenderBootstrapPromptContext(contextFiles); bootstrapPrompt != "" {
 		stableStaticPrompt = joinPromptSections(stableStaticPrompt, bootstrapPrompt)
 	}
