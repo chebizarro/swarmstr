@@ -18,7 +18,7 @@ func TestPublishAndFetch_RoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	list := &List{
 		Kind:  10000, // mute list
@@ -79,7 +79,7 @@ func TestPublishAndFetch_WithDTag(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	list := &List{
 		Kind: 30000, // categorized people list
@@ -114,7 +114,7 @@ func TestFetch_NotFound(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	_, err := Fetch(ctx, pool, []string{url}, kp.PubKeyHex(), 10000, "")
 	if err == nil {
@@ -129,7 +129,7 @@ func TestFetch_InvalidPubKey(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	_, err := Fetch(ctx, pool, []string{url}, "not-a-hex-pubkey", 10000, "")
 	if err == nil {
@@ -145,7 +145,7 @@ func TestPublish_ReplaceableOverwrites(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	// Publish first version
 	list1 := &List{
@@ -197,7 +197,7 @@ func TestPublish_EntryWithRelayAndPetname(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	list := &List{
 		Kind: 30000,
@@ -242,7 +242,7 @@ func TestSubscribe_LiveUpdates(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	store := NewListStore()
 

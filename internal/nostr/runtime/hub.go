@@ -88,7 +88,7 @@ func NewHub(ctx context.Context, keyer nostr.Keyer, selector *RelaySelector) (*N
 	hubCtx, hubCancel := context.WithCancel(ctx)
 
 	h := &NostrHub{
-		pool:     nostr.NewPool(PoolOptsNIP42(keyer)),
+		pool:     NewPoolNIP42(keyer),
 		keyer:    keyer,
 		pubkey:   pk,
 		selector: selector,

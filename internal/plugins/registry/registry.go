@@ -80,7 +80,7 @@ type Registry struct {
 
 // NewRegistry creates a Registry using a fresh pool pointed at relays.
 func NewRegistry(relays []string) *Registry {
-	pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+	pool := nostr.NewPool()
 	return &Registry{pool: pool, relays: relays}
 }
 

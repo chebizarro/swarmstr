@@ -37,6 +37,12 @@ func (m *mockKeyer) Encrypt(_ context.Context, plaintext string, _ nostr.PubKey)
 func (m *mockKeyer) Decrypt(_ context.Context, ciphertext string, _ nostr.PubKey) (string, error) {
 	return ciphertext, nil
 }
+func (m *mockKeyer) Nip04Encrypt(_ context.Context, plaintext string, _ nostr.PubKey) (string, error) {
+	return plaintext, nil
+}
+func (m *mockKeyer) Nip04Decrypt(_ context.Context, ciphertext string, _ nostr.PubKey) (string, error) {
+	return ciphertext, nil
+}
 
 type errMockKeyer struct {
 	err error
@@ -52,6 +58,12 @@ func (e *errMockKeyer) Encrypt(_ context.Context, p string, _ nostr.PubKey) (str
 	return p, nil
 }
 func (e *errMockKeyer) Decrypt(_ context.Context, c string, _ nostr.PubKey) (string, error) {
+	return c, nil
+}
+func (e *errMockKeyer) Nip04Encrypt(_ context.Context, p string, _ nostr.PubKey) (string, error) {
+	return p, nil
+}
+func (e *errMockKeyer) Nip04Decrypt(_ context.Context, c string, _ nostr.PubKey) (string, error) {
 	return c, nil
 }
 

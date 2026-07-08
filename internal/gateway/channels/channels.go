@@ -19,6 +19,20 @@ import (
 	nostruntime "metiq/internal/nostr/runtime"
 )
 
+func parseNIP29GroupAddress(addr string) (nip29.GroupAddress, error) {
+	addr = strings.TrimSpace(addr)
+	parts := strings.SplitN(addr, "'", 2)
+	if len(parts) != 2 {
+		return nip29.GroupAddress{}, fmt.Errorf("expected relay'groupID")
+	}
+	relay := strings.TrimSpace(parts[0])
+	groupID := strings.TrimSpace(parts[1])
+	if relay == "" || groupID == "" {
+		return nip29.GroupAddress{}, fmt.Errorf("relay and group ID are required")
+	}
+	return nip29.GroupAddress{Relay: relay, ID: groupID}, nil
+}
+
 // ─── InboundMessage ───────────────────────────────────────────────────────────
 
 // InboundMessage is a normalised inbound message from any channel.
@@ -193,7 +207,7 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 		return nil, fmt.Errorf("group_address is required (format: relay'groupID)")
 	}
 
-	gad, err := nip29.ParseGroupAddress(opts.GroupAddress)
+	gad, err := parseNIP29GroupAddress(opts.GroupAddress)
 	if err != nil {
 		return nil, fmt.Errorf("invalid group_address %q: %w", opts.GroupAddress, err)
 	}
@@ -216,7 +230,7 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 			return nil, fmt.Errorf("keyer is required (or provide Hub)")
 		}
 		keyer = opts.Keyer
-		pool = nostr.NewPool(nostruntime.PoolOptsNIP42(keyer))
+		pool = nostruntime.NewPoolNIP42(keyer)
 		ownsPool = true
 	}
 
@@ -470,7 +484,7 @@ func NewNIP28PublicChannel(parent context.Context, opts NIP28PublicChannelOption
 			return nil, fmt.Errorf("keyer is required (or provide Hub)")
 		}
 		keyer = opts.Keyer
-		pool = nostr.NewPool(nostruntime.PoolOptsNIP42(keyer))
+		pool = nostruntime.NewPoolNIP42(keyer)
 		ownsPool = true
 	}
 

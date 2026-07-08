@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	nostr "fiatjaf.com/nostr"
-
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
 	nostruntime "metiq/internal/nostr/runtime"
@@ -116,7 +114,7 @@ func (s *daemonServices) publishRelayPolicyLists(readRelays, writeRelays []strin
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	pool := nostr.NewPool(nostruntime.PoolOptsNIP42(s.relay.keyer))
+	pool := nostruntime.NewPoolNIP42(s.relay.keyer)
 	defer pool.Close("relay policy publish")
 	publishRelays := nostruntime.MergeRelayLists(readRelays, writeRelays)
 	if err := nostruntime.PublishStartupLists(ctx, nostruntime.StartupListPublishOptions{

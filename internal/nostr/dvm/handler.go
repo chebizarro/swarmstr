@@ -93,7 +93,7 @@ func Start(ctx context.Context, opts HandlerOpts) (*Handler, error) {
 	copy(relays, opts.Relays)
 
 	ctx2, cancel := context.WithCancel(ctx)
-	pool := nostr.NewPool(runtime.PoolOptsNIP42(ks))
+	pool := runtime.NewPoolNIP42(ks)
 	h := &Handler{
 		opts:      opts,
 		keyer:     ks,

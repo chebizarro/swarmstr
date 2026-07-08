@@ -66,7 +66,7 @@ func NewRelayFilterChannel(parent context.Context, opts RelayFilterChannelOption
 			return nil, fmt.Errorf("keyer is required (or provide Hub)")
 		}
 		keyer = opts.Keyer
-		pool = nostr.NewPool(nostruntime.PoolOptsNIP42(keyer))
+		pool = nostruntime.NewPoolNIP42(keyer)
 		ownsPool = true
 	}
 	pk, err := keyer.GetPublicKey(parent)

@@ -24,11 +24,11 @@ import (
 // ─── LNURL-pay helpers ────────────────────────────────────────────────────────
 
 type lnurlPayMetadata struct {
-	Callback      string `json:"callback"`
-	MinSendable   int64  `json:"minSendable"`  // millisatoshis
-	MaxSendable   int64  `json:"maxSendable"`  // millisatoshis
-	NostrPubkey   string `json:"nostrPubkey"`
-	AllowsNostr   bool   `json:"allowsNostr"`
+	Callback    string `json:"callback"`
+	MinSendable int64  `json:"minSendable"` // millisatoshis
+	MaxSendable int64  `json:"maxSendable"` // millisatoshis
+	NostrPubkey string `json:"nostrPubkey"`
+	AllowsNostr bool   `json:"allowsNostr"`
 }
 
 // ResolveLNURL resolves a Lightning Address (name@domain) to LNURL-pay metadata.
@@ -189,12 +189,12 @@ func Send(ctx context.Context, opts SendOpts, lud16, recipientPubkeyHex, noteID 
 
 // ZapReceipt represents a received kind:9735 zap receipt.
 type ZapReceipt struct {
-	ID             string `json:"id"`
-	SenderPubkey   string `json:"sender_pubkey"`
-	AmountMsat     int64  `json:"amount_msat"`
-	Comment        string `json:"comment"`
-	ZapRequestID   string `json:"zap_request_id"`
-	CreatedAt      int64  `json:"created_at"`
+	ID           string `json:"id"`
+	SenderPubkey string `json:"sender_pubkey"`
+	AmountMsat   int64  `json:"amount_msat"`
+	Comment      string `json:"comment"`
+	ZapRequestID string `json:"zap_request_id"`
+	CreatedAt    int64  `json:"created_at"`
 }
 
 // OnZapFunc is called for each received zap receipt.
@@ -224,7 +224,7 @@ func StartReceiver(ctx context.Context, opts ReceiveOpts) (context.CancelFunc, e
 	}
 
 	ctx2, cancel := context.WithCancel(ctx)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	f := nostr.Filter{
 		Kinds: []nostr.Kind{9735},

@@ -37,9 +37,17 @@ func (s *ExtendedSigner) DecryptNIP04(ctx context.Context, ciphertext string, se
 
 // EncryptNIP04 encrypts a plaintext for recipient using NIP-04 AES-CBC.
 func (s *ExtendedSigner) EncryptNIP04(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	return s.Nip04Encrypt(ctx, plaintext, recipient)
+}
+
+func (s *ExtendedSigner) Nip04Encrypt(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
 	shared, err := nip04.ComputeSharedSecret(recipient, [32]byte(s.sk))
 	if err != nil {
 		return "", err
 	}
 	return nip04.Encrypt(plaintext, shared)
+}
+
+func (s *ExtendedSigner) Nip04Decrypt(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	return s.DecryptNIP04(ctx, ciphertext, sender)
 }

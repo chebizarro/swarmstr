@@ -12,8 +12,8 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore/slicestore"
-	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/keyer"
+	khatru "metiq/internal/third_party/fiatjaf-nostr-khatru"
 )
 
 // NewTestRelay starts a fully-functional in-process nostr relay on a random port.
@@ -41,7 +41,7 @@ func NewTestRelay(t *testing.T) string {
 type TestKeyPair struct {
 	SecretKey nostr.SecretKey
 	PublicKey nostr.PubKey
-	Keyer    keyer.KeySigner
+	Keyer     keyer.KeySigner
 }
 
 // SecretKeyHex returns the hex-encoded secret key (useful for APIs that want a string).
@@ -64,7 +64,7 @@ func NewTestKeyPair(t *testing.T) TestKeyPair {
 	return TestKeyPair{
 		SecretKey: sk,
 		PublicKey: pk,
-		Keyer:    kr,
+		Keyer:     kr,
 	}
 }
 

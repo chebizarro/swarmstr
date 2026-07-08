@@ -318,7 +318,7 @@ func fetchFollows(ctx context.Context, pubkeyHex string, relays []string) ([]str
 		return nil, err
 	}
 
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	defer pool.Close("fetchFollows done")
 
 	f := nostr.Filter{

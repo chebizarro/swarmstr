@@ -4989,7 +4989,7 @@ func main() {
 	// Create a dedicated pool for NIP-51 list fetch/subscribe operations so the
 	// DM buses are not disturbed.
 	{
-		nip51Pool := nostr.NewPool(nostruntime.PoolOptsNIP42(controlServices.relay.keyer))
+		nip51Pool := nostruntime.NewPoolNIP42(controlServices.relay.keyer)
 		liveCfg := configState.Get()
 
 		// When the runtime config has no explicit relays, fall back to bootstrap relays.

@@ -99,7 +99,7 @@ func NewChatChannel(parent context.Context, opts ChatChannelOptions) (*ChatChann
 			return nil, fmt.Errorf("keyer is required (or provide Hub)")
 		}
 		keyer = opts.Keyer
-		pool = nostr.NewPool(nostruntime.PoolOptsNIP42(keyer))
+		pool = nostruntime.NewPoolNIP42(keyer)
 		ownsPool = true
 	}
 

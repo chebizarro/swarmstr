@@ -65,14 +65,6 @@ func (o NostrToolOpts) resolveRelays(override []string) []string {
 	return o.Relays
 }
 
-// PoolOptsNIP42 returns PoolOptions with full NIP-42 authentication support.
-// Both AuthHandler (reactive AUTH challenge signing) and AuthRequiredHandler
-// (retry after "auth-required:" CLOSED/OK responses) are wired to the keyer.
-// If o.Keyer is nil, returns plain PenaltyBox-only options.
-func (o NostrToolOpts) PoolOptsNIP42() nostr.PoolOptions {
-	return nostruntime.PoolOptsNIP42(o.Keyer)
-}
-
 // NewPoolNIP42 returns the hub's shared pool when available, or creates a new
 // ephemeral pool with NIP-42 support.  Callers that get the hub's pool MUST NOT
 // close it — use PoolIsShared() to check.
@@ -87,7 +79,7 @@ func (o NostrToolOpts) NewPoolNIP42() *nostr.Pool {
 	if h := o.hub(); h != nil {
 		return h.Pool()
 	}
-	return nostr.NewPool(o.PoolOptsNIP42())
+	return nostruntime.NewPoolNIP42(o.Keyer)
 }
 
 // PoolIsShared returns true when the pool returned by NewPoolNIP42 is shared
@@ -110,7 +102,7 @@ func (o NostrToolOpts) AcquirePool(reason string) (*nostr.Pool, func()) {
 	if h := o.hub(); h != nil {
 		return h.Pool(), func() {} // shared — do not close
 	}
-	pool := nostr.NewPool(o.PoolOptsNIP42())
+	pool := o.NewPoolNIP42()
 	return pool, func() { pool.Close(reason) }
 }
 

@@ -46,7 +46,7 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 			}
 		}
 		poolOnce.Do(func() {
-			fallbackPool = nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
+			fallbackPool = nostruntime.NewPoolNIP42(opts.Keyer)
 		})
 		return fallbackPool
 	}

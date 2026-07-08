@@ -1173,7 +1173,13 @@ func buildControlResponsePayload(id json.RawMessage, result ControlRPCResult, us
 func buildControlErrorPayload(id json.RawMessage, message string, code int, data map[string]any, useJSONRPC bool) []byte {
 	errObj := buildControlRPCError(message, code, data)
 	if useJSONRPC {
-		payloadRaw, err := contextvm.MarshalErrorResponse(id, contextvm.JSONRPCError{Code: errObj.Code, Message: errObj.Message, Data: errObj.Data})
+		var data json.RawMessage
+		if len(errObj.Data) > 0 {
+			if raw, err := json.Marshal(errObj.Data); err == nil {
+				data = raw
+			}
+		}
+		payloadRaw, err := contextvm.MarshalErrorResponse(id, contextvm.JSONRPCError{Code: errObj.Code, Message: errObj.Message, Data: data})
 		if err == nil {
 			return payloadRaw
 		}

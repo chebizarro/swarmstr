@@ -355,10 +355,18 @@ func newNIP04KeyerAdapter(sk nostr.SecretKey) nip04KeyerAdapter {
 }
 
 func (a nip04KeyerAdapter) DecryptNIP04(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	return a.Nip04Decrypt(ctx, ciphertext, sender)
+}
+
+func (a nip04KeyerAdapter) Nip04Decrypt(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
 	return decryptNIP04(a.sk, sender, ciphertext)
 }
 
 func (a nip04KeyerAdapter) EncryptNIP04(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	return a.Nip04Encrypt(ctx, plaintext, recipient)
+}
+
+func (a nip04KeyerAdapter) Nip04Encrypt(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
 	return encryptNIP04(a.sk, recipient, plaintext)
 }
 

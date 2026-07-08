@@ -214,7 +214,7 @@ func TestPublishEncryptedDMWithRetryRequiresPool(t *testing.T) {
 }
 
 func TestPublishEncryptedDMWithRetryRequiresSigner(t *testing.T) {
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	keyer := newNIP04KeyerAdapter(nostr.Generate())
 	_, err := publishEncryptedDMWithRetry(context.Background(), pool, nil, keyer, []string{"wss://relay.example"}, nostr.GetPublicKey(nostr.Generate()), "hello", nil)
 	if err == nil || err.Error() != "publish dm: signer is required" {

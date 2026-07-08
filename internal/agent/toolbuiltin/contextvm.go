@@ -160,7 +160,7 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			}
 		}
 		poolOnce.Do(func() {
-			fallbackPool = nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer))
+			fallbackPool = nostruntime.NewPoolNIP42(opts.Keyer)
 		})
 		return fallbackPool
 	}

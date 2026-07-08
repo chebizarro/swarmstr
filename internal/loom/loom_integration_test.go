@@ -47,7 +47,7 @@ func publishWorkerAd(t *testing.T, pool *nostr.Pool, url string, kp testutil.Tes
 
 func TestListWorkers_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	kp1 := testutil.NewTestKeyPair(t)
 	kp2 := testutil.NewTestKeyPair(t)
@@ -80,7 +80,7 @@ func TestListWorkers_Integration(t *testing.T) {
 
 func TestListWorkers_Empty(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -96,7 +96,7 @@ func TestListWorkers_Empty(t *testing.T) {
 
 func TestListWorkers_DefaultLimit(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -113,7 +113,7 @@ func TestListWorkers_DefaultLimit(t *testing.T) {
 
 func TestSubmitJob_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -140,7 +140,7 @@ func TestSubmitJob_Integration(t *testing.T) {
 
 func TestGetJobStatus_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -184,7 +184,7 @@ func TestGetJobStatus_Integration(t *testing.T) {
 
 func TestGetJobStatus_NotFound(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -199,7 +199,7 @@ func TestGetJobStatus_NotFound(t *testing.T) {
 
 func TestWaitForResult_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -241,7 +241,7 @@ func TestWaitForResult_Integration(t *testing.T) {
 
 func TestWaitForResult_Timeout(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -256,7 +256,7 @@ func TestWaitForResult_Timeout(t *testing.T) {
 
 func TestCancelJob_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -278,7 +278,7 @@ func TestCancelJob_Integration(t *testing.T) {
 
 func TestPublishEvent_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)

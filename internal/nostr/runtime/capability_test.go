@@ -324,7 +324,7 @@ func TestCapabilityValidationFailureRejectsInvalidSignature(t *testing.T) {
 
 func TestCapabilityMonitorStartIsIdempotent(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 	published := make(chan string, 2)
 

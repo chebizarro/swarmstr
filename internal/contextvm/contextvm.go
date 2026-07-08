@@ -27,11 +27,12 @@ import (
 	nostr "fiatjaf.com/nostr"
 	cascadia "git.sharegap.net/cascadia/cascadia-go"
 	casctx "git.sharegap.net/cascadia/cascadia-go/contextvm"
+	casnostr "git.sharegap.net/cascadia/cascadia-go/nostr"
 )
 
-// Event kinds come from cascadia-go. This package keeps swarmstr's fiatjaf-based
-// discovery/client transport as a thin compatibility layer until cascadia-go
-// exposes equivalent Pool/Keyer request-response helpers.
+// Event kinds come from cascadia-go. This package keeps swarmstr-specific
+// discovery/MCP client helpers and NIP-04 fallback around the shared ContextVM
+// envelope and fiatjaf nostr transport primitives.
 const (
 	KindMessage            = cascadia.CAS_INTENT
 	KindServerAnnouncement = cascadia.CTXVM_SERVER_ANNOUNCEMENT
@@ -67,15 +68,8 @@ type CallResult struct {
 	IsError bool             `json:"isError,omitempty"`
 }
 
-// JSONRPCRequest is the ContextVM message envelope carried in kind 25910 events.
-// It mirrors cascadia-go/contextvm.Request while retaining swarmstr's legacy
-// IDOrNull method.
-type JSONRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc,omitempty"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
+// JSONRPCRequest is the shared ContextVM message envelope carried in kind 25910 events.
+type JSONRPCRequest = casctx.Request
 
 // JSONRPCError is a JSON-RPC 2.0 error object.
 type JSONRPCError = casctx.Error
@@ -94,18 +88,9 @@ type JSONRPCErrorResponse struct {
 	Error   JSONRPCError    `json:"error"`
 }
 
-// IDOrNull returns the request id or JSON null when absent/invalid for response envelopes.
-func (r JSONRPCRequest) IDOrNull() json.RawMessage {
-	return IDOrNull(r.ID)
-}
-
 // IDOrNull returns id when it is valid JSON, otherwise JSON null.
 func IDOrNull(id json.RawMessage) json.RawMessage {
-	trimmed := bytesTrimSpace(id)
-	if len(trimmed) == 0 || !json.Valid(trimmed) {
-		return json.RawMessage(`null`)
-	}
-	return trimmed
+	return casctx.Request{ID: id}.IDOrNull()
 }
 
 // IDString returns a stable string representation of a JSON-RPC id for tags/cache keys.
@@ -422,43 +407,15 @@ func sendRequest(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relay
 	defer cancelResp()
 	respCh, closedCh := pool.SubscribeManyNotifyClosed(respCtx, relays, respFilter, nostr.SubscriptionOptions{})
 
-	if err := publishContextVMRequest(ctx, pool, relays, evt); err != nil {
-		return nil, err
+	accepted, err := casnostr.PublishWithPool(ctx, pool, relays, evt)
+	if err != nil {
+		return nil, fmt.Errorf("contextvm publish request: %w", err)
+	}
+	if accepted == 0 {
+		return nil, fmt.Errorf("contextvm publish request: no relay accepted request")
 	}
 
 	return awaitContextVMCompletion(ctx, keyer, serverPK, requestID, respCh, closedCh)
-}
-
-func publishContextVMRequest(ctx context.Context, pool *nostr.Pool, relays []string, evt nostr.Event) error {
-	if pool == nil {
-		return fmt.Errorf("contextvm publish request: nostr pool is required")
-	}
-	if len(relays) == 0 {
-		return fmt.Errorf("contextvm publish request: at least one relay is required")
-	}
-	var accepted int
-	var failures []string
-	for result := range pool.PublishMany(ctx, relays, evt) {
-		if result.Error != nil {
-			relay := strings.TrimSpace(result.RelayURL)
-			if relay == "" && result.Relay != nil {
-				relay = result.Relay.URL
-			}
-			if relay == "" {
-				relay = "unknown relay"
-			}
-			failures = append(failures, fmt.Sprintf("%s: %v", relay, result.Error))
-			continue
-		}
-		accepted++
-	}
-	if accepted == 0 {
-		if len(failures) == 0 {
-			return fmt.Errorf("contextvm publish request: no relay accepted request")
-		}
-		return fmt.Errorf("contextvm publish request rejected by all relays: %s", strings.Join(failures, "; "))
-	}
-	return nil
 }
 
 func awaitContextVMCompletion(ctx context.Context, keyer nostr.Keyer, serverPK nostr.PubKey, requestID string, respCh <-chan nostr.RelayEvent, closedCh <-chan nostr.RelayClosed) (json.RawMessage, error) {

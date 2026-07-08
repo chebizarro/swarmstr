@@ -32,6 +32,12 @@ func (lifecycleTestKeyer) Encrypt(context.Context, string, nostr.PubKey) (string
 func (lifecycleTestKeyer) Decrypt(context.Context, string, nostr.PubKey) (string, error) {
 	return "", nil
 }
+func (lifecycleTestKeyer) Nip04Encrypt(context.Context, string, nostr.PubKey) (string, error) {
+	return "", nil
+}
+func (lifecycleTestKeyer) Nip04Decrypt(context.Context, string, nostr.PubKey) (string, error) {
+	return "", nil
+}
 
 func TestBuildLifecycleNostrEventRunProjection(t *testing.T) {
 	evt, err := BuildLifecycleNostrEvent(Event{

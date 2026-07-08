@@ -200,7 +200,7 @@ func NewHeartbeat(parent context.Context, opts HeartbeatOptions) (*Heartbeat, er
 	ctx, cancel := context.WithCancel(parent)
 	h := &Heartbeat{
 		opts:    opts,
-		pool:    nostr.NewPool(nostruntime.PoolOptsNIP42(opts.Keyer)),
+		pool:    nostruntime.NewPoolNIP42(opts.Keyer),
 		pubkey:  pk,
 		current: StatusIdle,
 		ticker:  time.NewTicker(opts.IdleInterval),

@@ -76,7 +76,7 @@ func NewProfilePublisher(opts ProfilePublisherOptions) (*ProfilePublisher, error
 	pool := opts.Pool
 	ownsPool := false
 	if pool == nil {
-		pool = nostr.NewPool(PoolOptsNIP42(opts.Keyer))
+		pool = NewPoolNIP42(opts.Keyer)
 		ownsPool = true
 	}
 

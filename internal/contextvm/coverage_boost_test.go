@@ -51,6 +51,14 @@ func (m *mockKeyer) Decrypt(_ context.Context, _ string, _ nostr.PubKey) (string
 	return m.decReply, nil
 }
 
+func (m *mockKeyer) Nip04Encrypt(_ context.Context, _ string, _ nostr.PubKey) (string, error) {
+	return "", fmt.Errorf("nip04 unsupported")
+}
+
+func (m *mockKeyer) Nip04Decrypt(_ context.Context, _ string, _ nostr.PubKey) (string, error) {
+	return "", fmt.Errorf("nip04 unsupported")
+}
+
 // mockNIP04Keyer also supports NIP-04 encrypt/decrypt
 type mockNIP04Keyer struct {
 	mockKeyer

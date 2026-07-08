@@ -59,7 +59,7 @@ func NostrRelayPingTool() agent.ToolFunc {
 		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+		pool := nostr.NewPool()
 		defer pool.Close("ping done")
 
 		ensureRelayFn := ensureRelay
@@ -191,7 +191,7 @@ func NostrRelayScoreTool() agent.ToolFunc {
 
 		// Use a single shared pool for all relay dials to avoid creating
 		// 20 heavyweight pools concurrently.
-		pool := nostr.NewPool(nostr.PoolOptions{PenaltyBox: true})
+		pool := nostr.NewPool()
 		defer pool.Close("relay_score done")
 
 		// Limit concurrency to 5 simultaneous dials.

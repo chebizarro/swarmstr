@@ -13,7 +13,7 @@ import (
 
 func TestPublishAndFetchNIP65_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -64,7 +64,7 @@ func TestPublishAndFetchNIP65_Integration(t *testing.T) {
 
 func TestFetchNIP65_NotFound(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -78,7 +78,7 @@ func TestFetchNIP65_NotFound(t *testing.T) {
 
 func TestFetchNIP65_InvalidPubKey(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -93,7 +93,7 @@ func TestFetchNIP65_InvalidPubKey(t *testing.T) {
 
 func TestPublishAndFetchNIP02Contacts_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -140,7 +140,7 @@ func TestPublishAndFetchNIP02Contacts_Integration(t *testing.T) {
 
 func TestFetchNIP02Contacts_NotFound(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -154,7 +154,7 @@ func TestFetchNIP02Contacts_NotFound(t *testing.T) {
 
 func TestFetchNIP02Contacts_IgnoresInvalidContactPubkeys(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -198,7 +198,7 @@ func TestFetchNIP02Contacts_IgnoresInvalidContactPubkeys(t *testing.T) {
 
 func TestRelaySelector_FetchAndCache_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -234,7 +234,7 @@ func TestRelaySelector_FetchAndCache_Integration(t *testing.T) {
 
 func TestRelaySelector_FetchAndCache_NotFound(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)

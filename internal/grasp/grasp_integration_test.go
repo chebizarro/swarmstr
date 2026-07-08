@@ -18,7 +18,7 @@ func validRepoAddr(pubkey string) string {
 
 func TestAnnounceAndListRepos_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -59,7 +59,7 @@ func TestAnnounceAndListRepos_Integration(t *testing.T) {
 
 func TestAnnounceRepo_MissingID(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -73,7 +73,7 @@ func TestAnnounceRepo_MissingID(t *testing.T) {
 
 func TestListRepos_Empty(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -90,7 +90,7 @@ func TestListRepos_Empty(t *testing.T) {
 
 func TestListRepos_AllAuthors(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -111,7 +111,7 @@ func TestListRepos_AllAuthors(t *testing.T) {
 
 func TestCreateAndListIssues_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -145,7 +145,7 @@ func TestCreateAndListIssues_Integration(t *testing.T) {
 }
 
 func TestCreateIssue_InvalidRepoAddr(t *testing.T) {
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 	ctx := t.Context()
 
@@ -159,7 +159,7 @@ func TestCreateIssue_InvalidRepoAddr(t *testing.T) {
 }
 
 func TestCreateIssue_EmptyContent(t *testing.T) {
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 	ctx := t.Context()
 
@@ -176,7 +176,7 @@ func TestCreateIssue_EmptyContent(t *testing.T) {
 
 func TestSubmitPatch_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -196,7 +196,7 @@ func TestSubmitPatch_Integration(t *testing.T) {
 }
 
 func TestSubmitPatch_EmptyContent(t *testing.T) {
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 	ctx := t.Context()
 
@@ -213,7 +213,7 @@ func TestSubmitPatch_EmptyContent(t *testing.T) {
 
 func TestCreatePR_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -238,7 +238,7 @@ func TestCreatePR_Integration(t *testing.T) {
 }
 
 func TestCreatePR_InvalidRepoAddr(t *testing.T) {
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 	ctx := t.Context()
 
@@ -255,7 +255,7 @@ func TestCreatePR_InvalidRepoAddr(t *testing.T) {
 
 func TestPublishEvent_Integration(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -279,7 +279,7 @@ func TestPublishEvent_Integration(t *testing.T) {
 
 func TestAnnounceRepo_PersonalFork(t *testing.T) {
 	url := testutil.NewTestRelay(t)
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	kp := testutil.NewTestKeyPair(t)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

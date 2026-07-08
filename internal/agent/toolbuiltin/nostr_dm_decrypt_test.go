@@ -26,6 +26,12 @@ func (stubDecryptKeyer) Decrypt(_ context.Context, ciphertext string, _ nostr.Pu
 func (stubDecryptKeyer) DecryptNIP04(_ context.Context, ciphertext string, _ nostr.PubKey) (string, error) {
 	return "nip04:" + ciphertext, nil
 }
+func (stubDecryptKeyer) Nip04Encrypt(context.Context, string, nostr.PubKey) (string, error) {
+	return "", nil
+}
+func (stubDecryptKeyer) Nip04Decrypt(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	return stubDecryptKeyer{}.DecryptNIP04(ctx, ciphertext, sender)
+}
 
 func validSenderHex(t *testing.T) string {
 	t.Helper()
@@ -96,6 +102,9 @@ type invalidPaddingKeyer struct{ stubDecryptKeyer }
 
 func (invalidPaddingKeyer) DecryptNIP04(_ context.Context, _ string, _ nostr.PubKey) (string, error) {
 	return "", nostruntime.ErrInvalidPadding
+}
+func (k invalidPaddingKeyer) Nip04Decrypt(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	return k.DecryptNIP04(ctx, ciphertext, sender)
 }
 
 func TestNostrDMDecryptToolDirectNIP04_InvalidPaddingSurfacesMachineReadableError(t *testing.T) {

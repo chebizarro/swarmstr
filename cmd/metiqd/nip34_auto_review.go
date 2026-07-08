@@ -216,7 +216,7 @@ func loadInitialRepoBookmarks(ctx context.Context, keyer nostr.Keyer, cfg state.
 	if keyer == nil || len(relays) == 0 {
 		return
 	}
-	pool := nostr.NewPool(runtime.PoolOptsNIP42(keyer))
+	pool := runtime.NewPoolNIP42(keyer)
 	defer pool.Close("repo bookmark bootstrap complete")
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

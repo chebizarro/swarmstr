@@ -183,7 +183,7 @@ func TestPublishRelaySetRequiresPool(t *testing.T) {
 }
 
 func TestPublishRelaySetRequiresKeyer(t *testing.T) {
-	pool := nostr.NewPool(nostr.PoolOptions{})
+	pool := nostr.NewPool()
 	_, err := PublishRelaySet(context.Background(), pool, nil, []string{"wss://relay.example"}, "foo", []string{"wss://a.example"})
 	if err == nil || err.Error() != "publish relay set: keyer is required" {
 		t.Fatalf("expected keyer validation error, got %v", err)
