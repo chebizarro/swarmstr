@@ -338,17 +338,7 @@ func runPluginInstall(bootstrapPath string, args []string) error {
 		return fmt.Errorf("fetch plugin: %w", err)
 	}
 	if entry.Manifest.DownloadURL == "" {
-		// Inline plugin — write manifest JSON as index.js stub for manual install.
-		pluginDir := destDir + "/" + pluginID
-		if err := os.MkdirAll(pluginDir, 0o755); err != nil {
-			return fmt.Errorf("create plugin dir: %w", err)
-		}
-		out, _ := json.MarshalIndent(entry.Manifest, "", "  ")
-		if err := os.WriteFile(pluginDir+"/manifest.json", out, 0o600); err != nil {
-			return fmt.Errorf("write manifest: %w", err)
-		}
-		fmt.Printf("plugin fetched (no archive) %s → %s\n", pluginID, pluginDir)
-		return nil
+		return fmt.Errorf("install plugin %s: manifest has no download_url", pluginID)
 	}
 	installedPath, err := registry.Install(ctx, *entry, destDir)
 	if err != nil {
