@@ -13,9 +13,32 @@ import (
 	"metiq/internal/config"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 const defaultStreamManagerIdleTTL = 5 * time.Minute
+
+// EndpointSource combines a runtime endpoint profile with an optional bundled
+// descriptor set and curated full-RPC overrides. A non-nil ToolNames map is an
+// exact allowlist; methods absent from it are not exposed.
+type EndpointSource struct {
+	Profile          config.GRPCEndpointConfig
+	DescriptorSet    *descriptorpb.FileDescriptorSet
+	ToolNames        map[string]string
+	ToolTraits       map[string]agent.ToolTraits
+	ToolDescriptions map[string]string
+	MetadataSources  map[string]CredentialSource
+}
+
+// EndpointSourcesFromConfig preserves generic gRPC behavior by translating
+// configured endpoints into sources without embedded descriptors or overrides.
+func EndpointSourcesFromConfig(cfg config.GRPCConfig) []EndpointSource {
+	out := make([]EndpointSource, 0, len(cfg.Endpoints))
+	for _, profile := range cfg.Endpoints {
+		out = append(out, EndpointSource{Profile: profile})
+	}
+	return out
+}
 
 // Provider discovers configured gRPC endpoint profiles and exposes their methods
 // as standard agent.ToolRegistration values for the shared tool registry.
@@ -41,27 +64,63 @@ type Provider struct {
 // registrations. The provider does not mutate the caller's registry until
 // RegisterInto is called.
 func NewProvider(ctx context.Context, cfg config.GRPCConfig) (*Provider, error) {
-	if len(cfg.Endpoints) == 0 {
-		return newProvider(nil), nil
-	}
 	if errs := cfg.Validate(); len(errs) > 0 {
 		return nil, fmt.Errorf("invalid grpc config: %w", errors.Join(errs...))
 	}
-	manager, err := NewConnectionManagerFromConfig(cfg)
+	return NewProviderFromSources(ctx, EndpointSourcesFromConfig(cfg))
+}
+
+// NewProviderFromSources discovers generic and bundled endpoint sources without
+// requiring protoc, filesystem descriptor paths, or server reflection.
+func NewProviderFromSources(ctx context.Context, sources []EndpointSource, managerOpts ...ConnectionManagerOption) (*Provider, error) {
+	if len(sources) == 0 {
+		return newProvider(nil), nil
+	}
+	profiles := make([]config.GRPCEndpointConfig, 0, len(sources))
+	metadataSources := make(map[string]map[string]CredentialSource)
+	seenProfiles := make(map[string]struct{}, len(sources))
+	for i, source := range sources {
+		profile := source.Profile
+		id := strings.TrimSpace(profile.ID)
+		if id == "" {
+			return nil, fmt.Errorf("grpc endpoint source %d: profile id is required", i)
+		}
+		if strings.TrimSpace(profile.Target) == "" {
+			return nil, fmt.Errorf("grpc endpoint source %q: target is required", id)
+		}
+		if _, duplicate := seenProfiles[id]; duplicate {
+			return nil, fmt.Errorf("grpc endpoint source %q: duplicate profile id", id)
+		}
+		seenProfiles[id] = struct{}{}
+		if source.DescriptorSet != nil && len(source.DescriptorSet.File) == 0 {
+			return nil, fmt.Errorf("grpc endpoint source %q: embedded descriptor set is empty", id)
+		}
+		profile.ID = id
+		sources[i].Profile = profile
+		profiles = append(profiles, profile)
+		if len(source.MetadataSources) > 0 {
+			metadataSources[id] = source.MetadataSources
+		}
+	}
+	managerOpts = append(managerOpts, WithMetadataSources(metadataSources))
+	manager, err := NewConnectionManagerWithOptions(profiles, managerOpts...)
 	if err != nil {
 		return nil, err
 	}
 	p := newProvider(manager)
-	for _, profile := range cfg.Endpoints {
-		methods, err := p.discoverProfile(ctx, profile)
+	for _, source := range sources {
+		methods, err := p.discoverSource(ctx, source)
 		if err != nil {
 			_ = manager.Close()
 			return nil, err
 		}
 		p.methods = append(p.methods, methods...)
 	}
-	p.assignGlobalToolNames()
-	p.regs = p.buildRegistrations(cfg.Endpoints)
+	if err := p.assignGlobalToolNames(); err != nil {
+		_ = manager.Close()
+		return nil, err
+	}
+	p.regs = p.buildRegistrations(profiles)
 	return p, nil
 }
 
@@ -143,6 +202,65 @@ func (p *Provider) Methods() []MethodSpec {
 	return out
 }
 
+func (p *Provider) discoverSource(ctx context.Context, source EndpointSource) ([]MethodSpec, error) {
+	profile := source.Profile
+	var (
+		methods []MethodSpec
+		err     error
+	)
+	if source.DescriptorSet != nil {
+		if source.ToolNames == nil {
+			return nil, fmt.Errorf("grpc profile %q embedded descriptor source requires an exact tool allowlist", profile.ID)
+		}
+		methods, err = DiscoverFromEmbeddedDescriptorSet(profile, source.DescriptorSet)
+	} else {
+		methods, err = p.discoverProfile(ctx, profile)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	byMethod := make(map[string]MethodSpec, len(methods))
+	for _, method := range methods {
+		byMethod[method.FullMethod] = method
+	}
+	if source.ToolNames != nil {
+		missing := make([]string, 0)
+		filtered := make([]MethodSpec, 0, len(source.ToolNames))
+		for fullMethod, toolName := range source.ToolNames {
+			method, ok := byMethod[fullMethod]
+			if !ok {
+				missing = append(missing, fullMethod)
+				continue
+			}
+			toolName = strings.TrimSpace(toolName)
+			if toolName == "" || snakeIdentifier(toolName) != toolName {
+				return nil, fmt.Errorf("grpc profile %q curated method %q has invalid tool name %q", profile.ID, fullMethod, toolName)
+			}
+			method.ToolBaseName = toolName
+			method.OriginServerName = profile.ID
+			if traits, ok := source.ToolTraits[fullMethod]; ok {
+				method.Traits = traits
+			}
+			if description := strings.TrimSpace(source.ToolDescriptions[fullMethod]); description != "" {
+				method.Description = description
+			}
+			filtered = append(filtered, method)
+		}
+		if len(missing) > 0 {
+			sort.Strings(missing)
+			return nil, fmt.Errorf("grpc profile %q curated methods missing from descriptor set: %s", profile.ID, strings.Join(missing, ", "))
+		}
+		sort.Slice(filtered, func(i, j int) bool { return filtered[i].FullMethod < filtered[j].FullMethod })
+		methods = filtered
+	} else {
+		for i := range methods {
+			methods[i].OriginServerName = profile.ID
+		}
+	}
+	return methods, nil
+}
+
 func (p *Provider) discoverProfile(ctx context.Context, profile config.GRPCEndpointConfig) ([]MethodSpec, error) {
 	if p == nil || p.manager == nil {
 		return nil, errors.New("grpc provider is not configured")
@@ -166,19 +284,39 @@ func (p *Provider) discoverProfile(ctx context.Context, profile config.GRPCEndpo
 	return methods, nil
 }
 
-func (p *Provider) assignGlobalToolNames() {
-	seen := map[string]string{}
+func (p *Provider) assignGlobalToolNames() error {
+	groups := make(map[string][]int)
 	for i := range p.methods {
 		base := strings.TrimSpace(p.methods[i].ToolBaseName)
 		if base == "" {
 			base = toolBaseName(config.GRPCEndpointConfig{ID: p.methods[i].ProfileID}, p.methods[i].ServiceName, p.methods[i].MethodName)
+			p.methods[i].ToolBaseName = base
 		}
-		if firstMethod, exists := seen[base]; exists && firstMethod != p.methods[i].FullMethod {
-			base = base + "_" + shortHash(p.methods[i].ProfileID+":"+p.methods[i].FullMethod)
-		}
-		seen[base] = p.methods[i].FullMethod
-		p.methods[i].ToolBaseName = base
+		groups[base] = append(groups[base], i)
 	}
+	for base, indices := range groups {
+		if len(indices) < 2 {
+			continue
+		}
+		identities := make(map[string]struct{}, len(indices))
+		for _, index := range indices {
+			identity := p.methods[index].ProfileID + "\\x00" + p.methods[index].FullMethod
+			if _, duplicate := identities[identity]; duplicate {
+				return fmt.Errorf("duplicate grpc method identity %q", identity)
+			}
+			identities[identity] = struct{}{}
+			p.methods[index].ToolBaseName = base + "_" + shortHash(identity)
+		}
+	}
+	seen := make(map[string]string, len(p.methods))
+	for _, method := range p.methods {
+		identity := method.ProfileID + "\\x00" + method.FullMethod
+		if previous, duplicate := seen[method.ToolBaseName]; duplicate {
+			return fmt.Errorf("grpc tool name collision %q between %q and %q", method.ToolBaseName, previous, identity)
+		}
+		seen[method.ToolBaseName] = identity
+	}
+	return nil
 }
 
 func (p *Provider) buildRegistrations(profiles []config.GRPCEndpointConfig) []agent.ToolRegistration {
@@ -292,8 +430,8 @@ func (p *Provider) streamRegistration(method MethodSpec, name, action string, sc
 				"input":      "request",
 				"message":    "message",
 			},
-			Origin:   agent.ToolOrigin{Kind: agent.ToolOriginKindGRPC, ServerName: method.ProfileID, CanonicalName: method.FullMethod},
-			Traits:   agent.ToolTraits{ConcurrencySafe: false, InterruptBehavior: agent.ToolInterruptBehaviorCancel},
+			Origin:   agent.ToolOrigin{Kind: agent.ToolOriginKindGRPC, ServerName: methodOriginServerName(method), CanonicalName: method.FullMethod},
+			Traits:   streamMethodTraits(method),
 			Exposure: exposure,
 		},
 	}
@@ -382,6 +520,20 @@ func (p *Provider) endCall() {
 		p.signalClosed()
 	}
 	p.mu.Unlock()
+}
+
+func methodOriginServerName(method MethodSpec) string {
+	if name := strings.TrimSpace(method.OriginServerName); name != "" {
+		return name
+	}
+	return method.ProfileID
+}
+
+func streamMethodTraits(method MethodSpec) agent.ToolTraits {
+	traits := method.Traits
+	traits.ConcurrencySafe = false
+	traits.InterruptBehavior = agent.ToolInterruptBehaviorCancel
+	return traits
 }
 
 func methodToolCount(method MethodSpec) int {

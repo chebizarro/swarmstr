@@ -102,6 +102,14 @@ func (e *UnaryExecutor) SnapshotToolExecutor() agent.ToolExecutor {
 
 func unaryDescriptor(method MethodSpec) agent.ToolDescriptor {
 	requestSchema := cloneSchemaOrDefault(method.RequestSchema)
+	serverName := strings.TrimSpace(method.OriginServerName)
+	if serverName == "" {
+		serverName = method.ProfileID
+	}
+	traits := method.Traits
+	if traits == (agent.ToolTraits{}) {
+		traits = agent.ToolTraits{ConcurrencySafe: true, InterruptBehavior: agent.ToolInterruptBehaviorCancel}
+	}
 	return agent.ToolDescriptor{
 		Name:        method.ToolBaseName,
 		Description: unaryDescription(method),
@@ -136,13 +144,10 @@ func unaryDescriptor(method MethodSpec) agent.ToolDescriptor {
 		},
 		Origin: agent.ToolOrigin{
 			Kind:          agent.ToolOriginKindGRPC,
-			ServerName:    method.ProfileID,
+			ServerName:    serverName,
 			CanonicalName: method.FullMethod,
 		},
-		Traits: agent.ToolTraits{
-			ConcurrencySafe:   true,
-			InterruptBehavior: agent.ToolInterruptBehaviorCancel,
-		},
+		Traits: traits,
 	}
 }
 

@@ -464,6 +464,17 @@ func main() {
 	startedAt := time.Now()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// One shared secret store serves MCP, Lightning, and (through the Work item 3
+	// resolver injection seam) gRPC credentials. It is initialized before any
+	// web or payment tool construction so no subsystem creates an independent
+	// resolver or captures stale credential values.
+	secretsStore := secretspkg.NewStore(nil) // uses ~/.metiq/.env by default
+	if _, warns := secretsStore.Reload(); len(warns) > 0 {
+		for _, warning := range warns {
+			log.Printf("secrets: %s", warning)
+		}
+	}
 	var agentRunWG sync.WaitGroup
 	var agentRunMu sync.Mutex
 	agentRunClosed := false
@@ -1119,8 +1130,20 @@ func main() {
 	controlRuntimeConfig = configState
 	setRuntimeIdentityInfo(runtimeCfg, pubkey)
 
+	// ── Lightning/L402 lifecycle integration ─────────────────────────────
+	lightningCtl := newLightningController(secretsStore, newLightningRuntime, lightningRuntimeDeps{
+		HubFunc: func() *nostruntime.NostrHub { return controlHub },
+		Keyer:   controlKeyer,
+	})
+	defer func() {
+		if err := lightningCtl.close(context.Background()); err != nil {
+			log.Printf("[lightning] shutdown warning: %v", err)
+		}
+	}()
+	_ = lightningCtl.reconcile(ctx, tools, runtimeCfg, "initialization")
+
 	// ── gRPC tool provider integration ───────────────────────────────────
-	grpcProviderCtl := &grpcProviderController{}
+	grpcProviderCtl := newGRPCProviderController(secretsStore)
 	defer grpcProviderCtl.close()
 	grpcProviderCtl.reconcile(ctx, tools, runtimeCfg, "initialization")
 
@@ -1387,13 +1410,8 @@ func main() {
 	// but no bundled Go implementation.
 	hookspkg.AttachShellHandlers(hooksMgr)
 
-	// ── Secrets store ─────────────────────────────────────────────────────────
-	secretsStore := secretspkg.NewStore(nil) // uses ~/.metiq/.env by default
-	if _, warns := secretsStore.Reload(); len(warns) > 0 {
-		for _, w := range warns {
-			log.Printf("secrets: %s", w)
-		}
-	}
+	// ── Secrets-backed MCP auth ───────────────────────────────────────────────
+	// Reuse the process-wide store initialized before tool assembly.
 	mcpAuthController := newMCPAuthController(&mcpManager, tools, secretsStore, func() state.ConfigDoc { return configState.Get() })
 	controlMCPOps = newMCPOpsController(&mcpManager, tools, mcpAuthController, configState, docsRepo)
 	mcpAuthController.InstallOnManager(mcpManager)
@@ -6151,6 +6169,7 @@ func main() {
 		bumpPromptConfigGeneration()
 		setRuntimeIdentityInfo(doc, pubkey)
 		applyRuntimeConfigSideEffects(doc)
+		_ = lightningCtl.reconcile(ctx, tools, doc, "live config apply")
 		grpcProviderCtl.reconcile(ctx, tools, doc, "live config apply")
 		resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 		applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live config apply")
@@ -6180,6 +6199,7 @@ func main() {
 					configState.mu.Unlock()
 					setRuntimeIdentityInfo(doc, pubkey)
 					applyRuntimeConfigSideEffects(doc)
+					_ = lightningCtl.reconcile(ctx, tools, doc, "live file-reload apply")
 					grpcProviderCtl.reconcile(ctx, tools, doc, "live file-reload apply")
 					resolvedMCP := resolveMCPConfigWithDefaults(doc, fsOpts.WorkspaceDir())
 					applyMCPConfigAndReconcile(ctx, &mcpManager, tools, resolvedMCP, "live file-reload apply")

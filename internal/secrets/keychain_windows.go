@@ -17,7 +17,8 @@ type osBackend struct{}
 
 func NewOSBackend() SecretBackend { return osBackend{} }
 
-func (osBackend) Name() string { return "windows-credential-manager" }
+func (osBackend) Name() string          { return "windows-credential-manager" }
+func (osBackend) ProtectedAtRest() bool { return true }
 
 func (osBackend) Get(key string) (string, bool, error) {
 	target := osSecretService + ":" + strings.TrimSpace(key)

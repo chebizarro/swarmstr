@@ -14,10 +14,12 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/agent/toolgrpc"
 	"metiq/internal/config"
+	"metiq/internal/lightning"
+	"metiq/internal/secrets"
 	"metiq/internal/store/state"
 )
 
-var newGRPCProvider = toolgrpc.NewProvider
+var newGRPCProviderFromSources = toolgrpc.NewProviderFromSources
 
 func grpcConfigFromConfigDoc(doc state.ConfigDoc) (config.GRPCConfig, error) {
 	if len(doc.Extra) == 0 || doc.Extra["grpc"] == nil {
@@ -37,6 +39,41 @@ func grpcConfigFromConfigDoc(doc state.ConfigDoc) (config.GRPCConfig, error) {
 	return cfg, nil
 }
 
+func grpcEndpointSourcesFromConfigDoc(doc state.ConfigDoc) ([]toolgrpc.EndpointSource, error) {
+	grpcCfg, err := grpcConfigFromConfigDoc(doc)
+	if err != nil {
+		return nil, err
+	}
+	sources := toolgrpc.EndpointSourcesFromConfig(grpcCfg)
+
+	lightningCfg, err := config.ParseLightningConfigExtra(doc.Extra)
+	if err != nil {
+		return nil, err
+	}
+	if errs := config.ValidateLightningConfig(lightningCfg); len(errs) > 0 {
+		return nil, fmt.Errorf("validate lightning config: %w", errors.Join(errs...))
+	}
+	genericIDs := make(map[string]struct{}, len(grpcCfg.Endpoints))
+	for _, endpoint := range grpcCfg.Endpoints {
+		genericIDs[strings.ToLower(strings.TrimSpace(endpoint.ID))] = struct{}{}
+	}
+	for family, profiles := range map[string][]config.LightningGRPCProfile{
+		"lnd":  lightningCfg.LND.Profiles,
+		"tapd": lightningCfg.Tapd.Profiles,
+	} {
+		for _, profile := range profiles {
+			if _, collision := genericIDs[strings.ToLower(strings.TrimSpace(profile.ID))]; collision {
+				return nil, fmt.Errorf("lightning %s profile %q collides with generic grpc endpoint id", family, profile.ID)
+			}
+		}
+	}
+	lightningSources, err := lightning.BuildGRPCEndpointSources(lightningCfg)
+	if err != nil {
+		return nil, fmt.Errorf("build lightning grpc profiles: %w", err)
+	}
+	return append(sources, lightningSources...), nil
+}
+
 type grpcToolRegistryReconcileResult struct {
 	Added     int
 	Updated   int
@@ -54,7 +91,42 @@ func descriptorsEqual(a, b agent.ToolDescriptor) bool {
 	return a.Name == b.Name &&
 		a.Description == b.Description &&
 		a.Origin == b.Origin &&
-		reflect.DeepEqual(a.InputJSONSchema, b.InputJSONSchema)
+		reflect.DeepEqual(a.InputJSONSchema, b.InputJSONSchema) &&
+		equalStringMaps(a.ParamAliases, b.ParamAliases) &&
+		toolTraitsEqual(a.Traits, b.Traits) &&
+		toolExposureEqual(a.Exposure, b.Exposure)
+}
+
+func equalStringMaps(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func toolTraitsEqual(a, b agent.ToolTraits) bool {
+	if a.InterruptBehavior == "" {
+		a.InterruptBehavior = agent.ToolInterruptBehaviorBlock
+	}
+	if b.InterruptBehavior == "" {
+		b.InterruptBehavior = agent.ToolInterruptBehaviorBlock
+	}
+	return a == b
+}
+
+func toolExposureEqual(a, b agent.ToolExposureMode) bool {
+	if a == "" {
+		a = agent.ToolExposureModeAuto
+	}
+	if b == "" {
+		b = agent.ToolExposureModeAuto
+	}
+	return a == b
 }
 
 func reconcileGRPCToolRegistry(reg *agent.ToolRegistry, provider *toolgrpc.Provider) grpcToolRegistryReconcileResult {
@@ -120,6 +192,10 @@ func reconcileGRPCToolRegistryDesired(reg *agent.ToolRegistry, desired map[strin
 			result.Added++
 			log.Printf("[grpc] registered tool: %s", name)
 		case descriptorsEqual(existing, registration.Descriptor):
+			// Descriptor equality does not imply executable equality: a newly
+			// built provider owns fresh closures and the previous provider is
+			// closed after reconciliation.
+			reg.RegisterTool(name, registration)
 			result.Unchanged++
 		default:
 			reg.RegisterTool(name, registration)
@@ -132,22 +208,43 @@ func reconcileGRPCToolRegistryDesired(reg *agent.ToolRegistry, desired map[strin
 }
 
 type grpcProviderController struct {
-	mu       sync.Mutex
-	provider *toolgrpc.Provider
+	reconcileMu sync.Mutex
+	mu          sync.Mutex
+	provider    *toolgrpc.Provider
+	resolver    toolgrpc.ValueResolver
+}
+
+func newGRPCProviderController(store *secrets.Store) *grpcProviderController {
+	controller := &grpcProviderController{}
+	if store != nil {
+		controller.resolver = toolgrpc.ValueResolverFunc(func(ctx context.Context, source toolgrpc.CredentialSource) ([]byte, error) {
+			return store.ResolveBytes(ctx, secrets.CredentialSource{
+				Ref:      source.Ref,
+				Encoding: secrets.CredentialEncoding(source.Encoding),
+			})
+		})
+	}
+	return controller
 }
 
 func (c *grpcProviderController) reconcile(ctx context.Context, reg *agent.ToolRegistry, doc state.ConfigDoc, logContext string) grpcToolRegistryReconcileResult {
 	if c == nil {
 		return grpcToolRegistryReconcileResult{}
 	}
-	cfg, cfgErr := grpcConfigFromConfigDoc(doc)
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
+	sources, cfgErr := grpcEndpointSourcesFromConfigDoc(doc)
 	if cfgErr != nil {
 		log.Printf("[grpc] %s config invalid; keeping previous provider: %v", logContext, cfgErr)
 		return grpcToolRegistryReconcileResult{}
 	}
 	var next *toolgrpc.Provider
-	if len(cfg.Endpoints) > 0 {
-		provider, err := newGRPCProvider(ctx, cfg)
+	if len(sources) > 0 {
+		var options []toolgrpc.ConnectionManagerOption
+		if c.resolver != nil {
+			options = append(options, toolgrpc.WithValueResolver(c.resolver))
+		}
+		provider, err := newGRPCProviderFromSources(ctx, sources, options...)
 		if err != nil {
 			log.Printf("[grpc] %s provider build failed; keeping previous provider: %v", logContext, err)
 			return grpcToolRegistryReconcileResult{}
@@ -179,6 +276,8 @@ func (c *grpcProviderController) close() {
 	if c == nil {
 		return
 	}
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
 	c.mu.Lock()
 	provider := c.provider
 	c.provider = nil

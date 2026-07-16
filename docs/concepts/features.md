@@ -39,6 +39,18 @@ title: "Features"
 - `nostr_zap_send` / `nostr_zap_list` — Lightning zap tools
 - `nostr_relay_hints` — NIP-65 outbox relay hints
 
+### Lightning, L402, and Taproot Assets Tools
+- `l402_fetch` — payment-capable HTTPS fetch for operator-approved L402/LSAT origins; pays at most once and retries once
+- `web_fetch` — ordinary non-paying fetch; it never invokes a Lightning wallet
+- `nwc_get_balance`, `nwc_pay_invoice`, `nwc_make_invoice`, `nwc_lookup_invoice`, `nwc_list_transactions` — NIP-47 wallet compatibility tools
+- `lnd_*` — stable curated LND gRPC tools such as `lnd_get_info`, `lnd_wallet_balance`, and opt-in `lnd_send_payment`
+- `tap_*` — stable curated tapd tools such as `tap_get_info`, `tap_list_assets`, and opt-in `tap_send_asset`
+- Bundled pinned LND/tapd descriptors; no runtime `protoc`, generated clients, or server reflection required
+- Read-only LND/tapd toolsets by default; receive, spend, admin, and LND payer capabilities require explicit operator configuration
+- L402 amount/fee/hourly-spend policy, duplicate-payment protection, exact-origin token scoping, and protected or explicit memory-only caching
+
+See [Lightning & Payments configuration](../reference/CONFIGURATION_GUIDE.md#lightning--payments) for wallet profiles, TLS, macaroon references, toolsets, and secret handling.
+
 ### Multi-Channel Support
 - Primary: Nostr DMs (NIP-04 encrypted)
 - Optional plugins: Discord, Telegram, Signal, Matrix, and more

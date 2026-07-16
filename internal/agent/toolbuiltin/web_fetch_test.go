@@ -125,6 +125,31 @@ func TestWebFetchTool_PluginProvider(t *testing.T) {
 	}
 }
 
+func TestWebFetchTool_L402ChallengeNeverPaysOrRetries(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("web_fetch sent payment authorization: %q", got)
+		}
+		w.Header().Set("WWW-Authenticate", `L402 macaroon="must-not-leak", invoice="lnbc1secret"`)
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = w.Write([]byte("payment required"))
+	}))
+	defer srv.Close()
+
+	result, err := WebFetchTool(WebFetchOpts{AllowLocal: true})(context.Background(), map[string]any{"url": srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("web_fetch requests = %d, want 1", requests)
+	}
+	if result != "payment required" || strings.Contains(result, "must-not-leak") || strings.Contains(result, "lnbc1secret") {
+		t.Fatalf("unsafe web_fetch result = %q", result)
+	}
+}
+
 func TestWebFetchTool_InvalidScheme(t *testing.T) {
 	tool := WebFetchTool(WebFetchOpts{})
 	_, err := tool(context.Background(), map[string]any{"url": "ftp://example.com/"})

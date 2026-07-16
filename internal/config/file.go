@@ -969,6 +969,10 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 			errs = append(errs, detectUnknownMapKeys("fips", value, []string{"enabled", "control_socket", "agent_port", "control_port", "transport_pref", "peers", "conn_timeout", "reach_cache_ttl"})...)
 		case "grpc":
 			errs = append(errs, detectUnknownGRPCKeys(value)...)
+		case "extra":
+			if extra, ok := value.(map[string]any); ok && extra["lightning"] != nil {
+				errs = append(errs, detectUnknownLightningKeys(extra["lightning"])...)
+			}
 		case "hooks":
 			errs = append(errs, detectUnknownMapKeys("hooks", value, []string{"enabled", "token", "allowed_agent_ids", "default_session_key", "allow_request_session_key", "mappings"})...)
 		case "timeouts":

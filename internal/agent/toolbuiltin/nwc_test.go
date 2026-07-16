@@ -2,259 +2,180 @@ package toolbuiltin
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
-
-	"fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/keyer"
-	"fiatjaf.com/nostr/nip44"
 
 	"metiq/internal/agent"
 )
 
-// testNWCKeyer builds a nostr.Keyer for NWC tests.
-func testNWCKeyer(t *testing.T) nostr.Keyer {
+type recordingNWCClient struct {
+	method         string
+	params         map[string]any
+	result         map[string]any
+	err            error
+	paymentCalls   int
+	paymentInvoice string
+	paymentAmount  int64
+}
+
+func (c *recordingNWCClient) Request(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+	c.method = method
+	c.params = params
+	return c.result, c.err
+}
+
+func (c *recordingNWCClient) PayInvoiceTool(_ context.Context, invoice string, amountMSat int64) (map[string]any, error) {
+	c.paymentCalls++
+	c.paymentInvoice = invoice
+	c.paymentAmount = amountMSat
+	return c.result, c.err
+}
+
+func execNWCTool(t *testing.T, registry *agent.ToolRegistry, name string, args map[string]any) (string, error) {
 	t.Helper()
-	skHex := "1111111111111111111111111111111111111111111111111111111111111111"
-	sk, err := nostr.SecretKeyFromHex(skHex)
-	if err != nil {
-		t.Fatalf("SecretKeyFromHex: %v", err)
-	}
-	return nwcTestKeyer{KeySigner: keyer.NewPlainKeySigner([32]byte(sk)), sk: sk}
+	return registry.Execute(context.Background(), agent.ToolCall{Name: name, Args: args})
 }
 
-type nwcTestKeyer struct {
-	keyer.KeySigner
-	sk nostr.SecretKey
-}
-
-func (k nwcTestKeyer) Encrypt(_ context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
-	ck, err := nip44.GenerateConversationKey(recipient, k.sk)
-	if err != nil {
-		return "", err
-	}
-	return nip44.Encrypt(plaintext, ck)
-}
-
-func (k nwcTestKeyer) Decrypt(_ context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
-	ck, err := nip44.GenerateConversationKey(sender, k.sk)
-	if err != nil {
-		return "", err
-	}
-	return nip44.Decrypt(ciphertext, ck)
-}
-
-// helper: execute a named tool on the registry.
-func execTool(t *testing.T, reg *agent.ToolRegistry, name string, args map[string]any) (string, error) {
-	t.Helper()
-	return reg.Execute(context.Background(), agent.ToolCall{Name: name, Args: args})
-}
-
-// ── parseNWCUri tests ─────────────────────���─────────────────────────────────
-
-func TestParseNWCUri_Valid(t *testing.T) {
-	uri := "nostrwalletconnect://abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234?relay=wss://relay.example.com&secret=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-	conn, err := parseNWCUri(uri)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if conn.walletPubkey != "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234" {
-		t.Errorf("unexpected wallet pubkey: %s", conn.walletPubkey)
-	}
-	if conn.secret != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
-		t.Errorf("unexpected secret: %s", conn.secret)
-	}
-	if len(conn.relays) != 1 || conn.relays[0] != "wss://relay.example.com" {
-		t.Errorf("unexpected relays: %v", conn.relays)
-	}
-}
-
-func TestParseNWCUri_AlternateScheme(t *testing.T) {
-	uri := "nostr+walletconnect://abc123?relay=wss://r1.example.com&relay=wss://r2.example.com"
-	conn, err := parseNWCUri(uri)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if conn.walletPubkey != "abc123" {
-		t.Errorf("unexpected wallet pubkey: %s", conn.walletPubkey)
-	}
-	if len(conn.relays) != 2 {
-		t.Errorf("expected 2 relays, got %d", len(conn.relays))
-	}
-	if conn.secret != "" {
-		t.Errorf("expected empty secret, got %s", conn.secret)
-	}
-}
-
-func TestParseNWCUri_NwcScheme(t *testing.T) {
-	uri := "nwc://abc123?relay=wss://relay.example.com"
-	conn, err := parseNWCUri(uri)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if conn.walletPubkey != "abc123" {
-		t.Errorf("unexpected wallet pubkey: %s", conn.walletPubkey)
-	}
-}
-
-func TestParseNWCUri_Empty(t *testing.T) {
-	_, err := parseNWCUri("")
-	if err == nil {
-		t.Fatal("expected error for empty URI")
-	}
-}
-
-func TestParseNWCUri_BadScheme(t *testing.T) {
-	_, err := parseNWCUri("http://not-a-wallet")
-	if err == nil {
-		t.Fatal("expected error for invalid scheme")
-	}
-}
-
-func TestParseNWCUri_MissingPubkey(t *testing.T) {
-	_, err := parseNWCUri("nostrwalletconnect://?relay=wss://relay.example.com")
-	if err == nil {
-		t.Fatal("expected error for missing wallet pubkey")
-	}
-}
-
-// ── newNWCKeyer tests ──────────────────────────────────────────────────���────
-
-func TestNewNWCKeyer_Valid(t *testing.T) {
-	k, err := newNWCKeyer("1111111111111111111111111111111111111111111111111111111111111111")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	pk, err := k.GetPublicKey(context.Background())
-	if err != nil {
-		t.Fatalf("GetPublicKey: %v", err)
-	}
-	if pk.Hex() == "" {
-		t.Error("expected non-empty pubkey")
-	}
-}
-
-func TestNewNWCKeyer_Invalid(t *testing.T) {
-	_, err := newNWCKeyer("not-a-hex-key")
-	if err == nil {
-		t.Fatal("expected error for invalid secret")
-	}
-}
-
-func TestNewNWCKeyer_EncryptDecryptRoundTrip(t *testing.T) {
-	k, err := newNWCKeyer("1111111111111111111111111111111111111111111111111111111111111111")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Get our own pubkey for self-encryption test.
-	pk, _ := k.GetPublicKey(context.Background())
-
-	original := `{"method":"get_balance","params":{}}`
-	encrypted, err := k.Encrypt(context.Background(), original, pk)
-	if err != nil {
-		t.Fatalf("Encrypt: %v", err)
-	}
-	decrypted, err := k.Decrypt(context.Background(), encrypted, pk)
-	if err != nil {
-		t.Fatalf("Decrypt: %v", err)
-	}
-	if decrypted != original {
-		t.Errorf("round-trip mismatch: got %q, want %q", decrypted, original)
-	}
-}
-
-// ── Tool registration tests ────────────────────────────────────────────────
-
-func TestRegisterNWCTools_AllRegistered(t *testing.T) {
-	reg := agent.NewToolRegistry()
-	RegisterNWCTools(reg, NWCToolOpts{
-		Keyer:  testNWCKeyer(t),
-		NWCUri: "nostrwalletconnect://abcd1234?relay=wss://relay.example.com&secret=1111111111111111111111111111111111111111111111111111111111111111",
-	})
-
-	expected := []string{
-		"nwc_get_balance",
-		"nwc_pay_invoice",
-		"nwc_make_invoice",
-		"nwc_lookup_invoice",
-		"nwc_list_transactions",
-	}
-	registered := reg.List()
-	for _, name := range expected {
-		if !slices.Contains(registered, name) {
-			t.Errorf("tool %q not registered; got %v", name, registered)
+func TestRegisterNWCToolsPreservesAllPublicContracts(t *testing.T) {
+	registry := agent.NewToolRegistry()
+	RegisterNWCTools(registry, NWCToolOpts{Client: &recordingNWCClient{}})
+	for _, name := range []string{
+		"nwc_get_balance", "nwc_pay_invoice", "nwc_make_invoice",
+		"nwc_lookup_invoice", "nwc_list_transactions",
+	} {
+		if !slices.Contains(registry.List(), name) {
+			t.Fatalf("tool %q is not registered: %v", name, registry.List())
+		}
+		if descriptor, ok := registry.Descriptor(name); !ok || descriptor.Name != name {
+			t.Fatalf("descriptor for %q was not preserved: %#v", name, descriptor)
 		}
 	}
 }
 
-func TestNWCTools_NoUri(t *testing.T) {
-	reg := agent.NewToolRegistry()
-	RegisterNWCTools(reg, NWCToolOpts{
-		Keyer: testNWCKeyer(t),
+func TestNWCPayInvoiceForwardsLegacyArgumentsAndRedactsSecrets(t *testing.T) {
+	client := &recordingNWCClient{result: map[string]any{
+		"preimage": "abc", "fees_paid": float64(7),
+		"nested": map[string]any{"macaroon": "secret-macaroon", "token": "secret-token"},
+		"items":  []any{map[string]any{"access_token": "secret-access"}},
+	}}
+	registry := agent.NewToolRegistry()
+	RegisterNWCTools(registry, NWCToolOpts{Client: client})
+
+	output, err := execNWCTool(t, registry, "nwc_pay_invoice", map[string]any{
+		"invoice": "lnbc-test", "amount_msats": float64(1234),
 	})
-
-	// Tools should be registered (they return helpful config error).
-	registered := reg.List()
-	if !slices.Contains(registered, "nwc_get_balance") {
-		t.Fatal("expected nwc_get_balance to be registered even without URI")
+	if err != nil {
+		t.Fatalf("nwc_pay_invoice: %v", err)
 	}
-
-	// Calling without a URI should return a config error, not panic.
-	_, err := execTool(t, reg, "nwc_get_balance", map[string]any{})
-	if err == nil {
-		t.Fatal("expected error when calling without NWC URI configured")
+	if client.paymentCalls != 1 || client.paymentInvoice != "lnbc-test" || client.paymentAmount != 1234 {
+		t.Fatalf("typed payment call = count=%d invoice=%q amount=%d", client.paymentCalls, client.paymentInvoice, client.paymentAmount)
 	}
-}
-
-func TestNWCPayInvoice_MissingInvoice(t *testing.T) {
-	reg := agent.NewToolRegistry()
-	RegisterNWCTools(reg, NWCToolOpts{
-		Keyer:  testNWCKeyer(t),
-		NWCUri: "nostrwalletconnect://abcd1234?relay=wss://relay.example.com&secret=1111111111111111111111111111111111111111111111111111111111111111",
-	})
-
-	_, err := execTool(t, reg, "nwc_pay_invoice", map[string]any{})
-	if err == nil {
-		t.Fatal("expected error for missing invoice")
+	if client.method != "" {
+		t.Fatalf("raw request path was used: %q %#v", client.method, client.params)
 	}
-}
-
-func TestNWCMakeInvoice_MissingAmount(t *testing.T) {
-	reg := agent.NewToolRegistry()
-	RegisterNWCTools(reg, NWCToolOpts{
-		Keyer:  testNWCKeyer(t),
-		NWCUri: "nostrwalletconnect://abcd1234?relay=wss://relay.example.com&secret=1111111111111111111111111111111111111111111111111111111111111111",
-	})
-
-	_, err := execTool(t, reg, "nwc_make_invoice", map[string]any{})
-	if err == nil {
-		t.Fatal("expected error for missing amount_msats")
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("result is not JSON: %v", err)
+	}
+	nested, _ := decoded["nested"].(map[string]any)
+	items, _ := decoded["items"].([]any)
+	item, _ := items[0].(map[string]any)
+	if decoded["preimage"] != redactedNWCToolValue || decoded["fees_paid"] != float64(7) ||
+		nested["macaroon"] != redactedNWCToolValue || nested["token"] != redactedNWCToolValue ||
+		item["access_token"] != redactedNWCToolValue {
+		t.Fatalf("sensitive result fields were not redacted: %#v", decoded)
 	}
 }
 
-func TestNWCLookupInvoice_MissingIdentifier(t *testing.T) {
-	reg := agent.NewToolRegistry()
-	RegisterNWCTools(reg, NWCToolOpts{
-		Keyer:  testNWCKeyer(t),
-		NWCUri: "nostrwalletconnect://abcd1234?relay=wss://relay.example.com&secret=1111111111111111111111111111111111111111111111111111111111111111",
-	})
+func TestNWCToolErrorsRedactWalletSecrets(t *testing.T) {
+	client := &recordingNWCClient{err: errors.New("wallet error: macaroon=secret-macaroon preimage=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef access_token=secret-access")}
+	registry := agent.NewToolRegistry()
+	RegisterNWCTools(registry, NWCToolOpts{Client: client})
 
-	_, err := execTool(t, reg, "nwc_lookup_invoice", map[string]any{})
-	if err == nil {
-		t.Fatal("expected error for missing payment_hash and invoice")
+	_, err := execNWCTool(t, registry, "nwc_get_balance", nil)
+	if err == nil || strings.Contains(err.Error(), "secret-macaroon") ||
+		strings.Contains(err.Error(), "0123456789abcdef") || strings.Contains(err.Error(), "secret-access") {
+		t.Fatalf("wallet error was not redacted: %v", err)
 	}
 }
 
-func TestNWCTools_NoRelays(t *testing.T) {
-	reg := agent.NewToolRegistry()
-	RegisterNWCTools(reg, NWCToolOpts{
-		Keyer:  testNWCKeyer(t),
-		NWCUri: "nostrwalletconnect://abcd1234?secret=1111111111111111111111111111111111111111111111111111111111111111",
-		// No relays in URI or opts.
-	})
+func TestNWCMakeInvoiceForwardsOptionalFields(t *testing.T) {
+	client := &recordingNWCClient{result: map[string]any{"invoice": "lnbc-created"}}
+	registry := agent.NewToolRegistry()
+	RegisterNWCTools(registry, NWCToolOpts{Client: client})
 
-	_, err := execTool(t, reg, "nwc_get_balance", map[string]any{})
-	if err == nil {
-		t.Fatal("expected error when no relays configured")
+	if _, err := execNWCTool(t, registry, "nwc_make_invoice", map[string]any{
+		"amount_msats": float64(2500), "description": "coffee", "expiry": float64(90),
+	}); err != nil {
+		t.Fatalf("nwc_make_invoice: %v", err)
+	}
+	if client.method != nwcMethodMakeInvoice ||
+		client.params["amount"] != int64(2500) ||
+		client.params["description"] != "coffee" ||
+		client.params["expiry"] != int64(90) {
+		t.Fatalf("forwarded request = %s %#v", client.method, client.params)
+	}
+}
+
+func TestNWCLookupAndListPreserveParameterNames(t *testing.T) {
+	client := &recordingNWCClient{result: map[string]any{}}
+	registry := agent.NewToolRegistry()
+	RegisterNWCTools(registry, NWCToolOpts{Client: client})
+
+	if _, err := execNWCTool(t, registry, "nwc_lookup_invoice", map[string]any{"payment_hash": "00"}); err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if client.method != nwcMethodLookupInvoice || client.params["payment_hash"] != "00" {
+		t.Fatalf("lookup request = %s %#v", client.method, client.params)
+	}
+	if _, err := execNWCTool(t, registry, "nwc_list_transactions", map[string]any{
+		"from": float64(1), "until": float64(2), "limit": float64(3), "type": "outgoing",
+	}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if client.method != nwcMethodListTransactions ||
+		client.params["from"] != int64(1) ||
+		client.params["until"] != int64(2) ||
+		client.params["limit"] != int64(3) ||
+		client.params["type"] != "outgoing" {
+		t.Fatalf("list request = %s %#v", client.method, client.params)
+	}
+}
+
+func TestNWCToolArgumentValidationHappensBeforeClient(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "nwc_pay_invoice", args: map[string]any{}},
+		{name: "nwc_make_invoice", args: map[string]any{}},
+		{name: "nwc_lookup_invoice", args: map[string]any{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &recordingNWCClient{result: map[string]any{}}
+			registry := agent.NewToolRegistry()
+			RegisterNWCTools(registry, NWCToolOpts{Client: client})
+			if _, err := execNWCTool(t, registry, test.name, test.args); err == nil {
+				t.Fatal("expected argument validation error")
+			}
+			if client.method != "" {
+				t.Fatalf("client was called with %q", client.method)
+			}
+		})
+	}
+}
+
+func TestNWCToolsWithoutURIStillRegisterAndFailClosed(t *testing.T) {
+	registry := agent.NewToolRegistry()
+	RegisterNWCTools(registry, NWCToolOpts{})
+	if !slices.Contains(registry.List(), "nwc_get_balance") {
+		t.Fatal("nwc_get_balance was not registered")
+	}
+	if _, err := execNWCTool(t, registry, "nwc_get_balance", map[string]any{}); err == nil {
+		t.Fatal("expected missing configuration error")
 	}
 }

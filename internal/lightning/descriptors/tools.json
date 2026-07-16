@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "upstreams": {
+    "lnd": {
+      "repository": "https://github.com/lightningnetwork/lnd",
+      "tag": "v0.21.1-beta",
+      "commit": "2b87887fd9ef6b3e1391dc25e4c658ee73a06fa0",
+      "license": "MIT"
+    },
+    "tapd": {
+      "repository": "https://github.com/lightninglabs/taproot-assets",
+      "tag": "v0.8.0",
+      "commit": "b5121d06b5799e263e2a9804865d88af828e87b8",
+      "license": "MIT"
+    }
+  },
+  "descriptor_sets": {
+    "lnd": {
+      "file": "lnd.pb",
+      "sha256": "0920e3435a2b1fece60531f39e8e5876674a4d3fb6d03133d897471fad4d5b95"
+    },
+    "tapd": {
+      "file": "tapd.pb",
+      "sha256": "32495f56bf1409c178853064c330849f95c01d4ae060c6336a324bb36296e4d1"
+    }
+  },
+  "methods": [
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/GetInfo","tool":"lnd_get_info","description":"Get LND daemon and chain synchronization information.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/WalletBalance","tool":"lnd_wallet_balance","description":"Read the on-chain wallet balance.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/ChannelBalance","tool":"lnd_channel_balance","description":"Read Lightning channel balances.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/GetTransactions","tool":"lnd_list_transactions","description":"List on-chain wallet transactions.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/EstimateFee","tool":"lnd_estimate_onchain_fee","description":"Estimate an on-chain transaction fee.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/ListUnspent","tool":"lnd_list_unspent","description":"List unspent wallet outputs.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/ListPeers","tool":"lnd_list_peers","description":"List connected Lightning peers.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/PendingChannels","tool":"lnd_pending_channels","description":"List pending channels.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/ListChannels","tool":"lnd_list_channels","description":"List open channels.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/ClosedChannels","tool":"lnd_closed_channels","description":"List closed channels.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/ListInvoices","tool":"lnd_list_invoices","description":"List Lightning invoices.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/LookupInvoice","tool":"lnd_lookup_invoice","description":"Look up a Lightning invoice.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/DecodePayReq","tool":"lnd_decode_payment_request","description":"Decode a BOLT 11 payment request.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/ListPayments","tool":"lnd_list_payments","description":"List outgoing Lightning payments.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/GetChanInfo","tool":"lnd_get_channel_info","description":"Get public channel information.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/GetNodeInfo","tool":"lnd_get_node_info","description":"Get public Lightning node information.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/QueryRoutes","tool":"lnd_query_routes","description":"Query candidate Lightning routes.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/GetNetworkInfo","tool":"lnd_get_network_info","description":"Get Lightning graph statistics.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/FeeReport","tool":"lnd_fee_report","description":"Read channel fee policies and earnings.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/lnrpc.Lightning/ForwardingHistory","tool":"lnd_forwarding_history","description":"Read forwarding history.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/routerrpc.Router/EstimateRouteFee","tool":"lnd_estimate_route_fee","description":"Estimate a Lightning route fee.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/routerrpc.Router/QueryMissionControl","tool":"lnd_query_mission_control","description":"Read mission control state.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/routerrpc.Router/QueryProbability","tool":"lnd_query_probability","description":"Estimate route success probability.","read_only":true},
+    {"family":"lnd","toolset":"read","rpc":"/routerrpc.Router/BuildRoute","tool":"lnd_build_route","description":"Build a Lightning route without sending.","read_only":true},
+    {"family":"lnd","toolset":"receive","rpc":"/lnrpc.Lightning/AddInvoice","tool":"lnd_add_invoice","description":"Create a Lightning invoice.","read_only":false},
+    {"family":"lnd","toolset":"receive","rpc":"/lnrpc.Lightning/NewAddress","tool":"lnd_new_address","description":"Create a new on-chain receive address.","read_only":false},
+    {"family":"lnd","toolset":"spend","rpc":"/routerrpc.Router/SendPaymentV2","tool":"lnd_send_payment","description":"Send a Lightning payment.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"spend","rpc":"/routerrpc.Router/SendToRouteV2","tool":"lnd_send_to_route","description":"Send a payment over an explicit Lightning route.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"spend","rpc":"/lnrpc.Lightning/SendCoins","tool":"lnd_send_coins","description":"Send on-chain bitcoin to one address.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"spend","rpc":"/lnrpc.Lightning/SendMany","tool":"lnd_send_many","description":"Send on-chain bitcoin to multiple addresses.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"admin","rpc":"/lnrpc.Lightning/ConnectPeer","tool":"lnd_connect_peer","description":"Connect to a Lightning peer.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"admin","rpc":"/lnrpc.Lightning/DisconnectPeer","tool":"lnd_disconnect_peer","description":"Disconnect a Lightning peer.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"admin","rpc":"/lnrpc.Lightning/OpenChannel","tool":"lnd_open_channel","description":"Open a Lightning channel.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"admin","rpc":"/lnrpc.Lightning/CloseChannel","tool":"lnd_close_channel","description":"Close a Lightning channel.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"admin","rpc":"/lnrpc.Lightning/UpdateChannelPolicy","tool":"lnd_update_channel_policy","description":"Update channel routing policy.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"admin","rpc":"/lnrpc.Lightning/StopDaemon","tool":"lnd_stop_daemon","description":"Stop the LND daemon.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"admin","rpc":"/lnrpc.Lightning/BakeMacaroon","tool":"lnd_bake_macaroon","description":"Create a new LND macaroon.","read_only":false,"destructive":true},
+    {"family":"lnd","toolset":"admin","rpc":"/routerrpc.Router/ResetMissionControl","tool":"lnd_reset_mission_control","description":"Reset mission control state.","read_only":false,"destructive":true},
+
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/GetInfo","tool":"tap_get_info","description":"Get tapd daemon information.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/ListAssets","tool":"tap_list_assets","description":"List known Taproot Assets.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/FetchAsset","tool":"tap_fetch_asset","description":"Fetch one Taproot Asset.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/ListUtxos","tool":"tap_list_utxos","description":"List asset-bearing UTXOs.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/ListGroups","tool":"tap_list_groups","description":"List asset groups.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/ListBalances","tool":"tap_list_balances","description":"List Taproot Asset balances.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/ListTransfers","tool":"tap_list_transfers","description":"List Taproot Asset transfers.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/QueryAddrs","tool":"tap_list_addresses","description":"List Taproot Asset addresses.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/DecodeAddr","tool":"tap_decode_address","description":"Decode a Taproot Asset address.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/AddrReceives","tool":"tap_list_receives","description":"List address receive events.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/VerifyProof","tool":"tap_verify_proof","description":"Verify a Taproot Asset proof.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/DecodeProof","tool":"tap_decode_proof","description":"Decode a Taproot Asset proof.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/ExportProof","tool":"tap_export_proof","description":"Export a Taproot Asset proof.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/FetchAssetMeta","tool":"tap_fetch_asset_metadata","description":"Fetch Taproot Asset metadata.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/taprpc.TaprootAssets/ListBurns","tool":"tap_list_burns","description":"List burned Taproot Assets.","read_only":true},
+    {"family":"tapd","toolset":"read","rpc":"/mintrpc.Mint/ListBatches","tool":"tap_list_mint_batches","description":"List asset mint batches.","read_only":true},
+    {"family":"tapd","toolset":"receive","rpc":"/taprpc.TaprootAssets/NewAddr","tool":"tap_new_address","description":"Create a Taproot Asset receive address.","read_only":false},
+    {"family":"tapd","toolset":"spend","rpc":"/taprpc.TaprootAssets/SendAsset","tool":"tap_send_asset","description":"Send Taproot Assets.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/taprpc.TaprootAssets/BurnAsset","tool":"tap_burn_asset","description":"Burn Taproot Assets.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/taprpc.TaprootAssets/StopDaemon","tool":"tap_stop_daemon","description":"Stop the tapd daemon.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/taprpc.TaprootAssets/DebugLevel","tool":"tap_debug_level","description":"Change tapd debug logging.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/taprpc.TaprootAssets/BakeMacaroon","tool":"tap_bake_macaroon","description":"Create a new tapd macaroon.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/mintrpc.Mint/MintAsset","tool":"tap_mint_asset","description":"Add an asset to a mint batch.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/mintrpc.Mint/FundBatch","tool":"tap_fund_mint_batch","description":"Fund an asset mint batch.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/mintrpc.Mint/SealBatch","tool":"tap_seal_mint_batch","description":"Seal an asset mint batch.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/mintrpc.Mint/FinalizeBatch","tool":"tap_finalize_mint_batch","description":"Finalize an asset mint batch.","read_only":false,"destructive":true},
+    {"family":"tapd","toolset":"admin","rpc":"/mintrpc.Mint/CancelBatch","tool":"tap_cancel_mint_batch","description":"Cancel an asset mint batch.","read_only":false,"destructive":true}
+  ]
+}

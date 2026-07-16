@@ -19,7 +19,8 @@ func NewFileBackend(path string) *FileBackend {
 	return &FileBackend{path: path}
 }
 
-func (b *FileBackend) Name() string { return "file" }
+func (b *FileBackend) Name() string          { return "file" }
+func (b *FileBackend) ProtectedAtRest() bool { return false }
 
 func (b *FileBackend) Get(key string) (string, bool, error) {
 	if b == nil || strings.TrimSpace(b.path) == "" {

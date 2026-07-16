@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +24,57 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const grpcTransportTLSModeInsecurePlaintext = "insecure_plaintext"
+const (
+	grpcTransportTLSModeInsecurePlaintext = "insecure_plaintext"
+	MaxCredentialSourceBytes              = 1 << 20
+)
+
+// CredentialSource identifies an operator-controlled metadata credential.
+// Ref accepts secret:/env:/$ references or an absolute file: path. Encoding is
+// text or hex; hex encodes the resolved bytes as lowercase metadata text.
+type CredentialSource struct {
+	Ref      string `json:"ref" yaml:"ref"`
+	Encoding string `json:"encoding,omitempty" yaml:"encoding,omitempty"`
+}
+
+// ValueResolver resolves credential bytes without exposing secret material.
+// Implementations are called for every RPC so rotated macaroons take effect
+// without rebuilding a provider.
+type ValueResolver interface {
+	ResolveBytes(context.Context, CredentialSource) ([]byte, error)
+}
+
+// ValueResolverFunc adapts a function to ValueResolver.
+type ValueResolverFunc func(context.Context, CredentialSource) ([]byte, error)
+
+func (f ValueResolverFunc) ResolveBytes(ctx context.Context, source CredentialSource) ([]byte, error) {
+	return f(ctx, source)
+}
+
+// ConnectionManagerOption customizes credential resolution for a manager.
+type ConnectionManagerOption func(*connectionManagerOptions)
+
+type connectionManagerOptions struct {
+	resolver        ValueResolver
+	metadataSources map[string]map[string]CredentialSource
+}
+
+// WithValueResolver injects the daemon-owned resolver used for typed metadata
+// sources. A nil resolver leaves the compatibility resolver in place.
+func WithValueResolver(resolver ValueResolver) ConnectionManagerOption {
+	return func(opts *connectionManagerOptions) {
+		if resolver != nil {
+			opts.resolver = resolver
+		}
+	}
+}
+
+// WithMetadataSources binds metadata keys to credential sources by profile ID.
+func WithMetadataSources(sources map[string]map[string]CredentialSource) ConnectionManagerOption {
+	return func(opts *connectionManagerOptions) {
+		opts.metadataSources = cloneMetadataSources(sources)
+	}
+}
 
 type contextKey string
 
@@ -39,20 +92,31 @@ type CallOptions struct {
 // endpoint profiles. Connections are opened lazily and reused until Close or
 // CloseProfile is called.
 type ConnectionManager struct {
-	mu        sync.Mutex
-	profiles  map[string]config.GRPCEndpointConfig
-	conns     map[string]*grpc.ClientConn
-	dialLocks map[string]*sync.Mutex
+	mu              sync.Mutex
+	profiles        map[string]config.GRPCEndpointConfig
+	conns           map[string]*grpc.ClientConn
+	dialLocks       map[string]*sync.Mutex
+	resolver        ValueResolver
+	metadataSources map[string]map[string]CredentialSource
 }
 
-var (
-	grpcMetadataSecretResolver = newGRPCMetadataSecretResolver()
-	grpcDialContext            = grpc.DialContext
-)
+var grpcDialContext = grpc.DialContext
 
 // NewConnectionManager builds a connection pool for the supplied endpoint
 // profiles. Endpoint IDs are matched case-sensitively after trimming spaces.
 func NewConnectionManager(endpoints []config.GRPCEndpointConfig) (*ConnectionManager, error) {
+	return NewConnectionManagerWithOptions(endpoints)
+}
+
+// NewConnectionManagerWithOptions builds a connection pool with additive
+// credential resolution options.
+func NewConnectionManagerWithOptions(endpoints []config.GRPCEndpointConfig, managerOpts ...ConnectionManagerOption) (*ConnectionManager, error) {
+	opts := connectionManagerOptions{resolver: newDefaultValueResolver()}
+	for _, apply := range managerOpts {
+		if apply != nil {
+			apply(&opts)
+		}
+	}
 	profiles := make(map[string]config.GRPCEndpointConfig, len(endpoints))
 	for i, endpoint := range endpoints {
 		id := strings.TrimSpace(endpoint.ID)
@@ -73,9 +137,11 @@ func NewConnectionManager(endpoints []config.GRPCEndpointConfig) (*ConnectionMan
 		dialLocks[id] = &sync.Mutex{}
 	}
 	return &ConnectionManager{
-		profiles:  profiles,
-		conns:     make(map[string]*grpc.ClientConn, len(profiles)),
-		dialLocks: dialLocks,
+		profiles:        profiles,
+		conns:           make(map[string]*grpc.ClientConn, len(profiles)),
+		dialLocks:       dialLocks,
+		resolver:        opts.resolver,
+		metadataSources: opts.metadataSources,
 	}, nil
 }
 
@@ -130,7 +196,7 @@ func (m *ConnectionManager) Conn(ctx context.Context, profileID string) (*grpc.C
 	profile = m.profiles[id]
 	m.mu.Unlock()
 
-	conn, err := dialProfile(ctx, profile)
+	conn, err := dialProfileWithPolicy(ctx, profile, m.resolver, m.metadataSources[id])
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +226,7 @@ func (m *ConnectionManager) CallContext(ctx context.Context, profileID string, o
 	if !ok {
 		return nil, nil, fmt.Errorf("grpc profile %q is not configured", profileID)
 	}
-	return applyCallPolicy(ctx, profile, opts)
+	return applyCallPolicyWithResolver(ctx, profile, opts, m.resolver, m.metadataSources[strings.TrimSpace(profileID)])
 }
 
 // InvokeUnary applies connection-manager policy and invokes a unary RPC through
@@ -218,6 +284,10 @@ func (m *ConnectionManager) Close() error {
 }
 
 func dialProfile(ctx context.Context, profile config.GRPCEndpointConfig) (*grpc.ClientConn, error) {
+	return dialProfileWithPolicy(ctx, profile, newDefaultValueResolver(), nil)
+}
+
+func dialProfileWithPolicy(ctx context.Context, profile config.GRPCEndpointConfig, resolver ValueResolver, sources map[string]CredentialSource) (*grpc.ClientConn, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -228,7 +298,7 @@ func dialProfile(ctx context.Context, profile config.GRPCEndpointConfig) (*grpc.
 		defer cancel()
 	}
 
-	dialOpts, err := buildDialOptions(profile)
+	dialOpts, err := buildDialOptionsWithPolicy(profile, resolver, sources)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +310,10 @@ func dialProfile(ctx context.Context, profile config.GRPCEndpointConfig) (*grpc.
 }
 
 func buildDialOptions(profile config.GRPCEndpointConfig) ([]grpc.DialOption, error) {
+	return buildDialOptionsWithPolicy(profile, newDefaultValueResolver(), nil)
+}
+
+func buildDialOptionsWithPolicy(profile config.GRPCEndpointConfig, resolver ValueResolver, sources map[string]CredentialSource) ([]grpc.DialOption, error) {
 	creds, err := buildTransportCredentials(profile.Transport)
 	if err != nil {
 		return nil, fmt.Errorf("grpc profile %q transport: %w", profile.ID, err)
@@ -252,8 +326,8 @@ func buildDialOptions(profile config.GRPCEndpointConfig) ([]grpc.DialOption, err
 		grpc.WithTransportCredentials(creds),
 		grpc.WithBlock(),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxRecv)),
-		grpc.WithUnaryInterceptor(unaryPolicyInterceptor(profile)),
-		grpc.WithStreamInterceptor(streamPolicyInterceptor(profile)),
+		grpc.WithUnaryInterceptor(unaryPolicyInterceptor(profile, resolver, sources)),
+		grpc.WithStreamInterceptor(streamPolicyInterceptor(profile, resolver, sources)),
 	}, nil
 }
 
@@ -311,11 +385,11 @@ func certPoolFromFile(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-func unaryPolicyInterceptor(profile config.GRPCEndpointConfig) grpc.UnaryClientInterceptor {
+func unaryPolicyInterceptor(profile config.GRPCEndpointConfig, resolver ValueResolver, sources map[string]CredentialSource) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req any, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		var cancel context.CancelFunc
 		var err error
-		ctx, cancel, err = ensureCallPolicy(ctx, profile)
+		ctx, cancel, err = ensureCallPolicy(ctx, profile, resolver, sources)
 		if err != nil {
 			return err
 		}
@@ -324,9 +398,9 @@ func unaryPolicyInterceptor(profile config.GRPCEndpointConfig) grpc.UnaryClientI
 	}
 }
 
-func streamPolicyInterceptor(profile config.GRPCEndpointConfig) grpc.StreamClientInterceptor {
+func streamPolicyInterceptor(profile config.GRPCEndpointConfig, resolver ValueResolver, sources map[string]CredentialSource) grpc.StreamClientInterceptor {
 	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-		ctx, cancel, err := ensureCallPolicy(ctx, profile)
+		ctx, cancel, err := ensureCallPolicy(ctx, profile, resolver, sources)
 		if err != nil {
 			return nil, err
 		}
@@ -376,18 +450,22 @@ func (s *cancelableStream) cancelOnce() {
 	s.once.Do(s.cancel)
 }
 
-func ensureCallPolicy(ctx context.Context, profile config.GRPCEndpointConfig) (context.Context, context.CancelFunc, error) {
+func ensureCallPolicy(ctx context.Context, profile config.GRPCEndpointConfig, resolver ValueResolver, sources map[string]CredentialSource) (context.Context, context.CancelFunc, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if applied, _ := ctx.Value(policyAppliedContextKey).(bool); applied {
 		return ctx, func() {}, nil
 	}
-	return applyCallPolicy(ctx, profile, CallOptions{})
+	return applyCallPolicyWithResolver(ctx, profile, CallOptions{}, resolver, sources)
 }
 
 func applyCallPolicy(ctx context.Context, profile config.GRPCEndpointConfig, opts CallOptions) (context.Context, context.CancelFunc, error) {
-	merged, err := mergedOutgoingMetadata(ctx, profile, opts.Metadata)
+	return applyCallPolicyWithResolver(ctx, profile, opts, newDefaultValueResolver(), nil)
+}
+
+func applyCallPolicyWithResolver(ctx context.Context, profile config.GRPCEndpointConfig, opts CallOptions, resolver ValueResolver, sources map[string]CredentialSource) (context.Context, context.CancelFunc, error) {
+	merged, err := mergedOutgoingMetadata(ctx, profile, opts.Metadata, resolver, sources)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -405,15 +483,29 @@ func applyCallPolicy(ctx context.Context, profile config.GRPCEndpointConfig, opt
 	return ctx, cancel, nil
 }
 
-func mergedOutgoingMetadata(ctx context.Context, profile config.GRPCEndpointConfig, overrides map[string]string) (metadata.MD, error) {
+func mergedOutgoingMetadata(ctx context.Context, profile config.GRPCEndpointConfig, overrides map[string]string, resolver ValueResolver, sources map[string]CredentialSource) (metadata.MD, error) {
 	allowed := allowedOverrideKeys(profile.Auth.AllowOverrideKeys)
 	merged := metadata.New(nil)
+	for key, source := range sources {
+		canonical, err := normalizeMetadataKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("grpc profile %q credential metadata %q: %w", profile.ID, key, err)
+		}
+		if _, duplicate := profile.Auth.Metadata[key]; duplicate {
+			return nil, fmt.Errorf("grpc profile %q metadata %q has both static and credential sources", profile.ID, canonical)
+		}
+		resolved, err := resolveCredentialMetadata(ctx, resolver, source)
+		if err != nil {
+			return nil, fmt.Errorf("grpc profile %q credential metadata %q: %w", profile.ID, canonical, err)
+		}
+		merged.Set(canonical, resolved)
+	}
 	for key, value := range profile.Auth.Metadata {
 		canonical, err := normalizeMetadataKey(key)
 		if err != nil {
 			return nil, fmt.Errorf("grpc profile %q auth metadata %q: %w", profile.ID, key, err)
 		}
-		resolved, err := resolveMetadataSecretValue(value)
+		resolved, err := resolveMetadataSecretValue(ctx, resolver, value)
 		if err != nil {
 			return nil, fmt.Errorf("grpc profile %q auth metadata %q: %w", profile.ID, key, err)
 		}
@@ -439,7 +531,7 @@ func mergedOutgoingMetadata(ctx context.Context, profile config.GRPCEndpointConf
 		if !allowed[canonical] {
 			return nil, fmt.Errorf("grpc profile %q metadata override %q is not allowed", profile.ID, canonical)
 		}
-		resolved, err := resolveMetadataSecretValue(value)
+		resolved, err := resolveMetadataSecretValue(ctx, resolver, value)
 		if err != nil {
 			return nil, fmt.Errorf("grpc profile %q call metadata %q: %w", profile.ID, key, err)
 		}
@@ -513,43 +605,138 @@ func effectiveDeadlineMS(profile config.GRPCEndpointConfig, requestedMS int) (in
 	return deadlineMS, nil
 }
 
-type metadataSecretResolver struct {
+type defaultValueResolver struct {
 	mu    sync.Mutex
 	store *secrets.Store
 }
 
-func newGRPCMetadataSecretResolver() *metadataSecretResolver {
-	return &metadataSecretResolver{}
+func newDefaultValueResolver() *defaultValueResolver {
+	return &defaultValueResolver{}
 }
 
-func (r *metadataSecretResolver) resolve(ref string) (string, bool) {
-	if r == nil {
-		return "", false
+func (r *defaultValueResolver) ResolveBytes(ctx context.Context, source CredentialSource) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.store == nil {
-		r.store = secrets.NewStore(nil)
+	ref := strings.TrimSpace(source.Ref)
+	if ref == "" {
+		return nil, errors.New("credential reference is required")
 	}
-	if r.store == nil {
-		return "", false
+	var raw []byte
+	switch {
+	case strings.HasPrefix(ref, "file:"):
+		path := strings.TrimSpace(strings.TrimPrefix(ref, "file:"))
+		if path == "" || !filepath.IsAbs(path) {
+			return nil, errors.New("credential file path must be absolute")
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, errors.New("credential file is unavailable")
+		}
+		defer file.Close()
+		raw, err = io.ReadAll(io.LimitReader(file, MaxCredentialSourceBytes+1))
+		if err != nil {
+			return nil, errors.New("credential file could not be read")
+		}
+		if len(raw) > MaxCredentialSourceBytes {
+			return nil, fmt.Errorf("credential exceeds %d byte limit", MaxCredentialSourceBytes)
+		}
+	case strings.HasPrefix(ref, "secret:"), strings.HasPrefix(ref, "env:"), strings.HasPrefix(ref, "${"), strings.HasPrefix(ref, "$"):
+		lookup := ref
+		if strings.HasPrefix(ref, "secret:") {
+			name := strings.TrimSpace(strings.TrimPrefix(ref, "secret:"))
+			if name == "" {
+				return nil, errors.New("credential secret name is required")
+			}
+			lookup = "env:" + name
+		}
+		r.mu.Lock()
+		if r.store == nil {
+			r.store = secrets.NewStore(nil)
+		}
+		_, _ = r.store.Reload()
+		value, found := r.store.Resolve(lookup)
+		r.mu.Unlock()
+		if !found {
+			return nil, errors.New("credential secret was not found")
+		}
+		raw = []byte(value)
+	default:
+		return nil, errors.New("unsupported credential reference scheme")
 	}
-	_, _ = r.store.Reload()
-	return r.store.Resolve(ref)
+	if len(raw) == 0 {
+		return nil, errors.New("credential resolved to an empty value")
+	}
+	switch strings.ToLower(strings.TrimSpace(source.Encoding)) {
+	case "", "text":
+		for _, b := range raw {
+			if b < 0x20 || b > 0x7e {
+				return nil, errors.New("text credential contains non-ASCII bytes")
+			}
+		}
+		return raw, nil
+	case "hex":
+		return []byte(hex.EncodeToString(raw)), nil
+	default:
+		return nil, errors.New("credential encoding must be text or hex")
+	}
 }
 
-func resolveMetadataSecretValue(value string) (string, error) {
+func resolveCredentialMetadata(ctx context.Context, resolver ValueResolver, source CredentialSource) (string, error) {
+	if resolver == nil {
+		return "", errors.New("credential resolver is unavailable")
+	}
+	resolved, err := resolver.ResolveBytes(ctx, source)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
+		return "", errors.New("credential resolution failed")
+	}
+	if len(resolved) == 0 {
+		return "", errors.New("credential resolved to an empty value")
+	}
+	encoding := strings.ToLower(strings.TrimSpace(source.Encoding))
+	maxResolved := MaxCredentialSourceBytes
+	if encoding == "hex" {
+		maxResolved *= 2
+	}
+	if len(resolved) > maxResolved {
+		return "", fmt.Errorf("encoded credential exceeds %d byte limit", maxResolved)
+	}
+	for _, b := range resolved {
+		if b < 0x20 || b > 0x7e {
+			return "", errors.New("credential contains non-ASCII metadata bytes")
+		}
+		if encoding == "hex" && !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'f')) {
+			return "", errors.New("hex credential resolver returned non-lowercase-hex metadata")
+		}
+	}
+	if encoding == "hex" && len(resolved)%2 != 0 {
+		return "", errors.New("hex credential resolver returned an odd-length value")
+	}
+	return string(resolved), nil
+}
+
+func resolveMetadataSecretValue(ctx context.Context, resolver ValueResolver, value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if !strings.HasPrefix(trimmed, "secret:") {
 		return value, nil
 	}
-	name := strings.TrimSpace(strings.TrimPrefix(trimmed, "secret:"))
-	if name == "" {
-		return "", errors.New("secret reference name is required")
+	return resolveCredentialMetadata(ctx, resolver, CredentialSource{Ref: trimmed, Encoding: "text"})
+}
+
+func cloneMetadataSources(in map[string]map[string]CredentialSource) map[string]map[string]CredentialSource {
+	if len(in) == 0 {
+		return nil
 	}
-	resolved, found := grpcMetadataSecretResolver.resolve("env:" + name)
-	if !found {
-		return "", fmt.Errorf("secret reference %q was not found", trimmed)
+	out := make(map[string]map[string]CredentialSource, len(in))
+	for profileID, sources := range in {
+		cloned := make(map[string]CredentialSource, len(sources))
+		for key, source := range sources {
+			cloned[key] = source
+		}
+		out[profileID] = cloned
 	}
-	return resolved, nil
+	return out
 }

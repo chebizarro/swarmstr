@@ -13,6 +13,9 @@ var secretValuePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)bearer\s+[a-z0-9._~+/=-]+`),
 	regexp.MustCompile(`(?i)basic\s+[a-z0-9._~+/=-]+`),
 	regexp.MustCompile(`(?i)secret:[^\s,}\]]+`),
+	regexp.MustCompile(`(?i)\b(?:macaroon|payment[_-]?preimage|preimage|authorization|l402|lsat|token|access[_-]?token|refresh[_-]?token|api[_-]?key|password)\s*[:=]\s*["']?[a-z0-9._~+/=:-]+["']?`),
+	regexp.MustCompile(`(?i)\b(?:l402|lsat)\s+[a-z0-9._~+/=:-]+`),
+	regexp.MustCompile(`(?i)\b[a-z0-9._~+/=-]{16,}:[a-f0-9]{64}\b`),
 	regexp.MustCompile(`-----BEGIN [A-Z ]*(PRIVATE KEY|CERTIFICATE)-----[\s\S]*?-----END [A-Z ]*(PRIVATE KEY|CERTIFICATE)-----`),
 }
 
@@ -104,7 +107,7 @@ func sensitiveFieldKey(key string) bool {
 		return true
 	}
 	switch k {
-	case "ca_file", "cert_file", "certificate", "client_certificate", "key_file", "private_key", "tls_cert", "tls_key", "token", "access_token", "refresh_token", "api_key", "apikey", "password", "secret":
+	case "ca_file", "cert_file", "certificate", "client_certificate", "key_file", "private_key", "tls_cert", "tls_key", "token", "access_token", "refresh_token", "api_key", "apikey", "password", "secret", "macaroon", "payment_preimage", "preimage", "l402", "lsat", "authorization":
 		return true
 	default:
 		return strings.Contains(k, "private_key") || strings.Contains(k, "password") || strings.Contains(k, "secret") || strings.HasSuffix(k, "_token")
@@ -117,7 +120,7 @@ func sensitiveMetadataKey(key string) bool {
 		return true
 	}
 	switch k {
-	case "authorization", "proxy_authorization", "x_api_key", "api_key", "apikey", "x_auth_token", "x_access_token", "cookie", "set_cookie":
+	case "authorization", "proxy_authorization", "x_api_key", "api_key", "apikey", "x_auth_token", "x_access_token", "cookie", "set_cookie", "macaroon", "payment_preimage", "preimage", "l402", "lsat":
 		return true
 	default:
 		return strings.Contains(k, "token") || strings.Contains(k, "secret") || strings.Contains(k, "password") || strings.Contains(k, "credential")

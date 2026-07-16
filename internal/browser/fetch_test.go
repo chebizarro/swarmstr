@@ -2,6 +2,9 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,6 +139,150 @@ func TestFetch_missingURLErrors(t *testing.T) {
 	_, err := Fetch(context.Background(), Request{Method: "GET", URL: ""})
 	if err == nil {
 		t.Error("expected error for empty URL")
+	}
+}
+
+func TestClientRetainsHeadersWithoutJSONExposure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("WWW-Authenticate", `L402 macaroon="abc", invoice="lnbc1"`)
+		w.WriteHeader(http.StatusPaymentRequired)
+	}))
+	defer srv.Close()
+
+	resp, err := (&Client{}).Fetch(context.Background(), Request{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := resp.Headers.Values("WWW-Authenticate"); len(got) != 1 || !strings.Contains(got[0], "macaroon") {
+		t.Fatalf("headers not retained: %#v", got)
+	}
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "WWW-Authenticate") || strings.Contains(string(encoded), "macaroon") {
+		t.Fatalf("internal headers leaked through JSON: %s", encoded)
+	}
+}
+
+func TestClientRejectsRedirectDestination(t *testing.T) {
+	var reached bool
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	defer target.Close()
+	start := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer start.Close()
+
+	client := &Client{ValidateURL: func(raw string) error {
+		if strings.HasPrefix(raw, target.URL) {
+			return fmt.Errorf("blocked redirect")
+		}
+		return nil
+	}}
+	_, err := client.Fetch(context.Background(), Request{URL: start.URL})
+	if err == nil || !strings.Contains(err.Error(), "blocked redirect") {
+		t.Fatalf("expected redirect validation error, got %v", err)
+	}
+	if reached {
+		t.Fatal("rejected redirect destination was requested")
+	}
+}
+
+func TestClientStripsAuthorizationOnCrossOriginRedirect(t *testing.T) {
+	var gotAuthorization string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+	start := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer start.Close()
+
+	_, err := (&Client{}).Fetch(context.Background(), Request{URL: start.URL, Headers: map[string]string{"Authorization": "L402 secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuthorization != "" {
+		t.Fatalf("authorization leaked cross-origin: %q", gotAuthorization)
+	}
+}
+
+func TestClientPreservesAuthorizationOnSameOriginRedirect(t *testing.T) {
+	var gotAuthorization string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/end", http.StatusFound)
+			return
+		}
+		gotAuthorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	_, err := (&Client{}).Fetch(context.Background(), Request{URL: srv.URL + "/start", Headers: map[string]string{"Authorization": "L402 same-origin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuthorization != "L402 same-origin" {
+		t.Fatalf("same-origin authorization = %q", gotAuthorization)
+	}
+}
+
+func TestClientValidatedDialRejectsPrivateResolution(t *testing.T) {
+	reached := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	defer srv.Close()
+	address := strings.TrimPrefix(srv.URL, "http://127.0.0.1")
+	lookups := 0
+	client := &Client{
+		ValidateIP: func(ip net.IP) error {
+			if ip.IsLoopback() {
+				return fmt.Errorf("private dial blocked")
+			}
+			return nil
+		},
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			lookups++
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		},
+	}
+	_, err := client.Fetch(context.Background(), Request{URL: "http://public.example" + address})
+	if err == nil || !strings.Contains(err.Error(), "private dial blocked") {
+		t.Fatalf("dial validation error = %v", err)
+	}
+	if reached || lookups != 1 {
+		t.Fatalf("dial reached=%v lookups=%d", reached, lookups)
+	}
+}
+
+func TestClientFinalRedirectStrippingCannotBeOverridden(t *testing.T) {
+	var authorization, cookie string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		cookie = r.Header.Get("Cookie")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+	start := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer start.Close()
+	base := &http.Client{CheckRedirect: func(next *http.Request, _ []*http.Request) error {
+		next.Header.Set("Authorization", "reinserted")
+		next.Header.Set("Cookie", "session=secret")
+		return nil
+	}}
+	_, err := (&Client{HTTPClient: base}).Fetch(context.Background(), Request{
+		URL: start.URL, Headers: map[string]string{"Authorization": "original", "Cookie": "original=secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorization != "" || cookie != "" {
+		t.Fatalf("redirect credentials leaked: authorization=%q cookie=%q", authorization, cookie)
 	}
 }
 

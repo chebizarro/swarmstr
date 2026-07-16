@@ -16,7 +16,8 @@ type osBackend struct{}
 
 func NewOSBackend() SecretBackend { return osBackend{} }
 
-func (osBackend) Name() string { return "linux-secret-service" }
+func (osBackend) Name() string          { return "linux-secret-service" }
+func (osBackend) ProtectedAtRest() bool { return true }
 
 func (osBackend) Get(key string) (string, bool, error) {
 	cmd := exec.Command("secret-tool", "lookup", "service", osSecretService, "account", key)

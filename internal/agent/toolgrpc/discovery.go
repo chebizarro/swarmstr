@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"metiq/internal/agent"
 	"metiq/internal/config"
 
 	"github.com/bufbuild/protocompile"
@@ -31,7 +32,9 @@ import (
 // downstream registration/invocation code does not need to know the source.
 type MethodSpec struct {
 	ProfileID          string
+	OriginServerName   string
 	ToolBaseName       string
+	Traits             agent.ToolTraits
 	FullMethod         string // /package.Service/Method
 	ServiceName        string
 	MethodName         string
@@ -336,6 +339,16 @@ func LoadDescriptorSetFile(path string) (*descriptorpb.FileDescriptorSet, error)
 		return nil, fmt.Errorf("gRPC descriptor set %q contains no files", path)
 	}
 	return &fds, nil
+}
+
+// DiscoverFromEmbeddedDescriptorSet loads a bundled descriptor set directly.
+// It is intentionally separate from filesystem discovery so first-class
+// profiles never require reflection or descriptor files at runtime.
+func DiscoverFromEmbeddedDescriptorSet(profile config.GRPCEndpointConfig, fds *descriptorpb.FileDescriptorSet) ([]MethodSpec, error) {
+	if fds == nil || len(fds.File) == 0 {
+		return nil, fmt.Errorf("embedded gRPC descriptor set contains no files")
+	}
+	return DiscoverFromFileDescriptorSet(profile, fds)
 }
 
 // DiscoverFromFileDescriptorSet normalizes a parsed FileDescriptorSet into

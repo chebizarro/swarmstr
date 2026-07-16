@@ -296,7 +296,7 @@ func TestConnectionManagerMetadataOverrides(t *testing.T) {
 }
 
 func TestStreamPolicyInterceptorPreservesHalfCloseAndCancelsOnRecvEnd(t *testing.T) {
-	interceptor := streamPolicyInterceptor(config.GRPCEndpointConfig{ID: "stream"})
+	interceptor := streamPolicyInterceptor(config.GRPCEndpointConfig{ID: "stream"}, newDefaultValueResolver(), nil)
 	var callCtx context.Context
 	fake := &fakeClientStream{}
 	stream, err := interceptor(context.Background(), &grpc.StreamDesc{ClientStreams: true, ServerStreams: true}, nil, "/toolgrpc.test.TestService/Stream", func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
@@ -335,7 +335,7 @@ func TestStreamPolicyInterceptorPreservesHalfCloseAndCancelsOnRecvEnd(t *testing
 }
 
 func TestStreamPolicyInterceptorCancelsPolicyContextOnStreamerError(t *testing.T) {
-	interceptor := streamPolicyInterceptor(config.GRPCEndpointConfig{ID: "stream"})
+	interceptor := streamPolicyInterceptor(config.GRPCEndpointConfig{ID: "stream"}, newDefaultValueResolver(), nil)
 	var callCtx context.Context
 	_, err := interceptor(context.Background(), &grpc.StreamDesc{ServerStreams: true}, nil, "/toolgrpc.test.TestService/Stream", func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 		callCtx = ctx
@@ -411,10 +411,6 @@ func TestConnectionManagerReloadsSecretAuthMetadata(t *testing.T) {
 	if err := os.WriteFile(envPath, []byte(secretName+"=Bearer first-token\n"), 0o600); err != nil {
 		t.Fatalf("write initial .env: %v", err)
 	}
-
-	oldResolver := grpcMetadataSecretResolver
-	grpcMetadataSecretResolver = newGRPCMetadataSecretResolver()
-	t.Cleanup(func() { grpcMetadataSecretResolver = oldResolver })
 
 	manager, err := NewConnectionManager([]config.GRPCEndpointConfig{{
 		ID:     "secret-reload",

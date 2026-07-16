@@ -33,6 +33,7 @@ func ValidateConfigDoc(doc state.ConfigDoc) []error {
 	errs = append(errs, validateTTS(doc.TTS)...)
 	errs = append(errs, validateFIPS(doc.FIPS)...)
 	errs = append(errs, validateGRPCConfigDocExtra(doc.Extra)...)
+	errs = append(errs, validateLightningConfigDocExtra(doc.Extra)...)
 
 	return errs
 }

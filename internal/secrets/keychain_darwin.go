@@ -16,7 +16,8 @@ type osBackend struct{}
 
 func NewOSBackend() SecretBackend { return osBackend{} }
 
-func (osBackend) Name() string { return "macos-keychain" }
+func (osBackend) Name() string          { return "macos-keychain" }
+func (osBackend) ProtectedAtRest() bool { return true }
 
 func (osBackend) Get(key string) (string, bool, error) {
 	cmd := exec.Command("security", "find-generic-password", "-s", osSecretService, "-a", key, "-w")

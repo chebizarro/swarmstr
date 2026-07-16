@@ -18,6 +18,17 @@ type TargetRegistry struct {
 	Rules []TargetRule `json:"rules"`
 }
 
+// LightningTargetRegistry defines the credential-bearing Lightning config
+// paths. Wallet URIs must be indirect; macaroon sources may additionally be
+// absolute file references validated by the credential resolver.
+func LightningTargetRegistry() TargetRegistry {
+	return TargetRegistry{Rules: []TargetRule{
+		{PathPattern: "extra.lightning.wallets.*.uri", AllowedRefs: []string{"secret:*", "env:*", "$*"}, Required: true},
+		{PathPattern: "extra.lightning.lnd.profiles.*.macaroon.ref", AllowedRefs: []string{"secret:*", "env:*", "$*", "file:/*"}, Required: true},
+		{PathPattern: "extra.lightning.tapd.profiles.*.macaroon.ref", AllowedRefs: []string{"secret:*", "env:*", "$*", "file:/*"}, Required: true},
+	}}
+}
+
 // Validate checks a config path/value pair against the registry. Plain values in
 // registered paths are rejected; refs not matching AllowedRefs are rejected.
 func (r TargetRegistry) Validate(configPath, value string) error {
@@ -48,7 +59,7 @@ func SecretRefs(value string) []string {
 	var refs []string
 	for _, field := range fields {
 		field = strings.Trim(field, "{}[]()")
-		if strings.HasPrefix(field, "env:") || strings.HasPrefix(field, "secret:") || strings.HasPrefix(field, "$secret:") {
+		if strings.HasPrefix(field, "env:") || strings.HasPrefix(field, "secret:") || strings.HasPrefix(field, "file:") || strings.HasPrefix(field, "$secret:") {
 			refs = append(refs, strings.TrimPrefix(field, "$"))
 			continue
 		}
@@ -68,6 +79,9 @@ func allowedRef(allowed []string, ref string) bool {
 		return true
 	}
 	for _, pattern := range allowed {
+		if strings.HasSuffix(pattern, "*") && strings.HasPrefix(ref, strings.TrimSuffix(pattern, "*")) {
+			return true
+		}
 		if glob(pattern, ref) {
 			return true
 		}

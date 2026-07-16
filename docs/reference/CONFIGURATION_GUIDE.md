@@ -129,82 +129,227 @@ metiq config validate
 
 ## Lightning & Payments
 
-### Nostr Wallet Connect (NWC / NIP-47)
+Lightning support is configured under `extra.lightning`. With that key absent,
+the Lightning controllers are a no-op: no `l402_fetch`, `lnd_*`, or `tap_*`
+tools are added. Ordinary `web_fetch` remains non-paying in every configuration.
 
-Enable Lightning payments via any NWC-compatible wallet (Alby, LNbits, etc.).
+### L402 with a named wallet
 
-#### Configuration
-
-Add your NWC connection string to `extra.nwc`:
+This example uses Nostr Wallet Connect (NWC) to pay L402/LSAT HTTP challenges:
 
 ```json
 {
   "extra": {
-    "nwc": {
-      "connection_string": "nostr+walletconnect://pubkey?relay=wss://relay.getalby.com/v1&secret=..."
+    "lightning": {
+      "wallets": {
+        "default": {
+          "type": "nwc",
+          "network": "mainnet",
+          "uri": "env:METIQ_NWC_URI",
+          "timeout_ms": 30000,
+          "trust_wallet_fee_limit": true
+        }
+      },
+      "l402": {
+        "enabled": true,
+        "payer": "default",
+        "allowed_origins": ["https://api.example.com"],
+        "max_invoice_msat": 100000,
+        "max_fee_msat": 5000,
+        "max_spend_msat_per_hour": 500000,
+        "payment_timeout_ms": 30000,
+        "cache": {
+          "persistence": "secret_store",
+          "ttl": "24h",
+          "max_entries": 128
+        }
+      }
     }
   }
 }
 ```
 
-Or use environment variable:
-```bash
-export NWC_CONNECTION_STRING="nostr+walletconnect://..."
-metiqd
-```
+`l402_fetch` accepts `url`, optional `max_chars` (default `50000`), and
+optional `timeout_seconds` (default `30`, capped by
+`payment_timeout_ms`). It only accepts HTTPS resources on an exact
+`allowed_origins` entry. The client performs one initial request, at most one
+payment, and one authenticated retry. Credentials are scoped to the exact
+resource and origin, redirects are revalidated, and authorization is stripped
+on an origin change.
 
-#### Available Tools
+`web_fetch` never delegates to this payer, never retries with an L402 token,
+and remains the correct tool for non-paying HTTP reads.
 
-Once configured, these tools become available:
+#### Wallet profile fields
 
-| Tool | Description |
-|------|-------------|
-| `nwc_get_balance` | Check wallet balance (returns millisatoshis) |
-| `nwc_pay_invoice` | Pay a BOLT-11 lightning invoice |
-| `nwc_make_invoice` | Create an invoice to receive payment |
-| `nwc_lookup_invoice` | Check invoice payment status |
-| `nwc_list_transactions` | List recent transactions |
+| Field | Meaning |
+|---|---|
+| `type` | Required: `nwc` or `lnd`. |
+| `network` | Lightning network used to decode and validate invoices: `mainnet`, `testnet`, `regtest`, or `signet`. |
+| `uri` | NWC only. An explicit `secret:NAME`, `env:NAME`, `$NAME`, or `${NAME}` reference to the NWC URI. Plaintext is rejected in the canonical wallet profile. |
+| `lnd_profile` | LND only. ID of an LND profile with `payer_enabled: true`. |
+| `timeout_ms` | Wallet operation timeout; defaults to `30000`. |
+| `trust_wallet_fee_limit` | Must be explicitly `true` when an NWC wallet is the L402 payer. NWC does not provide the same enforceable per-call fee limit as the LND Router RPC. |
 
-#### Example Usage
+L402 validates the invoice network, amount, expiry, payment hash, returned
+preimage, maximum fee, and rolling hourly budget before accepting a payment as
+settled. Payment-hash single-flight and persisted pending-attempt records prevent
+automatic duplicate payment after ambiguous wallet timeouts.
+
+#### L402 fields and defaults
+
+| Field | Required/default | Meaning |
+|---|---|---|
+| `enabled` | Default `false` | Registers the payment-capable `l402_fetch` tool. |
+| `payer` | Required when enabled | Case-insensitive wallet ID from `wallets`. |
+| `allowed_origins` | Required when enabled | Exact `https://host[:port]` origins. No wildcards, paths, queries, fragments, or userinfo. |
+| `max_invoice_msat` | Positive, required when enabled | Maximum invoice amount. |
+| `max_fee_msat` | Positive, required when enabled | Maximum payment fee. |
+| `max_spend_msat_per_hour` | Positive, required when enabled | Rolling reservation budget; must be at least `max_invoice_msat + max_fee_msat`. |
+| `payment_timeout_ms` | Positive, required when enabled | Overall payment bound and maximum tool timeout. |
+| `cache.persistence` | `secret_store` | `secret_store` or explicit process-local `memory`. |
+| `cache.ttl` | `24h` | Positive Go duration limiting token reuse. |
+| `cache.max_entries` | `128` | In-process LRU bound. |
+
+`secret_store` requires a protected OS-backed secret backend and fails closed
+if one is unavailable. It does not fall back to the MCP plaintext credential
+file. `memory` keeps tokens and pending-payment protection only for the current
+process, so restart cache reuse and ambiguity protection are lost.
+
+### First-class LND and tapd gRPC profiles
+
+LND and Taproot Assets profiles reuse Metiq's dynamic gRPC runtime with bundled,
+pinned descriptors and stable curated tool names. They do not need server
+reflection, generated clients, or `protoc` at runtime.
 
 ```json
 {
-  "method": "chat.send",
-  "params": {
-    "text": "Pay this invoice: lnbc10u1...",
-    "session_id": "main"
+  "extra": {
+    "lightning": {
+      "wallets": {
+        "node": {
+          "type": "lnd",
+          "network": "mainnet",
+          "lnd_profile": "home-lnd"
+        }
+      },
+      "lnd": {
+        "profiles": [
+          {
+            "id": "home-lnd",
+            "target": "127.0.0.1:10009",
+            "network": "mainnet",
+            "tls_cert_file": "/home/metiq/.lnd/tls.cert",
+            "macaroon": {
+              "ref": "file:/home/metiq/.lnd/data/chain/bitcoin/mainnet/metiq-l402-payer.macaroon",
+              "encoding": "hex"
+            },
+            "payer_enabled": true,
+            "toolsets": ["read"],
+            "defaults": {
+              "deadline_ms": 15000,
+              "max_deadline_ms": 120000
+            },
+            "exposure": {
+              "mode": "auto",
+              "deferred_threshold": 25
+            }
+          }
+        ]
+      },
+      "tapd": {
+        "profiles": [
+          {
+            "id": "home-tapd",
+            "target": "127.0.0.1:10029",
+            "network": "mainnet",
+            "tls_cert_file": "/home/metiq/.tapd/tls.cert",
+            "macaroon": {
+              "ref": "file:/home/metiq/.tapd/data/mainnet/metiq-readonly.macaroon",
+              "encoding": "hex"
+            }
+          }
+        ]
+      }
+    }
   }
 }
 ```
 
-The agent will automatically use `nwc_pay_invoice` if it recognizes a lightning invoice.
+Profile IDs must be unique case-insensitively and must not collide with
+`extra.grpc.endpoints[].id`. `target`, `network`, an absolute
+`tls_cert_file`, and a macaroon source are required. `server_name` optionally
+overrides TLS hostname verification. The shared gRPC `defaults` fields control
+dial, RPC deadline, and receive-size bounds; discovery-related settings do not
+apply to the bundled descriptors. For curated Lightning profiles,
+`exposure.mode` and `deferred_threshold` control catalog placement;
+RPC selection comes from `toolsets`.
 
-#### Tool Parameters
+If `toolsets` is omitted, only `read` tools are exposed. Available sets are:
 
-**nwc_pay_invoice:**
-```json
-{
-  "invoice": "lnbc10u1...",  // Required: BOLT-11 invoice
-  "amount": 1000            // Optional: amount in msats (for zero-amount invoices)
-}
-```
+| Toolset | Examples | Safety |
+|---|---|---|
+| `read` | `lnd_get_info`, `lnd_wallet_balance`, `tap_get_info`, `tap_list_assets` | Default; read-only curated RPCs. |
+| `receive` | `lnd_add_invoice`, `lnd_new_address`, `tap_new_address` | Explicit opt-in; creates receive artifacts. |
+| `spend` | `lnd_send_payment`, `lnd_send_coins`, `tap_send_asset` | Explicit opt-in; marked destructive. |
+| `admin` | Channel/daemon/macaroon operations and Taproot Assets mint/burn operations | Explicit opt-in; marked destructive. |
 
-**nwc_make_invoice:**
-```json
-{
-  "amount": 1000,          // Required: amount in millisatoshis
-  "description": "Coffee", // Optional: invoice description
-  "expiry": 3600          // Optional: expiry in seconds
-}
-```
+`payer_enabled` is valid only for LND. It allows the internal L402 coordinator
+to use `SendPaymentV2`/`TrackPaymentV2`; it does **not** add the `spend`
+toolset. Keep `toolsets: ["read"]` unless agents must directly invoke
+spend-capable RPCs.
 
-**nwc_lookup_invoice:**
-```json
-{
-  "payment_hash": "abc123...",  // Option 1: hex payment hash
-  "invoice": "lnbc..."           // Option 2: BOLT-11 invoice string
-}
-```
+The exact descriptor versions, checksums, licenses, curated RPCs, stable names,
+and deterministic regeneration procedure are documented in
+[`internal/lightning/descriptors/README.md`](../../internal/lightning/descriptors/README.md).
+
+### Macaroons and secret handling
+
+Macaroon `ref` supports `secret:NAME`, `env:NAME`, `$NAME`,
+`${NAME}`, or `file:/absolute/path`. Plain credential material is rejected.
+
+- `encoding: "text"` (default) sends printable ASCII exactly as resolved. Use
+  it when an environment/secret value already contains the lowercase hex
+  macaroon.
+- `encoding: "hex"` reads raw bytes and sends their lowercase hex encoding.
+  This is the normal choice for LND/tapd binary macaroon files.
+- Credential sources are resolved for each RPC, so macaroon rotation does not
+  require putting the value in config. TLS certificate changes take effect when
+  the profile connection is rebuilt through config reconciliation or restart.
+- Macaroons, payment preimages, authorization values, and L402/LSAT tokens are
+  redacted from generated gRPC and wallet tool results and errors.
+
+Use least-privilege macaroons that match the selected toolsets. A read-only
+macaroon is sufficient for the default toolset; enabling receive, spend, admin,
+or `payer_enabled` requires corresponding daemon permissions.
+
+### Legacy NWC precedence and compatibility tools
+
+For an NWC wallet used by L402, URI resolution uses this compatibility order:
+
+1. `extra.lightning.wallets.<id>.uri`
+2. `extra.nwc.uri`
+3. `extra.nwc.connection_string`
+4. `NWC_CONNECTION_STRING`
+
+The canonical wallet URI must be an explicit secret reference. Legacy values
+remain readable for migration and produce a deprecation warning; the config is
+not rewritten.
+
+The standalone NIP-47 compatibility tools are:
+
+| Tool | Description |
+|---|---|
+| `nwc_get_balance` | Check wallet balance in millisatoshis. |
+| `nwc_pay_invoice` | Pay a BOLT-11 invoice; uses `amount_msats` only for zero-amount invoices. |
+| `nwc_make_invoice` | Create an invoice using required `amount_msats`, plus optional `description` and `expiry`. |
+| `nwc_lookup_invoice` | Look up by `payment_hash` or `invoice`. |
+| `nwc_list_transactions` | List recent transactions. |
+
+These compatibility tools currently read `extra.nwc.uri`; they register but
+fail closed when it is absent. During migration, keep `extra.nwc.uri` if those
+tools are needed in addition to `l402_fetch`. Their returned preimage and
+macaroon fields are redacted.
 
 ---
 

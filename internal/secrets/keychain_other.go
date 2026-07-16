@@ -8,7 +8,8 @@ type osBackend struct{}
 
 func NewOSBackend() SecretBackend { return osBackend{} }
 
-func (osBackend) Name() string { return "unsupported-os-secret-store" }
+func (osBackend) Name() string          { return "unsupported-os-secret-store" }
+func (osBackend) ProtectedAtRest() bool { return false }
 func (osBackend) Get(key string) (string, bool, error) {
 	return "", false, fmt.Errorf("OS secret store unsupported")
 }

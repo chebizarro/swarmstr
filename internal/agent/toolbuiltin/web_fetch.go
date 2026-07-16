@@ -95,7 +95,8 @@ func WebFetchTool(opts WebFetchOpts) agent.ToolFunc {
 			return "", fmt.Errorf("web_fetch: %w", err)
 		}
 
-		resp, err := browser.Fetch(ctx, browser.Request{
+		client := NewFetchBrowserClient(nil, allowLocal)
+		resp, err := client.Fetch(ctx, browser.Request{
 			URL:       rawURL,
 			TimeoutMS: timeoutSec * 1000,
 		})

@@ -17,6 +17,7 @@ Metiq runs AI agents that communicate over the Nostr relay network. Any device r
 | **Memory** | Pluggable backends: SQLite FTS + sqlite-vec, embedded LanceDB, Qdrant, wiki vault; hybrid vector + keyword retrieval with MMR ranking; active memory recall; embedding cache; auto-compaction; team memory sync over Nostr; MCP memory session bootstrap |
 | **Multi-agent** | ACP (Agent Control Protocol) over Nostr DMs; `acp.dispatch` for single delegation; `acp.pipeline` for sequential/parallel multi-step workflows; router policy; persisted pipeline flows with mirrored child tasks; commitment tracking with heartbeat delivery; JSONL session-tree harness |
 | **Security** | NIP-44 E2E encryption for channel messages; exec approvals enriched with automatic command analysis; exec policy management; security guidance hook and policy doctor; sandbox network-policy hardening; plugin trust decisions; security audit module; secret store |
+| **Lightning & payments** | Dedicated payment-capable `l402_fetch` with L402/LSAT challenge handling, NWC or LND invoice payment, spend limits, and protected token caching; ordinary `web_fetch` never pays; curated `lnd_*` and Taproot Assets `tap_*` gRPC tools with read-only defaults and opt-in receive/spend/admin toolsets |
 | **Plugin system** | Goja (embedded JS) and Node.js plugin runtimes; unified plugin lifecycle; manifest validation and build/package tooling; plugin trust store; OpenClaw plugin contract and Claude plugin support; hooks; registry install flows (npm/git/URL/archive/path + Nostr registry) |
 | **Sandbox** | Sandbox backend registry with runtime management; `nop` (os/exec + timeout) and hardened Docker backends; filesystem bridge; browser sandbox spec; workspace lifecycle and pruning; network policy controls; `sandbox.run` gateway method |
 | **Streaming** | Server-Sent Events from streaming providers; typed streaming events; `chat.chunk` WebSocket events for incremental display; streaming tool calls |
@@ -135,6 +136,49 @@ Key config sections:
 ```
 
 See `docs/MIGRATION_FROM_OPENCLAW.md` for a full field reference and OpenClaw migration guide.
+
+---
+
+## Lightning, L402, and Taproot Assets
+
+Metiq keeps paid HTTP access separate from ordinary browsing:
+
+- `web_fetch` is non-paying and never handles an invoice.
+- `l402_fetch` is a distinct, destructive tool that can pay one L402 or LSAT challenge and retry once, but only for exact HTTPS origins approved by the operator.
+- L402 payments can use a named NWC wallet or an LND profile. Amount, fee, hourly-spend, network, expiry, and timeout policies are checked before payment.
+- LND and tapd profiles expose stable curated `lnd_*` and `tap_*` tools from bundled descriptors. Omitting `toolsets` exposes only the `read` set; `receive`, `spend`, and `admin` are explicit opt-ins.
+
+A minimal NWC-backed L402 configuration is:
+
+```json
+{
+  "extra": {
+    "lightning": {
+      "wallets": {
+        "default": {
+          "type": "nwc",
+          "network": "mainnet",
+          "uri": "env:METIQ_NWC_URI",
+          "trust_wallet_fee_limit": true
+        }
+      },
+      "l402": {
+        "enabled": true,
+        "payer": "default",
+        "allowed_origins": ["https://api.example.com"],
+        "max_invoice_msat": 100000,
+        "max_fee_msat": 5000,
+        "max_spend_msat_per_hour": 500000,
+        "payment_timeout_ms": 30000
+      }
+    }
+  }
+}
+```
+
+L402 bearer tokens default to protected OS-backed secret storage and are never silently written to the plaintext fallback. Choose an in-memory cache explicitly if protected storage is unavailable and restart persistence is not required.
+
+See the [Lightning & Payments configuration guide](docs/reference/CONFIGURATION_GUIDE.md#lightning--payments) for wallet and gRPC profile fields. Descriptor pins, curated tool names, licenses, and regeneration instructions live in [`internal/lightning/descriptors/README.md`](internal/lightning/descriptors/README.md).
 
 ---
 

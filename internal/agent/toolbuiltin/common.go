@@ -7,10 +7,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"metiq/internal/browser"
 )
 
 // IsPrivateHost reports whether host (with optional :port) resolves to a
@@ -29,38 +32,27 @@ func IsPrivateHost(host string) bool {
 	if ip == nil {
 		return false
 	}
-	private := []string{
-		"127.0.0.0/8",
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.0.0/16", // link-local
-		"::1/128",
-		"fc00::/7",  // IPv6 ULA
-		"fe80::/10", // IPv6 link-local
-	}
-	for _, cidr := range private {
-		_, network, err := net.ParseCIDR(cidr)
-		if err == nil && network.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return isPrivateIP(ip)
 }
 
 func isPrivateIP(ip net.IP) bool {
-	if ip == nil {
-		return false
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
+		return true
 	}
 	private := []string{
+		"0.0.0.0/8",
+		"100.64.0.0/10", // carrier-grade NAT
 		"127.0.0.0/8",
 		"10.0.0.0/8",
 		"172.16.0.0/12",
 		"192.168.0.0/16",
 		"169.254.0.0/16", // link-local
 		"::1/128",
-		"fc00::/7",  // IPv6 ULA
-		"fe80::/10", // IPv6 link-local
+		"fc00::/7",                                          // IPv6 ULA
+		"fe80::/10",                                         // IPv6 link-local
+		"198.18.0.0/15",                                     // benchmark networks
+		"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", // documentation
+		"2001:db8::/32", // IPv6 documentation
 	}
 	for _, cidr := range private {
 		_, network, err := net.ParseCIDR(cidr)
@@ -98,9 +90,30 @@ func HasPrivateResolvedIP(host string) bool {
 	return false
 }
 
+// NewFetchBrowserClient creates a redirect-safe browser client whose DNS
+// result is validated again and pinned at dial time. allowLocal intentionally
+// disables both URL-time and dial-time address restrictions.
+func NewFetchBrowserClient(base *http.Client, allowLocal bool) *browser.Client {
+	client := &browser.Client{
+		HTTPClient: base,
+		ValidateURL: func(rawURL string) error {
+			return ValidateFetchURL(rawURL, allowLocal)
+		},
+	}
+	if !allowLocal {
+		client.ValidateIP = func(ip net.IP) error {
+			if isPrivateIP(ip) {
+				return fmt.Errorf("access to non-public network addresses is disabled")
+			}
+			return nil
+		}
+	}
+	return client
+}
+
 // ValidateFetchURL checks that rawURL is acceptable as a web-fetch target.
 // It rejects empty URLs, non-http/https schemes, and (unless allowLocal is
-// true) private-network hosts as a lightweight SSRF guard.
+// true) non-public hosts.
 func ValidateFetchURL(rawURL string, allowLocal bool) error {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {

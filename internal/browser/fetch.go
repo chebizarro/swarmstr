@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,17 +40,36 @@ type Request struct {
 
 // Response is the structured result of a browser.request call.
 type Response struct {
-	StatusCode  int    `json:"status_code"`
-	ContentType string `json:"content_type"`
-	URL         string `json:"url"`
+	StatusCode  int         `json:"status_code"`
+	ContentType string      `json:"content_type"`
+	URL         string      `json:"url"`
+	Headers     http.Header `json:"-"`
 	// Body is the raw response body (for non-HTML types).
 	Body string `json:"body,omitempty"`
 	// Text is the plain-text extraction (for HTML types).
 	Text string `json:"text,omitempty"`
 }
 
-// Fetch performs an HTTP request and returns a structured Response.
+// Client is a reusable browser transport. ValidateURL is applied to the
+// initial request and to every redirect destination.
+type Client struct {
+	HTTPClient  *http.Client
+	ValidateURL func(string) error
+	// ValidateIP is applied to every resolved address immediately before dial.
+	// When set, proxying and custom TLS dialers are disabled so the validated
+	// address is the address actually contacted.
+	ValidateIP func(net.IP) error
+	// LookupIP is an optional deterministic resolver seam for tests.
+	LookupIP func(context.Context, string) ([]net.IP, error)
+}
+
+// Fetch performs an HTTP request with the default browser client.
 func Fetch(ctx context.Context, req Request) (Response, error) {
+	return (&Client{}).Fetch(ctx, req)
+}
+
+// Fetch performs an HTTP request and returns a structured Response.
+func (c *Client) Fetch(ctx context.Context, req Request) (Response, error) {
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = http.MethodGet
@@ -71,6 +91,12 @@ func Fetch(ctx context.Context, req Request) (Response, error) {
 		}
 		parsed.RawQuery = q.Encode()
 		rawURL = parsed.String()
+	}
+
+	if c != nil && c.ValidateURL != nil {
+		if err := c.ValidateURL(rawURL); err != nil {
+			return Response{}, fmt.Errorf("validate url: %w", err)
+		}
 	}
 
 	// Build request body.
@@ -106,7 +132,45 @@ func Fetch(ctx context.Context, req Request) (Response, error) {
 		httpReq.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: time.Duration(timeoutMS) * time.Millisecond}
+	baseClient := http.DefaultClient
+	if c != nil && c.HTTPClient != nil {
+		baseClient = c.HTTPClient
+	}
+	client := *baseClient
+	validatedTransport := false
+	if c != nil && c.ValidateIP != nil {
+		if err := c.installValidatedDialer(&client); err != nil {
+			return Response{}, err
+		}
+		validatedTransport = true
+	}
+	if validatedTransport {
+		defer client.CloseIdleConnections()
+	}
+	baseRedirect := baseClient.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if c != nil && c.ValidateURL != nil {
+			if err := c.ValidateURL(next.URL.String()); err != nil {
+				return fmt.Errorf("validate redirect url: %w", err)
+			}
+		}
+		if baseRedirect != nil {
+			if err := baseRedirect(next, via); err != nil {
+				return err
+			}
+		} else if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		// Strip credentials after the wrapped callback so it cannot reinsert
+		// them. Exact-origin comparison is intentionally stricter than Go's
+		// default host/domain-only sensitive-header policy.
+		if len(via) > 0 && !sameOrigin(via[len(via)-1].URL, next.URL) {
+			next.Header.Del("Authorization")
+			next.Header.Del("Proxy-Authorization")
+			next.Header.Del("Cookie")
+		}
+		return nil
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return Response{}, fmt.Errorf("fetch %s: %w", rawURL, err)
@@ -123,6 +187,7 @@ func Fetch(ctx context.Context, req Request) (Response, error) {
 		StatusCode:  resp.StatusCode,
 		ContentType: contentType,
 		URL:         resp.Request.URL.String(),
+		Headers:     resp.Header.Clone(),
 	}
 
 	bodyStr := string(bodyBytes)
@@ -132,6 +197,88 @@ func Fetch(ctx context.Context, req Request) (Response, error) {
 		result.Body = bodyStr
 	}
 	return result, nil
+}
+
+func (c *Client) installValidatedDialer(client *http.Client) error {
+	var transport *http.Transport
+	switch base := client.Transport.(type) {
+	case nil:
+		defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return fmt.Errorf("default HTTP transport does not support validated dialing")
+		}
+		transport = defaultTransport.Clone()
+	case *http.Transport:
+		transport = base.Clone()
+	default:
+		return fmt.Errorf("custom HTTP transport does not support validated dialing")
+	}
+	dial := transport.DialContext
+	if dial == nil {
+		dialer := &net.Dialer{}
+		dial = dialer.DialContext
+	}
+	lookup := c.LookupIP
+	if lookup == nil {
+		lookup = func(ctx context.Context, host string) ([]net.IP, error) {
+			return net.DefaultResolver.LookupIP(ctx, "ip", host)
+		}
+	}
+	transport.Proxy = nil
+	transport.DialTLS = nil
+	transport.DialTLSContext = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, fmt.Errorf("invalid dial address")
+		}
+		var addresses []net.IP
+		if literal := net.ParseIP(host); literal != nil {
+			addresses = []net.IP{literal}
+		} else {
+			addresses, err = lookup(ctx, host)
+			if err != nil || len(addresses) == 0 {
+				return nil, fmt.Errorf("resolve dial host: %w", err)
+			}
+		}
+		for _, ip := range addresses {
+			if err := c.ValidateIP(ip); err != nil {
+				return nil, err
+			}
+		}
+		var dialErr error
+		for _, ip := range addresses {
+			connection, err := dial(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return connection, nil
+			}
+			dialErr = err
+		}
+		return nil, dialErr
+	}
+	client.Transport = transport
+	return nil
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil || !strings.EqualFold(a.Scheme, b.Scheme) || !strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	return effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
 }
 
 // isHTML reports whether a Content-Type header indicates HTML content.
