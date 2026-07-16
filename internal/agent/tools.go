@@ -136,9 +136,10 @@ type ToolCall struct {
 }
 
 type ToolTrace struct {
-	Call   ToolCall `json:"call"`
-	Result string   `json:"result,omitempty"`
-	Error  string   `json:"error,omitempty"`
+	Call       ToolCall       `json:"call"`
+	Result     string         `json:"result,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	Descriptor ToolDescriptor `json:"-"`
 }
 
 type ToolExecutor interface {

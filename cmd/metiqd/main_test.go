@@ -3778,6 +3778,118 @@ func TestIngestTrackerMarkProcessedClampsFutureTimestamp(t *testing.T) {
 	}
 }
 
+func TestPersistToolTracesRedactsSensitiveArgsAndKeepsSafeFields(t *testing.T) {
+	ctx := context.Background()
+	repo := state.NewTranscriptRepository(newTestStore(), "author")
+	secrets := []string{
+		"lnbc1invoice-secret",
+		"lnbc1dynamic-payment-request",
+		"macaroon-secret",
+		strings.Repeat("ab", 32),
+		"Bearer authorization-secret",
+		"l402-token-secret",
+		"lsat-token-secret",
+		"opaque-descriptor-secret",
+		"result-secret",
+		"error-secret",
+	}
+	trace := agent.ToolTrace{Call: agent.ToolCall{
+		ID:   "call-1",
+		Name: "nwc_pay_invoice",
+		Args: map[string]any{
+			"invoice": "lnbc1invoice-secret",
+			"request": map[string]any{
+				"payment_request": "lnbc1dynamic-payment-request",
+				"preimage":        strings.Repeat("ab", 32),
+			},
+			"metadata": map[string]any{
+				"authorization": "Bearer authorization-secret",
+				"x-request-id":  "req-safe",
+			},
+			"macaroon":    "macaroon-secret",
+			"l402":        "l402-token-secret",
+			"nested":      map[string]any{"lsat": "lsat-token-secret"},
+			"amount_msat": float64(21000),
+			"memo":        "safe memo",
+			"opaque":      "opaque-descriptor-secret",
+			"safe_label":  "descriptor-safe",
+		},
+	}, Result: "authorization=Bearer result-secret", Descriptor: agent.ToolDescriptor{
+		Name: "nwc_pay_invoice",
+		InputJSONSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"opaque":     map[string]any{"type": "string", "x-sensitive": true},
+				"safe_label": map[string]any{"type": "string"},
+			},
+		},
+	}}
+	errorTrace := agent.ToolTrace{
+		Call:  agent.ToolCall{ID: "call-2", Name: "lnd_send_payment", Args: map[string]any{"fee_limit_msat": float64(25)}},
+		Error: "rpc failed authorization=Bearer error-secret",
+	}
+
+	if err := persistToolTraces(ctx, repo, "session-1", "event-1", []agent.ToolTrace{trace, errorTrace}); err != nil {
+		t.Fatalf("persistToolTraces: %v", err)
+	}
+	entries, err := repo.ListSessionAll(ctx, "session-1")
+	if err != nil {
+		t.Fatalf("ListSessionAll: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("persisted entries = %d, want 2", len(entries))
+	}
+	argsJSON, ok := entries[0].Meta["tool_args"].(string)
+	if !ok {
+		t.Fatalf("tool_args metadata type = %T, value=%#v", entries[0].Meta["tool_args"], entries[0].Meta["tool_args"])
+	}
+	for _, secret := range secrets {
+		if strings.Contains(argsJSON, secret) {
+			t.Errorf("persisted tool args leaked %q: %s", secret, argsJSON)
+		}
+	}
+	var persisted map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &persisted); err != nil {
+		t.Fatalf("decode persisted tool args: %v", err)
+	}
+	if persisted["invoice"] != agent.RedactedToolValue ||
+		persisted["macaroon"] != agent.RedactedToolValue ||
+		persisted["l402"] != agent.RedactedToolValue ||
+		persisted["opaque"] != agent.RedactedToolValue {
+		t.Fatalf("top-level secrets not redacted: %#v", persisted)
+	}
+	request, _ := persisted["request"].(map[string]any)
+	metadata, _ := persisted["metadata"].(map[string]any)
+	nested, _ := persisted["nested"].(map[string]any)
+	if request["payment_request"] != agent.RedactedToolValue ||
+		request["preimage"] != agent.RedactedToolValue ||
+		metadata["authorization"] != agent.RedactedToolValue ||
+		nested["lsat"] != agent.RedactedToolValue {
+		t.Fatalf("nested secrets not redacted: %#v", persisted)
+	}
+	if persisted["amount_msat"] != float64(21000) ||
+		persisted["memo"] != "safe memo" ||
+		persisted["safe_label"] != "descriptor-safe" ||
+		metadata["x-request-id"] != "req-safe" {
+		t.Fatalf("safe fields changed during persistence: %#v", persisted)
+	}
+	if resultMeta, _ := entries[0].Meta["tool_result"].(string); strings.Contains(resultMeta, "result-secret") || !strings.Contains(resultMeta, agent.RedactedToolValue) {
+		t.Fatalf("persisted tool result was not redacted: meta=%q text=%q", resultMeta, entries[0].Text)
+	}
+	if strings.Contains(entries[0].Text, "result-secret") {
+		t.Fatalf("transcript text leaked tool result secret: %q", entries[0].Text)
+	}
+	if errorMeta, _ := entries[1].Meta["tool_error"].(string); strings.Contains(errorMeta, "error-secret") || !strings.Contains(errorMeta, agent.RedactedToolValue) {
+		t.Fatalf("persisted tool error was not redacted: meta=%q text=%q", errorMeta, entries[1].Text)
+	}
+	if strings.Contains(entries[1].Text, "error-secret") {
+		t.Fatalf("transcript text leaked tool error secret: %q", entries[1].Text)
+	}
+	if trace.Call.Args["invoice"] != "lnbc1invoice-secret" || trace.Call.Args["opaque"] != "opaque-descriptor-secret" {
+		t.Fatalf("persistToolTraces mutated source args: %#v", trace.Call.Args)
+	}
+}
+
 func newTestStore() *testStore {
 	return &testStore{replaceable: map[string]state.Event{}}
 }

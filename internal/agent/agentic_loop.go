@@ -312,7 +312,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 					if iter == 0 && toolPreamble != "" {
 						deltaContent = toolPreamble
 					}
-					messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, calls, resp.Content, deltaContent)
+					messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, cfg.Executor, calls, resp.Content, deltaContent)
 					messages, historyDelta = appendBlockedToolResults(messages, historyDelta, calls, thrashResult)
 					loopBlocked = true
 					calls = nil
@@ -328,7 +328,7 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 			if iter == 0 && toolPreamble != "" {
 				deltaContent = toolPreamble
 			}
-			messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, calls, resp.Content, deltaContent)
+			messages, historyDelta = appendAssistantToolCallMessages(messages, historyDelta, cfg.Executor, calls, resp.Content, deltaContent)
 
 			// Persist a resumable checkpoint before tool execution so a restarted
 			// runtime can resume from this model boundary without re-sampling.
@@ -796,10 +796,10 @@ func toolPlanKeyFromToolCalls(calls []ToolCall) string {
 	return b.String()
 }
 
-func appendAssistantToolCallMessages(messages []LLMMessage, historyDelta []ConversationMessage, calls []ToolCall, messageContent, deltaContent string) ([]LLMMessage, []ConversationMessage) {
+func appendAssistantToolCallMessages(messages []LLMMessage, historyDelta []ConversationMessage, executor ToolExecutor, calls []ToolCall, messageContent, deltaContent string) ([]LLMMessage, []ConversationMessage) {
 	refs := make([]ToolCallRef, len(calls))
 	for i, c := range calls {
-		refs[i] = ToolCallToRef(c)
+		refs[i] = ToolCallRefForPersistence(executor, c)
 	}
 	historyDelta = append(historyDelta, ConversationMessage{
 		Role:      "assistant",
@@ -1073,11 +1073,13 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 	}
 
 	if hooks != nil {
+		originalArgs := call.Args
+		safeCall := RedactToolCallForPersistence(executor, call)
 		beforeResult, hookErr := hooks.EmitBeforeToolCall(ctx, pluginhooks.BeforeToolCallEvent{
 			BaseEvent:  pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID},
 			ToolName:   call.Name,
 			ToolCallID: call.ID,
-			Args:       call.Args,
+			Args:       safeCall.Args,
 		})
 		if hookErr != nil {
 			log.Printf("before_tool_call hook error tool=%s session=%s err=%v", call.Name, sessionID, hookErr)
@@ -1092,7 +1094,7 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 			return result
 		}
 		if beforeResult != nil && beforeResult.MutatedArgs != nil {
-			call.Args = beforeResult.MutatedArgs
+			call.Args = RestoreRedactedToolArgs(originalArgs, beforeResult.MutatedArgs)
 		}
 	}
 	var loopResult toolloop.Result
@@ -1199,7 +1201,9 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		}
 
 		if hooks != nil {
-			if _, hookErr := hooks.EmitAfterToolCall(ctx, pluginhooks.AfterToolCallEvent{BaseEvent: pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID}, ToolName: call.Name, ToolCallID: call.ID, Args: call.Args, Result: value, Error: errMsg, DurationMS: time.Since(startedAt).Milliseconds()}); hookErr != nil {
+			redactor := NewToolRedactor()
+			safeCall := RedactToolCallForPersistence(executor, call)
+			if _, hookErr := hooks.EmitAfterToolCall(ctx, pluginhooks.AfterToolCallEvent{BaseEvent: pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID}, ToolName: call.Name, ToolCallID: call.ID, Args: safeCall.Args, Result: redactor.RedactString(value), Error: redactor.RedactString(errMsg), DurationMS: time.Since(startedAt).Milliseconds()}); hookErr != nil {
 				log.Printf("after_tool_call hook error tool=%s session=%s err=%v", call.Name, sessionID, hookErr)
 			}
 		}
@@ -1228,7 +1232,9 @@ func executeSingleToolCall(ctx context.Context, executor ToolExecutor, call Tool
 		return result
 	}
 	if hooks != nil {
-		if _, hookErr := hooks.EmitAfterToolCall(ctx, pluginhooks.AfterToolCallEvent{BaseEvent: pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID}, ToolName: call.Name, ToolCallID: call.ID, Args: call.Args, Result: value, DurationMS: time.Since(startedAt).Milliseconds()}); hookErr != nil {
+		redactor := NewToolRedactor()
+		safeCall := RedactToolCallForPersistence(executor, call)
+		if _, hookErr := hooks.EmitAfterToolCall(ctx, pluginhooks.AfterToolCallEvent{BaseEvent: pluginhooks.BaseEvent{SessionID: sessionID, TurnID: turnID}, ToolName: call.Name, ToolCallID: call.ID, Args: safeCall.Args, Result: redactor.RedactString(value), DurationMS: time.Since(startedAt).Milliseconds()}); hookErr != nil {
 			log.Printf("after_tool_call hook error tool=%s session=%s err=%v", call.Name, sessionID, hookErr)
 		}
 	}
@@ -1297,7 +1303,7 @@ func forceSummary(ctx context.Context, cfg AgenticLoopConfig, messages []LLMMess
 	if len(pendingCalls) > 0 && cfg.Executor != nil {
 		refs := make([]ToolCallRef, len(pendingCalls))
 		for i, c := range pendingCalls {
-			refs[i] = ToolCallToRef(c)
+			refs[i] = ToolCallRefForPersistence(cfg.Executor, c)
 		}
 		summaryDelta = append(summaryDelta, ConversationMessage{Role: "assistant", ToolCalls: refs})
 		// Append the assistant message with pending calls.

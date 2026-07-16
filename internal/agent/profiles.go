@@ -263,6 +263,23 @@ func (e *ProfileFilteredExecutor) Descriptors() []ToolDescriptor {
 	return nil
 }
 
+func (e *ProfileFilteredExecutor) Descriptor(name string) (ToolDescriptor, bool) {
+	if e.Allowed != nil && !e.Allowed[name] {
+		return ToolDescriptor{}, false
+	}
+	if provider, ok := e.Base.(interface {
+		Descriptor(string) (ToolDescriptor, bool)
+	}); ok {
+		return provider.Descriptor(name)
+	}
+	for _, descriptor := range e.Descriptors() {
+		if descriptor.Name == name {
+			return descriptor, true
+		}
+	}
+	return ToolDescriptor{}, false
+}
+
 func (e *ProfileFilteredExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
 	if e.Allowed != nil && !e.Allowed[call.Name] {
 		return ToolTraits{}, false

@@ -592,6 +592,15 @@ func (e *mutationTrackingToolExecutor) Definitions() []ToolDefinition {
 	return nil
 }
 
+func (e *mutationTrackingToolExecutor) Descriptor(name string) (ToolDescriptor, bool) {
+	if provider, ok := e.base.(interface {
+		Descriptor(string) (ToolDescriptor, bool)
+	}); ok {
+		return provider.Descriptor(name)
+	}
+	return ToolDescriptor{}, false
+}
+
 func (e *mutationTrackingToolExecutor) EffectiveTraits(call ToolCall) (ToolTraits, bool) {
 	resolver, ok := e.base.(interface {
 		EffectiveTraits(ToolCall) (ToolTraits, bool)

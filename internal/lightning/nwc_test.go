@@ -36,7 +36,7 @@ func (t *protocolNWCTransport) Subscribe(_ context.Context, subscription NWCSubs
 
 func (t *protocolNWCTransport) Publish(ctx context.Context, _ []string, event nostr.Event) (bool, error) {
 	t.publishedEvent = event
-	if !event.CheckID() || !event.VerifySignature() {
+	if !validSignedNWCEvent(event) {
 		t.t.Fatal("published NWC request is not a valid signed event")
 	}
 	plaintext, err := t.walletKeyer.Decrypt(ctx, event.Content, event.PubKey)

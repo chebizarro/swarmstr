@@ -436,7 +436,7 @@ func validNWCResponseEvent(event nostr.Event, wallet nostr.PubKey, ourKey, reque
 	if event.Kind != nostr.Kind(KindNWCResponse) || event.PubKey != wallet {
 		return false
 	}
-	if !event.CheckID() || !event.VerifySignature() {
+	if !validSignedNWCEvent(event) {
 		return false
 	}
 	now := nostr.Now()

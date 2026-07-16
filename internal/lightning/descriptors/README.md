@@ -25,3 +25,9 @@ changes: update the commits, tags, expected checksums, manifest methods, and
 licenses together.
 
 `protoc` and network access are regeneration-only dependencies.
+
+## Runtime interoperability
+
+The opt-in container-backed regtest target and pinned image versions are
+documented in [`../integration/README.md`](../integration/README.md). It is
+excluded from the default unit suite.

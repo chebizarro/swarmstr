@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"metiq/internal/agent/toolloop"
+	pluginhooks "metiq/internal/plugins/hooks"
+	pluginregistry "metiq/internal/plugins/registry"
 	"metiq/internal/policy"
 )
 
@@ -63,6 +65,75 @@ func (p *promptCacheCapturingProvider) Chat(_ context.Context, messages []LLMMes
 	p.calls = append(p.calls, captured)
 	p.opts = append(p.opts, opts)
 	return &LLMResponse{Content: "ok"}, nil
+}
+
+func TestExecuteSingleToolCallRedactsHookArgsButPreservesExecutionArgs(t *testing.T) {
+	const (
+		invoice      = "lnbc1-hook-secret"
+		resultSecret = "hook-result-secret"
+	)
+	registry := NewToolRegistry()
+	var executed map[string]any
+	registry.RegisterWithDef("nwc_pay_invoice", func(_ context.Context, args map[string]any) (string, error) {
+		executed = cloneToolRedactionValue(args).(map[string]any)
+		return "authorization=Bearer " + resultSecret, nil
+	}, ToolDefinition{
+		Name: "nwc_pay_invoice",
+		Parameters: ToolParameters{
+			Type: "object",
+			Properties: map[string]ToolParamProp{
+				"invoice":     {Type: "string"},
+				"amount_msat": {Type: "number"},
+				"memo":        {Type: "string"},
+			},
+			Required: []string{"invoice"},
+		},
+	})
+
+	invoker := pluginhooks.NewHookInvoker(nil, nil)
+	var beforeArgs, afterArgs map[string]any
+	var afterResult string
+	invoker.RegisterNative(pluginregistry.HookBeforeToolCall, "capture-before", 1, func(_ context.Context, payload any) (any, error) {
+		event, ok := payload.(pluginhooks.BeforeToolCallEvent)
+		if !ok {
+			t.Fatalf("before hook payload type = %T", payload)
+		}
+		beforeArgs = cloneToolRedactionValue(event.Args).(map[string]any)
+		return map[string]any{"args": map[string]any{"amount_msat": float64(2000)}}, nil
+	})
+	invoker.RegisterNative(pluginregistry.HookAfterToolCall, "capture-after", 1, func(_ context.Context, payload any) (any, error) {
+		event, ok := payload.(pluginhooks.AfterToolCallEvent)
+		if !ok {
+			t.Fatalf("after hook payload type = %T", payload)
+		}
+		afterArgs = cloneToolRedactionValue(event.Args).(map[string]any)
+		afterResult = event.Result
+		return nil, nil
+	})
+
+	result := executeSingleToolCall(context.Background(), registry, ToolCall{
+		ID:   "call-1",
+		Name: "nwc_pay_invoice",
+		Args: map[string]any{"invoice": invoice, "amount_msat": float64(1000), "memo": "safe"},
+	}, "session", "turn", nil, TraceContext{}, invoker)
+	if result.Content != "authorization=Bearer "+resultSecret {
+		t.Fatalf("tool result = %q", result.Content)
+	}
+	if strings.Contains(afterResult, resultSecret) || !strings.Contains(afterResult, RedactedToolValue) {
+		t.Fatalf("after hook result was not redacted: %q", afterResult)
+	}
+	if beforeArgs["invoice"] != RedactedToolValue || afterArgs["invoice"] != RedactedToolValue {
+		t.Fatalf("hook args leaked invoice: before=%#v after=%#v", beforeArgs, afterArgs)
+	}
+	if beforeArgs["memo"] != "safe" || afterArgs["memo"] != "safe" {
+		t.Fatalf("hook redaction changed safe args: before=%#v after=%#v", beforeArgs, afterArgs)
+	}
+	if executed["invoice"] != invoice {
+		t.Fatalf("executor invoice = %#v, want original", executed["invoice"])
+	}
+	if executed["amount_msat"] != float64(2000) {
+		t.Fatalf("executor did not receive safe hook mutation: %#v", executed)
+	}
 }
 
 func TestGenerateWithAgenticLoop_UsesPromptCacheProfileForPromptAssembly(t *testing.T) {

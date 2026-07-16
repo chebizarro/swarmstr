@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -345,13 +344,7 @@ type ProviderRuntime struct {
 // ToolCallToRef converts a ToolCall (with map args) to a ToolCallRef (with
 // JSON-string args) suitable for conversation history storage.
 func ToolCallToRef(tc ToolCall) ToolCallRef {
-	ref := ToolCallRef{ID: tc.ID, Name: tc.Name}
-	if len(tc.Args) > 0 {
-		if b, err := json.Marshal(tc.Args); err == nil {
-			ref.ArgsJSON = string(b)
-		}
-	}
-	return ref
+	return ToolCallRefForPersistence(nil, tc)
 }
 
 func NewProviderRuntime(provider Provider, tools ToolExecutor) (*ProviderRuntime, error) {
@@ -473,7 +466,7 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	if len(gen.ToolCalls) > 0 && len(gen.HistoryDelta) == 0 {
 		refs := make([]ToolCallRef, 0, len(gen.ToolCalls))
 		for _, call := range gen.ToolCalls {
-			refs = append(refs, ToolCallToRef(call))
+			refs = append(refs, ToolCallRefForPersistence(trackedTools, call))
 		}
 		gen.HistoryDelta = append(gen.HistoryDelta, ConversationMessage{
 			Role:      "assistant",
@@ -629,7 +622,7 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, turn Turn, gen Provid
 		ToolTraces:   nil,
 		Outcome:      gen.Outcome,
 		StopReason:   gen.StopReason,
-		HistoryDelta: gen.HistoryDelta,
+		HistoryDelta: RedactConversationMessagesForPersistence(tools, gen.HistoryDelta),
 		Usage: TurnUsage{
 			InputTokens:         gen.Usage.InputTokens,
 			OutputTokens:        gen.Usage.OutputTokens,
@@ -638,7 +631,11 @@ func (r *ProviderRuntime) buildResult(ctx context.Context, turn Turn, gen Provid
 		},
 	}
 	for _, call := range gen.ToolCalls {
-		trace := ToolTrace{Call: call}
+		descriptor, _ := ToolDescriptorForExecutor(tools, call.Name)
+		trace := ToolTrace{
+			Call:       NewToolRedactor().RedactToolCall(call, descriptor),
+			Descriptor: descriptor,
+		}
 		if tools == nil {
 			trace.Error = "no tool executor configured"
 			result.ToolTraces = append(result.ToolTraces, trace)

@@ -325,16 +325,24 @@ or `payer_enabled` requires corresponding daemon permissions.
 
 ### Legacy NWC precedence and compatibility tools
 
-For an NWC wallet used by L402, URI resolution uses this compatibility order:
+L402 and the standalone NIP-47 tools share the same secrets-aware URI
+resolution. Standalone tools choose the enabled L402 payer when it is an NWC
+wallet, otherwise a wallet named `default`, otherwise the sole configured NWC
+wallet. Multiple NWC wallets without either selector are ambiguous, so no
+canonical wallet is chosen; explicit legacy sources can still supply the
+standalone connection.
+
+After wallet selection, both paths use this compatibility order:
 
 1. `extra.lightning.wallets.<id>.uri`
 2. `extra.nwc.uri`
 3. `extra.nwc.connection_string`
 4. `NWC_CONNECTION_STRING`
 
-The canonical wallet URI must be an explicit secret reference. Legacy values
-remain readable for migration and produce a deprecation warning; the config is
-not rewritten.
+The canonical wallet URI must be an explicit secret reference. A configured
+higher-priority reference that cannot be resolved fails closed rather than
+falling through to another wallet. Legacy values remain readable for migration
+and produce a deprecation warning; the config is not rewritten.
 
 The standalone NIP-47 compatibility tools are:
 
@@ -346,10 +354,18 @@ The standalone NIP-47 compatibility tools are:
 | `nwc_lookup_invoice` | Look up by `payment_hash` or `invoice`. |
 | `nwc_list_transactions` | List recent transactions. |
 
-These compatibility tools currently read `extra.nwc.uri`; they register but
-fail closed when it is absent. During migration, keep `extra.nwc.uri` if those
-tools are needed in addition to `l402_fetch`. Their returned preimage and
-macaroon fields are redacted.
+These tools are exposed at startup only when the selected source resolves and
+forms a valid NWC client; with no configuration they are absent. Each invocation
+re-reads the current config and resolves the secret reference again, so process
+environment changes take effect and removing a credential fails closed without
+retaining the old URI. Values loaded from a `.env` file take effect after the
+normal secret-store reload or a restart. Adding the first NWC source after
+startup requires a restart so the tools can be added to the catalog.
+
+Direct `nwc_pay_invoice` calls do not use L402 origin allowlists, invoice/fee
+limits, or hourly budgets. Restrict the standalone tool with agent tool profiles
+and policy when a canonical wallet is intended only for L402. Tool names,
+inputs, JSON results, and preimage/macaroon redaction remain unchanged.
 
 ---
 

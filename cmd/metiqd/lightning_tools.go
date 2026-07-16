@@ -224,18 +224,14 @@ func (c *lightningController) resolveNWCURI(ctx context.Context, extra map[strin
 	if !foundWallet || !strings.EqualFold(strings.TrimSpace(wallet.Type), config.LightningWalletTypeNWC) {
 		return "", fmt.Errorf("NWC wallet %s is unavailable", walletID)
 	}
-	uri, source, found := config.ResolveNWCURI(extra, wallet)
-	if !found {
-		return "", fmt.Errorf("NWC credential for wallet %s is unavailable", walletID)
-	}
-	if source == "NWC_CONNECTION_STRING" || !isExplicitCredentialReference(uri) {
-		return uri, nil
-	}
-	resolved, err := c.secrets.ResolveBytes(ctx, secrets.CredentialSource{Ref: uri, Encoding: secrets.CredentialEncodingText})
+	uri, _, found, err := resolveConfiguredNWCURI(ctx, c.secrets, extra, wallet)
 	if err != nil {
 		return "", fmt.Errorf("NWC credential for wallet %s is unavailable: %w", walletID, err)
 	}
-	return string(resolved), nil
+	if !found {
+		return "", fmt.Errorf("NWC credential for wallet %s is unavailable", walletID)
+	}
+	return uri, nil
 }
 
 func isExplicitCredentialReference(value string) bool {
