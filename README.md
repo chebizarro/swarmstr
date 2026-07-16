@@ -12,17 +12,17 @@ Metiq runs AI agents that communicate over the Nostr relay network. Any device r
 
 | Area | What's included |
 |------|----------------|
-| **Agent runtime** | Multi-provider LLM support (OpenAI, Anthropic, Google Gemini, Groq, Mistral, Moonshot, Minimax, local HTTP); streaming responses via SSE; tool/function calling; per-session memory |
-| **Channels** | Telegram, Discord, Slack, WhatsApp, Email (IMAP+SMTP); typing indicators, reactions, threads, message editing, multi-account |
-| **Memory** | Full-text search index; explicit memory extraction; auto-compaction background goroutine; context assembly with turn budgets |
-| **Multi-agent** | ACP (Agent Control Protocol) over Nostr DMs; `acp.dispatch` for single delegation; `acp.pipeline` for sequential/parallel multi-step workflows; in-flight task dispatcher with timeout |
-| **Security** | NIP-44 E2E encryption for channel messages; exec approval modal; security audit module; secret store |
-| **Plugin system** | Goja (embedded JS) and Node.js plugin runtimes; remote registry (`plugins.registry.list/get/search`); URL install (`source=url`); npm install |
-| **Sandbox** | `NopSandbox` (os/exec + timeout) and `DockerSandbox` (ephemeral container, CPU/memory caps, optional network isolation); `sandbox.run` gateway method |
-| **Streaming** | Server-Sent Events from OpenAI-compatible providers; `chat.chunk` WebSocket events for incremental display; streaming runtime interface |
-| **Web UI** | Embedded dark-theme chat interface; sessions sidebar; streaming text bubbles; exec approval modal; channels/agents tabs |
-| **CLI** | 40+ commands across agents, channels, sessions, cron, nodes, config, plugins, secrets, security, and more |
-| **Nostr transport** | NIP-17 gift-wrapped DMs and NIP-04 compatibility paths; NIP-44 encryption; NIP-86-style control RPC; Nostr-backed state store |
+| **Agent runtime** | Native LLM providers: OpenAI (Chat + Responses), Anthropic (API key + OAuth), Google Gemini + Vertex, Azure OpenAI, Mistral, Groq, Moonshot/Kimi, Minimax, GitHub Copilot, DeepInfra, Fireworks, xAI Grok, LM Studio, Ollama, local HTTP; model catalog with provider fallback chains; streaming tool calls with typed events and tool-call repair; agentic loop with context budgets, pruning, and preflight checks |
+| **Channels** | 20 built-in channel extensions: Telegram, Discord, Slack, WhatsApp, Email (IMAP+SMTP), Signal, Matrix, Mattermost, Microsoft Teams, Google Chat, BlueBubbles, iMessage, IRC, LINE, Feishu, Nextcloud Talk, QQ, Synology Chat, Twitch, Zalo; event-driven inbound delivery; typing indicators, reactions, threads, message editing, media contracts, multi-account |
+| **Memory** | Pluggable backends: SQLite FTS + sqlite-vec, embedded LanceDB, Qdrant, wiki vault; hybrid vector + keyword retrieval with MMR ranking; active memory recall; embedding cache; auto-compaction; team memory sync over Nostr; MCP memory session bootstrap |
+| **Multi-agent** | ACP (Agent Control Protocol) over Nostr DMs; `acp.dispatch` for single delegation; `acp.pipeline` for sequential/parallel multi-step workflows; router policy; persisted pipeline flows with mirrored child tasks; commitment tracking with heartbeat delivery; JSONL session-tree harness |
+| **Security** | NIP-44 E2E encryption for channel messages; exec approvals enriched with automatic command analysis; exec policy management; security guidance hook and policy doctor; sandbox network-policy hardening; plugin trust decisions; security audit module; secret store |
+| **Plugin system** | Goja (embedded JS) and Node.js plugin runtimes; unified plugin lifecycle; manifest validation and build/package tooling; plugin trust store; OpenClaw plugin contract and Claude plugin support; hooks; registry install flows (npm/git/URL/archive/path + Nostr registry) |
+| **Sandbox** | Sandbox backend registry with runtime management; `nop` (os/exec + timeout) and hardened Docker backends; filesystem bridge; browser sandbox spec; workspace lifecycle and pruning; network policy controls; `sandbox.run` gateway method |
+| **Streaming** | Server-Sent Events from streaming providers; typed streaming events; `chat.chunk` WebSocket events for incremental display; streaming tool calls |
+| **Web UI** | Embedded dark-theme chat interface; sessions sidebar; streaming text bubbles; exec approval modal; management views for channels, agents, and plugins; slash-command catalog |
+| **CLI** | 50+ command groups across daemon, agents, models, channels, skills, config, secrets, MCP, plugins, tasks, memory, sandbox, security, observability, and more |
+| **Nostr transport** | NIP-17 gift-wrapped DMs and NIP-04 compatibility paths; NIP-44 encryption; NIP-11 relay info; NIP-86 management API; NIP-89 handler discoverability + DVM handler; NIP-98 HTTP auth; NIP-51 lists, NIP-58 badges, NIP-60/61 Cashu wallets & nutzaps; zaps; canonical Nostr-native event kinds via ContextVM (cascadia-go); Nostr-backed state store |
 
 ---
 
@@ -143,25 +143,29 @@ See `docs/MIGRATION_FROM_OPENCLAW.md` for a full field reference and OpenClaw mi
 ```
 metiq <command> [flags]
 
-Daemon:
+Daemon status:
   status                    show pubkey, uptime, relay connections
   health                    ping the admin API
   logs [--lines N]          tail recent daemon log lines
+  observe                   inspect structured runtime events/logs (--event, --wait)
   daemon start/stop/restart daemon lifecycle management
 
-Agents:
-  agents list               list configured agents
-  agents create/update/delete manage agent definitions
-  models list [--agent ID]  list available LLM models
+Agents & models:
+  agents list/create/update/delete   manage agent definitions
+  models list [--agent ID]  list available LLM models (native model catalog)
 
 Chat & sessions:
   sessions list             list conversation sessions
   sessions get <id>         show a session's turns
   sessions export <id>      export session to Markdown or HTML
+  transcripts list/export   inspect and export stored transcripts
+  trajectory                session trajectory export and cleanup
+  message send / send       send messages through the gateway
 
-Channels:
+Channels & skills:
   channels list             list configured channels and status
-  channels send <ch> <msg>  send a message to a channel
+  skills list/status/install/enable/disable   skill management
+  hooks                     list installed hooks
 
 Remote nodes (Nostr-native — no pairing required):
   nodes list                list known remote metiq agents
@@ -171,25 +175,49 @@ Remote nodes (Nostr-native — no pairing required):
 
 Plugins:
   plugins list              list installed plugins
-  plugins install [flags]   install from path/archive/npm/URL
-  plugins search --q <kw>   search Nostr plugin registry
+  plugins install [flags]   install from npm/git/url/archive/path
+  plugins build <path>      validate, build, and package a plugin
+  plugins validate <manifest>  validate a plugin manifest
+  plugins doctor            run plugin diagnostics
+  plugin-search --q <kw>    search Nostr plugin registry
 
 Config:
   config get [key]          read config value (dot-notation)
   config set <key> <value>  set config value
   config validate           validate config file
   config import/export      bulk import/export
+  lists                     runtime list docs
+  setup / onboard           interactive first-run setup
 
-Secrets:
+Secrets & MCP:
   secrets list/get/set      manage named secrets
+  mcp                       MCP server management
+
+Memory:
+  memory                    memory management (search, health, compact, eval)
+
+Tasks & QA:
+  tasks                     task management
+  qa                        run deterministic QA scenario packs
+
+Multi-agent & sandbox:
+  acp dispatch/pipeline/status   run and inspect ACP-backed coding agents
+  commitments list/add/status    manage inferred follow-up commitments
+  sandbox run/status        manage sandbox containers for agent isolation
 
 Security:
   security audit            run local security posture checks
+  security doctor           run policy conformance doctor
+  exec-policy               exec approval policy management
+  approvals list/resolve    manage exec approval requests
 
 Other:
   cron list/add/remove      manage scheduled tasks
-  approvals list/resolve    manage exec approval requests
-  doctor memory-status      inspect memory index health
+  doctor                    system health diagnostics
+  diagnostics               export support diagnostic bundle
+  backup                    create or restore local metiq backups
+  migrate                   migrate an OpenClaw agent to Metiq
+  keygen                    generate keys
   qr                        display QR code for daemon pubkey
   completion bash|zsh|fish  generate shell completion script
   gw <method> [params]      call any gateway method directly (auto prefers Nostr when control_target_pubkey is configured; use --transport http to force /call)
@@ -200,15 +228,17 @@ Other:
 
 ## Channel extensions
 
-Built-in channel plugins and their capabilities:
+20 built-in channel plugins, each config-gated (only compiled-in extensions matching a configured `nostr_channels` entry are instantiated):
 
-| Channel | Typing | Reactions | Threads | Edit | Multi-account |
-|---------|--------|-----------|---------|------|---------------|
-| Telegram | ✅ | ❌ | ✅ | ✅ | ✅ |
-| Discord | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Slack | ❌ | ✅ | ✅ | ✅ | ✅ |
-| WhatsApp | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Email (IMAP+SMTP) | ❌ | ❌ | ✅ | ❌ | ✅ |
+| | | | |
+|---|---|---|---|
+| Telegram | Discord | Slack | WhatsApp |
+| Email (IMAP+SMTP) | Signal | Matrix | Mattermost |
+| Microsoft Teams | Google Chat | BlueBubbles | iMessage |
+| IRC | LINE | Feishu | Nextcloud Talk |
+| QQ | Synology Chat | Twitch | Zalo |
+
+Per-channel capabilities (typing indicators, reactions, threads, message editing, media, multi-account) are declared through shared channel access and media contracts. Mattermost, Signal, BlueBubbles, and Email use event-driven inbound delivery rather than polling.
 
 ### End-to-end encryption
 
@@ -248,6 +278,13 @@ Agents can delegate tasks to other metiq agents (local or remote) via transport-
 
 Agents also have access to the `acp.delegate` built-in tool, letting LLMs orchestrate sub-agents inline during a turn.
 
+Recent ACP upgrades:
+
+- **Router policy** — configurable routing decisions for inbound ACP requests
+- **Persisted pipeline flows** — pipeline state survives daemon restarts, and child tasks are mirrored into the local task store
+- **Commitments** — follow-up commitments are inferred, persisted, and delivered with heartbeats (`metiq commitments list/add/status`)
+- **Session-tree harness** — JSONL session trees for inspecting multi-agent runs
+
 ### ACP transport compatibility
 
 - `acp.transport` supports `auto`, `nip17`, or `nip04`.
@@ -273,9 +310,20 @@ metiq plugins install --id my-plugin --source npm --spec my-npm-package@1.0.0
 metiq plugins install --id my-plugin --source url --url https://example.com/plugin.js
 
 # From Nostr plugin registry
-metiq plugins search --q weather
+metiq plugin-search --q weather
 metiq plugin-install --pubkey <author-npub> --id weather
+
+# Author tooling
+metiq plugins build ./my-plugin/       # validate, build, and package
+metiq plugins validate ./manifest.json # validate a manifest
+metiq plugins doctor                   # run plugin diagnostics
 ```
+
+### Lifecycle, trust, and contracts
+
+- **Unified lifecycle** — plugins move through a single install → enable → run → disable → uninstall state machine shared by all runtimes
+- **Trust store** — install-time trust decisions are recorded and enforced before a plugin can execute
+- **OpenClaw contract** — OpenClaw-format plugins run under a compatibility contract, including Claude plugin support
 
 ### Remote registry
 
@@ -315,7 +363,24 @@ Configure defaults in your daemon config:
 }
 ```
 
-Drivers: `nop` (os/exec, default) · `docker` (ephemeral container, requires Docker CLI).
+Drivers: `nop` (os/exec, default) · `docker` (hardened ephemeral container, requires Docker CLI).
+
+Sandbox infrastructure now includes a **backend registry** with runtime management (`metiq sandbox run` / `metiq sandbox status`), a **filesystem bridge** for controlled host file access, a **browser sandbox spec**, workspace lifecycle with pruning, and **network policy hardening** for containerized runs.
+
+---
+
+## Memory
+
+Metiq's memory subsystem is pluggable and hybrid:
+
+- **Backends** — SQLite FTS + `sqlite-vec` (default), embedded **LanceDB**, **Qdrant**, and a human-readable **wiki vault** backend
+- **Hybrid retrieval** — combined vector + keyword search with MMR ranking and recall-aware re-ranking
+- **Active recall** — relevant memories are surfaced into context automatically during a turn
+- **Compaction** — background auto-compaction with configurable triggers and context-budget-aware assembly
+- **Team memory** — memory sync between agents over Nostr
+- **MCP bootstrap** — memory sessions can be bootstrapped over MCP
+
+See `docs/MEMORY_SCHEMA.md` for the schema reference and `metiq memory` / `metiq doctor` for operational tooling.
 
 ---
 
@@ -426,14 +491,14 @@ Key packages:
 
 | Package | Purpose |
 |---------|---------|
-| `internal/agent` | LLM provider adapters, runtime, streaming, tool registry |
-| `internal/acp` | Multi-agent dispatcher and pipeline orchestrator |
+| `internal/agent` | Native LLM providers, model catalog, provider chains, agentic loop, streaming, tool registry |
+| `internal/acp` | Multi-agent dispatcher, pipeline orchestrator, router policy, commitments |
 | `internal/gateway/` | WS server, admin HTTP, method schema/decode, channel extensions |
-| `internal/memory` | FTS index, memory extraction, auto-compaction |
-| `internal/nostr/secure` | NIP-44 codecs, E2E encrypted channel handles |
-| `internal/plugins/` | Goja/Node.js runtimes, installer (npm/URL/archive), Nostr registry |
-| `internal/sandbox` | NopSandbox, DockerSandbox, SandboxRunner interface |
-| `internal/extensions/` | Telegram, Discord, Slack, WhatsApp, Email channel plugins |
+| `internal/memory` | Hybrid retrieval, backends (SQLite/sqlite-vec, LanceDB, Qdrant, wiki), active recall, team sync |
+| `internal/nostr/` | NIP modules (11, 17/44, 38, 51, 58, 60/61, 86, 98), DVM handler, zaps, runtime, publishing |
+| `internal/plugins/` | Goja/Node.js runtimes, installer, unified lifecycle, manifests, trust store, registry, SDK, contracts |
+| `internal/sandbox` | Backend registry, hardened Docker backend, fs bridge, browser spec, workspaces, netpolicy |
+| `internal/extensions/` | 20 built-in channel plugins (Telegram, Discord, Slack, Matrix, Signal, Teams, …) |
 | `internal/store/state` | Nostr-backed config/session/memory document store |
 
 See `docs/MIGRATION_FROM_OPENCLAW.md` for the full OpenClaw → Metiq migration guide.
