@@ -36,33 +36,30 @@ func TestWrapHandleByCapabilitiesAllCombinations(t *testing.T) {
 			t.Fatalf("mask %d edit=%v want %v", mask, ok, caps.Edit)
 		}
 		// The concrete PluginChannelHandle needs a real OpenClaw host for optional
-		// calls. Calling through the wrapper with a nil host intentionally panics,
-		// but still covers the forwarding method bodies for every mask variant.
+		// calls. The host RPC layer guards its nil receiver and returns an error,
+		// which still covers the forwarding method bodies for every mask variant.
 		if th, ok := handle.(sdk.TypingHandle); ok {
-			mustPanic(t, func() { _ = th.SendTyping(context.Background(), 1) })
+			mustErr(t, th.SendTyping(context.Background(), 1))
 		}
 		if rh, ok := handle.(sdk.ReactionHandle); ok {
-			mustPanic(t, func() { _ = rh.AddReaction(context.Background(), "event", "👍") })
-			mustPanic(t, func() { _ = rh.RemoveReaction(context.Background(), "event", "👍") })
+			mustErr(t, rh.AddReaction(context.Background(), "event", "👍"))
+			mustErr(t, rh.RemoveReaction(context.Background(), "event", "👍"))
 		}
 		if hh, ok := handle.(sdk.ThreadHandle); ok {
-			mustPanic(t, func() { _ = hh.SendInThread(context.Background(), "thread", "text") })
+			mustErr(t, hh.SendInThread(context.Background(), "thread", "text"))
 		}
 		if ah, ok := handle.(sdk.AudioHandle); ok {
-			mustPanic(t, func() { _ = ah.SendAudio(context.Background(), []byte("a"), "wav") })
+			mustErr(t, ah.SendAudio(context.Background(), []byte("a"), "wav"))
 		}
 		if eh, ok := handle.(sdk.EditHandle); ok {
-			mustPanic(t, func() { _ = eh.EditMessage(context.Background(), "event", "new") })
+			mustErr(t, eh.EditMessage(context.Background(), "event", "new"))
 		}
 	}
 }
 
-func mustPanic(t *testing.T, fn func()) {
+func mustErr(t *testing.T, err error) {
 	t.Helper()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic from nil OpenClaw host")
-		}
-	}()
-	fn()
+	if err == nil {
+		t.Fatal("expected error from nil OpenClaw host")
+	}
 }

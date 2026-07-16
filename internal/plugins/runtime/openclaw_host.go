@@ -378,6 +378,12 @@ func (h *OpenClawPluginHost) Providers() map[string]*RegisteredProvider {
 }
 
 func (h *OpenClawPluginHost) call(ctx context.Context, method string, params any) (*RPCResponse, error) {
+	// Guard the nil receiver explicitly: on macOS/arm64 a faulting atomic on a
+	// near-nil address can spin instead of producing a recoverable nil-pointer
+	// panic, which previously hung callers (and tests) forever.
+	if h == nil {
+		return nil, fmt.Errorf("openclaw rpc %s: plugin host is nil", method)
+	}
 	id := h.nextID.Add(1)
 	ch := make(chan *RPCResponse, 1)
 
