@@ -12,21 +12,58 @@ import (
 	"metiq/internal/nostr/events"
 )
 
+// AgentSessionMode is the standard-agent data-access boundary for a session.
+// Private sessions may read a private corpus but must not publish to fleet
+// relays. Fleet sessions may publish fleet records but must not have a route
+// to the private corpus.
+type AgentSessionMode string
+
+const (
+	AgentSessionModeFleet   AgentSessionMode = "fleet"
+	AgentSessionModePrivate AgentSessionMode = "private"
+)
+
+func normalizeAgentSessionMode(mode AgentSessionMode) AgentSessionMode {
+	if strings.EqualFold(strings.TrimSpace(string(mode)), string(AgentSessionModePrivate)) {
+		return AgentSessionModePrivate
+	}
+	return AgentSessionModeFleet
+}
+
+// AllowsFleetPublish reports whether this session may write to fleet relays.
+func (mode AgentSessionMode) AllowsFleetPublish() bool {
+	return normalizeAgentSessionMode(mode) == AgentSessionModeFleet
+}
+
+// AllowsPrivateCorpus reports whether this session may read private corpus data.
+func (mode AgentSessionMode) AllowsPrivateCorpus() bool {
+	return normalizeAgentSessionMode(mode) == AgentSessionModePrivate
+}
+
+func requireFleetSession(mode AgentSessionMode, action string) error {
+	if !mode.AllowsFleetPublish() {
+		return fmt.Errorf("%s: private session cannot publish to fleet relays", action)
+	}
+	return nil
+}
+
 // WorkerAdvertisement is the standard kind:10100 worker-ad shape for agents
 // that expose worker capacity.
 type WorkerAdvertisement struct {
-	AgentID           string         `json:"agent_id,omitempty"`
-	Runtime           string         `json:"runtime,omitempty"`
-	RuntimeVersion    string         `json:"runtime_version,omitempty"`
-	Status            string         `json:"status,omitempty"`
-	Capabilities      []string       `json:"capabilities,omitempty"`
-	Tools             []string       `json:"tools,omitempty"`
-	ContextVMFeatures []string       `json:"contextvm_features,omitempty"`
-	Relays            []string       `json:"relays,omitempty"`
-	Metadata          map[string]any `json:"metadata,omitempty"`
+	SessionMode       AgentSessionMode `json:"session_mode,omitempty"`
+	AgentID           string           `json:"agent_id,omitempty"`
+	Runtime           string           `json:"runtime,omitempty"`
+	RuntimeVersion    string           `json:"runtime_version,omitempty"`
+	Status            string           `json:"status,omitempty"`
+	Capabilities      []string         `json:"capabilities,omitempty"`
+	Tools             []string         `json:"tools,omitempty"`
+	ContextVMFeatures []string         `json:"contextvm_features,omitempty"`
+	Relays            []string         `json:"relays,omitempty"`
+	Metadata          map[string]any   `json:"metadata,omitempty"`
 }
 
 func normalizeWorkerAdvertisement(in WorkerAdvertisement) WorkerAdvertisement {
+	in.SessionMode = normalizeAgentSessionMode(in.SessionMode)
 	in.AgentID = strings.TrimSpace(in.AgentID)
 	in.Runtime = strings.TrimSpace(in.Runtime)
 	if in.Runtime == "" {
@@ -48,6 +85,7 @@ func normalizeWorkerAdvertisement(in WorkerAdvertisement) WorkerAdvertisement {
 func BuildWorkerAdvertisementTags(ad WorkerAdvertisement) nostr.Tags {
 	ad = normalizeWorkerAdvertisement(ad)
 	tags := nostr.Tags{{"status", ad.Status}}
+	tags = append(tags, []string{"session_mode", string(ad.SessionMode)})
 	if ad.AgentID != "" {
 		tags = append(tags, []string{"agent", ad.AgentID})
 	}
@@ -85,6 +123,10 @@ func BuildWorkerAdvertisementContent(ad WorkerAdvertisement) string {
 
 // PublishWorkerAdvertisement signs and publishes the standard kind:10100 worker advertisement.
 func PublishWorkerAdvertisement(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publishRelays []string, ad WorkerAdvertisement) (string, error) {
+	ad = normalizeWorkerAdvertisement(ad)
+	if err := requireFleetSession(ad.SessionMode, "publish worker ad"); err != nil {
+		return "", err
+	}
 	if pool == nil {
 		return "", fmt.Errorf("publish worker ad: pool is required")
 	}
@@ -126,16 +168,18 @@ func PublishWorkerAdvertisement(ctx context.Context, pool *nostr.Pool, keyer nos
 
 // AuditRecord is the standard kind:4903 CAS_AUDIT payload.
 type AuditRecord struct {
-	Actor       string         `json:"actor"`
-	Action      string         `json:"action"`
-	Target      string         `json:"target"`
-	Outcome     string         `json:"outcome"`
-	Correlation string         `json:"correlation,omitempty"`
-	AgentID     string         `json:"agent_id,omitempty"`
-	Details     map[string]any `json:"details,omitempty"`
+	SessionMode AgentSessionMode `json:"session_mode,omitempty"`
+	Actor       string           `json:"actor"`
+	Action      string           `json:"action"`
+	Target      string           `json:"target"`
+	Outcome     string           `json:"outcome"`
+	Correlation string           `json:"correlation,omitempty"`
+	AgentID     string           `json:"agent_id,omitempty"`
+	Details     map[string]any   `json:"details,omitempty"`
 }
 
 func normalizeAuditRecord(in AuditRecord) AuditRecord {
+	in.SessionMode = normalizeAgentSessionMode(in.SessionMode)
 	in.Actor = strings.TrimSpace(in.Actor)
 	in.Action = strings.TrimSpace(in.Action)
 	in.Target = strings.TrimSpace(in.Target)
@@ -157,6 +201,7 @@ func BuildAuditTags(record AuditRecord) nostr.Tags {
 		{"target", record.Target},
 		{"outcome", record.Outcome},
 	}
+	tags = append(tags, []string{"session_mode", string(record.SessionMode)})
 	if record.Correlation != "" {
 		tags = append(tags, []string{"correlation", record.Correlation})
 	}
@@ -178,13 +223,16 @@ func BuildAuditContent(record AuditRecord) string {
 
 // PublishAuditRecord signs and publishes a kind:4903 CAS_AUDIT record for consequential actions.
 func PublishAuditRecord(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, publishRelays []string, record AuditRecord) (string, error) {
+	record = normalizeAuditRecord(record)
+	if err := requireFleetSession(record.SessionMode, "publish audit"); err != nil {
+		return "", err
+	}
 	if pool == nil {
 		return "", fmt.Errorf("publish audit: pool is required")
 	}
 	if keyer == nil {
 		return "", fmt.Errorf("publish audit: keyer is required")
 	}
-	record = normalizeAuditRecord(record)
 	if record.Actor == "" || record.Action == "" || record.Target == "" || record.Outcome == "" {
 		return "", fmt.Errorf("publish audit: actor, action, target, and outcome are required")
 	}
