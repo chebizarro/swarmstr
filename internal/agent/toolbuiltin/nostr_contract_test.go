@@ -5,7 +5,30 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	nostr "fiatjaf.com/nostr"
+	nostruntime "metiq/internal/nostr/runtime"
 )
+
+func TestPrivateSessionBlocksOutboundNostrTools(t *testing.T) {
+	opts := NostrToolOpts{SessionMode: nostruntime.AgentSessionModePrivate}
+	if err := opts.checkOutboundEvent(&nostr.Event{Kind: 1, Content: "public"}); err == nil || !strings.Contains(err.Error(), "private session") {
+		t.Fatalf("event guard error = %v", err)
+	}
+	if err := opts.checkOutboundContent("fleet rpc"); err == nil || !strings.Contains(err.Error(), "private session") {
+		t.Fatalf("content guard error = %v", err)
+	}
+}
+
+func TestDefaultFleetSessionAllowsOutboundNostrTools(t *testing.T) {
+	opts := NostrToolOpts{}
+	if err := opts.checkOutboundEvent(&nostr.Event{Kind: 1}); err != nil {
+		t.Fatalf("default fleet event guard error = %v", err)
+	}
+	if err := opts.checkOutboundContent("fleet rpc"); err != nil {
+		t.Fatalf("default fleet content guard error = %v", err)
+	}
+}
 
 func TestNostrToolErr_Basic(t *testing.T) {
 	err := nostrToolErr("nostr_fetch", "no_relays", "no relays configured", nil)

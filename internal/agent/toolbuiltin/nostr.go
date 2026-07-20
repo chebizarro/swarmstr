@@ -41,9 +41,16 @@ type NostrToolOpts struct {
 	// Nil means no guard (all publishes allowed). When set, every tool that
 	// publishes events calls guard.CheckEvent before signing and sending.
 	PublishGuard *secure.PublishGuard
+	// SessionMode enforces the standard-agent privacy boundary. The zero value
+	// preserves the fleet-mode default. Private mode blocks every outbound
+	// Nostr tool before signing or relay I/O.
+	SessionMode nostruntime.AgentSessionMode
 }
 
 func (o NostrToolOpts) checkOutboundEvent(evt *nostr.Event) error {
+	if !o.SessionMode.AllowsFleetPublish() {
+		return fmt.Errorf("private session cannot publish to fleet relays")
+	}
 	if o.PublishGuard == nil {
 		return nil
 	}
@@ -51,6 +58,9 @@ func (o NostrToolOpts) checkOutboundEvent(evt *nostr.Event) error {
 }
 
 func (o NostrToolOpts) checkOutboundContent(text string) error {
+	if !o.SessionMode.AllowsFleetPublish() {
+		return fmt.Errorf("private session cannot publish to fleet relays")
+	}
 	if o.PublishGuard == nil {
 		return nil
 	}
