@@ -341,6 +341,56 @@ func TestResolveAgentTurnToolSurfaceIntersectsPerTurnConstraints(t *testing.T) {
 	}
 }
 
+func TestResolveAgentTurnToolSurfaceBlocksFleetWritesInPrivateSession(t *testing.T) {
+	baseTools := agent.NewToolRegistry()
+	for _, name := range []string{"memory_search", "nostr_fetch", "nostr_publish", "nostr_send_dm", "nostr_agent_rpc"} {
+		toolName := name
+		baseTools.RegisterWithDef(toolName, func(context.Context, map[string]any) (string, error) { return toolName, nil }, agent.ToolDefinition{
+			Name:        toolName,
+			Description: toolName,
+		})
+	}
+	prevToolRegistry := controlToolRegistry
+	controlToolRegistry = baseTools
+	defer func() { controlToolRegistry = prevToolRegistry }()
+
+	docsRepo := state.NewDocsRepository(newTestStore(), "author")
+	if _, err := docsRepo.PutSession(context.Background(), "session-private", state.SessionDoc{
+		SessionID: "session-private",
+		Meta:      map[string]any{"session_mode": "private"},
+	}); err != nil {
+		t.Fatalf("put private session: %v", err)
+	}
+
+	rt, exec, defs := resolveAgentTurnToolSurface(
+		context.Background(), state.ConfigDoc{Agents: []state.AgentConfig{{
+			ID:           "worker",
+			EnabledTools: []string{"memory_search", "nostr_fetch", "nostr_publish", "nostr_send_dm", "nostr_agent_rpc"},
+		}}}, docsRepo, "session-private", "worker",
+		&filterableRuntime{}, baseTools, turnToolConstraints{},
+	)
+	filteredRuntime, ok := rt.(*filterableRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want *filterableRuntime", rt)
+	}
+	for _, blocked := range []string{"nostr_publish", "nostr_send_dm", "nostr_agent_rpc"} {
+		if filteredRuntime.allowed[blocked] {
+			t.Fatalf("private runtime exposes blocked tool %q: %v", blocked, filteredRuntime.allowed)
+		}
+		if _, err := exec.Execute(context.Background(), agent.ToolCall{Name: blocked}); err == nil {
+			t.Fatalf("private executor invoked blocked tool %q", blocked)
+		}
+	}
+	for _, retained := range []string{"memory_search", "nostr_fetch"} {
+		if !filteredRuntime.allowed[retained] {
+			t.Fatalf("private runtime removed read-only tool %q: %v", retained, filteredRuntime.allowed)
+		}
+	}
+	if got := len(defs); got != 2 {
+		t.Fatalf("private definitions len = %d, want 2: %+v", got, defs)
+	}
+}
+
 func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	provider := &capturingProvider{result: agent.ProviderResult{
 		Text:  "ok",

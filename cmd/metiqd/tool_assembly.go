@@ -2,16 +2,52 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"metiq/internal/agent"
 	"metiq/internal/store/state"
 )
 
+var privateSessionBlockedFleetTools = map[string]struct{}{
+	"nostr_publish":        {},
+	"nostr_send_dm":        {},
+	"nostr_profile_set":    {},
+	"nostr_relay_list_set": {},
+	"nostr_zap_send":       {},
+	"nostr_agent_rpc":      {},
+	"nostr_agent_send":     {},
+}
+
 func resolveAgentTurnToolSurface(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, sessionID, agentID string, rt agent.Runtime, base agent.ToolExecutor, constraints turnToolConstraints) (agent.Runtime, agent.ToolExecutor, []agent.ToolDefinition) {
 	allowed := resolvedTurnRuntimeToolAllowlist(ctx, cfg, docsRepo, sessionID, agentID, constraints)
+	if sessionUsesPrivateAgentMode(ctx, docsRepo, sessionID) {
+		if allowed == nil {
+			allowed = make(map[string]bool)
+			for _, def := range agent.ToolDefinitions(base) {
+				allowed[def.Name] = true
+			}
+		} else {
+			allowed = agent.CloneAllowedToolIDs(allowed)
+		}
+		for name := range privateSessionBlockedFleetTools {
+			delete(allowed, name)
+		}
+	}
 	rt = filterRuntimeByAllowedTools(rt, allowed)
 	exec := agent.FilteredToolExecutor(base, allowed)
 	return rt, exec, agent.ToolDefinitions(exec)
+}
+
+func sessionUsesPrivateAgentMode(ctx context.Context, docsRepo *state.DocsRepository, sessionID string) bool {
+	if docsRepo == nil || strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	doc, err := docsRepo.GetSession(ctx, sessionID)
+	if err != nil || doc.Meta == nil {
+		return false
+	}
+	raw, _ := doc.Meta["session_mode"].(string)
+	return strings.EqualFold(strings.TrimSpace(raw), "private")
 }
 
 // partitionTurnTools splits tools from an executor into inline and deferred
