@@ -12,7 +12,7 @@ func TestMemoryOutboxRetryBackoffTerminalFailureAndCompaction(t *testing.T) {
 	b := newUnifiedTestSQLiteBackend(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	id, err := b.EnqueueMemoryOutboxEvent(ctx, "rec-1", "nostr:30321", map[string]any{"id": "rec-1"}, now)
+	id, err := b.EnqueueMemoryOutboxEvent(ctx, "rec-1", "nostr:30078", map[string]any{"id": "rec-1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestMemoryOutboxRetryBackoffTerminalFailureAndCompaction(t *testing.T) {
 		}
 	}
 
-	oldID, err := b.EnqueueMemoryOutboxEvent(ctx, "rec-old", "nostr:30321", "{}", now.Add(-8*24*time.Hour))
+	oldID, err := b.EnqueueMemoryOutboxEvent(ctx, "rec-old", "nostr:30078", "{}", now.Add(-8*24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,11 +85,11 @@ func TestMemoryOutboxForceRepublishAndHealthDepthWarning(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 101; i++ {
-		if _, err := b.EnqueueMemoryOutboxEvent(ctx, fmt.Sprintf("rec-%d", i), "nostr:30321", "{}", now.Add(time.Hour)); err != nil {
+		if _, err := b.EnqueueMemoryOutboxEvent(ctx, fmt.Sprintf("rec-%d", i), "nostr:30078", "{}", now.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	failedID, err := b.EnqueueMemoryOutboxEvent(ctx, "rec-failed", "nostr:30321", "{}", now.Add(-8*24*time.Hour))
+	failedID, err := b.EnqueueMemoryOutboxEvent(ctx, "rec-failed", "nostr:30078", "{}", now.Add(-8*24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

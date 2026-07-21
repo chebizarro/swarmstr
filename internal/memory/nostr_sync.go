@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	// MemoryNostrKindDurable is a parameterized replaceable event for durable
-	// memory sync. Shared project namespaces use latest-created_at wins; CRDT
-	// conflict resolution is intentionally deferred to a later phase.
-	MemoryNostrKindDurable = nostr.Kind(30321)
+	// MemoryNostrKindDurable uses the standard NIP-78 application-data kind for
+	// durable memory sync. The d tag scopes records by namespace and record ID.
+	// Shared project namespaces use latest-created_at wins; CRDT conflict
+	// resolution is intentionally deferred to a later phase.
+	MemoryNostrKindDurable = nostr.Kind(30078)
 	MemoryNostrVersion     = 1
 )
 
