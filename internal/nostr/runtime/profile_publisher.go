@@ -115,10 +115,13 @@ func (pp *ProfilePublisher) Stop() {
 	if pp.cancel != nil {
 		pp.cancel()
 	}
-	pp.wg.Wait()
+	// A pool fetch or publish can remain blocked while its relay transport is
+	// connecting even after the request context is cancelled. Close a pool we
+	// own before waiting for the loop so shutdown actively interrupts that I/O.
 	if pp.ownsPool && pp.pool != nil {
 		pp.pool.Close("profile publisher stopped")
 	}
+	pp.wg.Wait()
 }
 
 // UpdateProfile sets a new desired profile and triggers a publish if it changed.
