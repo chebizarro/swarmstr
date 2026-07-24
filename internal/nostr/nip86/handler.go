@@ -10,16 +10,28 @@ import (
 	"strconv"
 	"strings"
 
+	nostr "fiatjaf.com/nostr"
 	"metiq/internal/nostr/nip98"
 )
 
 const ContentType = "application/nostr+json+rpc"
 
-var SupportedMethods = []string{"supportedmethods", "banpubkey", "allowpubkey", "listbannedpubkeys", "listallowedpubkeys", "banevent", "allowevent", "listbannedevents", "changerelayname", "changerelaydescription", "changerelayicon", "allowkind", "disallowkind", "listallowedkinds", "listdisallowedkinds", "blockip", "unblockip", "listblockedips"}
+var SupportedMethods = []string{
+	"banpubkey", "unbanpubkey", "listbannedpubkeys",
+	"allowpubkey", "unallowpubkey", "listallowedpubkeys",
+	"createrole", "editrole", "deleterole", "assignrole", "unassignrole",
+	"listeventsneedingmoderation", "allowevent", "banevent", "listbannedevents",
+	"changerelayname", "changerelaydescription", "changerelayicon",
+	"allowkind", "disallowkind", "listallowedkinds",
+	"blockip", "unblockip", "listblockedips",
+}
+
+type AdminPolicy func(context.Context, string) bool
 
 type Handler struct {
-	Store    ManagementStore
-	RelayURL string
+	Store     ManagementStore
+	RelayURL  string
+	Authorize AdminPolicy
 }
 type request struct {
 	Method string            `json:"method"`
@@ -34,7 +46,22 @@ func NewHandler(store ManagementStore, relayURL string) http.Handler {
 	if store == nil {
 		store = NewMemoryStore()
 	}
-	return &Handler{Store: store, RelayURL: strings.TrimSpace(relayURL)}
+	var policy AdminPolicy
+	if admins, ok := store.(interface {
+		IsAdmin(context.Context, string) bool
+	}); ok {
+		policy = admins.IsAdmin
+	}
+	return NewHandlerWithAdminPolicy(store, relayURL, policy)
+}
+
+// NewHandlerWithAdminPolicy constructs a handler with an explicit policy. A nil
+// policy fails closed after NIP-98 verification.
+func NewHandlerWithAdminPolicy(store ManagementStore, relayURL string, policy AdminPolicy) http.Handler {
+	if store == nil {
+		store = NewMemoryStore()
+	}
+	return &Handler{Store: store, RelayURL: strings.TrimSpace(relayURL), Authorize: policy}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -56,8 +83,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if u == "" {
 		u = absoluteURL(r)
 	}
-	if _, err := nip98.VerifyPayloadRequired(r.Header.Get("Authorization"), r.Method, u, raw); err != nil {
+	verifiedPubKey, err := nip98.VerifyPayloadRequired(r.Header.Get("Authorization"), r.Method, u, raw)
+	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if h.Authorize == nil || !h.Authorize(r.Context(), verifiedPubKey) {
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 	var req request
@@ -83,29 +115,67 @@ func (h *Handler) Dispatch(ctx context.Context, method string, params []json.Raw
 	case "supportedmethods":
 		return append([]string(nil), SupportedMethods...), nil
 	case "banpubkey":
-		v, r, e := stringReason(params, "pubkey")
+		v, r, e := pubkeyReason(params)
 		if e != nil {
 			return nil, e
 		}
 		return true, h.Store.BanPubKey(ctx, v, r)
+	case "unbanpubkey":
+		v, r, e := pubkeyReason(params)
+		if e != nil {
+			return nil, e
+		}
+		return true, h.Store.UnbanPubKey(ctx, v, r)
 	case "allowpubkey":
-		v, r, e := stringReason(params, "pubkey")
+		v, r, e := pubkeyReason(params)
 		if e != nil {
 			return nil, e
 		}
 		return true, h.Store.AllowPubKey(ctx, v, r)
+	case "unallowpubkey":
+		v, r, e := pubkeyReason(params)
+		if e != nil {
+			return nil, e
+		}
+		return true, h.Store.UnallowPubKey(ctx, v, r)
 	case "listbannedpubkeys":
 		return h.Store.ListBannedPubKeys(ctx)
 	case "listallowedpubkeys":
 		return h.Store.ListAllowedPubKeys(ctx)
+	case "createrole", "editrole":
+		role, e := roleParams(params)
+		if e != nil {
+			return nil, e
+		}
+		if method == "createrole" {
+			return true, h.Store.CreateRole(ctx, role)
+		}
+		return true, h.Store.EditRole(ctx, role)
+	case "deleterole":
+		id, e := oneString(params, "role id")
+		if e != nil {
+			return nil, e
+		}
+		return true, h.Store.DeleteRole(ctx, id)
+	case "assignrole", "unassignrole":
+		pubkey, roleID, e := pubkeyRole(params)
+		if e != nil {
+			return nil, e
+		}
+		if method == "assignrole" {
+			return true, h.Store.AssignRole(ctx, pubkey, roleID)
+		}
+		return true, h.Store.UnassignRole(ctx, pubkey, roleID)
+	case "listeventsneedingmoderation":
+		return h.Store.ListEventsNeedingModeration(ctx)
 	case "banevent":
-		v, r, e := stringReason(params, "event id")
+		v, r, e := eventReason(params)
 		if e != nil {
 			return nil, e
 		}
 		return true, h.Store.BanEvent(ctx, v, r)
 	case "allowevent":
-		v, r, e := stringReason(params, "event id")
+		v, r, e := eventReason(params)
 		if e != nil {
 			return nil, e
 		}
@@ -144,8 +214,6 @@ func (h *Handler) Dispatch(ctx context.Context, method string, params []json.Raw
 		return true, h.Store.DisallowKind(ctx, k)
 	case "listallowedkinds":
 		return h.Store.ListAllowedKinds(ctx)
-	case "listdisallowedkinds":
-		return h.Store.ListDisallowedKinds(ctx)
 	case "blockip":
 		v, r, e := stringReason(params, "ip")
 		if e != nil {
@@ -205,6 +273,66 @@ func stringReason(params []json.RawMessage, name string) (string, string, error)
 	}
 	return v, reason, nil
 }
+func pubkeyReason(params []json.RawMessage) (string, string, error) {
+	pubkey, reason, err := stringReason(params, "pubkey")
+	if err != nil {
+		return "", "", err
+	}
+	parsed, err := nostr.PubKeyFromHex(pubkey)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid pubkey")
+	}
+	return parsed.Hex(), reason, nil
+}
+
+func eventReason(params []json.RawMessage) (string, string, error) {
+	id, reason, err := stringReason(params, "event id")
+	if err != nil {
+		return "", "", err
+	}
+	parsed, err := nostr.IDFromHex(id)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid event id")
+	}
+	return parsed.Hex(), reason, nil
+}
+
+func roleParams(params []json.RawMessage) (Role, error) {
+	if len(params) != 5 {
+		return Role{}, fmt.Errorf("role parameters required")
+	}
+	values := make([]string, 4)
+	for i, name := range []string{"role id", "label", "description", "color"} {
+		if err := json.Unmarshal(params[i], &values[i]); err != nil {
+			return Role{}, fmt.Errorf("invalid %s", name)
+		}
+		values[i] = strings.TrimSpace(values[i])
+		if i < 2 && values[i] == "" {
+			return Role{}, fmt.Errorf("invalid %s", name)
+		}
+	}
+	order, err := oneInt(params[4:], "order")
+	if err != nil {
+		return Role{}, err
+	}
+	return Role{ID: values[0], Label: values[1], Description: values[2], Color: values[3], Order: order}, nil
+}
+
+func pubkeyRole(params []json.RawMessage) (string, string, error) {
+	if len(params) != 2 {
+		return "", "", fmt.Errorf("pubkey and role id parameters required")
+	}
+	pubkey, _, err := pubkeyReason(params[:1])
+	if err != nil {
+		return "", "", err
+	}
+	roleID, err := oneString(params[1:], "role id")
+	if err != nil {
+		return "", "", err
+	}
+	return pubkey, roleID, nil
+}
+
 func oneInt(params []json.RawMessage, name string) (int, error) {
 	if len(params) != 1 {
 		return 0, fmt.Errorf("%s parameter required", name)
