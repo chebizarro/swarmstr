@@ -25,18 +25,53 @@ import (
 	nostr "fiatjaf.com/nostr"
 )
 
-// Kind constants for NIP-51 list events.
+// Kind constants for current NIP-51 standard lists and sets.
 const (
-	KindMuteList      = 10000 // Muted pubkeys
-	KindPinList       = 10001 // Pinned note IDs
-	KindPeopleList    = 30000 // Alias for follow sets / categorized people lists (replaceable, d-tag)
-	KindFollowSet     = 30000 // Follow sets (replaceable, d-tag)
-	KindDeprecatedSet = 30001 // Deprecated legacy categorized set
-	KindRelaySet      = 30002 // Relay sets (replaceable, d-tag)
-	KindBookmarkSet   = 30003 // Bookmark sets (replaceable, d-tag)
-	KindCurationSet   = 30004 // Categorized curation set (replaceable, d-tag)
-	KindBlockList     = 30000 // Alias: use d-tag "blocklist" for blocking
-	KindAllowList     = 30000 // Alias: use d-tag "allowlist" for allowing
+	KindFollowList       = 3
+	KindMuteList         = 10000
+	KindPinList          = 10001
+	KindRelayList        = 10002
+	KindBookmarks        = 10003
+	KindCommunities      = 10004
+	KindPublicChats      = 10005
+	KindBlockedRelays    = 10006
+	KindSearchRelays     = 10007
+	KindProfileBadges    = 10008
+	KindSimpleGroups     = 10009
+	KindRelayFeeds       = 10012
+	KindPrivateRelays    = 10013
+	KindInterests        = 10015
+	KindGitAuthors       = 10017
+	KindGitRepositories  = 10018
+	KindMediaFollows     = 10020
+	KindEmojis           = 10030
+	KindDMRelays         = 10050
+	KindFavoritePodcasts = 10054
+	KindBlossomServers   = 10063
+	KindAuthoredPodcasts = 10064
+	KindGoodWikiAuthors  = 10101
+	KindGoodWikiRelays   = 10102
+
+	KindPeopleList       = 30000 // Alias for follow sets / categorized people lists.
+	KindFollowSet        = 30000
+	KindDeprecatedSet    = 30001
+	KindRelaySet         = 30002
+	KindBookmarkSet      = 30003
+	KindCurationSet      = 30004 // Article curation.
+	KindVideoCuration    = 30005
+	KindPictureCuration  = 30006
+	KindKindMuteSet      = 30007
+	KindBadgeSet         = 30008
+	KindInterestSet      = 30015
+	KindEmojiSet         = 30030
+	KindReleaseSet       = 30063
+	KindAppCurationSet   = 30267
+	KindCalendarSet      = 31924
+	KindStarterPack      = 39089
+	KindMediaStarterPack = 39092
+
+	KindBlockList = 30000 // Alias: use d-tag "blocklist" for blocking.
+	KindAllowList = 30000 // Alias: use d-tag "allowlist" for allowing.
 )
 
 // Well-known d-tag identifiers for relay sets (kind 30002).
@@ -53,32 +88,46 @@ const (
 
 // ListEntry is a single entry in a NIP-51 list.
 type ListEntry struct {
-	Tag     string // tag type: "p" (pubkey), "e" (event id), "t" (hashtag), "a" (naddr), "r" (relay)
-	Value   string // the main value
-	Relay   string // optional relay hint (for "p" and "e" tags)
-	Petname string // optional petname (for "p" tags)
+	Tag     string   // tag type, such as p, e, t, a, relay, word, group, emoji, server, or url
+	Value   string   // the main value
+	Relay   string   // optional relay hint (for p/e compatibility)
+	Petname string   // optional petname (for p compatibility)
+	Extra   []string // remaining wire values, preserved for generic list items
 }
 
 // List represents a decoded NIP-51 list event.
 type List struct {
-	Kind      int
-	DTag      string // for replaceable kinds (30000, 30001)
-	PubKey    string
-	Title     string
-	Entries   []ListEntry
-	CreatedAt int64
-	EventID   string
+	Kind           int
+	DTag           string // for replaceable kinds (30000, 30001)
+	PubKey         string
+	Title          string
+	Image          string
+	Description    string
+	Entries        []ListEntry // public tag items
+	PrivateEntries []ListEntry // NIP-44 items from encrypted content
+	CreatedAt      int64
+	EventID        string
 }
 
-// RelaysFromList extracts relay URLs from "r" tag entries in a list.
-// This is the standard way to read relay sets (kind 30002).
+// RelaysFromList extracts current relay tags and legacy kind-30002 r tags.
 func RelaysFromList(list *List) []string {
 	var out []string
-	for _, e := range list.Entries {
-		if e.Tag == "r" && e.Value != "" {
+	for _, e := range list.AllEntries() {
+		if (e.Tag == "relay" || e.Tag == "r") && e.Value != "" {
 			out = append(out, e.Value)
 		}
 	}
+	return out
+}
+
+// AllEntries returns public items followed by private items in chronological order.
+func (list *List) AllEntries() []ListEntry {
+	if list == nil {
+		return nil
+	}
+	out := make([]ListEntry, 0, len(list.Entries)+len(list.PrivateEntries))
+	out = append(out, list.Entries...)
+	out = append(out, list.PrivateEntries...)
 	return out
 }
 
@@ -87,7 +136,7 @@ func NewRelaySetList(pubkey, dtag string, relays []string) *List {
 	entries := make([]ListEntry, 0, len(relays))
 	for _, r := range relays {
 		if r != "" {
-			entries = append(entries, ListEntry{Tag: "r", Value: r})
+			entries = append(entries, ListEntry{Tag: "relay", Value: r})
 		}
 	}
 	return &List{
@@ -132,7 +181,7 @@ func (s *ListStore) IsMuted(ownerPubkey, targetPubkey string) bool {
 	if !ok {
 		return false
 	}
-	for _, e := range l.Entries {
+	for _, e := range l.AllEntries() {
 		if e.Tag == "p" && e.Value == targetPubkey {
 			return true
 		}
@@ -146,7 +195,7 @@ func (s *ListStore) IsBlocked(ownerPubkey, targetPubkey string) bool {
 	if !ok {
 		return false
 	}
-	for _, e := range l.Entries {
+	for _, e := range l.AllEntries() {
 		if e.Tag == "p" && e.Value == targetPubkey {
 			return true
 		}
@@ -161,7 +210,7 @@ func (s *ListStore) IsAllowed(ownerPubkey, targetPubkey string) bool {
 	if !ok {
 		return true // no allowlist = allow all
 	}
-	for _, e := range l.Entries {
+	for _, e := range l.AllEntries() {
 		if e.Tag == "p" && e.Value == targetPubkey {
 			return true
 		}
@@ -247,16 +296,23 @@ func DecodeEvent(ev nostr.Event) *List {
 			if len(tag) >= 2 {
 				l.Title = tag[1]
 			}
-		case "p", "e", "t", "a", "r":
-			entry := ListEntry{Tag: tag[0]}
+		case "image":
 			if len(tag) >= 2 {
-				entry.Value = tag[1]
+				l.Image = tag[1]
 			}
-			if len(tag) >= 3 {
-				entry.Relay = tag[2]
+		case "description":
+			if len(tag) >= 2 {
+				l.Description = tag[1]
 			}
-			if len(tag) >= 4 && tag[0] == "p" {
-				entry.Petname = tag[3]
+		default:
+			if !isNIP51ItemTag(tag[0]) || len(tag) < 2 {
+				continue
+			}
+			entry := listEntryFromTag(tag)
+			// Pre-parity swarmstr emitted r for relay sets. Normalize it on
+			// read while preserving r for kind-10009 simple-group metadata.
+			if ev.Kind == nostr.Kind(KindRelaySet) && entry.Tag == "r" {
+				entry.Tag = "relay"
 			}
 			l.Entries = append(l.Entries, entry)
 		}
@@ -264,36 +320,146 @@ func DecodeEvent(ev nostr.Event) *List {
 	return l
 }
 
-// Publish creates or replaces a NIP-51 list event on the given relays.
-func Publish(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, list *List) (string, error) {
+// DecodeEventWithPrivate decrypts self-encrypted NIP-44 private list items.
+func DecodeEventWithPrivate(ctx context.Context, keyer nostr.Keyer, ev nostr.Event) (*List, error) {
+	list := DecodeEvent(ev)
+	if strings.TrimSpace(ev.Content) == "" {
+		return list, nil
+	}
+	if keyer == nil {
+		return nil, fmt.Errorf("nip51: keyer required for private items")
+	}
+	plaintext, err := keyer.Decrypt(ctx, ev.Content, ev.PubKey)
+	if err != nil {
+		return nil, fmt.Errorf("nip51: decrypt private items: %w", err)
+	}
+	var tags nostr.Tags
+	if err := json.Unmarshal([]byte(plaintext), &tags); err != nil {
+		return nil, fmt.Errorf("nip51: decode private items: %w", err)
+	}
+	for _, tag := range tags {
+		if len(tag) < 2 || !isNIP51ItemTag(tag[0]) {
+			return nil, fmt.Errorf("nip51: invalid private item %v", tag)
+		}
+		entry := listEntryFromTag(tag)
+		if ev.Kind == nostr.Kind(KindRelaySet) && entry.Tag == "r" {
+			entry.Tag = "relay"
+		}
+		list.PrivateEntries = append(list.PrivateEntries, entry)
+	}
+	return list, nil
+}
+
+func isNIP51ItemTag(name string) bool {
+	switch name {
+	case "p", "e", "t", "a", "r", "relay", "word", "group", "emoji", "server", "url":
+		return true
+	default:
+		return false
+	}
+}
+
+func listEntryFromTag(tag nostr.Tag) ListEntry {
+	entry := ListEntry{Tag: tag[0], Value: tag[1]}
+	if len(tag) > 2 {
+		entry.Extra = append([]string(nil), tag[2:]...)
+		entry.Relay = tag[2]
+	}
+	if len(tag) > 3 && tag[0] == "p" {
+		entry.Petname = tag[3]
+	}
+	return entry
+}
+
+func listEntryTag(entry ListEntry, kind int) (nostr.Tag, error) {
+	name := strings.TrimSpace(entry.Tag)
+	if kind == KindRelaySet && name == "r" {
+		name = "relay"
+	}
+	if !isNIP51ItemTag(name) || strings.TrimSpace(entry.Value) == "" {
+		return nil, fmt.Errorf("invalid list entry %q=%q", name, entry.Value)
+	}
+	tag := nostr.Tag{name, entry.Value}
+	if len(entry.Extra) > 0 {
+		return append(tag, entry.Extra...), nil
+	}
+	if entry.Relay != "" {
+		tag = append(tag, entry.Relay)
+	}
+	if name == "p" && entry.Petname != "" {
+		if entry.Relay == "" {
+			tag = append(tag, "")
+		}
+		tag = append(tag, entry.Petname)
+	}
+	return tag, nil
+}
+
+// BuildListEvent constructs an unsigned NIP-51 event. PrivateEntries are
+// serialized as a JSON tag array and NIP-44 encrypted to the author's own key.
+func BuildListEvent(ctx context.Context, keyer nostr.Keyer, list *List) (nostr.Event, error) {
+	if list == nil {
+		return nostr.Event{}, fmt.Errorf("nip51: list is required")
+	}
+	if keyer == nil {
+		return nostr.Event{}, fmt.Errorf("nip51: keyer is required")
+	}
+	if list.Kind >= 30000 && list.Kind < 40000 && strings.TrimSpace(list.DTag) == "" {
+		return nostr.Event{}, fmt.Errorf("nip51: d tag is required for set kind %d", list.Kind)
+	}
+	pubkey, err := keyer.GetPublicKey(ctx)
+	if err != nil {
+		return nostr.Event{}, fmt.Errorf("nip51: get public key: %w", err)
+	}
 	tags := nostr.Tags{}
 	if list.DTag != "" {
 		tags = append(tags, nostr.Tag{"d", list.DTag})
 	}
-	if list.Title != "" {
-		tags = append(tags, nostr.Tag{"title", list.Title})
-	}
-	for _, e := range list.Entries {
-		tag := nostr.Tag{e.Tag, e.Value}
-		if e.Relay != "" {
-			tag = append(tag, e.Relay)
+	for _, metadata := range []struct{ name, value string }{
+		{"title", list.Title}, {"image", list.Image}, {"description", list.Description},
+	} {
+		if metadata.value != "" {
+			tags = append(tags, nostr.Tag{metadata.name, metadata.value})
 		}
-		if e.Tag == "p" && e.Petname != "" {
-			if e.Relay == "" {
-				tag = append(tag, "")
-			}
-			tag = append(tag, e.Petname)
+	}
+	for _, entry := range list.Entries {
+		tag, err := listEntryTag(entry, list.Kind)
+		if err != nil {
+			return nostr.Event{}, fmt.Errorf("nip51: public item: %w", err)
 		}
 		tags = append(tags, tag)
 	}
 
-	evt := nostr.Event{
-		Kind:      nostr.Kind(list.Kind),
-		CreatedAt: nostr.Now(),
-		Tags:      tags,
-		Content:   "",
+	content := ""
+	if len(list.PrivateEntries) > 0 {
+		privateTags := make(nostr.Tags, 0, len(list.PrivateEntries))
+		for _, entry := range list.PrivateEntries {
+			tag, err := listEntryTag(entry, list.Kind)
+			if err != nil {
+				return nostr.Event{}, fmt.Errorf("nip51: private item: %w", err)
+			}
+			privateTags = append(privateTags, tag)
+		}
+		plaintext, err := json.Marshal(privateTags)
+		if err != nil {
+			return nostr.Event{}, fmt.Errorf("nip51: encode private items: %w", err)
+		}
+		content, err = keyer.Encrypt(ctx, string(plaintext), pubkey)
+		if err != nil {
+			return nostr.Event{}, fmt.Errorf("nip51: encrypt private items: %w", err)
+		}
 	}
+	return nostr.Event{
+		Kind: nostr.Kind(list.Kind), PubKey: pubkey, CreatedAt: nostr.Now(), Tags: tags, Content: content,
+	}, nil
+}
 
+// Publish creates or replaces a NIP-51 list event on the given relays.
+func Publish(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer, relays []string, list *List) (string, error) {
+	evt, err := BuildListEvent(ctx, keyer, list)
+	if err != nil {
+		return "", err
+	}
 	if err := keyer.SignEvent(ctx, &evt); err != nil {
 		return "", fmt.Errorf("nip51: sign event: %w", err)
 	}

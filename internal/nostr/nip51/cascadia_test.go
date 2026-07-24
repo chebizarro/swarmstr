@@ -48,7 +48,7 @@ func TestCascadiaListBuilders(t *testing.T) {
 	if relays.Kind != KindRelaySet || relays.DTag != "relays:deployments" {
 		t.Fatalf("relays list kind/dtag = %d/%q", relays.Kind, relays.DTag)
 	}
-	if len(relays.Entries) != 1 || relays.Entries[0].Tag != "r" {
+	if len(relays.Entries) != 1 || relays.Entries[0].Tag != "relay" {
 		t.Fatalf("relay entries = %+v", relays.Entries)
 	}
 }

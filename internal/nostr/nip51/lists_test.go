@@ -1,11 +1,13 @@
 package nip51
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
 )
 
 // ─── ListEntry / List ─────────────────────────────────────────────────────────
@@ -52,8 +54,8 @@ func TestNewRelaySetList(t *testing.T) {
 		t.Fatalf("expected 2 entries (empty filtered), got %d", len(l.Entries))
 	}
 	for _, e := range l.Entries {
-		if e.Tag != "r" {
-			t.Errorf("entry tag: got %q, want r", e.Tag)
+		if e.Tag != "relay" {
+			t.Errorf("entry tag: got %q, want relay", e.Tag)
 		}
 	}
 }
@@ -258,6 +260,66 @@ func TestDecodeEvent_AllEntryTypes(t *testing.T) {
 	}
 }
 
+func TestRelaySetEmitsCurrentRelayTagAndReadsLegacyR(t *testing.T) {
+	kr := testListKeyer()
+	evt, err := BuildListEvent(context.Background(), kr, NewRelaySetList("", "search", []string{"wss://search.example"}))
+	if err != nil {
+		t.Fatalf("BuildListEvent: %v", err)
+	}
+	if len(evt.Tags) != 2 || evt.Tags[0][0] != "d" || evt.Tags[1][0] != "relay" {
+		t.Fatalf("current relay-set tags = %v", evt.Tags)
+	}
+	legacy := DecodeEvent(makeTestEvent(KindRelaySet, [][]string{{"d", "search"}, {"r", "wss://legacy.example"}}, ""))
+	if len(legacy.Entries) != 1 || legacy.Entries[0].Tag != "relay" || legacy.Entries[0].Value != "wss://legacy.example" {
+		t.Fatalf("legacy relay-set decode = %+v", legacy.Entries)
+	}
+}
+
+func TestPrivateItemsNIP44RoundTripWithoutPlaintextLeak(t *testing.T) {
+	kr := testListKeyer()
+	list := &List{
+		Kind:           KindMuteList,
+		Entries:        []ListEntry{{Tag: "p", Value: strings.Repeat("1", 64)}},
+		PrivateEntries: []ListEntry{{Tag: "word", Value: "private-secret-word"}, {Tag: "t", Value: "hidden-topic"}},
+	}
+	evt, err := BuildListEvent(context.Background(), kr, list)
+	if err != nil {
+		t.Fatalf("BuildListEvent: %v", err)
+	}
+	if evt.Content == "" || strings.Contains(evt.Content, "private-secret-word") || strings.Contains(evt.Content, "hidden-topic") {
+		t.Fatalf("private plaintext leaked in content %q", evt.Content)
+	}
+	if len(evt.Tags) != 1 || evt.Tags[0][0] != "p" {
+		t.Fatalf("public tags = %v", evt.Tags)
+	}
+	decoded, err := DecodeEventWithPrivate(context.Background(), kr, evt)
+	if err != nil {
+		t.Fatalf("DecodeEventWithPrivate: %v", err)
+	}
+	if len(decoded.Entries) != 1 || len(decoded.PrivateEntries) != 2 {
+		t.Fatalf("decoded public=%+v private=%+v", decoded.Entries, decoded.PrivateEntries)
+	}
+	if decoded.PrivateEntries[0].Tag != "word" || decoded.PrivateEntries[0].Value != "private-secret-word" {
+		t.Fatalf("private[0] = %+v", decoded.PrivateEntries[0])
+	}
+}
+
+func TestDecodeEvent_AllCurrentStandardItemTags(t *testing.T) {
+	evt := makeTestEvent(KindSimpleGroups, [][]string{
+		{"word", "lowercase"}, {"relay", "wss://relay.example"},
+		{"group", "group-id", "wss://groups.example", "Group Name"},
+		{"emoji", "wave", "https://example/wave.png"}, {"server", "https://blossom.example"},
+		{"url", "https://podcast.example/rss.xml"},
+	}, "")
+	list := DecodeEvent(evt)
+	if len(list.Entries) != 6 {
+		t.Fatalf("entries = %+v", list.Entries)
+	}
+	if got := list.Entries[2].Extra; len(got) != 2 || got[0] != "wss://groups.example" || got[1] != "Group Name" {
+		t.Fatalf("group extras = %v", got)
+	}
+}
+
 func TestDecodeEvent_EmptyTags(t *testing.T) {
 	ev := makeTestEvent(KindMuteList, [][]string{
 		{}, // empty tag, should be skipped
@@ -384,6 +446,11 @@ func TestListKey_DifferentParams(t *testing.T) {
 	}
 }
 
+func testListKeyer() nostr.Keyer {
+	kr := keyer.NewPlainKeySigner(nostr.Generate())
+	return &kr
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 func TestKindConstants(t *testing.T) {
@@ -395,6 +462,43 @@ func TestKindConstants(t *testing.T) {
 	}
 	if KindRelaySet != 30002 {
 		t.Errorf("KindRelaySet: %d", KindRelaySet)
+	}
+}
+
+func TestCurrentNIP51KindMatrix(t *testing.T) {
+	standard := map[string]int{
+		"follow": KindFollowList, "mute": KindMuteList, "pinned": KindPinList,
+		"relay-list": KindRelayList, "bookmarks": KindBookmarks, "communities": KindCommunities,
+		"public-chats": KindPublicChats, "blocked-relays": KindBlockedRelays, "search-relays": KindSearchRelays,
+		"profile-badges": KindProfileBadges, "simple-groups": KindSimpleGroups, "relay-feeds": KindRelayFeeds,
+		"private-relays": KindPrivateRelays, "interests": KindInterests, "git-authors": KindGitAuthors,
+		"git-repositories": KindGitRepositories, "media-follows": KindMediaFollows, "emojis": KindEmojis,
+		"dm-relays": KindDMRelays, "favorite-podcasts": KindFavoritePodcasts, "blossom": KindBlossomServers,
+		"authored-podcasts": KindAuthoredPodcasts, "wiki-authors": KindGoodWikiAuthors, "wiki-relays": KindGoodWikiRelays,
+	}
+	wantStandard := map[string]int{
+		"follow": 3, "mute": 10000, "pinned": 10001, "relay-list": 10002, "bookmarks": 10003,
+		"communities": 10004, "public-chats": 10005, "blocked-relays": 10006, "search-relays": 10007,
+		"profile-badges": 10008, "simple-groups": 10009, "relay-feeds": 10012, "private-relays": 10013,
+		"interests": 10015, "git-authors": 10017, "git-repositories": 10018, "media-follows": 10020,
+		"emojis": 10030, "dm-relays": 10050, "favorite-podcasts": 10054, "blossom": 10063,
+		"authored-podcasts": 10064, "wiki-authors": 10101, "wiki-relays": 10102,
+	}
+	for name, want := range wantStandard {
+		if got := standard[name]; got != want {
+			t.Errorf("%s kind = %d, want %d", name, got, want)
+		}
+	}
+	sets := map[int]int{
+		KindFollowSet: 30000, KindRelaySet: 30002, KindBookmarkSet: 30003, KindCurationSet: 30004,
+		KindVideoCuration: 30005, KindPictureCuration: 30006, KindKindMuteSet: 30007, KindBadgeSet: 30008,
+		KindInterestSet: 30015, KindEmojiSet: 30030, KindReleaseSet: 30063, KindAppCurationSet: 30267,
+		KindCalendarSet: 31924, KindStarterPack: 39089, KindMediaStarterPack: 39092,
+	}
+	for got, want := range sets {
+		if got != want {
+			t.Errorf("set kind = %d, want %d", got, want)
+		}
 	}
 }
 
