@@ -14,10 +14,20 @@ import (
 // channelAccount is a configured, named channel instance that supplies
 // credentials and routing defaults internally without exposing secrets.
 type channelAccount struct {
-	ID       string
-	Provider string
-	Config   map[string]any
-	Default  bool
+	ID        string
+	Provider  string
+	Config    map[string]any
+	AllowFrom []string
+	Default   bool
+}
+
+// ResolvedChannelAccount is a configured channel account with credentials kept
+// inside the daemon. Lifecycle callers use it instead of accepting raw secrets.
+type ResolvedChannelAccount struct {
+	ID        string
+	Provider  string
+	Config    map[string]any
+	AllowFrom []string
 }
 
 var configuredChannelAccounts = struct {
@@ -46,10 +56,11 @@ func ConfigureChannelAccounts(cfg state.NostrChannelsConfig) {
 			byProvider[provider] = make(map[string]channelAccount)
 		}
 		byProvider[provider][accountID] = channelAccount{
-			ID:       accountID,
-			Provider: provider,
-			Config:   cloneAccountParams(accountCfg),
-			Default:  isDefault,
+			ID:        accountID,
+			Provider:  provider,
+			Config:    cloneAccountParams(accountCfg),
+			AllowFrom: append([]string(nil), channelCfg.AllowFrom...),
+			Default:   isDefault,
 		}
 	}
 
@@ -86,6 +97,44 @@ func ResolveChannelAccountParams(provider string, params map[string]any) (map[st
 	}
 	resolved["account_id"] = selected.ID
 	return resolved, nil
+}
+
+// ResolveConfiguredChannelAccount resolves a named/default account for a
+// provider. Unlike action parameter resolution, lifecycle calls require a real
+// configured account and never fall back to caller-supplied credentials.
+func ResolveConfiguredChannelAccount(provider, accountID string) (ResolvedChannelAccount, error) {
+	provider = normalizeChannelProvider(provider)
+	configuredChannelAccounts.RLock()
+	accounts := configuredChannelAccounts.byProvider[provider]
+	selected, err := selectChannelAccount(provider, strings.TrimSpace(accountID), accounts)
+	configuredChannelAccounts.RUnlock()
+	if err != nil {
+		return ResolvedChannelAccount{}, err
+	}
+	if selected == nil {
+		return ResolvedChannelAccount{}, fmt.Errorf("no channel accounts configured for provider %q", provider)
+	}
+	return ResolvedChannelAccount{ID: selected.ID, Provider: selected.Provider, Config: cloneAccountParams(selected.Config), AllowFrom: append([]string(nil), selected.AllowFrom...)}, nil
+}
+
+// ConfiguredChannelAccounts returns deterministic public account identities
+// without exposing their configuration values.
+func ConfiguredChannelAccounts() []ResolvedChannelAccount {
+	configuredChannelAccounts.RLock()
+	defer configuredChannelAccounts.RUnlock()
+	var out []ResolvedChannelAccount
+	for provider, accounts := range configuredChannelAccounts.byProvider {
+		for id := range accounts {
+			out = append(out, ResolvedChannelAccount{ID: id, Provider: provider})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Provider == out[j].Provider {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Provider < out[j].Provider
+	})
+	return out
 }
 
 // AccountScopedGatewayMethods wraps channel gateway handlers with configured

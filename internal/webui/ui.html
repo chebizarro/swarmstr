@@ -1831,7 +1831,7 @@ const TOKEN   = '{{.Token}}';
 
   function normalizePendingApproval(raw, kind) {
     if (!raw || typeof raw !== 'object') return null;
-    const approval = Object.assign({}, raw);
+    const approval = Object.assign({}, raw.presentation || {}, raw);
     approval.id = approval.id || approval.request_id || approval.approval_id;
     approval.kind = approval.kind || approval.approval_kind || kind || 'exec';
     approval.status = approval.status || 'pending';
@@ -1845,21 +1845,14 @@ const TOKEN   = '{{.Token}}';
   }
 
   async function reconcilePendingApprovals() {
-    const snapshot = await callMethod('exec.approval.list', {});
+    const snapshot = await callMethod('approval.list', {});
     const authoritative = Array.isArray(snapshot)
       ? snapshot
       : ((snapshot && (snapshot.pending || snapshot.approvals || snapshot.items)) || []);
     const now = Date.now();
     const merged = new Map();
-    // Plugin approvals use a separate owner; preserve only still-live plugin entries.
-    approvalQueue.forEach(existing => {
-      const approval = normalizePendingApproval(existing);
-      if (!approval || approval.kind === 'exec' || approval.status !== 'pending') return;
-      if (approval.expires_at && approval.expires_at <= now) return;
-      merged.set(approval.id, approval);
-    });
     authoritative.forEach(item => {
-      const approval = normalizePendingApproval(item, 'exec');
+      const approval = normalizePendingApproval(item);
       if (!approval || approval.status !== 'pending') return;
       if (approval.expires_at && approval.expires_at <= now) return;
       merged.set(approval.id, approval);
@@ -1911,10 +1904,11 @@ const TOKEN   = '{{.Token}}';
   function renderApproval(a) {
     updateApprovalBadge();
     const isPlugin = a.kind === 'plugin';
-    approvalTitle.textContent = isPlugin ? '⚠ Plugin Approval Required' : '⚠ Exec Approval Required';
+    const isSystem = a.kind === 'system';
+    approvalTitle.textContent = isPlugin ? '⚠ Plugin Approval Required' : (isSystem ? '⚠ System Approval Required' : '⚠ Exec Approval Required');
     approvalSubtitle.textContent = isPlugin
       ? 'Review plugin identity, permissions, and requested operation before deciding:'
-      : 'Review the command metadata before deciding:';
+      : (isSystem ? 'Review the system operation before deciding:' : 'Review the command metadata before deciding:');
     approvalIDLabel.textContent = 'id: ' + truncate(a.id, 28);
     approvalCmd.innerHTML = isPlugin ? escapeHTML(resolveApprovalCommand(a)) : highlightCommand(resolveApprovalCommand(a));
     approvalMeta.innerHTML = '';
@@ -2006,9 +2000,6 @@ const TOKEN   = '{{.Token}}';
         : (decision === 'approve' ? 'allow-once' : 'deny');
       const params = { id, kind: approval.kind || 'exec', decision: normalizedDecision };
       if (approval.plugin_id || approval.pluginId) params.plugin_id = approval.plugin_id || approval.pluginId;
-      if (approval.kind === 'plugin') {
-        throw new Error('plugin approval resolution is not registered by this gateway');
-      }
       await callMethod('approval.resolve', params);
       approvalQueue = approvalQueue.filter(a => a.id !== id);
       currentApprovalID = null;

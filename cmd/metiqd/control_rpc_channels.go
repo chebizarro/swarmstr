@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"metiq/internal/agent"
@@ -34,11 +35,131 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
+		result := map[string]any{}
 		if channelState == nil {
-			return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{buildNostrChannelStatusRow(map[string]any{}, "channel_state_unavailable")}}}, true, nil
+			result["channels"] = []map[string]any{buildNostrChannelStatusRow(map[string]any{}, "channel_state_unavailable")}
+		} else {
+			status := channelState.Status(dmBus, controlBus, cfg)
+			result["channels"] = []map[string]any{buildNostrChannelStatusRow(status, "")}
 		}
-		status := channelState.Status(dmBus, controlBus, cfg)
-		return nostruntime.ControlRPCResult{Result: map[string]any{"channels": []map[string]any{buildNostrChannelStatusRow(status, "")}}}, true, nil
+		if h.deps.channelAccounts != nil {
+			result["channel_accounts"] = h.deps.channelAccounts.List()
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodChannelsStart, methods.MethodChannelsStop:
+		req, err := methods.DecodeChannelsLifecycleParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if h.deps.channelAccounts == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel account runtime not configured")
+		}
+		var snapshot channels.AccountSnapshot
+		if method == methods.MethodChannelsStart {
+			snapshot, err = h.deps.channelAccounts.Start(ctx, req.Channel, req.AccountID)
+		} else {
+			snapshot, err = h.deps.channelAccounts.Stop(ctx, req.Channel, req.AccountID)
+		}
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result := map[string]any{"channel": snapshot.Channel, "account_id": snapshot.AccountID}
+		if method == methods.MethodChannelsStart {
+			result["started"] = snapshot.Running
+		} else {
+			result["stopped"] = !snapshot.Running
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodChannelsPairingList:
+		req, err := methods.DecodeChannelsPairingListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if h.deps.channelPairing == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel pairing runtime not configured")
+		}
+		if req.Channel != "" {
+			if _, err := channels.ResolveConfiguredChannelAccount(req.Channel, req.AccountID); err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+		}
+		pending, err := h.deps.channelPairing.List(req.Channel, req.AccountID, time.Now())
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		accounts := []map[string]any{}
+		for _, account := range channels.ConfiguredChannelAccounts() {
+			if req.Channel != "" && account.Provider != req.Channel {
+				continue
+			}
+			if req.AccountID != "" && account.ID != req.AccountID {
+				continue
+			}
+			resolved, resolveErr := channels.ResolveConfiguredChannelAccount(account.Provider, account.ID)
+			if resolveErr != nil {
+				continue
+			}
+			dmPolicy, _ := resolved.Config["dm_policy"].(string)
+			if !strings.EqualFold(strings.TrimSpace(dmPolicy), "pairing") {
+				continue
+			}
+			accounts = append(accounts, map[string]any{"channel": account.Provider, "account_id": account.ID})
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"accounts": accounts, "requests": pending}}, true, nil
+	case methods.MethodChannelsPairingApprove, methods.MethodChannelsPairingDismiss:
+		req, err := methods.DecodeChannelsPairingResolveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if h.deps.channelPairing == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel pairing runtime not configured")
+		}
+		var pairing channels.PairingRequest
+		if method == methods.MethodChannelsPairingApprove {
+			if h.deps.approvePairing == nil {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel pairing persistence not configured")
+			}
+			pairing, err = h.deps.channelPairing.Approve(req.RequestID, func(observed channels.PairingRequest) error {
+				if observed.Channel != req.Channel || observed.AccountID != req.AccountID {
+					return fmt.Errorf("pairing request does not belong to channel account")
+				}
+				return h.deps.approvePairing(ctx, observed)
+			})
+		} else {
+			observed, ok := h.deps.channelPairing.Get(req.RequestID)
+			if !ok {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("pending DM access request not found")
+			}
+			if observed.Channel != req.Channel || observed.AccountID != req.AccountID {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("pairing request does not belong to channel account")
+			}
+			pairing, err = h.deps.channelPairing.Dismiss(req.RequestID)
+		}
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result := map[string]any{"request_id": pairing.RequestID, "channel": pairing.Channel, "account_id": pairing.AccountID, "sender_id": pairing.SenderID}
+		resolution := "dismissed"
+		if method == methods.MethodChannelsPairingApprove {
+			result["approved"] = true
+			resolution = "approved"
+		} else {
+			result["dismissed"] = true
+		}
+		emitControlWSEvent(gatewayws.EventChannelPairingResolved, map[string]any{"ts_ms": time.Now().UnixMilli(), "request_id": pairing.RequestID, "channel": pairing.Channel, "account_id": pairing.AccountID, "sender_id": pairing.SenderID, "resolution": resolution})
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodChannelsLogout:
 		req, err := methods.DecodeChannelsLogoutParams(in.Params)
 		if err != nil {

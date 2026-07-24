@@ -1346,6 +1346,8 @@ func (r *cronRegistry) Load(ctx context.Context, repo *state.DocsRepository) err
 
 type execApprovalPendingRecord struct {
 	ID                   string         `json:"id"`
+	Kind                 string         `json:"kind"`
+	Presentation         map[string]any `json:"presentation,omitempty"`
 	NodeID               string         `json:"node_id,omitempty"`
 	AgentID              *string        `json:"agent_id,omitempty"`
 	SessionKey           *string        `json:"session_key,omitempty"`
@@ -1374,18 +1376,15 @@ type execApprovalsRegistry struct {
 	global           map[string]any
 	perNode          map[string]map[string]any
 	pending          map[string]execApprovalPendingRecord
+	storagePath      string
 	pendingID        int64
 	watchers         map[string][]chan execApprovalPendingRecord
 	onWaitRegistered func(id string)
 }
 
 func newExecApprovalsRegistry() *execApprovalsRegistry {
-	return &execApprovalsRegistry{
-		global:   map[string]any{},
-		perNode:  map[string]map[string]any{},
-		pending:  map[string]execApprovalPendingRecord{},
-		watchers: map[string][]chan execApprovalPendingRecord{},
-	}
+	registry, _ := newExecApprovalsRegistryAt("")
+	return registry
 }
 
 func (r *execApprovalsRegistry) cleanup() {
@@ -1393,22 +1392,47 @@ func (r *execApprovalsRegistry) cleanup() {
 	defer r.mu.Unlock()
 	now := time.Now().UnixMilli()
 	ttlMS := int64(approvalTTL.Milliseconds())
-	for id, rec := range r.pending {
+	next := cloneExecApprovalRecords(r.pending)
+	notifications := map[string]execApprovalPendingRecord{}
+	changed := false
+	for id, rec := range next {
 		if rec.Status == "resolved" && now-rec.ResolvedAt > ttlMS {
-			delete(r.pending, id)
-		} else if rec.ExpiresAt > 0 && now > rec.ExpiresAt {
-			delete(r.pending, id)
+			delete(next, id)
+			changed = true
+			continue
+		}
+		if rec.Status == "pending" && rec.ExpiresAt > 0 && now >= rec.ExpiresAt {
+			rec.Status = "resolved"
+			rec.Decision = "deny"
+			rec.Reason = "approval expired"
+			rec.ResolvedAt = now
+			next[id] = rec
+			notifications[id] = rec
+			changed = true
 		}
 	}
-	if len(r.pending) > maxPendingApprovals {
-		oldest := make([]string, 0, len(r.pending))
-		for id := range r.pending {
-			oldest = append(oldest, id)
+	if len(next) > maxPendingApprovals {
+		oldest := make([]execApprovalPendingRecord, 0, len(next))
+		for _, rec := range next {
+			oldest = append(oldest, rec)
 		}
-		excess := len(oldest) - maxPendingApprovals
-		for i := 0; i < excess; i++ {
-			delete(r.pending, oldest[i])
+		sort.Slice(oldest, func(i, j int) bool {
+			if oldest[i].Requested == oldest[j].Requested {
+				return oldest[i].ID < oldest[j].ID
+			}
+			return oldest[i].Requested < oldest[j].Requested
+		})
+		for i := 0; i < len(oldest)-maxPendingApprovals; i++ {
+			delete(next, oldest[i].ID)
+			changed = true
 		}
+	}
+	if !changed || r.persistApprovalsLocked(next) != nil {
+		return
+	}
+	r.pending = next
+	for id, rec := range notifications {
+		r.notifyWatchers(id, rec)
 	}
 }
 
@@ -1440,33 +1464,7 @@ func (r *execApprovalsRegistry) SetNode(nodeID string, next map[string]any) map[
 }
 
 func (r *execApprovalsRegistry) Request(req methods.ExecApprovalRequestRequest) execApprovalPendingRecord {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pendingID++
-	now := time.Now().UnixMilli()
-	id := fmt.Sprintf("approval-%d-%d", now, r.pendingID)
-	rec := execApprovalPendingRecord{
-		ID:                   id,
-		NodeID:               req.NodeID,
-		AgentID:              req.AgentID,
-		SessionKey:           req.SessionKey,
-		Command:              req.Command,
-		CommandArgv:          append([]string(nil), req.CommandArgv...),
-		Args:                 req.Args,
-		CWD:                  req.CWD,
-		Host:                 req.Host,
-		AnalysisWarnings:     append([]string(nil), req.AnalysisWarnings...),
-		AnalysisSummary:      req.AnalysisSummary,
-		AnalysisSignature:    req.AnalysisSignature,
-		AllowAlwaysAvailable: req.AllowAlwaysAvailable,
-		AllowAlwaysReason:    req.AllowAlwaysReason,
-		ApprovalMode:         req.ApprovalMode,
-		TimeoutMS:            req.TimeoutMS,
-		Status:               "pending",
-		Requested:            now,
-		ExpiresAt:            now + int64(req.TimeoutMS),
-	}
-	r.pending[id] = rec
+	rec, _ := r.RequestDurable(req)
 	return rec
 }
 
@@ -1477,13 +1475,21 @@ func (r *execApprovalsRegistry) Resolve(req methods.ExecApprovalResolveRequest) 
 	if !ok {
 		return execApprovalPendingRecord{}, state.ErrNotFound
 	}
+	if rec.Status != "pending" {
+		return execApprovalPendingRecord{}, fmt.Errorf("approval %q is already resolved", req.ID)
+	}
 	rec.Decision = req.Decision
 	rec.Reason = req.Reason
 	rec.Status = "resolved"
 	rec.ResolvedAt = time.Now().UnixMilli()
-	r.pending[req.ID] = rec
+	next := cloneExecApprovalRecords(r.pending)
+	next[req.ID] = rec
+	if err := r.persistApprovalsLocked(next); err != nil {
+		return execApprovalPendingRecord{}, err
+	}
+	r.pending = next
 	r.notifyWatchers(req.ID, rec)
-	return rec, nil
+	return cloneExecApprovalRecord(rec), nil
 }
 
 func (r *execApprovalsRegistry) GetPending(id string) (execApprovalPendingRecord, error) {
@@ -1520,6 +1526,7 @@ func cloneExecApprovalRecord(rec execApprovalPendingRecord) execApprovalPendingR
 	out := rec
 	out.CommandArgv = append([]string(nil), rec.CommandArgv...)
 	out.Args = cloneMapAny(rec.Args)
+	out.Presentation = cloneMapAny(rec.Presentation)
 	out.AnalysisWarnings = append([]string(nil), rec.AnalysisWarnings...)
 	if rec.CWD != nil {
 		cwd := *rec.CWD
@@ -1569,35 +1576,29 @@ func (r *execApprovalsRegistry) WaitForDecision(ctx context.Context, id string, 
 
 	timeout := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
 	defer timeout.Stop()
-
-	expireTicker := time.NewTicker(1 * time.Second)
-	defer expireTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			r.mu.Lock()
-			rec, _ := r.pending[id]
-			r.mu.Unlock()
-			return rec, false, nil
-		case <-timeout.C:
-			r.mu.Lock()
-			rec, _ := r.pending[id]
-			r.mu.Unlock()
-			return rec, false, nil
-		case updated := <-ch:
-			if updated.Status == "resolved" {
-				return updated, true, nil
-			}
-		case <-expireTicker.C:
-			r.mu.Lock()
-			rec, ok := r.pending[id]
-			if ok && rec.ExpiresAt > 0 && time.Now().UnixMilli() > rec.ExpiresAt {
-				r.mu.Unlock()
-				return rec, false, nil
-			}
-			r.mu.Unlock()
+	var expiryTimer *time.Timer
+	var expiry <-chan time.Time
+	if rec.ExpiresAt > 0 {
+		untilExpiry := time.Until(time.UnixMilli(rec.ExpiresAt))
+		if untilExpiry <= 0 {
+			return r.terminalizePending(id, "approval expired")
 		}
+		expiryTimer = time.NewTimer(untilExpiry)
+		expiry = expiryTimer.C
+		defer expiryTimer.Stop()
+	}
+
+	select {
+	case <-ctx.Done():
+		current, err := r.GetApproval(id)
+		return current, current.Status == "resolved", err
+	case <-timeout.C:
+		current, err := r.GetApproval(id)
+		return current, current.Status == "resolved", err
+	case <-expiry:
+		return r.terminalizePending(id, "approval expired")
+	case updated := <-ch:
+		return updated, updated.Status == "resolved", nil
 	}
 }
 

@@ -58,7 +58,11 @@ func pluginRuntimeServices(store *secretspkg.Store) pluginmanager.RuntimeService
 				typed.AnalysisSignature = analysis.Signature
 				typed.AllowAlwaysAvailable = analysis.AllowAlways
 			}
-			return pluginRuntimeMap(registry.Request(typed)), nil
+			record, err := registry.RequestDurable(typed)
+			if err != nil {
+				return nil, err
+			}
+			return pluginRuntimeMap(record), nil
 		},
 		ExecApprovalSnapshot: func() map[string]any {
 			if controlExecApprovals == nil {

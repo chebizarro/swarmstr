@@ -19,6 +19,22 @@ type ChannelsLogoutRequest struct {
 	AccountID string `json:"account_id,omitempty"`
 }
 
+type ChannelsLifecycleRequest struct {
+	Channel   string `json:"channel"`
+	AccountID string `json:"account_id,omitempty"`
+}
+
+type ChannelsPairingListRequest struct {
+	Channel   string `json:"channel,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+}
+
+type ChannelsPairingResolveRequest struct {
+	Channel   string `json:"channel"`
+	AccountID string `json:"account_id"`
+	RequestID string `json:"request_id"`
+}
+
 // ChannelsJoinRequest joins a NIP-29 relay group or other channel.
 // For NIP-29, GroupAddress has the form "<relayHost>'<groupID>".
 type ChannelsJoinRequest struct {
@@ -106,6 +122,34 @@ func (r ChannelsLogoutRequest) Normalize() (ChannelsLogoutRequest, error) {
 	r.Channel = strings.ToLower(strings.TrimSpace(r.Channel))
 	if r.Channel == "" {
 		return r, fmt.Errorf("channel is required")
+	}
+	return r, nil
+}
+
+func (r ChannelsLifecycleRequest) Normalize() (ChannelsLifecycleRequest, error) {
+	r.Channel = strings.ToLower(strings.TrimSpace(r.Channel))
+	r.AccountID = strings.TrimSpace(r.AccountID)
+	if r.Channel == "" {
+		return r, fmt.Errorf("channel is required")
+	}
+	return r, nil
+}
+
+func (r ChannelsPairingListRequest) Normalize() (ChannelsPairingListRequest, error) {
+	r.Channel = strings.ToLower(strings.TrimSpace(r.Channel))
+	r.AccountID = strings.TrimSpace(r.AccountID)
+	if r.AccountID != "" && r.Channel == "" {
+		return r, fmt.Errorf("channel is required when account_id is set")
+	}
+	return r, nil
+}
+
+func (r ChannelsPairingResolveRequest) Normalize() (ChannelsPairingResolveRequest, error) {
+	r.Channel = strings.ToLower(strings.TrimSpace(r.Channel))
+	r.AccountID = strings.TrimSpace(r.AccountID)
+	r.RequestID = strings.TrimSpace(r.RequestID)
+	if r.Channel == "" || r.AccountID == "" || r.RequestID == "" {
+		return r, fmt.Errorf("channel, account_id, and request_id are required")
 	}
 	return r, nil
 }
@@ -264,6 +308,18 @@ func DecodeChannelsStatusParams(params json.RawMessage) (ChannelsStatusRequest, 
 		return req, nil
 	}
 	return decodeMethodParams[ChannelsStatusRequest](params)
+}
+
+func DecodeChannelsLifecycleParams(params json.RawMessage) (ChannelsLifecycleRequest, error) {
+	return decodeMethodParams[ChannelsLifecycleRequest](params)
+}
+
+func DecodeChannelsPairingListParams(params json.RawMessage) (ChannelsPairingListRequest, error) {
+	return decodeMethodParams[ChannelsPairingListRequest](params)
+}
+
+func DecodeChannelsPairingResolveParams(params json.RawMessage) (ChannelsPairingResolveRequest, error) {
+	return decodeMethodParams[ChannelsPairingResolveRequest](params)
 }
 
 func DecodeChannelsLogoutParams(params json.RawMessage) (ChannelsLogoutRequest, error) {

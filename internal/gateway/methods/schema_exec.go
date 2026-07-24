@@ -15,6 +15,11 @@ type ExecApprovalGetRequest struct {
 
 type ExecApprovalListRequest struct{}
 
+type ApprovalListRequest struct {
+	Kind   string `json:"kind,omitempty"`
+	Status string `json:"status,omitempty"`
+}
+
 type ApprovalResolveRequest struct {
 	ID       string `json:"id"`
 	Kind     string `json:"kind"`
@@ -106,14 +111,29 @@ func (r ExecApprovalGetRequest) Normalize() (ExecApprovalGetRequest, error) {
 
 func (r ExecApprovalListRequest) Normalize() (ExecApprovalListRequest, error) { return r, nil }
 
+func (r ApprovalListRequest) Normalize() (ApprovalListRequest, error) {
+	r.Kind = strings.ToLower(strings.TrimSpace(r.Kind))
+	if r.Kind != "" && r.Kind != "exec" && r.Kind != "plugin" && r.Kind != "system" {
+		return r, fmt.Errorf("unsupported approval kind %q", r.Kind)
+	}
+	r.Status = strings.ToLower(strings.TrimSpace(r.Status))
+	if r.Status == "" {
+		r.Status = "pending"
+	}
+	if r.Status != "pending" && r.Status != "resolved" && r.Status != "all" {
+		return r, fmt.Errorf("unsupported approval status %q", r.Status)
+	}
+	return r, nil
+}
+
 func (r ApprovalResolveRequest) Normalize() (ApprovalResolveRequest, error) {
 	r.ID = strings.TrimSpace(r.ID)
-	r.Kind = strings.TrimSpace(r.Kind)
+	r.Kind = strings.ToLower(strings.TrimSpace(r.Kind))
 	r.Decision = strings.TrimSpace(r.Decision)
 	if r.ID == "" || r.Kind == "" || r.Decision == "" {
 		return r, fmt.Errorf("id, kind, and decision are required")
 	}
-	if r.Kind != "exec" {
+	if r.Kind != "exec" && r.Kind != "plugin" && r.Kind != "system" {
 		return r, fmt.Errorf("unsupported approval kind %q", r.Kind)
 	}
 	switch r.Decision {
@@ -203,6 +223,13 @@ func DecodeExecApprovalListParams(params json.RawMessage) (ExecApprovalListReque
 		return ExecApprovalListRequest{}, nil
 	}
 	return decodeMethodParams[ExecApprovalListRequest](params)
+}
+
+func DecodeApprovalListParams(params json.RawMessage) (ApprovalListRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		return ApprovalListRequest{}, nil
+	}
+	return decodeMethodParams[ApprovalListRequest](params)
 }
 
 func DecodeApprovalResolveParams(params json.RawMessage) (ApprovalResolveRequest, error) {

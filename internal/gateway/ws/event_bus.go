@@ -61,6 +61,10 @@ const (
 	// EventChannelMessage is emitted when a message arrives on or is sent to
 	// a channel (NIP-29 group or other).
 	EventChannelMessage = "channel.message"
+	// EventChannelPairingRequested is emitted after a direct sender request is durably recorded.
+	EventChannelPairingRequested = "channel.pairing.requested"
+	// EventChannelPairingResolved is emitted after the durable account/store transition commits.
+	EventChannelPairingResolved = "channel.pairing.resolved"
 	// EventRelayHealth is emitted when the relay health monitor probes a relay.
 	EventRelayHealth = "relay.health"
 	// EventDMHealth is emitted when a DM transport health snapshot changes.
@@ -132,6 +136,8 @@ var AllPushEvents = []string{
 	EventVoicewake,
 	EventUpdateAvailable,
 	EventChannelMessage,
+	EventChannelPairingRequested,
+	EventChannelPairingResolved,
 	EventRelayHealth,
 	EventDMHealth,
 	EventNodePairRequested,

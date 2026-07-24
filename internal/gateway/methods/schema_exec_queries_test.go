@@ -17,7 +17,7 @@ func TestDecodeExecApprovalGetListAndUnifiedResolve(t *testing.T) {
 	if _, err := DecodeExecApprovalListParams(json.RawMessage(`{"unexpected":true}`)); err == nil {
 		t.Fatal("expected strict list params error")
 	}
-	resolve, err := DecodeApprovalResolveParams(json.RawMessage(`{"id":"approval-1","kind":"exec","decision":"allow-once"}`))
+	resolve, err := DecodeApprovalResolveParams(json.RawMessage(`{"id":"approval-1","kind":"plugin","decision":"allow-once"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestDecodeExecApprovalGetListAndUnifiedResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, raw := range []string{
-		`{"id":"approval-1","kind":"plugin","decision":"deny"}`,
+		`{"id":"approval-1","kind":"unknown","decision":"deny"}`,
 		`{"id":"approval-1","kind":"exec","decision":"approve"}`,
 	} {
 		req, err := DecodeApprovalResolveParams(json.RawMessage(raw))

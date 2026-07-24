@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 120,
-    "partial": 2,
-    "missing": 202,
+    "implemented": 127,
+    "partial": 0,
+    "missing": 197,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "defer": 53,
@@ -124,16 +124,18 @@
     },
     {
       "method": "channels.start",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "channels.start",
+      "notes": "Starts the resolved configured extension account using its real lifecycle handle.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
     },
     {
       "method": "channels.stop",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "channels.stop",
+      "notes": "Stops the resolved configured extension account and closes its real lifecycle handle.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -2247,24 +2249,27 @@
     },
     {
       "method": "channels.pairing.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "channels.pairing.list",
+      "notes": "Lists durable pending DM sender requests for configured pairing-policy accounts.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
     },
     {
       "method": "channels.pairing.approve",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "channels.pairing.approve",
+      "notes": "Durably adds the observed sender to the account allowlist before removing its pending request.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
     },
     {
       "method": "channels.pairing.dismiss",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "channels.pairing.dismiss",
+      "notes": "Dismisses a durable pending DM sender request for the owning account.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -2513,18 +2518,18 @@
     },
     {
       "method": "approval.get",
-      "status": "partial",
+      "status": "implemented",
       "metiq_method": "approval.get",
-      "notes": "Unified approval projection is implemented for exec approvals; plugin and system-agent owners remain pending.",
+      "notes": "Returns durable exec, plugin, or system-owned approval records through one projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "approval.resolve",
-      "status": "partial",
+      "status": "implemented",
       "metiq_method": "approval.resolve",
-      "notes": "Unified first-answer resolution is implemented for exec approvals; plugin and system-agent owners remain pending.",
+      "notes": "Applies first-answer resolution to durable exec, plugin, or system-owned approvals.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"

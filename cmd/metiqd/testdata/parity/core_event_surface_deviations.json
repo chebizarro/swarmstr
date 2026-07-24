@@ -7,6 +7,8 @@
     "agent.status",
     "agent.thinking",
     "channel.message",
+    "channel.pairing.requested",
+    "channel.pairing.resolved",
     "chat.chunk",
     "chat.message",
     "config.updated",

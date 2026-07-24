@@ -125,6 +125,8 @@ var (
 	controlSessionStore         *state.SessionStore
 	controlSessionMemoryRuntime *sessionMemoryRuntime
 	controlExecApprovals        *execApprovalsRegistry
+	controlChannelAccounts      *channels.AccountRuntime
+	controlChannelPairing       *channels.PairingStore
 	controlWizards              *wizardRegistry
 	controlOps                  *operationsRegistry
 	controlAgentRegistry        *agent.AgentRuntimeRegistry
@@ -1545,7 +1547,10 @@ func main() {
 	nodeInvocations := newNodeInvocationRegistry()
 	nodePending := nodepending.New()
 	cronJobs := newCronRegistry()
-	execApprovals := newExecApprovalsRegistry()
+	execApprovals, err := newExecApprovalsRegistryAt(filepath.Join(filepath.Dir(configFilePath), "approval-ledger.json"))
+	if err != nil {
+		log.Fatalf("load approval ledger: %v", err)
+	}
 	wizards := newWizardRegistry()
 	ops := newOperationsRegistry()
 	subagents := newSubagentRegistry()
@@ -1853,7 +1858,7 @@ func main() {
 			}
 
 			// Build an approval request.
-			rec := execApprovals.Request(methods.ExecApprovalRequestRequest{
+			rec, approvalErr := execApprovals.RequestDurable(methods.ExecApprovalRequestRequest{
 				Command:              commandText,
 				CommandArgv:          commandArgv,
 				Args:                 call.Args,
@@ -1867,6 +1872,9 @@ func main() {
 				ApprovalMode:         approvalMode,
 				TimeoutMS:            approvalTimeoutMS,
 			})
+			if approvalErr != nil {
+				return "", fmt.Errorf("persist exec approval tool=%s: %w", call.Name, approvalErr)
+			}
 
 			// Emit a WS event so the UI / operator can see the pending request.
 			emitControlWSEvent(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
@@ -6066,54 +6074,63 @@ func main() {
 		}
 	}
 
-	// Register only the channel plugins that match configured nostr_channels entries.
-	availableKinds := extensions.AvailableKinds()
-	n := extensions.RegisterConfigured(configState.Get())
-	log.Printf("channel extensions: %d available, %d registered from config", len(availableKinds), n)
+	// Pairing requests are durable and contain only sender/account identity.
+	pairingPath := filepath.Join(filepath.Dir(configFilePath), "channel-pairing.json")
+	channelPairing, err := channels.NewPairingStore(pairingPath)
+	if err != nil {
+		log.Fatalf("channel pairing store: %v", err)
+	}
 
-	extensionResults, err := channels.ConnectExtensions(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {
-		// Per-channel allow-from check for extension channels.
-		if chanCfgExt, ok := configState.Get().NostrChannels[msg.ChannelID]; ok {
-			if dec := policy.EvaluateGroupMessage(msg.SenderID, chanCfgExt.AllowFrom, configState.Get()); !dec.Allowed {
-				log.Printf("extension channel message rejected from=%s channel=%s reason=%s", msg.SenderID, msg.ChannelID, dec.Reason)
+	availableKinds := extensions.AvailableKinds()
+	channelAccounts := extensions.NewConfiguredAccountRuntime(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {
+		// Pairing is accepted only for accounts/messages that prove direct-message
+		// scope. The helper revalidates latest config and emits only after the
+		// pending request is durably committed.
+		initialCfg := configState.Get()
+		if chanCfgExt, ok := initialCfg.NostrChannels[msg.ChannelID]; ok {
+			if access := policy.EvaluateGroupMessage(msg.SenderID, chanCfgExt.AllowFrom, initialCfg); !access.Allowed {
+				if _, pairErr := observeChannelPairing(configState, channelPairing, msg, emitControlWSEvent); pairErr != nil {
+					log.Printf("extension pairing request persist failed channel=%s sender=%s err=%v", msg.ChannelID, msg.SenderID, pairErr)
+				}
+				log.Printf("extension channel message rejected from=%s channel=%s reason=%s", msg.SenderID, msg.ChannelID, access.Reason)
 				return
 			}
 		}
 
-		// Normalize inbound text: strip platform-specific bot mention prefixes.
 		text := msg.Text
 		if platform, ok := channelPlatforms[msg.ChannelID]; ok {
 			text = channels.NormalizeInbound(platform, text, "")
 			msg.Text = text
 		}
-
-		// Compute debounce key (includes thread ID when present for separate
-		// thread-scoped queues).
 		key := channels.DebounceKeyWithThread(msg.ChannelID, msg.SenderID, msg.ThreadID)
 		if msg.EventID != "" {
 			channelEventIDsMu.Lock()
 			channelEventIDs[key] = msg.EventID
 			channelEventIDsMu.Unlock()
 		}
-		// Submit to the debouncer; it will coalesce rapid messages from the same
-		// sender (and thread) and fire after channelDebounceWindow of silence.
 		channelDebouncer.Submit(key, msg.Text)
-	})
-	if err != nil {
-		log.Printf("extension channel startup error: %v", err)
-	}
-	for _, r := range extensionResults {
-		log.Printf("extension channel connected: %s (plugin=%s caps=%+v)", r.ChannelID, r.PluginID, r.Capabilities)
-		defer r.Handle.Close()
-		// Register handles so the debounce flush callback can send replies and
-		// use optional channel features via interface assertions.
+	}, func(snapshot channels.AccountSnapshot, connection channels.AccountConnection) {
 		channelHandlesMu.Lock()
-		channelHandles[r.ChannelID] = r.Handle
-		if r.RawHandle != nil {
-			channelRawHandles[r.ChannelID] = r.RawHandle
+		channelHandles[snapshot.AccountID] = connection.Handle
+		if connection.RawHandle != nil {
+			channelRawHandles[snapshot.AccountID] = connection.RawHandle
 		}
 		channelHandlesMu.Unlock()
+		log.Printf("extension channel connected: %s (plugin=%s)", snapshot.AccountID, snapshot.Channel)
+	}, func(snapshot channels.AccountSnapshot) {
+		channelHandlesMu.Lock()
+		delete(channelHandles, snapshot.AccountID)
+		delete(channelRawHandles, snapshot.AccountID)
+		channelHandlesMu.Unlock()
+		log.Printf("extension channel stopped: %s (plugin=%s)", snapshot.AccountID, snapshot.Channel)
+	})
+	log.Printf("channel extensions: %d available, %d configured accounts", len(availableKinds), len(channels.ConfiguredChannelAccounts()))
+	for _, startErr := range channelAccounts.StartAll(ctx) {
+		log.Printf("extension channel startup error: %v", startErr)
 	}
+	defer channelAccounts.CloseAll()
+	controlChannelAccounts = channelAccounts
+	controlChannelPairing = channelPairing
 	// Flush any in-flight debounced messages on shutdown.
 	defer channelDebouncer.FlushAll()
 
@@ -6199,6 +6216,7 @@ func main() {
 	// config mutation. Disk persistence is handled before successful Set() calls
 	// in mutation paths so callers do not observe success when write-back fails.
 	configState.SetOnChange(func(doc state.ConfigDoc) {
+		channels.ConfigureChannelAccounts(doc.NostrChannels)
 		// Bump prompt section cache generation so next prompt build recomputes.
 		bumpPromptConfigGeneration()
 		setRuntimeIdentityInfo(doc, pubkey)
@@ -7541,8 +7559,13 @@ func handleControlRPCRequest(
 		nodePending:     svc.session.nodePending,
 		canvasHost:      svc.handlers.canvasHost,
 		channels:        svc.relay.channels,
-		nostrHub:        svc.relay.hub,
-		keyer:           svc.relay.keyer,
+		channelAccounts: controlChannelAccounts,
+		channelPairing:  controlChannelPairing,
+		approvePairing: func(approvalCtx context.Context, req channels.PairingRequest) error {
+			return applyChannelPairingAllow(approvalCtx, docsRepo, configState, req)
+		},
+		nostrHub: svc.relay.hub,
+		keyer:    svc.relay.keyer,
 	}
 	if svc.handlers.hooksMgr != nil {
 		deps.hooksMgr = svc.handlers.hooksMgr

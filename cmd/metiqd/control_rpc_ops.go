@@ -481,6 +481,20 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: out}, true, nil
+	case methods.MethodApprovalList:
+		req, err := methods.DecodeApprovalListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyApprovalList(h.deps.execApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, true, nil
 	case methods.MethodApprovalResolve:
 		req, err := methods.DecodeApprovalResolveParams(in.Params)
 		if err != nil {

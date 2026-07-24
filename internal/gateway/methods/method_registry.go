@@ -57,6 +57,11 @@ var adminDispatchRegistry = []struct {
 	}},
 	{AdminDispatchChannels, []string{
 		MethodChannelsStatus,
+		MethodChannelsStart,
+		MethodChannelsStop,
+		MethodChannelsPairingList,
+		MethodChannelsPairingApprove,
+		MethodChannelsPairingDismiss,
 		MethodChannelsLogout,
 		MethodChannelsJoin,
 		MethodChannelsLeave,
@@ -97,6 +102,7 @@ var adminDispatchRegistry = []struct {
 		MethodExecApprovalWaitDecision,
 		MethodExecApprovalResolve,
 		MethodApprovalGet,
+		MethodApprovalList,
 		MethodApprovalResolve,
 	}},
 	{AdminDispatchMCP, []string{

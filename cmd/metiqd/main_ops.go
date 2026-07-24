@@ -378,7 +378,10 @@ func (s *daemonServices) applyExecApprovalRequest(reg *execApprovalsRegistry, re
 	if reg == nil {
 		return nil, fmt.Errorf("exec approvals runtime not configured")
 	}
-	rec := reg.Request(req)
+	rec, err := reg.RequestDurable(req)
+	if err != nil {
+		return nil, err
+	}
 	s.emitWSEvent(gatewayws.EventExecApprovalRequested, gatewayws.ExecApprovalRequestedPayload{
 		TS:                   time.Now().UnixMilli(),
 		ID:                   rec.ID,

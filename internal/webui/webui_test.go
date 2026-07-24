@@ -117,7 +117,7 @@ func TestHandler_IncludesParityRunControlsAndToolActivity(t *testing.T) {
 		"tool.start",
 		"renderToolActivity",
 		"plugin.approval.requested",
-		"exec.approval.list",
+		"approval.list",
 		"approval.resolve",
 		"reconcilePendingApprovals",
 	} {

@@ -81,6 +81,9 @@ type controlRPCDeps struct {
 	nodePending     *nodepending.Store
 	canvasHost      *canvas.Host
 	channels        *channels.Registry
+	channelAccounts *channels.AccountRuntime
+	channelPairing  *channels.PairingStore
+	approvePairing  func(context.Context, channels.PairingRequest) error
 	nostrHub        *nostruntime.NostrHub
 	keyer           nostr.Keyer
 }

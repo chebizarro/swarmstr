@@ -95,24 +95,47 @@ func execApprovalPendingSummary(rec execApprovalPendingRecord) map[string]any {
 }
 
 func approvalPendingSnapshot(rec execApprovalPendingRecord) map[string]any {
-	summary := execApprovalPendingSummary(rec)
-	presentation := map[string]any{
-		"kind":             "exec",
-		"commandText":      summary["commandText"],
-		"commandPreview":   summary["commandPreview"],
-		"warningText":      nil,
-		"host":             summary["host"],
-		"nodeId":           summary["nodeId"],
-		"agentId":          summary["agentId"],
-		"allowedDecisions": summary["allowedDecisions"],
+	kind := rec.Kind
+	if kind == "" {
+		kind = "exec"
+	}
+	presentation := cloneMapAny(rec.Presentation)
+	if kind == "exec" {
+		summary := execApprovalPendingSummary(rec)
+		presentation = map[string]any{
+			"kind":             "exec",
+			"commandText":      summary["commandText"],
+			"commandPreview":   summary["commandPreview"],
+			"warningText":      nil,
+			"host":             summary["host"],
+			"nodeId":           summary["nodeId"],
+			"agentId":          summary["agentId"],
+			"allowedDecisions": summary["allowedDecisions"],
+		}
+	} else {
+		if presentation == nil {
+			presentation = map[string]any{}
+		}
+		presentation["kind"] = kind
+		if _, ok := presentation["allowedDecisions"]; !ok {
+			presentation["allowedDecisions"] = []string{"allow-once", "deny"}
+		}
+	}
+	status := rec.Status
+	if status == "" {
+		status = "pending"
 	}
 	return map[string]any{
 		"id":           rec.ID,
+		"kind":         kind,
 		"urlPath":      "/approvals/" + rec.ID,
 		"createdAtMs":  rec.Requested,
 		"expiresAtMs":  rec.ExpiresAt,
 		"presentation": presentation,
-		"status":       "pending",
+		"status":       status,
+		"decision":     rec.Decision,
+		"reason":       rec.Reason,
+		"resolvedAtMs": rec.ResolvedAt,
 	}
 }
 
@@ -120,11 +143,30 @@ func applyApprovalGet(reg *execApprovalsRegistry, req methods.ExecApprovalGetReq
 	if reg == nil {
 		return nil, fmt.Errorf("exec approvals runtime not configured")
 	}
-	rec, err := reg.GetPending(req.ID)
+	rec, err := reg.GetApproval(req.ID)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"approval": approvalPendingSnapshot(rec)}, nil
+}
+
+func applyApprovalList(reg *execApprovalsRegistry, req methods.ApprovalListRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("approvals runtime not configured")
+	}
+	status := req.Status
+	if status == "" {
+		status = "pending"
+	}
+	if status == "all" {
+		status = ""
+	}
+	records := reg.ListApprovals(req.Kind, status)
+	out := make([]map[string]any, 0, len(records))
+	for _, rec := range records {
+		out = append(out, approvalPendingSnapshot(rec))
+	}
+	return map[string]any{"approvals": out, "count": len(out)}, nil
 }
 
 func applyApprovalResolve(reg *execApprovalsRegistry, req methods.ApprovalResolveRequest) (map[string]any, error) {
@@ -139,7 +181,7 @@ func applyApprovalResolve(reg *execApprovalsRegistry, req methods.ApprovalResolv
 	if req.Decision == "allow-always" {
 		reason = "always allow selected in web UI"
 	}
-	rec, err := reg.Resolve(methods.ExecApprovalResolveRequest{ID: req.ID, Decision: decision, Reason: reason})
+	rec, err := reg.ResolveOwned(req.ID, req.Kind, decision, reason)
 	if err != nil {
 		return nil, err
 	}

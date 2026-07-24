@@ -17,9 +17,12 @@ import (
 	"time"
 
 	"metiq/internal/config"
+	"metiq/internal/gateway/channels"
 	"metiq/internal/gateway/methods"
 	gatewayprotocol "metiq/internal/gateway/protocol"
 	gatewayws "metiq/internal/gateway/ws"
+	"metiq/internal/plugins/sdk"
+	"metiq/internal/policy"
 	"metiq/internal/store/state"
 )
 
@@ -170,6 +173,93 @@ func (s *daemonServices) applyPairingConfigUpdate(ctx context.Context, docsRepo 
 	}
 	configState.Set(cfg)
 	return result, nil
+}
+
+// applyChannelPairingAllow durably grants one observed sender access to the
+// selected configured channel account. The pending request is removed only
+// after this commit succeeds.
+func observeChannelPairing(configState *runtimeConfigStore, store *channels.PairingStore, msg sdk.InboundChannelMessage, emit func(string, any)) (bool, error) {
+	if configState == nil || store == nil {
+		return false, fmt.Errorf("channel pairing runtime not configured")
+	}
+	initialCfg := configState.Get()
+	chanCfg, ok := initialCfg.NostrChannels[msg.ChannelID]
+	if !ok {
+		return false, nil
+	}
+	if access := policy.EvaluateGroupMessage(msg.SenderID, chanCfg.AllowFrom, initialCfg); access.Allowed {
+		return false, nil
+	}
+	account, err := channels.ResolveConfiguredChannelAccount(chanCfg.Kind, msg.ChannelID)
+	if err != nil {
+		return false, err
+	}
+	if !channels.EvaluatePairingInbound(account, msg, initialCfg).RequestPairing {
+		return false, nil
+	}
+	// Re-read and re-resolve immediately before persistence. Approval updates the
+	// config state before returning, so a racing late callback observes allowlist
+	// membership and cannot recreate the request.
+	latestCfg := configState.Get()
+	latestAccount, err := channels.ResolveConfiguredChannelAccount(chanCfg.Kind, msg.ChannelID)
+	if err != nil || !channels.EvaluatePairingInbound(latestAccount, msg, latestCfg).RequestPairing {
+		return false, err
+	}
+	now := time.Now()
+	observedAt := now
+	if msg.CreatedAt > 0 {
+		observedAt = time.Unix(msg.CreatedAt, 0)
+	}
+	pairing, created, err := store.UpsertObservedAt(latestAccount.Provider, latestAccount.ID, msg.SenderID, observedAt, now)
+	if err != nil {
+		return false, err
+	}
+	if created && emit != nil {
+		emit(gatewayws.EventChannelPairingRequested, map[string]any{"ts_ms": now.UnixMilli(), "request_id": pairing.RequestID, "channel": pairing.Channel, "account_id": pairing.AccountID, "sender_id": pairing.SenderID})
+	}
+	return created, nil
+}
+
+func applyChannelPairingAllow(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req channels.PairingRequest) error {
+	if docsRepo == nil || configState == nil {
+		return fmt.Errorf("channel pairing persistence is not configured")
+	}
+	controlPairingConfigMu.Lock()
+	defer controlPairingConfigMu.Unlock()
+
+	resolved, err := channels.ResolveConfiguredChannelAccount(req.Channel, req.AccountID)
+	if err != nil {
+		return err
+	}
+	cfg := configState.Get()
+	nextChannels := make(state.NostrChannelsConfig, len(cfg.NostrChannels))
+	for id, account := range cfg.NostrChannels {
+		copy := account
+		copy.AllowFrom = append([]string(nil), account.AllowFrom...)
+		copy.Config = cloneMapAny(account.Config)
+		nextChannels[id] = copy
+	}
+	account, ok := nextChannels[resolved.ID]
+	if !ok {
+		return fmt.Errorf("channel account %q is no longer configured", resolved.ID)
+	}
+	for _, sender := range account.AllowFrom {
+		if strings.EqualFold(strings.TrimSpace(sender), strings.TrimSpace(req.SenderID)) {
+			return nil
+		}
+	}
+	account.AllowFrom = append(account.AllowFrom, strings.TrimSpace(req.SenderID))
+	nextChannels[resolved.ID] = account
+	cfg.NostrChannels = nextChannels
+	if err := persistRuntimeConfigFile(cfg); err != nil {
+		return fmt.Errorf("persist channel pairing config: %w", err)
+	}
+	if _, err := docsRepo.PutConfig(ctx, cfg); err != nil {
+		return fmt.Errorf("persist channel pairing state: %w", err)
+	}
+	configState.Set(cfg)
+	channels.ConfigureChannelAccounts(cfg.NostrChannels)
+	return nil
 }
 
 func randomToken() (string, error) {
