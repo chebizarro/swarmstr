@@ -231,6 +231,9 @@ var adminDispatchRegistry = []struct {
 		MethodSessionSuggestionsList,
 		MethodSessionSuggestionsResolve,
 		MethodSessionTyping,
+		MethodSessionDiscussionInfo,
+		MethodSessionDiscussionOpen,
+		MethodSessionsObserverAsk,
 	}},
 	{AdminDispatchTasks, []string{
 		MethodTasksCreate,

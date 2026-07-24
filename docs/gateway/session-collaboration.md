@@ -75,3 +75,27 @@ Known deviations from OpenClaw: `queue` dispatches like `send` (metiq has no
 composer follow-up queue), suggestion dispatch attribution is inlined into the
 message text, and typing broadcasts do not require two live identified viewers
 (metiq has no per-identity presence roster yet).
+
+## Discussion provider and observer ask (A2.5c)
+
+- `session.discussion.info` (`operator.read`) / `session.discussion.open`
+  (`operator.write`) — served through an explicit `DiscussionProvider`
+  contract on the session coordinator. No installed provider reports
+  `state: "none"`; a failing provider is a transient error (never `none`), so
+  clients do not cache-hide the feature. `open` passes the collaboration
+  mutation matrix (draft sessions admit only managers) and projects
+  `sessions.changed` with `reason: "discussion"` on success.
+- `sessions.observer.ask` (`operator.read`) — answers one bounded operator
+  question (≤400 chars in, ≤600 chars out) about a session using an
+  `ObserverAskProvider`. The daemon provider builds a bounded transcript
+  digest (last 30 entries, 400 chars each, 6000 total) and runs a one-shot
+  completion on the session's resolved runtime under a 10-second deadline.
+  Admission is bounded before provider work: one in-flight ask per session
+  (busy error), at most 6 concurrent asks, 12 asks per rolling minute
+  globally, and 4 per connection. A gateway WS connection is required; draft
+  sessions admit only managers.
+
+Known deviations from OpenClaw: asks require a WS connection rather than an
+active session subscription (metiq's subscription registry is runtime-local),
+and the digest derives from the persisted transcript tail instead of a live
+observer note buffer.

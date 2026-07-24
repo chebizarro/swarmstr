@@ -1503,6 +1503,26 @@ const TOKEN   = '{{.Token}}';
       showSessionSharingPanel(grid, sid);
     });
     suggestRow.appendChild(addSuggestion);
+    const discussion = await callSafe('session.discussion.info', { sessionKey: sid });
+    const discussionRow = document.createElement('div'); discussionRow.className = 'action-row'; card.appendChild(discussionRow);
+    const discussionLabel = document.createElement('span'); discussionLabel.className = 'sub';
+    discussionLabel.textContent = discussion.error ? `Discussion unavailable: ${discussion.error}` : `Discussion: ${discussion.state || 'none'}`;
+    discussionRow.appendChild(discussionLabel);
+    if (!discussion.error && discussion.state && discussion.state !== 'none') {
+      addActionButton(discussionRow, 'Open discussion', 'session.discussion.open', () => ({ sessionKey: sid }), () => showSessionSharingPanel(grid, sid));
+    }
+    const askRow = document.createElement('div'); askRow.className = 'action-row'; card.appendChild(askRow);
+    const askInput = document.createElement('input'); askInput.className = 'mini-input'; askInput.placeholder = 'ask the session observer'; askRow.appendChild(askInput);
+    const askButton = document.createElement('button'); askButton.className = 'mini-btn'; askButton.textContent = 'Ask observer';
+    askButton.addEventListener('click', async () => {
+      const question = askInput.value.trim();
+      if (!question) return;
+      askButton.disabled = true;
+      const result = await callSafe('sessions.observer.ask', { sessionKey: sid, question });
+      askButton.disabled = false;
+      status.textContent = result.error ? `Observer: ${result.error}` : `Observer: ${result.answer || ''}`;
+    });
+    askRow.appendChild(askButton);
   }
 
   async function showSessionsView(token) {

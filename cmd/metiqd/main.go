@@ -1137,6 +1137,7 @@ func main() {
 	configState = newRuntimeConfigStoreWithManaged(runtimeCfg, managedSettings)
 	controlRuntimeConfig = configState
 	setRuntimeIdentityInfo(runtimeCfg, pubkey)
+	sessionCoordinator.SetObserverAskProvider(newSessionObserverAskProvider(transcriptRepo, configState))
 
 	// ── NWC (NIP-47) standalone compatibility tools ──────────────────────
 	// Registration waits for the persisted runtime config and shared secret

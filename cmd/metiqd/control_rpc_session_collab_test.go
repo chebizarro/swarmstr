@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -160,4 +161,74 @@ func TestSessionSuggestionsAndTypingRPC(t *testing.T) {
 		t.Fatal("connection-scoped identified typing must broadcast")
 	}
 	_ = coordinator
+}
+
+func TestSessionDiscussionAndObserverAskRPC(t *testing.T) {
+	ctx, handler, coordinator := newCollabTestHandler(t)
+	ownerCtx := principalCtx(ctx, "alice", "operator.write", "operator.read")
+	call := func(callCtx context.Context, method, params string) (nostruntime.ControlRPCResult, error) {
+		result, handled, err := handler.handleSessionCollabRPC(callCtx, nostruntime.ControlRPCInbound{Method: method, Params: json.RawMessage(params)}, method, state.ConfigDoc{})
+		if !handled {
+			t.Fatalf("%s must be handled", method)
+		}
+		return result, err
+	}
+	info, err := call(ownerCtx, "session.discussion.info", `{"sessionKey":"session-a"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Result.(sessioncoord.DiscussionState); got.State != "none" {
+		t.Fatalf("absent provider must report none: %+v", got)
+	}
+	opened, err := call(ownerCtx, "session.discussion.open", `{"sessionKey":"session-a"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opened.Result.(sessioncoord.DiscussionState); got.State != "none" {
+		t.Fatalf("absent provider open must report none: %+v", got)
+	}
+	coordinator.SetObserverAskProvider(func(_ context.Context, key, question string) (string, error) {
+		return "observed " + key + " re " + question, nil
+	})
+	if _, err := call(ownerCtx, "sessions.observer.ask", `{"sessionKey":"session-a","question":"state?"}`); err == nil {
+		t.Fatal("observer ask without a connection must fail")
+	}
+	connCtx := gatewayws.ContextWithConnectionID(ownerCtx, "conn-ask")
+	answered, err := call(connCtx, "sessions.observer.ask", `{"sessionKey":"session-a","question":"state?"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := answered.Result.(map[string]any)["answer"].(string); got != "observed session-a re state?" {
+		t.Fatalf("unexpected answer: %q", got)
+	}
+}
+
+func TestBuildObserverDigestBounds(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore()
+	transcripts := state.NewTranscriptRepository(backend, "author")
+	for i := 0; i < 40; i++ {
+		if _, err := transcripts.PutEntry(ctx, state.TranscriptEntryDoc{
+			Version: 1, SessionID: "s-digest", EntryID: fmt.Sprintf("e%03d", i),
+			Role: "assistant", Text: strings.Repeat("x", 500), Unix: int64(i + 1),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	digest, err := buildObserverDigest(ctx, transcripts, "s-digest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]string
+	if err := json.Unmarshal([]byte(digest), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) == 0 || len(rows) > observerDigestMaxEntries {
+		t.Fatalf("digest rows out of bounds: %d", len(rows))
+	}
+	for _, row := range rows {
+		if len([]rune(row["text"])) > observerDigestMaxEntryLen+1 {
+			t.Fatalf("digest entry exceeds per-entry bound: %d", len(row["text"]))
+		}
+	}
 }

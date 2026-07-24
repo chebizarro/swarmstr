@@ -147,7 +147,9 @@ func (h controlRPCHandler) handleSessionCollabRPC(ctx context.Context, in nostru
 		methods.MethodSessionMembersAdd, methods.MethodSessionMembersRemove,
 		methods.MethodSessionsObserverVisibility,
 		methods.MethodSessionSuggestionsAdd, methods.MethodSessionSuggestionsList,
-		methods.MethodSessionSuggestionsResolve, methods.MethodSessionTyping:
+		methods.MethodSessionSuggestionsResolve, methods.MethodSessionTyping,
+		methods.MethodSessionDiscussionInfo, methods.MethodSessionDiscussionOpen,
+		methods.MethodSessionsObserverAsk:
 	default:
 		return nostruntime.ControlRPCResult{}, false, nil
 	}
@@ -278,6 +280,46 @@ func (h controlRPCHandler) handleSessionCollabRPC(ctx context.Context, in nostru
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "broadcast": broadcast}}, true, nil
+	case methods.MethodSessionDiscussionInfo:
+		req, err := methods.DecodeSessionDiscussionParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		state, err := coordinator.DiscussionInfo(ctx, req.SessionKey)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: state}, true, nil
+	case methods.MethodSessionDiscussionOpen:
+		req, err := methods.DecodeSessionDiscussionParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		state, err := coordinator.DiscussionOpen(ctx, req.SessionKey, actor)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: state}, true, nil
+	case methods.MethodSessionsObserverAsk:
+		req, err := methods.DecodeSessionsObserverAskParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		connectionID, _ := gatewayws.ConnectionIDFromContext(ctx)
+		answer, err := coordinator.ObserverAsk(ctx, req.SessionKey, req.Question, connectionID, actor)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"answer": answer}}, true, nil
 	}
 	return nostruntime.ControlRPCResult{}, false, nil
 }

@@ -32,12 +32,15 @@ type Service struct {
 	active    map[string]string // session key -> owning connection id for this process
 
 	// Collaboration state.
-	nowFn              func() time.Time
-	sharingCache       map[string]state.SessionSharingDoc
-	suggestionCache    map[string]state.SessionSuggestionsDoc
-	suggestionInflight map[string]struct{}
-	observerVisible    map[string]bool         // connection id -> declared observer visibility
-	typingState        map[string]*typingEntry // subject+session -> live typing accounting
+	nowFn               func() time.Time
+	sharingCache        map[string]state.SessionSharingDoc
+	suggestionCache     map[string]state.SessionSuggestionsDoc
+	suggestionInflight  map[string]struct{}
+	observerVisible     map[string]bool         // connection id -> declared observer visibility
+	typingState         map[string]*typingEntry // subject+session -> live typing accounting
+	discussion          DiscussionProvider
+	observerAskProvider ObserverAskProvider
+	observerAsk         observerAskState
 }
 
 type DispatchRequest struct {
