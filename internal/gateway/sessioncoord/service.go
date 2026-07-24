@@ -30,6 +30,11 @@ type Service struct {
 	broadcast BroadcastFunc
 	pending   []pendingEvent
 	active    map[string]string // session key -> owning connection id for this process
+
+	// Collaboration state.
+	nowFn           func() time.Time
+	sharingCache    map[string]state.SessionSharingDoc
+	observerVisible map[string]bool // connection id -> declared observer visibility
 }
 
 type DispatchRequest struct {

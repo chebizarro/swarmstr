@@ -6197,9 +6197,18 @@ func main() {
 			AllowInsecureControlUI:  gatewayWSAllowInsecureControlUI,
 			ValidateDeviceToken:     gatewayDeviceTokenValidator(configState),
 			OnDisconnect: func(disconnectCtx context.Context, info gatewayws.ConnectionInfo) {
+				if sessionCoordinator != nil {
+					sessionCoordinator.DropConnection(info.ID)
+				}
 				for _, reclaimErr := range reclaimDisconnectedSessionPlacements(disconnectCtx, sessionCoordinator, info.ID) {
 					log.Printf("session placement disconnect reclaim: %v", reclaimErr)
 				}
+			},
+			EventAuthorizer: func(principal gatewayws.ControlPrincipal, event string, payload any) bool {
+				if sessionCoordinator == nil {
+					return true
+				}
+				return sessionCoordinator.AllowEventDelivery(gatewayPrincipalCollabActor(principal), event, payload)
 			},
 			StaticHandler: webui.Handler(wsPath, gatewayWSToken),
 			HandleRequest: func(ctx context.Context, req gatewayprotocol.RequestFrame) (any, *gatewayprotocol.ErrorShape) {
@@ -6224,6 +6233,8 @@ func main() {
 
 	controlConfigFilePath = configFilePath
 	controlServices.handlers.configFilePath = configFilePath
+	// Baseline for hot-reload agent-runtime diffing (swarmstr-v2uq).
+	seedAgentRuntimeReloadBaseline(configState.Get())
 
 	// configState.Set hook: apply live runtime side effects + WS event on every
 	// config mutation. Disk persistence is handled before successful Set() calls
@@ -8040,6 +8051,8 @@ func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
 			controlProfilePublisher.UpdateRelays(allRelays)
 		}
 	}
+	// Rebuild runtimes for agents whose runtime parameters changed (swarmstr-v2uq).
+	reprovisionChangedAgentRuntimes(cfg)
 }
 
 var writeRuntimeConfigFile = config.WriteConfigFile

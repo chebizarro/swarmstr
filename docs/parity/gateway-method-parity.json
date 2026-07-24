@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 147,
+    "implemented": 152,
     "partial": 0,
-    "missing": 177,
+    "missing": 172,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "defer": 53,
@@ -1513,7 +1513,7 @@
     },
     {
       "method": "sessions.messages.subscribe",
-        "status": "implemented",
+      "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1521,7 +1521,7 @@
     },
     {
       "method": "sessions.messages.unsubscribe",
-        "status": "implemented",
+      "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1538,7 +1538,7 @@
     },
     {
       "method": "sessions.describe",
-        "status": "implemented",
+      "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1618,7 +1618,7 @@
     },
     {
       "method": "sessions.create",
-        "status": "implemented",
+      "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1626,7 +1626,7 @@
     },
     {
       "method": "sessions.send",
-        "status": "implemented",
+      "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1634,7 +1634,7 @@
     },
     {
       "method": "sessions.abort",
-        "status": "implemented",
+      "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -2685,43 +2685,48 @@
     },
     {
       "method": "sessions.observer.visibility",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Connection-scoped observer visibility declaration tracked by the session coordinator.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
+      "workstream": "WS-A",
+      "metiq_method": "sessions.observer.visibility"
     },
     {
       "method": "session.visibility.set",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Persisted sharing-doc visibility with owner/admin authorization and session.sharing event projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
+      "workstream": "WS-A",
+      "metiq_method": "session.visibility.set"
     },
     {
       "method": "session.members.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Owner/admin-scoped membership aggregate with identity catalog and allowed visibilities.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
+      "workstream": "WS-A",
+      "metiq_method": "session.members.list"
     },
     {
       "method": "session.members.add",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Idempotent persisted membership grant with session.sharing member-added projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
+      "workstream": "WS-A",
+      "metiq_method": "session.members.add"
     },
     {
       "method": "session.members.remove",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Idempotent persisted membership revocation with session.sharing member-removed projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
+      "workstream": "WS-A",
+      "metiq_method": "session.members.remove"
     },
     {
       "method": "session.suggestions.add",

@@ -37,6 +37,8 @@ const (
 	EventSessionPlacement = "session.placement"
 	// EventSessionsChanged invalidates session catalogs, including group changes.
 	EventSessionsChanged = "sessions.changed"
+	// EventSessionSharing reports session visibility and membership transitions.
+	EventSessionSharing = "session.sharing"
 
 	// EventCronTick is emitted when a cron job fires.
 	EventCronTick = "cron.tick"
@@ -132,6 +134,7 @@ var AllPushEvents = []string{
 	EventChatMessage,
 	EventSessionPlacement,
 	EventSessionsChanged,
+	EventSessionSharing,
 	EventCronTick,
 	EventCronResult,
 	EventConfigUpdated,

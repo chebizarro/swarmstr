@@ -150,6 +150,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 	if result, handled, err := h.handleSessionRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
+	if result, handled, err := h.handleSessionCollabRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
 	if result, handled, err := h.handleTaskRPC(ctx, in, method); handled {
 		return result, err
 	}

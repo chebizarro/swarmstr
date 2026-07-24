@@ -46,6 +46,9 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 	if transcriptRepo != nil && sessionStore != nil {
 		transcriptRepo.BindSessionStore(sessionStore)
 	}
+	if err := h.authorizeSessionMutationVisibility(ctx, in, method); err != nil {
+		return nostruntime.ControlRPCResult{}, true, err
+	}
 
 	switch method {
 	case methods.MethodChatSend, methods.MethodSessionsSend:

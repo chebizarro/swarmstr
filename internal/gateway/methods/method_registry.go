@@ -222,6 +222,11 @@ var adminDispatchRegistry = []struct {
 		MethodSessionsPrune,
 		MethodSessionsExport,
 		MethodSessionsSpawn,
+		MethodSessionVisibilitySet,
+		MethodSessionMembersList,
+		MethodSessionMembersAdd,
+		MethodSessionMembersRemove,
+		MethodSessionsObserverVisibility,
 	}},
 	{AdminDispatchTasks, []string{
 		MethodTasksCreate,

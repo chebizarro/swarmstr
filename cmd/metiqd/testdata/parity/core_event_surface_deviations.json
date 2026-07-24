@@ -21,6 +21,7 @@
     "presence.updated",
     "relay.health",
     "session.placement",
+    "session.sharing",
     "sessions.changed",
     "thinking.delta",
     "tool.error",

@@ -1440,6 +1440,46 @@ const TOKEN   = '{{.Token}}';
     controls.appendChild(reveal);
   }
 
+  async function showSessionSharingPanel(grid, sid) {
+    const previous = document.getElementById('session-sharing-panel');
+    if (previous) previous.remove();
+    const card = addMgmtCard(grid, 'Sharing');
+    card.id = 'session-sharing-panel';
+    card.innerHTML += `<div class="sub">${escapeHTML(sid)}</div>`;
+    const status = document.createElement('div'); status.className = 'sub'; status.textContent = 'Loading sharing…'; card.appendChild(status);
+    const res = await callSafe('session.members.list', { sessionKey: sid });
+    if (res.error) { status.textContent = `Sharing unavailable: ${res.error}`; return; }
+    const ownerLabel = res.owner ? (res.owner.label || res.owner.id) : 'unassigned';
+    status.textContent = `Role: ${res.role || 'owner'} · Owner: ${ownerLabel}`;
+    const visRow = document.createElement('div'); visRow.className = 'action-row'; card.appendChild(visRow);
+    const visibility = document.createElement('select'); visibility.className = 'mini-input';
+    for (const value of (res.allowedVisibilities || ['shared', 'read-only', 'suggest', 'draft'])) {
+      const option = document.createElement('option'); option.value = value; option.textContent = value; visibility.appendChild(option);
+    }
+    visRow.appendChild(visibility);
+    const applyVisibility = document.createElement('button'); applyVisibility.className = 'mini-btn'; applyVisibility.textContent = 'Set visibility';
+    applyVisibility.addEventListener('click', async () => {
+      const result = await callSafe('session.visibility.set', { sessionKey: sid, visibility: visibility.value });
+      status.textContent = result.error ? `Visibility failed: ${result.error}` : `Visibility set to ${result.visibility}`;
+    });
+    visRow.appendChild(applyVisibility);
+    addRows(card, res.members || [], (row, member) => {
+      row.innerHTML = `<strong>${escapeHTML(member.identityId)}</strong><div class="sub">added by ${escapeHTML(member.addedBy || 'unknown')}</div>`;
+      const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
+      addActionButton(actions, 'Remove', 'session.members.remove', () => ({ sessionKey: sid, identityId: member.identityId }), () => showSessionSharingPanel(grid, sid));
+    });
+    const addRow = document.createElement('div'); addRow.className = 'action-row'; card.appendChild(addRow);
+    const identity = document.createElement('input'); identity.className = 'mini-input'; identity.placeholder = 'identity id'; addRow.appendChild(identity);
+    const addMember = document.createElement('button'); addMember.className = 'mini-btn'; addMember.textContent = 'Add member';
+    addMember.addEventListener('click', async () => {
+      if (!identity.value.trim()) return;
+      const result = await callSafe('session.members.add', { sessionKey: sid, identityId: identity.value.trim() });
+      if (result.error) { status.textContent = `Add failed: ${result.error}`; return; }
+      showSessionSharingPanel(grid, sid);
+    });
+    addRow.appendChild(addMember);
+  }
+
   async function showSessionsView(token) {
     const { grid } = beginManagementView('Sessions', 'List, detail, delete, export, reset, compact, and prune sessions.');
     const res = await callSafe('sessions.list', { limit: 100 });
@@ -1452,6 +1492,7 @@ const TOKEN   = '{{.Token}}';
       const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
       addActionButton(actions, 'Open', 'sessions.preview', () => ({ session_id: sid }), async () => { sessionID = sid; localStorage.setItem('metiq_session', sid); mainView='chat'; loadSessionHistory(sid); });
       const filesButton = document.createElement('button'); filesButton.className = 'mini-btn'; filesButton.textContent = 'Files'; filesButton.addEventListener('click', () => showSessionFilesPanel(grid, sid)); actions.appendChild(filesButton);
+      const sharingButton = document.createElement('button'); sharingButton.className = 'mini-btn'; sharingButton.textContent = 'Sharing'; sharingButton.addEventListener('click', () => showSessionSharingPanel(grid, sid)); actions.appendChild(sharingButton);
       addActionButton(actions, 'Export', 'sessions.export', () => ({ session_id: sid }));
       addActionButton(actions, 'Reset', 'sessions.reset', () => ({ session_id: sid }), () => showSessionsView(++viewSeq));
       addActionButton(actions, 'Delete', 'sessions.delete', () => ({ session_id: sid }), () => { loadSessions(); showSessionsView(++viewSeq); });

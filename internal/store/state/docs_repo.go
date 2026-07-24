@@ -76,6 +76,19 @@ func (r *DocsRepository) GetSessionPlacement(ctx context.Context, sessionID stri
 	return out, nil
 }
 
+func (r *DocsRepository) PutSessionSharing(ctx context.Context, sessionID string, doc SessionSharingDoc) (Event, error) {
+	tags := [][]string{{"t", "session_sharing"}, {"session", protectedTagValue(sessionID)}}
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:session:%s:sharing", sessionID), "session_sharing_doc", doc, tags)
+}
+
+func (r *DocsRepository) GetSessionSharing(ctx context.Context, sessionID string) (SessionSharingDoc, error) {
+	var out SessionSharingDoc
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:session:%s:sharing", sessionID), &out); err != nil {
+		return SessionSharingDoc{}, err
+	}
+	return out, nil
+}
+
 func (r *DocsRepository) ListSessions(ctx context.Context, limit int) ([]SessionDoc, error) {
 	if limit < 0 {
 		return nil, fmt.Errorf("limit must be non-negative")

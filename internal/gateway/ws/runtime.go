@@ -88,9 +88,14 @@ type RuntimeOptions struct {
 	// that client instead of blocking fanout to other subscribers.
 	EventBufferSize       int
 	DeltaCoalesceInterval time.Duration
-	HandleRequest         RequestHandler
-	ValidateDeviceToken   DeviceTokenValidator
-	OnDisconnect          func(context.Context, ConnectionInfo)
+	// EventAuthorizer, when non-nil, filters broadcast fanout per connection.
+	// Returning false suppresses delivery of one event to one client without
+	// affecting other subscribers. It runs on the broadcast path and must be
+	// fast and non-blocking.
+	EventAuthorizer     func(principal ControlPrincipal, event string, payload any) bool
+	HandleRequest       RequestHandler
+	ValidateDeviceToken DeviceTokenValidator
+	OnDisconnect        func(context.Context, ConnectionInfo)
 	// StartupReady reports whether sidecar-backed methods may be dispatched.
 	// Nil means ready, which matches runtimes started after daemon initialization.
 	StartupReady func() bool
@@ -309,6 +314,9 @@ func (r *Runtime) broadcastImmediate(event string, payload any) {
 				continue
 			}
 			if isSessionMessageEvent(name) && !c.acceptsSessionMessagePayload(emitPayload) {
+				continue
+			}
+			if r.opts.EventAuthorizer != nil && !r.opts.EventAuthorizer(c.principal, name, emitPayload) {
 				continue
 			}
 			seq := atomic.AddInt64(&c.seq, 1)
@@ -797,6 +805,19 @@ func PrincipalFromContext(ctx context.Context) (ControlPrincipal, bool) {
 
 func contextWithControlPrincipal(ctx context.Context, principal ControlPrincipal) context.Context {
 	return context.WithValue(ctx, controlPrincipalContextKey{}, principal)
+}
+
+// ContextWithControlPrincipal attaches a control principal to ctx. It is the
+// exported seam used by daemon-side tests that exercise principal-scoped
+// request handling outside a live WS connection.
+func ContextWithControlPrincipal(ctx context.Context, principal ControlPrincipal) context.Context {
+	return contextWithControlPrincipal(ctx, principal)
+}
+
+// ContextWithConnectionID attaches a gateway connection id to ctx. It is the
+// exported seam used by daemon-side tests for connection-scoped methods.
+func ContextWithConnectionID(ctx context.Context, connectionID string) context.Context {
+	return contextWithControlConnection(ctx, connectionID)
 }
 
 func ConnectionIDFromContext(ctx context.Context) (string, bool) {
