@@ -34,6 +34,9 @@ var (
 type ManagerOptions struct {
 	// DefaultTurnTimeout applies to RunTurn when no request timeout is supplied.
 	DefaultTurnTimeout time.Duration
+	// FallbackBackends are attempted in order after the requested or persisted
+	// primary backend when an early transient failure is safe to retry.
+	FallbackBackends []string
 	// RuntimeIdleTTL controls CleanupIdleRuntimeHandles. <=0 disables idle cleanup.
 	RuntimeIdleTTL time.Duration
 	// MaxSpawnDepth limits managed child session nesting. <=0 uses the default.
@@ -238,16 +241,17 @@ type InitializeSessionInput struct {
 
 // RunSessionTurnInput runs one turn in a managed ACP session.
 type RunSessionTurnInput struct {
-	SessionKey  string             `json:"session_key"`
-	Backend     string             `json:"backend,omitempty"`
-	Agent       string             `json:"agent,omitempty"`
-	Mode        string             `json:"mode,omitempty"`
-	Text        string             `json:"text"`
-	RequestID   string             `json:"request_id,omitempty"`
-	TimeoutMS   int64              `json:"timeout_ms,omitempty"`
-	Attachments []TurnAttachment   `json:"attachments,omitempty"`
-	Controls    []RuntimeControl   `json:"controls,omitempty"`
-	OnEvent     func(RuntimeEvent) `json:"-"`
+	SessionKey       string             `json:"session_key"`
+	Backend          string             `json:"backend,omitempty"`
+	FallbackBackends []string           `json:"fallback_backends,omitempty"`
+	Agent            string             `json:"agent,omitempty"`
+	Mode             string             `json:"mode,omitempty"`
+	Text             string             `json:"text"`
+	RequestID        string             `json:"request_id,omitempty"`
+	TimeoutMS        int64              `json:"timeout_ms,omitempty"`
+	Attachments      []TurnAttachment   `json:"attachments,omitempty"`
+	Controls         []RuntimeControl   `json:"controls,omitempty"`
+	OnEvent          func(RuntimeEvent) `json:"-"`
 }
 
 // CancelSessionInput cancels an active or backend-known turn for a session.
@@ -292,6 +296,7 @@ func NewManager(backends *BackendRegistry, sessions SessionStore, agents *AgentR
 	if dispatcher == nil {
 		dispatcher = NewDispatcher()
 	}
+	opts.FallbackBackends = append([]string(nil), opts.FallbackBackends...)
 	if opts.DefaultTurnTimeout <= 0 {
 		opts.DefaultTurnTimeout = defaultManagerTurnTimeout
 	}
@@ -422,84 +427,136 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 	unlock := m.lockSession(key)
 	defer unlock()
 
-	state, err := m.ensureRuntimeState(ctx, key, input.Backend, input.Agent)
-	if err != nil {
-		acpErr := ToAcpRuntimeError(err, AcpCodeSessionInitFailed, "ACP session initialization failed")
-		m.recordError(acpErr.Code)
-		return nil, acpErr
+	resolvedBackend := ""
+	if cached := m.getCached(key); cached != nil {
+		resolvedBackend = cached.Backend
+	} else {
+		record, err := m.loadRecord(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if record != nil {
+			resolvedBackend = decodeSessionRuntimeMeta(record).Backend
+		}
 	}
-	if err := m.applyRuntimeControls(ctx, state.Runtime, state.Handle, input.Controls); err != nil {
-		acpErr := ToAcpRuntimeError(err, AcpCodeBackendUnsupportedControl, "ACP runtime backend control failed")
-		m.recordError(acpErr.Code)
-		return nil, acpErr
+	fallbacks := input.FallbackBackends
+	if len(fallbacks) == 0 {
+		fallbacks = m.opts.FallbackBackends
 	}
-
-	turnCtx, cancel := context.WithCancelCause(ctx)
+	candidates := resolveBackendCandidatePlan(input.Backend, resolvedBackend, fallbacks)
 	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = m.opts.DefaultTurnTimeout
 	}
-	defer cancel(nil)
-
-	active := &managerActiveTurn{Runtime: state.Runtime, Handle: state.Handle, Cancel: cancel, RequestID: strings.TrimSpace(input.RequestID), StartedAt: m.now(), cancelDone: make(chan struct{})}
-	m.setActive(key, active)
-	defer m.clearActive(key, active)
-	m.mu.Lock()
-	m.counters.TurnsStarted++
-	m.mu.Unlock()
+	overallStartedAt := m.now()
 	pending := &PendingPrompt{
 		Text:        input.Text,
 		Mode:        strings.TrimSpace(input.Mode),
 		RequestID:   strings.TrimSpace(input.RequestID),
 		TimeoutMS:   input.TimeoutMS,
 		Attachments: append([]TurnAttachment(nil), input.Attachments...),
-		CreatedAt:   active.StartedAt.Unix(),
+		CreatedAt:   overallStartedAt.Unix(),
 	}
-	if err := m.saveMetaWithPending(ctx, key, state.Agent, state.Mode, state.Handle, "running", "", pending, false); err != nil {
-		return nil, err
-	}
+	var attempts []BackendAttempt
+	var turnStarted bool
 
-	events, runErr := m.consumeTurn(turnCtx, state, input, timeout, active)
-	if errors.Is(runErr, context.DeadlineExceeded) {
-		active.TimedOut = true
-	}
-
-	terminal := false
-	for _, ev := range events {
-		if ev.Kind.IsTerminal() {
-			terminal = true
-			break
+	for candidateIndex, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-	}
-	if runErr == nil && !terminal {
-		runErr = fmt.Errorf("acp manager: turn ended without terminal event")
-	}
+		state, err := m.ensureRuntimeState(ctx, key, candidate, input.Agent)
+		if err != nil {
+			attempt := backendAttempt(candidate, err, AcpCodeSessionInitFailed, "ACP session initialization failed", false)
+			attempts = append(attempts, attempt)
+			if isFailoverWorthyBackendAttempt(attempt) && candidateIndex < len(candidates)-1 {
+				continue
+			}
+			failErr := BackendFailoverError{Attempts: attempts}
+			m.recordError(errorCode(failErr))
+			return nil, failErr
+		}
+		if err := m.applyRuntimeControls(ctx, state.Runtime, state.Handle, input.Controls); err != nil {
+			attempt := backendAttempt(state.Backend, err, AcpCodeBackendUnsupportedControl, "ACP runtime backend control failed", false)
+			attempts = append(attempts, attempt)
+			failErr := BackendFailoverError{Attempts: attempts}
+			m.recordError(errorCode(failErr))
+			return nil, failErr
+		}
 
-	state.LastUsedAt = m.now()
-	m.recordTurnLatency(state.LastUsedAt.Sub(active.StartedAt))
-	m.setCached(key, state)
-	if runErr != nil {
-		m.recordTurnFailure(active, runErr)
+		turnCtx, cancelTurn := context.WithCancelCause(ctx)
+		active := &managerActiveTurn{Runtime: state.Runtime, Handle: state.Handle, Cancel: cancelTurn, RequestID: strings.TrimSpace(input.RequestID), StartedAt: overallStartedAt, cancelDone: make(chan struct{})}
+		m.setActive(key, active)
+		if !turnStarted {
+			turnStarted = true
+			m.mu.Lock()
+			m.counters.TurnsStarted++
+			m.mu.Unlock()
+		}
+		if err := m.saveMetaWithPending(ctx, key, state.Agent, state.Mode, state.Handle, "running", "", pending, false); err != nil {
+			cancelTurn(nil)
+			m.clearActive(key, active)
+			return nil, err
+		}
+
+		events, runErr := m.consumeTurn(turnCtx, state, input, timeout, active)
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			active.TimedOut = true
+		}
+		terminal := false
+		for _, event := range events {
+			if event.Kind.IsTerminal() {
+				terminal = true
+				break
+			}
+		}
+		if runErr == nil && !terminal {
+			runErr = fmt.Errorf("acp manager: turn ended without terminal event")
+		}
+		cancelTurn(nil)
+		m.clearActive(key, active)
+
+		if runErr == nil {
+			state.LastUsedAt = m.now()
+			m.recordTurnLatency(state.LastUsedAt.Sub(overallStartedAt))
+			m.setCached(key, state)
+			m.mu.Lock()
+			m.counters.TurnsCompleted++
+			m.mu.Unlock()
+			if state.Mode == SessionModeOneshot {
+				m.closeOneShot(key, state, "oneshot-complete")
+			} else {
+				_ = m.saveMetaWithPending(context.Background(), key, state.Agent, state.Mode, state.Handle, "idle", "", nil, true)
+			}
+			return events, nil
+		}
+
+		sawOutput := turnEventsSawOutput(events)
+		attempt := backendAttempt(state.Backend, runErr, AcpCodeTurnFailed, "ACP turn failed before completion", sawOutput)
+		attempts = append(attempts, attempt)
+		if isFailoverWorthyBackendAttempt(attempt) && candidateIndex < len(candidates)-1 {
+			continue
+		}
+
+		failErr := BackendFailoverError{Attempts: attempts}
+		state.LastUsedAt = m.now()
+		m.recordTurnLatency(state.LastUsedAt.Sub(overallStartedAt))
+		m.setCached(key, state)
+		m.recordTurnFailure(active, failErr)
 		if state.Mode == SessionModeOneshot {
 			m.closeOneShot(key, state, "oneshot-error")
 		} else {
 			clearPending := true
-			if errors.Is(runErr, context.Canceled) && active != nil && !active.Canceled.Load() {
+			if errors.Is(failErr, context.Canceled) && !active.Canceled.Load() {
 				clearPending = false
 			}
-			_ = m.saveMetaWithPending(context.Background(), key, state.Agent, state.Mode, state.Handle, "error", runErr.Error(), nil, clearPending)
+			_ = m.saveMetaWithPending(context.Background(), key, state.Agent, state.Mode, state.Handle, "error", failErr.Error(), nil, clearPending)
 		}
-		return events, runErr
+		return events, failErr
 	}
-	m.mu.Lock()
-	m.counters.TurnsCompleted++
-	m.mu.Unlock()
-	if state.Mode == SessionModeOneshot {
-		m.closeOneShot(key, state, "oneshot-complete")
-	} else {
-		_ = m.saveMetaWithPending(context.Background(), key, state.Agent, state.Mode, state.Handle, "idle", "", nil, true)
-	}
-	return events, nil
+
+	failErr := BackendFailoverError{Attempts: attempts}
+	m.recordError(errorCode(failErr))
+	return nil, failErr
 }
 
 // CancelSession cancels an active turn or forwards cancellation to the backend.
@@ -744,7 +801,7 @@ func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, i
 				return closedTurn()
 			}
 			if recordEvent(ev) {
-				return events, nil
+				return events, runtimeTerminalEventError(ev)
 			}
 		default:
 		}
@@ -754,7 +811,7 @@ func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, i
 				return closedTurn()
 			}
 			if recordEvent(ev) {
-				return events, nil
+				return events, runtimeTerminalEventError(ev)
 			}
 		case <-timeoutC:
 			timeoutErr := NewTurnTimeoutError(fmt.Sprintf("ACP turn timed out after %v", timeout))
@@ -764,7 +821,7 @@ func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, i
 			select {
 			case ev, ok := <-ch:
 				if ok && recordEvent(ev) {
-					return events, nil
+					return events, runtimeTerminalEventError(ev)
 				}
 			default:
 			}
@@ -775,6 +832,22 @@ func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, i
 			_ = m.cancelActiveTurn(active, "turn-disconnect", cause)
 			return events, cause
 		}
+	}
+}
+
+func runtimeTerminalEventError(event RuntimeEvent) error {
+	if event.Kind != EventError {
+		return nil
+	}
+	message := strings.TrimSpace(event.Text)
+	if message == "" {
+		message = "ACP turn failed before completion"
+	}
+	return AcpError{
+		Code:       AcpCodeTurnFailed,
+		Message:    message,
+		DetailCode: strings.TrimSpace(event.Code),
+		Retryable:  event.Retryable,
 	}
 }
 
