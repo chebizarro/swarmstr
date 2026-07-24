@@ -23,6 +23,7 @@ package context
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -304,7 +305,7 @@ func (e *WindowedEngine) Ingest(_ context.Context, sessionID string, msg Message
 	return IngestResult{Ingested: true}, nil
 }
 
-func (e *WindowedEngine) Assemble(ctx context.Context, sessionID string, _ int) (AssembleResult, error) {
+func (e *WindowedEngine) Assemble(ctx context.Context, sessionID string, maxTokens int) (AssembleResult, error) {
 	e.mu.Lock()
 	msgs := make([]Message, len(e.sessions[sessionID]))
 	copy(msgs, e.sessions[sessionID])
@@ -312,29 +313,62 @@ func (e *WindowedEngine) Assemble(ctx context.Context, sessionID string, _ int) 
 	activeRecall := e.activeRecall
 	e.mu.Unlock()
 
-	estTokens := 0
-	for _, msg := range msgs {
-		estTokens += estimateMessageTokens(msg)
+	// A non-positive budget is the compatibility/unlimited mode.
+	if maxTokens <= 0 {
+		result := AssembleResult{Messages: msgs, EstimatedTokens: EstimateMessagesTokens(msgs)}
+		cacheParts := promptCacheParts{Summary: normalizePromptCacheSummary(summary)}
+		if cacheParts.Summary != "" {
+			result.SystemPromptAddition = cacheParts.Summary
+			result.EstimatedTokens += EstimateTextTokens(cacheParts.Summary)
+		}
+		if activeRecall != nil {
+			if latest, ok := latestUserMessage(msgs); ok {
+				recallText, err := activeRecall.AssembleActiveRecall(ctx, sessionID, latest, msgs, 0)
+				if err != nil {
+					return result, err
+				}
+				cacheParts.Recall = normalizePromptCacheRecall(recallText)
+				if cacheParts.Recall != "" {
+					if result.SystemPromptAddition != "" {
+						result.SystemPromptAddition += "\n\n"
+					}
+					result.SystemPromptAddition += cacheParts.Recall
+					result.EstimatedTokens += EstimateTextTokens(cacheParts.Recall)
+				}
+			}
+		}
+		e.annotateAssembleResultWithParts(sessionID, &result, cacheParts)
+		return result, nil
 	}
-	result := AssembleResult{Messages: msgs, EstimatedTokens: estTokens}
-	cacheParts := promptCacheParts{Summary: normalizePromptCacheSummary(summary)}
-	if cacheParts.Summary != "" {
-		result.SystemPromptAddition = cacheParts.Summary
-		result.EstimatedTokens += (len(cacheParts.Summary) + 3) / 4
+
+	fullSummary := normalizePromptCacheSummary(summary)
+	projection := fitWindowProjection(msgs, fullSummary, maxTokens)
+	result := AssembleResult{
+		Messages:             projection.Messages,
+		SystemPromptAddition: projection.Summary,
+		EstimatedTokens:      projection.Tokens,
 	}
-	if activeRecall != nil {
+	cacheParts := promptCacheParts{Summary: projection.Summary}
+	remainingTokens := maxTokens - projection.Tokens
+	if activeRecall != nil && remainingTokens > 0 {
 		if latest, ok := latestUserMessage(msgs); ok {
-			recallText, err := activeRecall.AssembleActiveRecall(ctx, sessionID, latest, msgs, 0)
+			maxChars := CharacterCapacity(remainingTokens, DefaultCharsPerToken)
+			recallText, err := activeRecall.AssembleActiveRecall(ctx, sessionID, latest, msgs, maxChars)
 			if err != nil {
 				return result, err
 			}
 			cacheParts.Recall = normalizePromptCacheRecall(recallText)
-			if cacheParts.Recall != "" {
-				if result.SystemPromptAddition != "" {
-					result.SystemPromptAddition += "\n\n"
-				}
-				result.SystemPromptAddition += cacheParts.Recall
-				result.EstimatedTokens += (len(cacheParts.Recall) + 3) / 4
+			result.SystemPromptAddition, result.EstimatedTokens = fitRecallToBudget(
+				result.Messages, projection.Summary, cacheParts.Recall, maxTokens,
+			)
+			// Cache metadata must describe only the material that survived clipping.
+			switch {
+			case result.SystemPromptAddition == projection.Summary:
+				cacheParts.Recall = ""
+			case projection.Summary != "":
+				cacheParts.Recall = strings.TrimPrefix(result.SystemPromptAddition, projection.Summary+"\n\n")
+			default:
+				cacheParts.Recall = result.SystemPromptAddition
 			}
 		}
 	}

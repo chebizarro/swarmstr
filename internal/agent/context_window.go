@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"sync"
+
+	ctxengine "metiq/internal/context"
 )
 
 // ─── Context tiers ────────────────────────────────────────────────────────────
@@ -66,11 +68,7 @@ type ModelContextProfile struct {
 // EffectiveInputTokens returns the number of tokens available for input
 // (system prompt + history + tools) after reserving output space.
 func (p ModelContextProfile) EffectiveInputTokens() int {
-	eff := p.ContextWindowTokens - p.ReserveOutputTokens
-	if eff < 256 {
-		return 256
-	}
-	return eff
+	return ctxengine.AvailableTokens(p.ContextWindowTokens, p.ReserveOutputTokens, 1, 256)
 }
 
 // ─── Model context registry ──────────────────────────────────────────────────

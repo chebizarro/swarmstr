@@ -1,6 +1,10 @@
 package agent
 
-import "math"
+import (
+	"math"
+
+	ctxengine "metiq/internal/context"
+)
 
 // ─── Context budget ───────────────────────────────────────────────────────────
 
@@ -112,7 +116,7 @@ const safetyMargin = 0.80
 // window using continuous lerp/clamp math — no tier switches.
 func ComputeContextBudget(profile ModelContextProfile) ContextBudget {
 	effectiveTokens := profile.EffectiveInputTokens()
-	effectiveChars := int(float64(effectiveTokens) * charsPerToken * safetyMargin)
+	effectiveChars := ctxengine.CharacterCapacity(effectiveTokens, charsPerToken*safetyMargin)
 	if effectiveChars < 1024 {
 		effectiveChars = 1024
 	}
@@ -229,21 +233,7 @@ func BudgetUtilization(used, max int) int {
 
 // truncateUTF8 truncates s to at most maxBytes, respecting UTF-8 boundaries.
 func truncateUTF8(s string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	if len(s) <= maxBytes {
-		return s
-	}
-	// Walk back from maxBytes to find a valid UTF-8 boundary.
-	cut := maxBytes
-	for cut > 0 && (s[cut]&0xC0) == 0x80 {
-		cut--
-	}
-	if cut == 0 {
-		return ""
-	}
-	return s[:cut]
+	return ctxengine.TruncateUTF8(s, maxBytes)
 }
 
 // SessionMemoryBudgetRunes returns the SessionMemoryMax as a rune count

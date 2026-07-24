@@ -88,6 +88,7 @@ type StoreStatus struct {
 	Primary        BackendStatus         `json:"primary"`
 	Fallback       *BackendStatus        `json:"fallback,omitempty"`
 	Recovery       *SQLiteRecoveryReport `json:"recovery,omitempty"`
+	FTS            *FTSHealth            `json:"fts,omitempty"`
 }
 
 // BackendFactory is a function that opens a Backend at the given path.

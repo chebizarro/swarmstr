@@ -68,16 +68,7 @@ type SessionMemoryStateCompacter interface {
 // estimateMessageTokens estimates the token count for a single message.
 // Uses the standard ~4 chars per token heuristic plus overhead for tool calls.
 func estimateMessageTokens(msg Message) int {
-	tokens := (len(msg.Content) + 3) / 4
-	// Add overhead for each tool call (name, id, args).
-	for _, tc := range msg.ToolCalls {
-		tokens += (len(tc.Name) + len(tc.ID) + len(tc.ArgsJSON) + 3) / 4
-	}
-	// Minimum 1 token for any message.
-	if tokens < 1 {
-		tokens = 1
-	}
-	return tokens
+	return EstimateMessageTokens(msg)
 }
 
 // ─── Message classification ──────────────────────────────────��────────────────
@@ -267,10 +258,7 @@ func estimateMessagesTokens(messages []Message) int {
 }
 
 func estimateTextTokens(text string) int {
-	if text == "" {
-		return 0
-	}
-	return (len(text) + 3) / 4
+	return EstimateTextTokens(text)
 }
 
 func getLastAssistantUsage(messages []Message) int {

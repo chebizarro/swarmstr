@@ -4,6 +4,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+
+	ctxengine "metiq/internal/context"
 )
 
 // ─── Pre-flight context budget gate ──────────────────────────────────────────
@@ -58,7 +60,7 @@ func EnforceTotalContextBudget(
 	}
 
 	profile := ProfileFromContextWindowTokens(contextWindowTokens)
-	budgetTokens := int(float64(profile.EffectiveInputTokens()) * preflightSafetyMargin)
+	budgetTokens := ctxengine.AvailableTokens(profile.EffectiveInputTokens(), 0, preflightSafetyMargin, 0)
 	if budgetTokens < 512 {
 		budgetTokens = 512
 	}
@@ -145,7 +147,7 @@ func EnforceTotalContextBudget(
 		if msg.Role != "system" {
 			continue
 		}
-		maxChars := len(msg.Content) - int(float64(overageTokens)*charsPerTokenMixed)
+		maxChars := len(msg.Content) - ctxengine.CharacterCapacity(overageTokens, charsPerTokenMixed)
 		if maxChars < 500 {
 			maxChars = 500
 		}
@@ -156,7 +158,7 @@ func EnforceTotalContextBudget(
 			result.Messages[i] = clone
 			result.SystemTruncated = true
 			freedChars := len(msg.Content) - len(clone.Content)
-			freedTokens := int(float64(freedChars) / charsPerTokenMixed)
+			freedTokens := ctxengine.EstimateTokensFloor(freedChars, charsPerTokenMixed)
 			log.Printf("%s: truncated system prompt by %d chars (~%d tokens freed)",
 				logPrefix, freedChars, freedTokens)
 			overageTokens -= freedTokens
@@ -198,10 +200,10 @@ func estimateTotalTokens(messages []LLMMessage, tools []ToolDefinition) int {
 		toolChars += EstimateToolDefinitionChars(def)
 	}
 	// Convert tool chars to tokens at JSON rate (2.5 c/t) instead of prose rate.
-	toolTokens := int(float64(toolChars) / 2.5)
+	toolTokens := ctxengine.EstimateTokensFloor(toolChars, 2.5)
 
 	// Convert message chars to tokens at mixed rate.
-	messageTokens := int(float64(totalChars) / charsPerTokenMixed)
+	messageTokens := ctxengine.EstimateTokensFloor(totalChars, charsPerTokenMixed)
 
 	return messageTokens + toolTokens
 }
@@ -246,7 +248,7 @@ func truncateDynamicContextMessages(messages []LLMMessage, targetTokenReduction 
 		}
 
 		remainingTokens := targetTokenReduction - freedTokens
-		charsToFree := int(float64(remainingTokens) * dynamicContextCharsPerTokenEstimate)
+		charsToFree := ctxengine.CharacterCapacity(remainingTokens, dynamicContextCharsPerTokenEstimate)
 		if charsToFree < 1 {
 			charsToFree = 1
 		}
@@ -275,7 +277,7 @@ func truncateDynamicContextMessages(messages []LLMMessage, targetTokenReduction 
 		result[i] = clone
 
 		freedChars := len(msg.Content) - len(newContent)
-		freed := int(float64(freedChars) / charsPerTokenMixed)
+		freed := ctxengine.EstimateTokensFloor(freedChars, charsPerTokenMixed)
 		if freed == 0 && freedChars > 0 {
 			freed = 1
 		}
@@ -347,7 +349,7 @@ func trimHistoryMessages(messages []LLMMessage, targetTokenReduction int) histor
 		if msg.Role == "system" || msg.Lane == PromptLaneDynamicContext {
 			continue
 		}
-		msgTokens := int(float64(len(msg.Content)+60) / charsPerTokenMixed)
+		msgTokens := ctxengine.EstimateTokensFloor(len(msg.Content)+60, charsPerTokenMixed)
 		if msgTokens == 0 {
 			msgTokens = 1
 		}
@@ -417,7 +419,7 @@ func dropLargestTools(tools []ToolDefinition, criticalSet map[string]bool, targe
 			break
 		}
 		dropSet[d.idx] = true
-		freedTokens += int(float64(d.chars) / 2.5) // JSON tokenization rate
+		freedTokens += ctxengine.EstimateTokensFloor(d.chars, 2.5) // JSON tokenization rate
 	}
 
 	if len(dropSet) == 0 {
@@ -446,13 +448,13 @@ func EstimateTurnTokens(turn Turn) int {
 	for _, h := range turn.History {
 		historyChars += len(h.Content) + 60
 	}
-	promptTokens := int(float64(promptChars+historyChars) / charsPerTokenMixed)
+	promptTokens := ctxengine.EstimateTokensFloor(promptChars+historyChars, charsPerTokenMixed)
 
 	toolChars := 0
 	for _, def := range turn.Tools {
 		toolChars += EstimateToolDefinitionChars(def)
 	}
-	toolTokens := int(float64(toolChars) / 2.5)
+	toolTokens := ctxengine.EstimateTokensFloor(toolChars, 2.5)
 
 	return promptTokens + toolTokens
 }
@@ -464,7 +466,7 @@ func MustFitContext(turn Turn) bool {
 		return true
 	}
 	profile := ProfileFromContextWindowTokens(turn.ContextWindowTokens)
-	budget := int(float64(profile.EffectiveInputTokens()) * preflightSafetyMargin)
+	budget := ctxengine.AvailableTokens(profile.EffectiveInputTokens(), 0, preflightSafetyMargin, 0)
 	return EstimateTurnTokens(turn) <= budget
 }
 

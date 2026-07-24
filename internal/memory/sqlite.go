@@ -65,6 +65,7 @@ type SQLiteBackend struct {
 
 	recovery       SQLiteRecoveryOptions
 	recoveryReport SQLiteRecoveryReport
+	ftsHealth      FTSHealth
 }
 
 func init() {
@@ -172,6 +173,10 @@ func openSQLiteBackendWithoutRecovery(path string) (*SQLiteBackend, error) {
 		db.Close()
 		return nil, fmt.Errorf("backfill unified schema: %w", err)
 	}
+	if _, err := backend.EnsureFTSHealthy(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize fts lifecycle: %w", err)
+	}
 
 	return backend, nil
 }
@@ -233,6 +238,11 @@ func (b *SQLiteBackend) initSchema() error {
 		content_rowid='rowid',
 		tokenize='unicode61 remove_diacritics 2'
 	);
+
+	-- Vocabulary projection exposes actual indexed document rowids. Reading
+	-- chunks_fts directly reflects the external content table and cannot detect
+	-- missing index rows.
+	CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts_vocab USING fts5vocab(chunks_fts, 'instance');
 
 	-- Triggers to keep FTS in sync with chunks table
 	CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
@@ -655,10 +665,18 @@ func (b *SQLiteBackend) MemoryStatus() StoreStatus {
 		}
 	}
 	recovery := b.RecoveryReport()
+	fts := b.FTSHealth()
+	primary := BackendStatus{Name: "sqlite", Available: available}
+	if fts.State == FTSStateDegraded {
+		primary.Degraded = true
+		primary.Available = false
+		primary.LastError = fts.LastError
+	}
 	return StoreStatus{
 		Kind:     "sqlite",
-		Primary:  BackendStatus{Name: "sqlite", Available: available},
+		Primary:  primary,
 		Recovery: &recovery,
+		FTS:      &fts,
 	}
 }
 
