@@ -69,8 +69,9 @@ func loopbackTransport(t *testing.T, pubkey string, onMessage func(context.Conte
 // B's pubkey. After this call, A.SendDM(ctx, bPubkey, ...) delivers to B.
 // The connection is registered for cleanup (closed before the listener
 // transport to avoid 30s read-timeout blocking during teardown).
-func connectTransports(t *testing.T, from *FIPSTransport, toPubkey string, toAddr string) {
+func connectTransports(t *testing.T, from, to *FIPSTransport, toAddr string) {
 	t.Helper()
+	toPubkey := to.pubkeyHex
 	conn, err := net.DialTimeout("tcp6", toAddr, 2*time.Second)
 	if err != nil {
 		t.Fatalf("connect %s → %s: %v", from.pubkeyHex[:8], toPubkey[:8], err)
@@ -81,8 +82,14 @@ func connectTransports(t *testing.T, from *FIPSTransport, toPubkey string, toAdd
 	// Close this outbound connection during cleanup so the listener's
 	// handleConn goroutine sees EOF instead of blocking for 30s.
 	t.Cleanup(func() { conn.Close() })
-	// Seed identity cache so B can resolve A.
 	from.cacheIdentity(toPubkey)
+
+	// Both peers use ::1 in this TCP harness, so bind the receiver's observed
+	// source address to the connecting peer exactly as the real FIPS daemon's
+	// authenticated session/IPv6 mapping would.
+	to.idCacheMu.Lock()
+	to.idCache[net.IPv6loopback.String()] = from.pubkeyHex
+	to.idCacheMu.Unlock()
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -109,7 +116,7 @@ func TestIntegration_DM_Over_FIPS(t *testing.T) {
 	transportB.cacheIdentity(agentAPubkey)
 
 	// Wire A → B.
-	connectTransports(t, transportA, agentBPubkey, addrB)
+	connectTransports(t, transportA, transportB, addrB)
 
 	// Send DM from A to B.
 	ctx := context.Background()
@@ -174,8 +181,8 @@ func TestIntegration_Bidirectional_DM(t *testing.T) {
 	transportB.cacheIdentity(agentAPubkey)
 
 	// Wire both directions.
-	connectTransports(t, transportA, agentBPubkey, addrB)
-	connectTransports(t, transportB, agentAPubkey, addrA)
+	connectTransports(t, transportA, transportB, addrB)
+	connectTransports(t, transportB, transportA, addrA)
 
 	ctx := context.Background()
 
@@ -377,7 +384,7 @@ func TestIntegration_MultiBurst(t *testing.T) {
 	var mu sync.Mutex
 	var received []string
 
-	_, addrB := loopbackTransport(t, agentBPubkey, func(_ context.Context, dm InboundDM) error {
+	transportB, addrB := loopbackTransport(t, agentBPubkey, func(_ context.Context, dm InboundDM) error {
 		mu.Lock()
 		received = append(received, dm.Text)
 		mu.Unlock()
@@ -385,7 +392,7 @@ func TestIntegration_MultiBurst(t *testing.T) {
 	})
 
 	transportA, _ := loopbackTransport(t, agentAPubkey, nil)
-	connectTransports(t, transportA, agentBPubkey, addrB)
+	connectTransports(t, transportA, transportB, addrB)
 
 	ctx := context.Background()
 	for i := 0; i < msgCount; i++ {
@@ -437,8 +444,8 @@ func TestIntegration_HealthAccessors(t *testing.T) {
 	}
 
 	// Connect A → B and B → A.
-	connectTransports(t, transportA, agentBPubkey, addrB)
-	connectTransports(t, transportB, agentAPubkey, addrA)
+	connectTransports(t, transportA, transportB, addrB)
+	connectTransports(t, transportB, transportA, addrA)
 
 	if transportA.ConnectionCount() != 1 {
 		t.Errorf("after connect: connection count = %d, want 1", transportA.ConnectionCount())
@@ -448,8 +455,8 @@ func TestIntegration_HealthAccessors(t *testing.T) {
 	transportA.cacheIdentity(agentBPubkey)
 	transportA.cacheIdentity(agentCPubkey) // extra peer
 
-	if transportA.IdentityCacheSize() != 2 {
-		t.Errorf("identity cache size = %d, want 2", transportA.IdentityCacheSize())
+	if transportA.IdentityCacheSize() != 3 {
+		t.Errorf("identity cache size = %d, want 3", transportA.IdentityCacheSize())
 	}
 
 	// TransportSelector accessors.
@@ -480,7 +487,7 @@ func TestIntegration_DualPort_DM_And_Control(t *testing.T) {
 	var controlReceived atomic.Int32
 
 	// Agent B: DM transport on port X, control channel on port Y.
-	_, addrB := loopbackTransport(t, agentBPubkey, func(_ context.Context, dm InboundDM) error {
+	transportB, addrB := loopbackTransport(t, agentBPubkey, func(_ context.Context, dm InboundDM) error {
 		dmReceived.Add(1)
 		return nil
 	})
@@ -501,7 +508,7 @@ func TestIntegration_DualPort_DM_And_Control(t *testing.T) {
 
 	// Agent A sends a DM.
 	transportA, _ := loopbackTransport(t, agentAPubkey, nil)
-	connectTransports(t, transportA, agentBPubkey, addrB)
+	connectTransports(t, transportA, transportB, addrB)
 	transportA.SendDM(context.Background(), agentBPubkey, "dm payload")
 
 	// Agent A sends a control request.

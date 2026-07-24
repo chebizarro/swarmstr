@@ -21,6 +21,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"fiatjaf.com/nostr/nip19"
 )
 
 // fipsFrameType discriminates agent message frame types.
@@ -79,6 +81,12 @@ type FIPSTransport struct {
 	idCacheMu sync.RWMutex
 	idCache   map[string]string
 
+	// Injectable network seams keep DNS priming and dial ordering deterministic
+	// in tests. Production uses the system resolver configured for the .fips
+	// zone and a standard TCP dialer.
+	lookupIP    func(context.Context, string, string) ([]net.IP, error)
+	dialContext func(context.Context, string, string) (net.Conn, error)
+
 	listener *FIPSListener
 
 	ctx    context.Context
@@ -106,17 +114,20 @@ func NewFIPSTransport(opts FIPSTransportOptions) (*FIPSTransport, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	dialer := &net.Dialer{}
 
 	ft := &FIPSTransport{
-		pubkeyHex: opts.PubkeyHex,
-		agentPort: port,
-		dialTTL:   dialTTL,
-		onMessage: opts.OnMessage,
-		onError:   opts.OnError,
-		conns:     make(map[string]*fipsConn),
-		idCache:   make(map[string]string),
-		ctx:       ctx,
-		cancel:    cancel,
+		pubkeyHex:   opts.PubkeyHex,
+		agentPort:   port,
+		dialTTL:     dialTTL,
+		onMessage:   opts.OnMessage,
+		onError:     opts.OnError,
+		conns:       make(map[string]*fipsConn),
+		idCache:     make(map[string]string),
+		lookupIP:    net.DefaultResolver.LookupIP,
+		dialContext: dialer.DialContext,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
 	return ft, nil
@@ -270,7 +281,11 @@ func (ft *FIPSTransport) getOrDial(ctx context.Context, toPubkeyHex string) (net
 	}
 	ft.connMu.Unlock()
 
-	// Dial a new connection.
+	// Dial a new connection. Resolve the peer's .fips DNS name first: the
+	// daemon uses that query as the routing-intent signal that primes its
+	// one-way IPv6 → pubkey identity cache. Without this step, packets for a
+	// directly-derived fd00::/8 address may reach the TUN before the daemon can
+	// route them.
 	addr, err := FIPSAddrString(toPubkeyHex, ft.agentPort)
 	if err != nil {
 		return nil, newFIPSPermanentError(toPubkeyHex, "derive address", err)
@@ -279,8 +294,16 @@ func (ft *FIPSTransport) getOrDial(ctx context.Context, toPubkeyHex string) (net
 	dialCtx, dialCancel := context.WithTimeout(ctx, ft.dialTTL)
 	defer dialCancel()
 
-	var d net.Dialer
-	conn, err := d.DialContext(dialCtx, "tcp6", addr)
+	if err := ft.primeDaemonIdentity(dialCtx, toPubkeyHex); err != nil {
+		return nil, fmt.Errorf("prime daemon identity: %w", err)
+	}
+
+	dial := ft.dialContext
+	if dial == nil {
+		var d net.Dialer
+		dial = d.DialContext
+	}
+	conn, err := dial(dialCtx, "tcp6", addr)
 	if err != nil {
 		return nil, classifyFIPSError(ctx, toPubkeyHex, "dial "+addr, FIPSErrorKindTransport, err)
 	}
@@ -328,6 +351,35 @@ func (ft *FIPSTransport) evictOldestLocked() {
 
 // ── Identity cache ────────────────────────────────────────────────────────────
 
+func (ft *FIPSTransport) primeDaemonIdentity(ctx context.Context, pubkeyHex string) error {
+	pk, err := ParsePubKey(pubkeyHex)
+	if err != nil {
+		return fmt.Errorf("parse pubkey: %w", err)
+	}
+	canonicalPubkey := pk.Hex()
+	expectedIP, err := FIPSIPv6FromPubkey(canonicalPubkey)
+	if err != nil {
+		return fmt.Errorf("derive expected IPv6: %w", err)
+	}
+
+	lookup := ft.lookupIP
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIP
+	}
+	name := nip19.EncodeNpub(pk) + ".fips"
+	ips, err := lookup(ctx, "ip6", name)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", name, err)
+	}
+	for _, ip := range ips {
+		if ip.Equal(expectedIP) {
+			ft.cacheIdentity(canonicalPubkey)
+			return nil
+		}
+	}
+	return fmt.Errorf("resolve %s: expected %s, got %v", name, expectedIP, ips)
+}
+
 func (ft *FIPSTransport) cacheIdentity(pubkeyHex string) {
 	ip, err := FIPSIPv6FromPubkey(pubkeyHex)
 	if err != nil {
@@ -374,15 +426,32 @@ func (ft *FIPSTransport) handleInbound(frameType fipsFrameType, payload []byte, 
 		return
 	}
 
-	// Use envelope sender if identity cache miss.
-	fromPubkey := senderPubkey
-	if fromPubkey == "" {
-		fromPubkey = env.From
+	// The envelope is application plaintext and cannot establish identity. The
+	// listener's senderPubkey comes from the remote FIPS IPv6 address, whose
+	// source is authenticated by the daemon session and bound in our cache.
+	// Unknown addresses are rejected; known addresses must agree with env.From.
+	if senderPubkey == "" {
+		ft.emitError(fmt.Errorf("fips inbound: reject sender with unknown authenticated identity"))
+		return
+	}
+	authenticatedPK, err := ParsePubKey(senderPubkey)
+	if err != nil {
+		ft.emitError(fmt.Errorf("fips inbound: invalid authenticated sender identity: %w", err))
+		return
+	}
+	claimedPK, err := ParsePubKey(env.From)
+	if err != nil {
+		ft.emitError(fmt.Errorf("fips inbound: invalid envelope sender claim: %w", err))
+		return
+	}
+	if authenticatedPK.Hex() != claimedPK.Hex() {
+		ft.emitError(fmt.Errorf("fips inbound: sender claim %s does not match authenticated identity %s", claimedPK.Hex(), authenticatedPK.Hex()))
+		return
 	}
 
 	if ft.onMessage != nil {
 		dm := InboundDM{
-			FromPubKey: fromPubkey,
+			FromPubKey: authenticatedPK.Hex(),
 			Text:       env.Text,
 			CreatedAt:  env.TS,
 			Scheme:     "fips",

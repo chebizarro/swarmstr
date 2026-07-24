@@ -298,3 +298,170 @@ func TestFIPSTransport_identity_cache(t *testing.T) {
 		t.Fatalf("expected empty for unknown addr, got %q", got)
 	}
 }
+
+func TestFIPSTransport_getOrDial_primesDaemonIdentityBeforeDial(t *testing.T) {
+	targetPubkey := "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+	expectedIP, err := FIPSIPv6FromPubkey(targetPubkey)
+	if err != nil {
+		t.Fatalf("derive expected IP: %v", err)
+	}
+
+	var steps []string
+	ft := &FIPSTransport{
+		agentPort: FIPSDefaultAgentPort,
+		dialTTL:   time.Second,
+		conns:     make(map[string]*fipsConn),
+		idCache:   make(map[string]string),
+		ctx:       context.Background(),
+	}
+	ft.lookupIP = func(_ context.Context, network, host string) ([]net.IP, error) {
+		steps = append(steps, "dns")
+		if network != "ip6" {
+			t.Fatalf("lookup network = %q, want ip6", network)
+		}
+		if !strings.HasPrefix(host, "npub1") || !strings.HasSuffix(host, ".fips") {
+			t.Fatalf("lookup host = %q, want npub...fips", host)
+		}
+		return []net.IP{expectedIP}, nil
+	}
+	var peerConn net.Conn
+	ft.dialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		steps = append(steps, "dial")
+		if network != "tcp6" {
+			t.Fatalf("dial network = %q, want tcp6", network)
+		}
+		if address != net.JoinHostPort(expectedIP.String(), fmt.Sprint(FIPSDefaultAgentPort)) {
+			t.Fatalf("dial address = %q", address)
+		}
+		if got := ft.resolveIdentity(net.JoinHostPort(expectedIP.String(), "9999")); got != targetPubkey {
+			t.Fatalf("local identity cache was not primed before dial: got %q", got)
+		}
+		local, peer := net.Pipe()
+		peerConn = peer
+		return local, nil
+	}
+
+	conn, err := ft.getOrDial(context.Background(), targetPubkey)
+	if err != nil {
+		t.Fatalf("getOrDial: %v", err)
+	}
+	defer conn.Close()
+	defer peerConn.Close()
+	if got := strings.Join(steps, ","); got != "dns,dial" {
+		t.Fatalf("operation order = %q, want dns,dial", got)
+	}
+}
+
+func TestFIPSTransport_getOrDial_rejectsUnexpectedDNSAddress(t *testing.T) {
+	targetPubkey := "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+	dialed := false
+	ft := &FIPSTransport{
+		agentPort: FIPSDefaultAgentPort,
+		dialTTL:   time.Second,
+		conns:     make(map[string]*fipsConn),
+		idCache:   make(map[string]string),
+		lookupIP: func(context.Context, string, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("fd00::dead")}, nil
+		},
+		dialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, fmt.Errorf("unexpected dial")
+		},
+	}
+
+	_, err := ft.getOrDial(context.Background(), targetPubkey)
+	if err == nil || !strings.Contains(err.Error(), "expected") {
+		t.Fatalf("getOrDial error = %v, want DNS address mismatch", err)
+	}
+	if dialed {
+		t.Fatal("dial must not run when DNS does not confirm the derived FIPS address")
+	}
+	if ft.IdentityCacheSize() != 0 {
+		t.Fatal("mismatched DNS response must not populate the local identity cache")
+	}
+}
+
+func TestFIPSTransport_handleInbound_rejectsUnknownSender(t *testing.T) {
+	payload, err := json.Marshal(fipsDMEnvelope{From: agentAPubkey, Text: "spoof", TS: 1})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var delivered int
+	var gotErr error
+	ft := &FIPSTransport{
+		idCache: make(map[string]string),
+		ctx:     context.Background(),
+		onMessage: func(context.Context, InboundDM) error {
+			delivered++
+			return nil
+		},
+		onError: func(err error) { gotErr = err },
+	}
+
+	ft.handleInbound(fipsFrameDM, payload, ft.resolveIdentity("[fd00::dead]:1337"))
+
+	if delivered != 0 {
+		t.Fatalf("delivered %d messages from an unknown sender", delivered)
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "unknown authenticated identity") {
+		t.Fatalf("error = %v, want unknown authenticated identity rejection", gotErr)
+	}
+}
+
+func TestFIPSTransport_handleInbound_rejectsSenderClaimMismatch(t *testing.T) {
+	payload, err := json.Marshal(fipsDMEnvelope{From: agentBPubkey, Text: "spoof", TS: 1})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var delivered int
+	var gotErr error
+	ft := &FIPSTransport{
+		idCache: make(map[string]string),
+		ctx:     context.Background(),
+		onMessage: func(context.Context, InboundDM) error {
+			delivered++
+			return nil
+		},
+		onError: func(err error) { gotErr = err },
+	}
+	ft.cacheIdentity(agentAPubkey)
+	remoteIP, _ := FIPSIPv6FromPubkey(agentAPubkey)
+
+	ft.handleInbound(fipsFrameDM, payload, ft.resolveIdentity(net.JoinHostPort(remoteIP.String(), "1337")))
+
+	if delivered != 0 {
+		t.Fatalf("delivered %d messages with a mismatched sender claim", delivered)
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "does not match authenticated identity") {
+		t.Fatalf("error = %v, want sender mismatch rejection", gotErr)
+	}
+}
+
+func TestFIPSTransport_handleInbound_acceptsMatchingAuthenticatedSender(t *testing.T) {
+	payload, err := json.Marshal(fipsDMEnvelope{From: agentAPubkey, Text: "authentic", TS: 123})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var received InboundDM
+	var gotErr error
+	ft := &FIPSTransport{
+		idCache: make(map[string]string),
+		ctx:     context.Background(),
+		onMessage: func(_ context.Context, dm InboundDM) error {
+			received = dm
+			return nil
+		},
+		onError: func(err error) { gotErr = err },
+	}
+	ft.cacheIdentity(agentAPubkey)
+	remoteIP, _ := FIPSIPv6FromPubkey(agentAPubkey)
+
+	ft.handleInbound(fipsFrameDM, payload, ft.resolveIdentity(net.JoinHostPort(remoteIP.String(), "1337")))
+
+	if gotErr != nil {
+		t.Fatalf("unexpected error: %v", gotErr)
+	}
+	if received.FromPubKey != agentAPubkey || received.Text != "authentic" || received.CreatedAt != 123 {
+		t.Fatalf("received DM = %+v", received)
+	}
+}

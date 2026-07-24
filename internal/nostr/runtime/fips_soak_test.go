@@ -78,8 +78,8 @@ func TestIntegration_SustainedDMExchange_DuringDaemonRekey(t *testing.T) {
 	})
 	transportA.cacheIdentity(agentBPubkey)
 	transportB.cacheIdentity(agentAPubkey)
-	connectTransports(t, transportA, agentBPubkey, addrB)
-	connectTransports(t, transportB, agentAPubkey, addrA)
+	connectTransports(t, transportA, transportB, addrB)
+	connectTransports(t, transportB, transportA, addrA)
 
 	ctx := context.Background()
 	for i := 0; i < perDirection; i++ {
