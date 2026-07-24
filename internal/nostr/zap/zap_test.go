@@ -14,6 +14,8 @@ import (
 	"fiatjaf.com/nostr/keyer"
 )
 
+const testProviderPubkey = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+
 // ─── parseZapReceipt ──────────────────────────────────────────────────────────
 
 func TestParseZapReceipt_Basic(t *testing.T) {
@@ -103,8 +105,8 @@ func TestParseZapReceipt_ShortTag(t *testing.T) {
 	ev := nostr.Event{
 		Kind: 9735,
 		Tags: nostr.Tags{
-			{"description"},     // too short
-			{"bolt11"},          // too short
+			{"description"}, // too short
+			{"bolt11"},      // too short
 			{"p", "some-pubkey"},
 		},
 	}
@@ -312,6 +314,7 @@ func TestStartReceiver_NoRelays(t *testing.T) {
 func TestStartReceiver_ValidOpts_CancelImmediately(t *testing.T) {
 	cancel, err := StartReceiver(context.Background(), ReceiveOpts{
 		RecipientPubkeyHex: "abcdef1234567890",
+		ProviderPubkeyHex:  testProviderPubkey,
 		OnZap:              func(ZapReceipt) {},
 		Relays:             []string{"wss://localhost:1"},
 	})
@@ -327,6 +330,7 @@ func TestStartReceiver_CanceledParentContext(t *testing.T) {
 	parentCancel()
 	cancel, err := StartReceiver(ctx, ReceiveOpts{
 		RecipientPubkeyHex: "abcdef1234567890",
+		ProviderPubkeyHex:  testProviderPubkey,
 		OnZap:              func(ZapReceipt) {},
 		Relays:             []string{"wss://localhost:1"},
 	})

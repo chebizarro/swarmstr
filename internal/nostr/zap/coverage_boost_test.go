@@ -89,7 +89,7 @@ func TestResolveLNURL_AllowsNostrTrueFromServer(t *testing.T) {
 			MinSendable: 1000,
 			MaxSendable: 100000000,
 			AllowsNostr: true,
-			NostrPubkey: "abcdef",
+			NostrPubkey: testProviderPubkey,
 		})
 	}))
 	defer srv.Close()
@@ -100,11 +100,30 @@ func TestResolveLNURL_AllowsNostrTrueFromServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.NostrPubkey != "abcdef" {
+	if meta.NostrPubkey != testProviderPubkey {
 		t.Errorf("nostrPubkey: %q", meta.NostrPubkey)
 	}
 	if !meta.AllowsNostr {
 		t.Error("expected AllowsNostr = true")
+	}
+}
+
+func TestResolveLNURL_InvalidNostrPubkeyFromServer(t *testing.T) {
+	withInsecureTransport(t)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(lnurlPayMetadata{
+			Callback:    "https://example.com/cb",
+			MinSendable: 1000,
+			MaxSendable: 100000000,
+			AllowsNostr: true,
+			NostrPubkey: "not-a-bip340-key",
+		})
+	}))
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "https://")
+	if _, err := ResolveLNURL(context.Background(), "user@"+host); err == nil || !strings.Contains(err.Error(), "invalid LNURL nostrPubkey") {
+		t.Fatalf("expected invalid nostrPubkey error, got %v", err)
 	}
 }
 
@@ -172,11 +191,22 @@ func sendTestServer(t *testing.T, callbackHandler http.HandlerFunc) (*httptest.S
 func TestSend_SuccessFullFlow(t *testing.T) {
 	withInsecureTransport(t)
 	srv, lud16 := sendTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("nostr") == "" {
+		nostrJSON := r.URL.Query().Get("nostr")
+		if nostrJSON == "" {
 			t.Error("missing nostr param")
 		}
 		if r.URL.Query().Get("amount") != "10000" {
 			t.Errorf("amount: %s", r.URL.Query().Get("amount"))
+		}
+		lnurl := r.URL.Query().Get("lnurl")
+		if !strings.HasPrefix(lnurl, "lnurl1") {
+			t.Errorf("callback lnurl is not bech32: %q", lnurl)
+		}
+		var request nostr.Event
+		if err := json.Unmarshal([]byte(nostrJSON), &request); err != nil {
+			t.Errorf("decode zap request: %v", err)
+		} else if got := zapTestTag(request.Tags, "lnurl"); got != lnurl {
+			t.Errorf("zap request lnurl = %q, callback lnurl = %q", got, lnurl)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"pr": "lnbc10n1..."})
 	})
@@ -200,6 +230,12 @@ func TestSend_SuccessFullFlow(t *testing.T) {
 func TestSend_WithNoteID(t *testing.T) {
 	withInsecureTransport(t)
 	srv, lud16 := sendTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var request nostr.Event
+		if err := json.Unmarshal([]byte(r.URL.Query().Get("nostr")), &request); err != nil {
+			t.Errorf("decode zap request: %v", err)
+		} else if got := zapTestTag(request.Tags, "k"); got != "1" {
+			t.Errorf("event zap k tag = %q, want 1", got)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"pr": "lnbc20n1..."})
 	})
 	defer srv.Close()
@@ -318,6 +354,15 @@ func TestSend_CallbackInvalidJSON(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "parse callback response") {
 		t.Errorf("err: %v", err)
 	}
+}
+
+func zapTestTag(tags nostr.Tags, name string) string {
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == name {
+			return tag[1]
+		}
+	}
+	return ""
 }
 
 func TestSend_GetPublicKeyError(t *testing.T) {
