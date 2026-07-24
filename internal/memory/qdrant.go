@@ -33,33 +33,56 @@ const (
 
 func init() {
 	RegisterBackend("qdrant", func(path string) (Backend, error) {
-		// path encodes "qdrant_url|ollama_url|collection" or just qdrant_url
-		qdrantURL := qdrantDefaultURL
-		ollamaURL := ollamaDefaultURL
-		collection := defaultCollection
-		if path != "" {
-			parts := strings.SplitN(path, "|", 3)
-			if len(parts) >= 1 && parts[0] != "" {
-				qdrantURL = parts[0]
-			}
-			if len(parts) >= 2 && parts[1] != "" {
-				ollamaURL = parts[1]
-			}
-			if len(parts) >= 3 && parts[2] != "" {
-				collection = parts[2]
-			}
+		_, ollamaURL, _ := parseQdrantPath(path)
+		provider, err := NewOllamaEmbeddingProvider(map[string]any{"url": ollamaURL, "model": embedModel})
+		if err != nil {
+			return nil, err
 		}
-		b := &QdrantBackend{
-			qdrantURL:  strings.TrimRight(qdrantURL, "/"),
-			ollamaURL:  strings.TrimRight(ollamaURL, "/"),
-			collection: collection,
-			client:     &http.Client{Timeout: 30 * time.Second},
-		}
-		if err := b.ensureCollection(); err != nil {
-			return nil, fmt.Errorf("qdrant: ensure collection %q: %w", collection, err)
-		}
-		return b, nil
+		return OpenQdrantBackendWithProvider(path, provider)
 	})
+}
+
+// OpenQdrantBackendWithProvider opens Qdrant with the shared memory embedding
+// provider contract instead of binding the backend to a provider implementation.
+func OpenQdrantBackendWithProvider(path string, provider MemoryEmbeddingProvider) (*QdrantBackend, error) {
+	if provider == nil {
+		return nil, errors.New("qdrant: embedding provider is required")
+	}
+	qdrantURL, ollamaURL, collection := parseQdrantPath(path)
+	probe, err := provider.Embed(context.Background(), "memory host dimension probe")
+	if err != nil {
+		return nil, fmt.Errorf("qdrant: probe embedding provider: %w", err)
+	}
+	if len(probe) == 0 {
+		return nil, errors.New("qdrant: embedding provider returned an empty probe vector")
+	}
+	b := &QdrantBackend{
+		qdrantURL:  strings.TrimRight(qdrantURL, "/"),
+		ollamaURL:  strings.TrimRight(ollamaURL, "/"),
+		collection: collection,
+		client:     &http.Client{Timeout: 30 * time.Second},
+		provider:   provider,
+		vectorDims: len(probe),
+	}
+	if err := b.ensureCollection(); err != nil {
+		return nil, fmt.Errorf("qdrant: ensure collection %q: %w", collection, err)
+	}
+	return b, nil
+}
+
+func parseQdrantPath(path string) (qdrantURL, ollamaURL, collection string) {
+	qdrantURL, ollamaURL, collection = qdrantDefaultURL, ollamaDefaultURL, defaultCollection
+	parts := strings.SplitN(path, "|", 3)
+	if len(parts) >= 1 && strings.TrimSpace(parts[0]) != "" {
+		qdrantURL = parts[0]
+	}
+	if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
+		ollamaURL = parts[1]
+	}
+	if len(parts) >= 3 && strings.TrimSpace(parts[2]) != "" {
+		collection = parts[2]
+	}
+	return qdrantURL, ollamaURL, collection
 }
 
 // QdrantBackend implements memory.Backend using Qdrant + Ollama embeddings.
@@ -75,6 +98,8 @@ type QdrantBackend struct {
 	lastFailureAt       time.Time
 	nextRetryAt         time.Time
 	consecutiveFailures int
+	provider            MemoryEmbeddingProvider
+	vectorDims          int
 }
 
 // -- embedding --
@@ -82,6 +107,9 @@ type QdrantBackend struct {
 func (b *QdrantBackend) embed(ctx context.Context, text string) ([]float32, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if b.provider != nil {
+		return b.provider.Embed(ctx, text)
 	}
 	body, _ := json.Marshal(map[string]any{
 		"model":  embedModel,
@@ -110,6 +138,21 @@ func (b *QdrantBackend) embed(ctx context.Context, text string) ([]float32, erro
 		return nil, fmt.Errorf("ollama embed returned empty vector")
 	}
 	return out.Embedding, nil
+}
+
+func (b *QdrantBackend) embeddingDimensions() int {
+	if b.vectorDims > 0 {
+		return b.vectorDims
+	}
+	return vectorDim
+}
+
+// EmbeddingProvider reports the provider used for Qdrant vectors.
+func (b *QdrantBackend) EmbeddingProvider() EmbeddingProvider {
+	if b.provider != nil {
+		return b.provider.EmbeddingProvider()
+	}
+	return EmbeddingProvider{ID: "ollama", Model: embedModel, Version: "v1"}.Normalized()
 }
 
 // -- Qdrant helpers --
@@ -161,7 +204,7 @@ func (b *QdrantBackend) ensureCollectionWithContext(ctx context.Context) error {
 	}
 	body, _ := json.Marshal(map[string]any{
 		"vectors": map[string]any{
-			"size":     vectorDim,
+			"size":     b.embeddingDimensions(),
 			"distance": "Cosine",
 		},
 		"on_disk_payload": true,
@@ -290,6 +333,15 @@ func (b *QdrantBackend) BackendStatus() BackendStatus {
 func (b *QdrantBackend) MemoryStatus() StoreStatus {
 	primary := b.BackendStatus()
 	return StoreStatus{Kind: "backend", Primary: primary}
+}
+
+func (b *QdrantBackend) VectorAvailable() bool {
+	return b.ensureCollectionWithContext(context.Background()) == nil
+}
+
+func (b *QdrantBackend) ProbeVectorAvailability(ctx context.Context) (bool, error) {
+	err := b.ensureCollectionWithContext(ctx)
+	return err == nil, err
 }
 
 func (b *QdrantBackend) recordSuccess(domain string) {

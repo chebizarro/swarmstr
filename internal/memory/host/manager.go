@@ -14,9 +14,19 @@ const defaultSearchLimit = 10
 
 var ErrNotFound = errors.New("memory host: ref not found")
 
-type backend interface {
+// Backend is the storage seam consumed by the memory host. The built-in
+// memory, SQLite, local-vector/LanceDB-compatible, and Qdrant backends satisfy
+// this contract; richer lifecycle and diagnostics capabilities are detected
+// through the optional interfaces below.
+type Backend interface {
 	Search(query string, limit int) []memory.IndexedMemory
 	SearchSession(sessionID, query string, limit int) []memory.IndexedMemory
+}
+
+// EmbeddingProvider is the backend-neutral semantic embedding seam.
+type EmbeddingProvider interface {
+	Embed(context.Context, string) ([]float32, error)
+	EmbeddingProvider() memory.EmbeddingProvider
 }
 
 type contextSearcher interface {
@@ -52,14 +62,14 @@ type syncer interface {
 }
 
 type Options struct {
-	Backend           backend
-	EmbeddingProvider memory.MemoryEmbeddingProvider
+	Backend           Backend
+	EmbeddingProvider EmbeddingProvider
 	Debug             DebugHook
 }
 
 type SearchManager struct {
-	backend         backend
-	embedder        memory.MemoryEmbeddingProvider
+	backend         Backend
+	embedder        EmbeddingProvider
 	debug           DebugHook
 	cachedEmbedding *EmbeddingProbeResult
 }
@@ -267,8 +277,7 @@ func (m *SearchManager) ProbeVectorAvailability(ctx context.Context) (bool, erro
 	if p, ok := m.backend.(vectorCapability); ok {
 		return p.VectorAvailable(), nil
 	}
-	_, nameLooksVector := m.backend.(*memory.LanceDBBackend)
-	return nameLooksVector || m.embedder != nil, nil
+	return false, nil
 }
 
 func (m *SearchManager) Close() error {

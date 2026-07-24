@@ -404,6 +404,15 @@ func (b *LanceDBBackend) MemoryStatus() StoreStatus {
 	return StoreStatus{Kind: "local-vector", Primary: primary}
 }
 
+func (b *LanceDBBackend) VectorAvailable() bool {
+	return b.store.Health(context.Background()) == nil
+}
+
+func (b *LanceDBBackend) ProbeVectorAvailability(ctx context.Context) (bool, error) {
+	err := b.store.Health(ctx)
+	return err == nil, err
+}
+
 func (b *LanceDBBackend) filter(keep func(IndexedMemory) bool, limit int) []IndexedMemory {
 	if limit <= 0 {
 		limit = 20

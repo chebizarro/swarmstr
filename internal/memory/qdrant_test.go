@@ -553,6 +553,44 @@ func TestQdrantSearchBackoffSuppressesImmediateRetryUntilCooldownExpires(t *test
 	}
 }
 
+func TestOpenQdrantBackendWithProviderUsesSharedEmbeddingDimensions(t *testing.T) {
+	createdDims := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/collections/"):
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/collections/"):
+			var body struct {
+				Vectors struct {
+					Size int `json:"size"`
+				} `json:"vectors"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode create collection: %v", err)
+			}
+			createdDims = body.Vectors.Size
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider := StaticMemoryEmbeddingProvider{
+		Provider: EmbeddingProvider{ID: "contract", Model: "test", Version: "v1"},
+		Dims:     3,
+	}
+	backend, err := OpenQdrantBackendWithProvider(server.URL+"||test", provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if createdDims != 3 {
+		t.Fatalf("collection used %d dimensions, want provider dimensions 3", createdDims)
+	}
+	if got := backend.EmbeddingProvider(); got.ID != "contract" || got.Model != "test" {
+		t.Fatalf("unexpected provider metadata: %#v", got)
+	}
+}
+
 func TestHybridIndexMemoryStatusReflectsBackendFallback(t *testing.T) {
 	idx, err := OpenIndex(filepath.Join(t.TempDir(), "memory.json"))
 	if err != nil {
