@@ -11,6 +11,11 @@ title: "Access Control & Pairing"
 
 metiq controls who can interact with your agent via the `dm.policy` field in the runtime ConfigDoc. There are four policy modes.
 
+> `channels.pairing.*` approves an unknown sender for access to an agent. It is
+> unrelated to account/device authentication such as the WhatsApp linked-device
+> QR or phone-number pair code. See [WhatsApp Linked Device](/channels/whatsappweb)
+> for that separate flow.
+
 ## DM Policy Modes
 
 Configure in the `dm` section of your ConfigDoc:

@@ -14,6 +14,7 @@ import (
 	_ "metiq/internal/extensions/qqbot"
 	_ "metiq/internal/extensions/sms"
 	_ "metiq/internal/extensions/telegram"
+	_ "metiq/internal/extensions/whatsappweb"
 	_ "metiq/internal/extensions/zalouser"
 )
 
@@ -26,7 +27,7 @@ func TestAvailableKinds_NonEmpty(t *testing.T) {
 
 func TestAvailableKinds_ContainsCompiledAndAliasKinds(t *testing.T) {
 	kinds := extensions.AvailableKinds()
-	want := map[string]bool{"telegram": false, "qqbot": false, "imessage": false, "nextcloud": false, "nextcloud-talk": false, "sms": false, "zalouser": false}
+	want := map[string]bool{"telegram": false, "qqbot": false, "imessage": false, "nextcloud": false, "nextcloud-talk": false, "sms": false, "whatsappweb": false, "zalouser": false}
 	for _, k := range kinds {
 		if _, ok := want[k]; ok {
 			want[k] = true

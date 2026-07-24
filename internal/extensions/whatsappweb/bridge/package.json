@@ -1,0 +1,16 @@
+{
+  "name": "@swarmstr/whatsappweb-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Loopback Baileys bridge for swarmstr's unofficial WhatsApp linked-device channel",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "baileys": "7.0.0-rc13",
+    "ws": "8.21.1"
+  }
+}

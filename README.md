@@ -13,7 +13,7 @@ Metiq runs AI agents that communicate over the Nostr relay network. Any device r
 | Area | What's included |
 |------|----------------|
 | **Agent runtime** | Native LLM providers: OpenAI (Chat + Responses), Anthropic (API key + OAuth), Google Gemini + Vertex, Azure OpenAI, Mistral, Groq, Moonshot/Kimi, Minimax, GitHub Copilot, DeepInfra, Fireworks, xAI Grok, LM Studio, Ollama, local HTTP; model catalog with provider fallback chains; streaming tool calls with typed events and tool-call repair; agentic loop with context budgets, pruning, and preflight checks |
-| **Channels** | 20 built-in channel extensions: Telegram, Discord, Slack, WhatsApp, Email (IMAP+SMTP), Signal, Matrix, Mattermost, Microsoft Teams, Google Chat, BlueBubbles, iMessage, IRC, LINE, Feishu, Nextcloud Talk, QQ, Synology Chat, Twitch, Zalo; event-driven inbound delivery; typing indicators, reactions, threads, message editing, media contracts, multi-account |
+| **Channels** | 23 built-in channel extensions: Telegram, Discord, Slack, WhatsApp Cloud API, unofficial WhatsApp linked device, Email (IMAP+SMTP), Signal, Matrix, Mattermost, Microsoft Teams, Google Chat, BlueBubbles, iMessage, IRC, LINE, Feishu, Nextcloud Talk, QQ, Synology Chat, Twitch, Zalo, SMS, ZaloUser; event-driven inbound delivery; typing indicators, reactions, threads, message editing, media contracts, multi-account |
 | **Memory** | Pluggable backends: SQLite FTS + sqlite-vec, embedded LanceDB, Qdrant, wiki vault; hybrid vector + keyword retrieval with MMR ranking; active memory recall; embedding cache; auto-compaction; team memory sync over Nostr; MCP memory session bootstrap |
 | **Multi-agent** | ACP (Agent Control Protocol) over Nostr DMs; `acp.dispatch` for single delegation; `acp.pipeline` for sequential/parallel multi-step workflows; router policy; persisted pipeline flows with mirrored child tasks; commitment tracking with heartbeat delivery; JSONL session-tree harness |
 | **Security** | NIP-44 E2E encryption for channel messages; exec approvals enriched with automatic command analysis; exec policy management; security guidance hook and policy doctor; sandbox network-policy hardening; plugin trust decisions; security audit module; secret store |
@@ -272,17 +272,24 @@ Other:
 
 ## Channel extensions
 
-20 built-in channel plugins, each config-gated (only compiled-in extensions matching a configured `nostr_channels` entry are instantiated):
+23 built-in channel plugins, each config-gated (only compiled-in extensions matching a configured `nostr_channels` entry are instantiated):
 
 | | | | |
 |---|---|---|---|
-| Telegram | Discord | Slack | WhatsApp |
+| Telegram | Discord | Slack | WhatsApp Cloud API |
 | Email (IMAP+SMTP) | Signal | Matrix | Mattermost |
 | Microsoft Teams | Google Chat | BlueBubbles | iMessage |
 | IRC | LINE | Feishu | Nextcloud Talk |
 | QQ | Synology Chat | Twitch | Zalo |
+| SMS | ZaloUser | WhatsApp linked device (unofficial) | |
 
 Per-channel capabilities (typing indicators, reactions, threads, message editing, media, multi-account) are declared through shared channel access and media contracts. Mattermost, Signal, BlueBubbles, and Email use event-driven inbound delivery rather than polling.
+
+> **WhatsApp linked-device warning:** the `whatsappweb` Baileys transport may
+> violate WhatsApp's terms and can cause account restriction or permanent bans.
+> Use a separate number you can afford to lose. See
+> [the setup and risk guide](docs/channels/whatsappweb.md). The `whatsapp`
+> extension remains the official Meta Cloud API channel.
 
 ### End-to-end encryption
 
@@ -542,7 +549,7 @@ Key packages:
 | `internal/nostr/` | NIP modules (11, 17/44, 38, 51, 58, 60/61, 86, 98), DVM handler, zaps, runtime, publishing |
 | `internal/plugins/` | Goja/Node.js runtimes, installer, unified lifecycle, manifests, trust store, registry, SDK, contracts |
 | `internal/sandbox` | Backend registry, hardened Docker backend, fs bridge, browser spec, workspaces, netpolicy |
-| `internal/extensions/` | 20 built-in channel plugins (Telegram, Discord, Slack, Matrix, Signal, Teams, …) |
+| `internal/extensions/` | 23 built-in channel plugins (Telegram, Discord, Slack, WhatsApp Cloud/Web, Matrix, Signal, Teams, …) |
 | `internal/store/state` | Nostr-backed config/session/memory document store |
 
 See `docs/MIGRATION_FROM_OPENCLAW.md` for the full OpenClaw → Metiq migration guide.

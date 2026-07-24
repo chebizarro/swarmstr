@@ -33,9 +33,14 @@ external platforms into the `nostr_channels` pipeline. All channels share the sa
 | Matrix     | Plugin    | homeserver + access token                  |
 | Slack      | Plugin    | App token; team-based                      |
 | IRC        | Plugin    | Server + credentials                       |
-| WhatsApp   | Plugin    | Unofficial; Baileys-based                  |
+| WhatsApp Cloud | Plugin | Official Meta Business Cloud API + webhooks |
+| WhatsApp Web | Plugin  | [Unofficial linked device](/channels/whatsappweb); ban risk |
 | MS Teams   | Plugin    | App registration required                  |
 | MatterMost | Plugin    | Server URL + bot token                     |
+
+> **Warning:** The `whatsappweb` personal-account transport is unofficial,
+> may violate WhatsApp's terms, and may cause account restriction or permanent
+> bans. Prefer the official `whatsapp` Cloud API channel for production.
 
 ## Routing
 
