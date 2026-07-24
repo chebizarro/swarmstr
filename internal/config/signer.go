@@ -13,7 +13,8 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/keyer"
 	"fiatjaf.com/nostr/nip19"
-	"fiatjaf.com/nostr/nip46"
+
+	internalnip46 "metiq/internal/nostr/nip46"
 )
 
 // ResolvePrivateKey returns the effective hex-encoded private key from the
@@ -142,40 +143,30 @@ func ResolveSigner(ctx context.Context, cfg BootstrapConfig, pool *nostr.Pool) (
 
 	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
 	case "bunker":
-		// Connect to the remote bunker.  Generate an ephemeral client key for
-		// the NIP-46 handshake; the bunker holds the actual signing key.
+		// The disposable client key authenticates only the NIP-46 channel. The
+		// user identity key remains exclusively in the remote signer.
 		clientSK, err := generateEphemeralKey()
 		if err != nil {
 			return nil, fmt.Errorf("generate bunker ephemeral key: %w", err)
 		}
-		authHandler := func(authURL string) {
-			// Log the auth URL so the operator can approve the connection.
-			// In a future iteration this could open a browser or send a DM.
-			fmt.Printf("NIP-46 bunker auth required — visit: %s\n", authURL)
+		permissions, err := internalnip46.ParsePermissions("sign_event,nip04_encrypt,nip04_decrypt,nip44_encrypt,nip44_decrypt")
+		if err != nil {
+			return nil, err
 		}
-		bc, err := nip46.ConnectBunker(ctx, clientSK, raw, pool, authHandler)
+		client, err := internalnip46.ConnectBunker(ctx, clientSK, raw,
+			internalnip46.NewPoolTransport(pool, clientSK), permissions,
+			internalnip46.ClientMetadata{Name: "swarmstr agent"},
+			func(authURL string) { fmt.Printf("NIP-46 bunker auth required — visit: %s\n", authURL) })
 		if err != nil {
 			return nil, fmt.Errorf("connect bunker %q: %w", raw, err)
 		}
-		return keyer.NewBunkerSignerFromBunkerClient(bc), nil
+		return client, nil
 
 	case "nostrconnect":
-		// nostrconnect:// is the inverse: we generate a URL and wait for the
-		// signer to connect back.  Parse relays and secret from the URL.
-		relays := u.Query()["relay"]
-		if len(relays) == 0 {
-			return nil, fmt.Errorf("nostrconnect:// URL must include at least one relay= parameter")
-		}
-		secret := u.Query().Get("secret")
-		clientSK, err := generateEphemeralKey()
-		if err != nil {
-			return nil, fmt.Errorf("generate nostrconnect ephemeral key: %w", err)
-		}
-		bc, err := nip46.NewBunkerFromNostrConnect(ctx, clientSK, relays, secret, pool)
-		if err != nil {
-			return nil, fmt.Errorf("nostrconnect handshake: %w", err)
-		}
-		return keyer.NewBunkerSignerFromBunkerClient(bc), nil
+		// A nostrconnect token identifies a previously generated client key.
+		// signer_url cannot safely reconstruct that secret key; callers that
+		// retain it use nip46.AcceptNostrConnect directly.
+		return nil, fmt.Errorf("nostrconnect:// is a client-generated invitation and cannot be used as signer_url; use bunker:// or AcceptNostrConnect with the retained client key")
 
 	default:
 		// env:// / file:// / direct key — resolve to raw key, then wrap.

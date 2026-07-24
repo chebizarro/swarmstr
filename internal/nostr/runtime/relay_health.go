@@ -9,6 +9,8 @@ import (
 	"time"
 
 	nostr "fiatjaf.com/nostr"
+
+	"metiq/internal/nostr/nip66"
 )
 
 // RelayHealthResult captures the result of probing a single relay.
@@ -20,8 +22,11 @@ type RelayHealthResult struct {
 }
 
 type relayHealthState struct {
-	failures      int
-	cooldownUntil time.Time
+	failures        int
+	cooldownUntil   time.Time
+	externalRTT     time.Duration
+	externalSources int
+	externalAt      time.Time
 }
 
 // RelayHealthTracker tracks per-relay degradation for retry ordering/backoff.
@@ -122,13 +127,45 @@ func (t *RelayHealthTracker) NextAllowedIn(relay string, now time.Time) time.Dur
 	return st.cooldownUntil.Sub(now)
 }
 
+// ApplyNIP66Consensus records advisory multi-monitor health data. It never
+// blocks relays: NIP-66 explicitly forbids requiring monitor data to connect.
+func (t *RelayHealthTracker) ApplyNIP66Consensus(consensus map[string]nip66.ConsensusStatus, now time.Time, maxAge time.Duration) {
+	if maxAge <= 0 {
+		maxAge = 2 * time.Hour
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, st := range t.relays {
+		st.externalRTT, st.externalSources, st.externalAt = 0, 0, time.Time{}
+	}
+	for relay, sample := range consensus {
+		if sample.Monitors < 2 || sample.Latest == 0 || now.Sub(time.Unix(int64(sample.Latest), 0)) > maxAge {
+			continue
+		}
+		for configured, st := range t.relays {
+			normalized, err := nip66.NormalizeRelay(configured)
+			if err != nil || normalized != relay {
+				continue
+			}
+			st.externalRTT = sample.MedianRead
+			if st.externalRTT == 0 {
+				st.externalRTT = sample.MedianOpen
+			}
+			st.externalSources = sample.Monitors
+			st.externalAt = time.Unix(int64(sample.Latest), 0)
+		}
+	}
+}
+
 // SortRelays orders relays best-first, pushing degraded relays to the end.
 func (t *RelayHealthTracker) SortRelays(relays []string) []string {
 	type relayOrder struct {
-		url      string
-		failures int
-		blocked  bool
-		index    int
+		url             string
+		failures        int
+		blocked         bool
+		externalRTT     time.Duration
+		externalSources int
+		index           int
 	}
 	now := time.Now()
 	list := normalizeRelayURLs(relays)
@@ -141,6 +178,8 @@ func (t *RelayHealthTracker) SortRelays(relays []string) []string {
 		if ok {
 			item.failures = st.failures
 			item.blocked = !st.cooldownUntil.IsZero() && now.Before(st.cooldownUntil)
+			item.externalRTT = st.externalRTT
+			item.externalSources = st.externalSources
 		}
 		ordered = append(ordered, item)
 	}
@@ -152,6 +191,11 @@ func (t *RelayHealthTracker) SortRelays(relays []string) []string {
 		}
 		if ordered[i].failures != ordered[j].failures {
 			return ordered[i].failures < ordered[j].failures
+		}
+		// Advisory NIP-66 latency breaks ties only when both relays have
+		// corroborated data, so absence of monitoring is never a penalty.
+		if ordered[i].externalSources >= 2 && ordered[j].externalSources >= 2 && ordered[i].externalRTT != ordered[j].externalRTT {
+			return ordered[i].externalRTT < ordered[j].externalRTT
 		}
 		return ordered[i].index < ordered[j].index
 	})

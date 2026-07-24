@@ -10,6 +10,9 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+
+	nostr "fiatjaf.com/nostr"
+	"metiq/internal/nostr/nip66"
 )
 
 func TestProbeRelayREQSuccess(t *testing.T) {
@@ -99,6 +102,23 @@ func TestProbeRelayREQClosedEventStreamIsFailure(t *testing.T) {
 	}
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "subscription ended before response") {
 		t.Fatalf("expected closed-stream error, got %v", res.Err)
+	}
+}
+
+func TestRelayHealthTrackerAppliesAdvisoryNIP66Consensus(t *testing.T) {
+	now := time.Now()
+	tracker := NewRelayHealthTracker()
+	tracker.Seed([]string{"wss://slow.example", "wss://fast.example", "wss://unmonitored.example"})
+	tracker.ApplyNIP66Consensus(map[string]nip66.ConsensusStatus{
+		"wss://slow.example/": {Relay: "wss://slow.example/", Monitors: 2, MedianRead: 300 * time.Millisecond, Latest: nostr.Timestamp(now.Unix())},
+		"wss://fast.example/": {Relay: "wss://fast.example/", Monitors: 3, MedianRead: 20 * time.Millisecond, Latest: nostr.Timestamp(now.Unix())},
+	}, now, time.Hour)
+	got := tracker.SortRelays([]string{"wss://slow.example", "wss://fast.example", "wss://unmonitored.example"})
+	if got[0] != "wss://fast.example" || got[1] != "wss://slow.example" {
+		t.Fatalf("advisory consensus did not order monitored peers: %v", got)
+	}
+	if !tracker.Allowed("wss://unmonitored.example", now) {
+		t.Fatal("absence of NIP-66 data must not block a relay")
 	}
 }
 

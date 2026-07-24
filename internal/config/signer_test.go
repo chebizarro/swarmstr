@@ -269,16 +269,12 @@ func TestResolveSigner_Bunker_EntropyFailurePropagatesError(t *testing.T) {
 	}
 }
 
-func TestResolveSigner_NostrConnect_EntropyFailurePropagatesError(t *testing.T) {
-	orig := entropyReader
-	entropyReader = errReader{}
-	t.Cleanup(func() { entropyReader = orig })
-
-	_, err := ResolveSigner(context.Background(), BootstrapConfig{SignerURL: "nostrconnect://example?relay=wss://relay.example"}, nil)
+func TestResolveSigner_NostrConnectRequiresRetainedClientKey(t *testing.T) {
+	_, err := ResolveSigner(context.Background(), BootstrapConfig{SignerURL: "nostrconnect://example?relay=wss://relay.example&secret=once"}, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "generate nostrconnect ephemeral key") {
+	if !strings.Contains(err.Error(), "client-generated invitation") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
