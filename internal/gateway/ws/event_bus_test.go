@@ -121,7 +121,7 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventExecApprovalRequested, EventExecApprovalResolved,
 		EventVoicewake, EventUpdateAvailable,
 		EventChannelMessage, EventRelayHealth, EventDMHealth,
-		EventNodePairRequested, EventNodePairResolved,
+		EventNodePairRequested, EventNodePairResolved, EventNodeInvokeProgress,
 		EventDevicePairResolved, EventPluginLoaded,
 		EventToolStart, EventToolProgress, EventToolResult, EventToolError,
 	}

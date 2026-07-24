@@ -11,6 +11,7 @@
     "chat.message",
     "config.updated",
     "mcp.lifecycle",
+    "node.invoke.progress",
     "cron.result",
     "cron.tick",
     "dm.health",

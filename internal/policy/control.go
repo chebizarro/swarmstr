@@ -141,15 +141,15 @@ func IsSensitiveControlMethod(method string) bool {
 		return true
 	case "tools.profile.set", "skills.install", "skills.update":
 		return true
-	case "cron.add", "cron.update", "cron.remove", "cron.run":
+	case "cron.add", "cron.update", "cron.remove", "cron.run", "cron.scratch.get", "cron.scratch.set":
 		return true
-	case "exec.approvals.set", "exec.approval.resolve":
+	case "exec.approvals.set", "exec.approval.resolve", "approval.resolve":
 		return true
 	case "mcp.put", "mcp.remove", "mcp.reconnect", "mcp.auth.start", "mcp.auth.refresh", "mcp.auth.clear", "secrets.reload", "secrets.resolve":
 		return true
 	case "talk.mode", "voicewake.set", "tts.setprovider", "tts.enable", "tts.disable", "tts.convert", "browser.request":
 		return true
-	case "node.pair.approve", "node.pair.reject", "device.pair.approve", "device.pair.reject", "device.pair.remove", "device.token.rotate", "device.token.revoke", "node.rename", "node.canvas.capability.refresh", "node.invoke", "node.event", "node.result", "node.invoke.result", "node.pending.enqueue", "node.pending.pull", "node.pending.ack", "node.pending.drain", "exec.approvals.node.set", "canvas.update", "canvas.delete":
+	case "node.pair.approve", "node.pair.reject", "node.pair.remove", "device.pair.approve", "device.pair.reject", "device.pair.remove", "device.pair.rename", "device.token.rotate", "device.token.revoke", "node.rename", "node.canvas.capability.refresh", "node.invoke", "node.invoke.progress", "node.event", "node.result", "node.invoke.result", "node.pending.enqueue", "node.pending.pull", "node.pending.ack", "node.pending.drain", "exec.approvals.node.set", "canvas.update", "canvas.delete":
 		return true
 	case "plugins.install", "plugins.uninstall", "plugins.update":
 		return true

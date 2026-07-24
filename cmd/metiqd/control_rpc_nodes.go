@@ -86,6 +86,9 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 			Decision:  "approved",
 		})
 		// Notify the node via NIP-17 DM if node_id looks like a Nostr pubkey.
+		if nodeID != "" {
+			h.deps.nodeInvocations.AllowNode(nodeID)
+		}
 		if nodeID != "" && approvalToken != "" {
 			go sendControlDM(ctx, nodeID, fmt.Sprintf(`{"type":"pair.approved","request_id":%q,"token":%q}`, req.RequestID, approvalToken))
 		}
@@ -116,6 +119,30 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		// Notify the node via NIP-17 DM if node_id looks like a Nostr pubkey.
 		if nodeID != "" {
 			go sendControlDM(ctx, nodeID, fmt.Sprintf(`{"type":"pair.rejected","request_id":%q}`, req.RequestID))
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodNodePairRemove:
+		req, err := methods.DecodeNodePairRemoveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := revokeNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			out, err := applyNodePairRemove(ctx, docsRepo, configState, req)
+			if err != nil {
+				return nil, err
+			}
+			h.deps.nodeInvocations.RemoveNode(req.NodeID)
+			if _, err := h.deps.nodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID}); err != nil {
+				return nil, err
+			}
+			return out, nil
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodNodePairVerify:
@@ -215,6 +242,20 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodDevicePairRename:
+		req, err := methods.DecodeDevicePairRenameParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyDevicePairRename(ctx, docsRepo, configState, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodDeviceTokenRotate:
 		req, err := methods.DecodeDeviceTokenRotateParams(in.Params)
 		if err != nil {
@@ -308,7 +349,9 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyNodeInvoke(h.deps.nodeInvocations, req)
+		out, err := withActiveNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			return applyNodeInvoke(h.deps.nodeInvocations, req)
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -325,6 +368,31 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 			go sendControlDM(ctx, req.NodeID, string(payload))
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodNodeInvokeProgress:
+		req, err := methods.DecodeNodeInvokeProgressParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := withActiveNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			_, out, err := applyNodeInvokeProgressAndEmit(h.deps.nodeInvocations, req, func(progress nodeInvocationProgressChunk) {
+				controlServices.emitWSEvent(gatewayws.EventNodeInvokeProgress, gatewayws.NodeInvokeProgressPayload{
+					TS:       time.Now().UnixMilli(),
+					InvokeID: req.InvokeID,
+					NodeID:   req.NodeID,
+					Seq:      progress.Seq,
+					Chunk:    progress.Chunk,
+				})
+			})
+			return out, err
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodNodeEvent:
 		req, err := methods.DecodeNodeEventParams(in.Params)
 		if err != nil {
@@ -334,7 +402,9 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyNodeEvent(h.deps.nodeInvocations, req)
+		out, err := withActiveNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			return applyNodeEvent(h.deps.nodeInvocations, req)
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -348,7 +418,9 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyNodeResult(h.deps.nodeInvocations, req)
+		out, err := withActiveNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			return applyNodeResult(h.deps.nodeInvocations, req)
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -362,7 +434,9 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := h.deps.nodePending.Enqueue(nodepending.EnqueueRequest{NodeID: req.NodeID, Command: req.Command, Args: req.Args, IdempotencyKey: req.IdempotencyKey, TTLMS: req.TTLMS})
+		out, err := withActiveNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			return h.deps.nodePending.Enqueue(nodepending.EnqueueRequest{NodeID: req.NodeID, Command: req.Command, Args: req.Args, IdempotencyKey: req.IdempotencyKey, TTLMS: req.TTLMS})
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -376,7 +450,9 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := h.deps.nodePending.Pull(req.NodeID)
+		out, err := withActiveNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			return h.deps.nodePending.Pull(req.NodeID)
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -390,7 +466,9 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := h.deps.nodePending.Ack(nodepending.AckRequest{NodeID: req.NodeID, IDs: req.IDs})
+		out, err := withActiveNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			return h.deps.nodePending.Ack(nodepending.AckRequest{NodeID: req.NodeID, IDs: req.IDs})
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -404,7 +482,9 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := h.deps.nodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID, MaxItems: req.MaxItems})
+		out, err := withActiveNode(h.deps.nodeInvocations, req.NodeID, func() (map[string]any, error) {
+			return h.deps.nodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID, MaxItems: req.MaxItems})
+		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}

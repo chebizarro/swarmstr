@@ -695,17 +695,30 @@ type nodeInvocationEvent struct {
 }
 
 type nodeInvocationRecord struct {
-	RunID     string                `json:"run_id"`
-	NodeID    string                `json:"node_id"`
-	Command   string                `json:"command"`
-	Args      map[string]any        `json:"args,omitempty"`
-	TimeoutMS int                   `json:"timeout_ms"`
-	Status    string                `json:"status"`
-	CreatedAt int64                 `json:"created_at"`
-	UpdatedAt int64                 `json:"updated_at"`
-	Result    any                   `json:"result,omitempty"`
-	Error     string                `json:"error,omitempty"`
-	Events    []nodeInvocationEvent `json:"events,omitempty"`
+	RunID           string                `json:"run_id"`
+	NodeID          string                `json:"node_id"`
+	Command         string                `json:"command"`
+	Args            map[string]any        `json:"args,omitempty"`
+	TimeoutMS       int                   `json:"timeout_ms"`
+	Status          string                `json:"status"`
+	CreatedAt       int64                 `json:"created_at"`
+	UpdatedAt       int64                 `json:"updated_at"`
+	Result          any                   `json:"result,omitempty"`
+	Error           string                `json:"error,omitempty"`
+	Events          []nodeInvocationEvent `json:"events,omitempty"`
+	progressNextSeq int                   `json:"-"`
+	progressPending map[int]string        `json:"-"`
+}
+
+type nodeInvocationProgressChunk struct {
+	Seq   int
+	Chunk string
+}
+
+type nodeInvocationProgressOutcome struct {
+	Accepted  bool
+	Delivered []nodeInvocationProgressChunk
+	Record    nodeInvocationRecord
 }
 
 const (
@@ -719,13 +732,67 @@ const (
 )
 
 type nodeInvocationRegistry struct {
-	mu    sync.Mutex
-	runs  map[string]nodeInvocationRecord
-	order []string
+	mu             sync.Mutex
+	progressEmitMu sync.Mutex
+	lifecycleMu    sync.RWMutex
+	revokedNodes   map[string]struct{}
+	runs           map[string]nodeInvocationRecord
+	order          []string
 }
 
 func newNodeInvocationRegistry() *nodeInvocationRegistry {
-	return &nodeInvocationRegistry{runs: map[string]nodeInvocationRecord{}, order: []string{}}
+	return &nodeInvocationRegistry{revokedNodes: map[string]struct{}{}, runs: map[string]nodeInvocationRecord{}, order: []string{}}
+}
+
+func (r *nodeInvocationRegistry) WithActiveNode(nodeID string, operation func() error) error {
+	if r == nil {
+		return fmt.Errorf("node invoke runtime not configured")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	r.lifecycleMu.RLock()
+	defer r.lifecycleMu.RUnlock()
+	if _, revoked := r.revokedNodes[nodeID]; nodeID != "" && revoked {
+		return fmt.Errorf("node %q is no longer paired", nodeID)
+	}
+	return operation()
+}
+
+func (r *nodeInvocationRegistry) RevokeNode(nodeID string, cleanup func() error) error {
+	if r == nil {
+		return fmt.Errorf("node invoke runtime not configured")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if nodeID != "" {
+		r.revokedNodes[nodeID] = struct{}{}
+	}
+	return cleanup()
+}
+
+func (r *nodeInvocationRegistry) AllowNode(nodeID string) {
+	if r == nil {
+		return
+	}
+	r.lifecycleMu.Lock()
+	delete(r.revokedNodes, strings.TrimSpace(nodeID))
+	r.lifecycleMu.Unlock()
+}
+
+// RemoveNode clears invocation state. Pair removal must call it from inside
+// RevokeNode so no active-node operation can race cleanup.
+func (r *nodeInvocationRegistry) RemoveNode(nodeID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := r.order[:0]
+	for _, runID := range r.order {
+		if run, ok := r.runs[runID]; ok && run.NodeID == nodeID {
+			delete(r.runs, runID)
+			continue
+		}
+		kept = append(kept, runID)
+	}
+	r.order = append([]string(nil), kept...)
 }
 
 func (r *nodeInvocationRegistry) cleanup() {
@@ -769,21 +836,73 @@ func (r *nodeInvocationRegistry) Begin(req methods.NodeInvokeRequest) nodeInvoca
 	}
 	_, exists := r.runs[runID]
 	rec := nodeInvocationRecord{
-		RunID:     runID,
-		NodeID:    req.NodeID,
-		Command:   req.Command,
-		Args:      req.Args,
-		TimeoutMS: req.TimeoutMS,
-		Status:    "queued",
-		CreatedAt: now,
-		UpdatedAt: now,
-		Events:    []nodeInvocationEvent{},
+		RunID:           runID,
+		NodeID:          req.NodeID,
+		Command:         req.Command,
+		Args:            req.Args,
+		TimeoutMS:       req.TimeoutMS,
+		Status:          "queued",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Events:          []nodeInvocationEvent{},
+		progressPending: map[int]string{},
 	}
 	if !exists {
 		r.order = append(r.order, runID)
 	}
 	r.runs[runID] = rec
 	return rec
+}
+
+func (r *nodeInvocationRegistry) AddProgress(req methods.NodeInvokeProgressRequest) (nodeInvocationProgressOutcome, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.runs[req.InvokeID]
+	if !ok {
+		return nodeInvocationProgressOutcome{}, state.ErrNotFound
+	}
+	if rec.NodeID != req.NodeID {
+		return nodeInvocationProgressOutcome{}, fmt.Errorf("node_id mismatch")
+	}
+	if rec.Status == "ok" || rec.Status == "error" || rec.Status == "failed" || rec.Status == "cancelled" || rec.Status == "done" {
+		return nodeInvocationProgressOutcome{Record: rec}, nil
+	}
+	if req.Seq < rec.progressNextSeq {
+		return nodeInvocationProgressOutcome{Record: rec}, nil
+	}
+	if rec.progressPending == nil {
+		rec.progressPending = map[int]string{}
+	}
+	if _, exists := rec.progressPending[req.Seq]; exists {
+		return nodeInvocationProgressOutcome{Record: rec}, nil
+	}
+	const maxPendingProgressChunks = 128
+	if req.Seq > rec.progressNextSeq && len(rec.progressPending) >= maxPendingProgressChunks {
+		return nodeInvocationProgressOutcome{Record: rec}, nil
+	}
+	rec.progressPending[req.Seq] = req.Chunk
+	rec.Status = "running"
+	rec.UpdatedAt = time.Now().UnixMilli()
+	outcome := nodeInvocationProgressOutcome{Accepted: true}
+	for {
+		chunk, exists := rec.progressPending[rec.progressNextSeq]
+		if !exists {
+			break
+		}
+		seq := rec.progressNextSeq
+		delete(rec.progressPending, seq)
+		rec.progressNextSeq++
+		rec.Events = append(rec.Events, nodeInvocationEvent{
+			Type:   "progress",
+			Status: "running",
+			Data:   map[string]any{"seq": seq, "chunk": chunk},
+			UnixMS: rec.UpdatedAt,
+		})
+		outcome.Delivered = append(outcome.Delivered, nodeInvocationProgressChunk{Seq: seq, Chunk: chunk})
+	}
+	r.runs[req.InvokeID] = rec
+	outcome.Record = rec
+	return outcome, nil
 }
 
 func (r *nodeInvocationRegistry) AddEvent(req methods.NodeEventRequest) (nodeInvocationRecord, error) {
@@ -828,6 +947,7 @@ func (r *nodeInvocationRegistry) SetResult(req methods.NodeResultRequest) (nodeI
 		rec.Status = "ok"
 	}
 	rec.Events = append(rec.Events, nodeInvocationEvent{Type: "result", Status: rec.Status, Message: req.Error, UnixMS: now})
+	rec.progressPending = nil
 	r.runs[req.RunID] = rec
 	return rec, nil
 }
@@ -842,6 +962,27 @@ type cronJobRecord struct {
 	Updated  int64           `json:"updated_at"`
 }
 
+const cronScratchMaxBytes = 262144
+
+type cronScratchRecord struct {
+	Content     string `json:"content"`
+	Revision    int    `json:"revision"`
+	UpdatedAtMS int64  `json:"updatedAtMs"`
+}
+
+type cronScratchWriteResult struct {
+	OK              bool
+	Scratch         *cronScratchRecord
+	CurrentRevision int
+}
+
+type cronPersistedState struct {
+	Version          int                          `json:"version"`
+	Jobs             []cronJobRecord              `json:"jobs"`
+	Scratch          map[string]cronScratchRecord `json:"scratch,omitempty"`
+	ScratchRevisions map[string]int               `json:"scratchRevisions,omitempty"`
+}
+
 type cronRunRecord struct {
 	RunID    string `json:"run_id"`
 	JobID    string `json:"job_id"`
@@ -853,14 +994,23 @@ type cronRunRecord struct {
 var errCronPersistenceUnavailable = errors.New("cron persistence backend unavailable")
 
 type cronRegistry struct {
-	mu       sync.Mutex
-	jobs     map[string]cronJobRecord
-	order    []string
-	runsByID map[string][]cronRunRecord
+	mu               sync.Mutex
+	persistMu        sync.Mutex
+	jobs             map[string]cronJobRecord
+	order            []string
+	runsByID         map[string][]cronRunRecord
+	scratch          map[string]cronScratchRecord
+	scratchRevisions map[string]int
 }
 
 func newCronRegistry() *cronRegistry {
-	return &cronRegistry{jobs: map[string]cronJobRecord{}, order: []string{}, runsByID: map[string][]cronRunRecord{}}
+	return &cronRegistry{
+		jobs:             map[string]cronJobRecord{},
+		order:            []string{},
+		runsByID:         map[string][]cronRunRecord{},
+		scratch:          map[string]cronScratchRecord{},
+		scratchRevisions: map[string]int{},
+	}
 }
 
 func (r *cronRegistry) cleanup() {
@@ -956,7 +1106,49 @@ func (r *cronRegistry) Remove(id string) error {
 		}
 	}
 	delete(r.runsByID, id)
+	delete(r.scratch, id)
+	delete(r.scratchRevisions, id)
 	return nil
+}
+
+func (r *cronRegistry) Scratch(id string) (*cronScratchRecord, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.jobs[id]; !ok {
+		return nil, 0, state.ErrNotFound
+	}
+	currentRevision := r.scratchRevisions[id]
+	record, ok := r.scratch[id]
+	if !ok {
+		return nil, currentRevision, nil
+	}
+	out := record
+	return &out, currentRevision, nil
+}
+
+func (r *cronRegistry) SetScratch(id string, content *string, expectedRevision *int) (cronScratchWriteResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.jobs[id]; !ok {
+		return cronScratchWriteResult{}, state.ErrNotFound
+	}
+	currentRevision := r.scratchRevisions[id]
+	if expectedRevision != nil && *expectedRevision != currentRevision {
+		return cronScratchWriteResult{OK: false, CurrentRevision: currentRevision}, nil
+	}
+	if content != nil && len([]byte(*content)) > cronScratchMaxBytes {
+		return cronScratchWriteResult{}, fmt.Errorf("scratch content exceeds %d bytes", cronScratchMaxBytes)
+	}
+	nextRevision := currentRevision + 1
+	r.scratchRevisions[id] = nextRevision
+	if content == nil {
+		delete(r.scratch, id)
+		return cronScratchWriteResult{OK: true, CurrentRevision: nextRevision}, nil
+	}
+	record := cronScratchRecord{Content: *content, Revision: nextRevision, UpdatedAtMS: time.Now().UnixMilli()}
+	r.scratch[id] = record
+	out := record
+	return cronScratchWriteResult{OK: true, Scratch: &out, CurrentRevision: nextRevision}, nil
 }
 
 func (r *cronRegistry) Run(id string) (cronRunRecord, error) {
@@ -1016,30 +1208,89 @@ func (r *cronRegistry) Runs(id string, limit int) []cronRunRecord {
 	return all
 }
 
-// Save persists the current cron jobs to the DocsRepository so they survive
-// daemon restarts.  Runs are intentionally not persisted (they are ephemeral).
+// MutatePersisted stages a cron mutation against an isolated snapshot, writes
+// that snapshot durably, then publishes it as live state. A failed write leaves
+// the live registry (including scratch CAS revisions) unchanged.
+func (r *cronRegistry) MutatePersisted(ctx context.Context, repo *state.DocsRepository, mutate func(*cronRegistry) (bool, error)) error {
+	if r == nil {
+		return fmt.Errorf("cron runtime not configured")
+	}
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
+
+	r.mu.Lock()
+	staged := newCronRegistry()
+	staged.order = append(staged.order, r.order...)
+	for id, job := range r.jobs {
+		job.Params = append(json.RawMessage(nil), job.Params...)
+		staged.jobs[id] = job
+	}
+	for id, scratch := range r.scratch {
+		staged.scratch[id] = scratch
+	}
+	for id, revision := range r.scratchRevisions {
+		staged.scratchRevisions[id] = revision
+	}
+	r.mu.Unlock()
+
+	changed, err := mutate(staged)
+	if err != nil || !changed {
+		return err
+	}
+	if err := staged.Save(ctx, repo); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	for id := range r.jobs {
+		if _, exists := staged.jobs[id]; !exists {
+			delete(r.runsByID, id)
+		}
+	}
+	r.jobs = staged.jobs
+	r.order = staged.order
+	r.scratch = staged.scratch
+	r.scratchRevisions = staged.scratchRevisions
+	r.mu.Unlock()
+	return nil
+}
+
+// Save persists cron jobs and their scratch documents to the DocsRepository so
+// they survive daemon restarts. Runs are intentionally not persisted.
 func (r *cronRegistry) Save(ctx context.Context, repo *state.DocsRepository) error {
 	if repo == nil {
 		return fmt.Errorf("%w: docs repository is nil", errCronPersistenceUnavailable)
 	}
 	r.mu.Lock()
-	jobs := make([]cronJobRecord, 0, len(r.jobs))
-	for _, j := range r.jobs {
-		jobs = append(jobs, j)
+	persisted := cronPersistedState{
+		Version:          2,
+		Jobs:             make([]cronJobRecord, 0, len(r.jobs)),
+		Scratch:          make(map[string]cronScratchRecord, len(r.scratch)),
+		ScratchRevisions: make(map[string]int, len(r.scratchRevisions)),
+	}
+	for _, id := range r.order {
+		if job, ok := r.jobs[id]; ok {
+			persisted.Jobs = append(persisted.Jobs, job)
+		}
+	}
+	for id, scratch := range r.scratch {
+		persisted.Scratch[id] = scratch
+	}
+	for id, revision := range r.scratchRevisions {
+		persisted.ScratchRevisions[id] = revision
 	}
 	r.mu.Unlock()
 
-	raw, err := json.Marshal(jobs)
+	raw, err := json.Marshal(persisted)
 	if err != nil {
-		return fmt.Errorf("marshal cron jobs: %w", err)
+		return fmt.Errorf("marshal cron state: %w", err)
 	}
 	_, err = repo.PutCronJobs(ctx, raw)
 	return err
 }
 
-// Load restores cron jobs from the DocsRepository.
-// Must be called before the scheduler starts.  Non-fatal: if no jobs are stored
-// it returns nil.
+// Load restores cron jobs and scratch documents from the DocsRepository. Legacy
+// job-array payloads remain supported so upgrades preserve existing schedules.
 func (r *cronRegistry) Load(ctx context.Context, repo *state.DocsRepository) error {
 	if repo == nil {
 		return nil // no-op when store is unavailable (e.g. tests)
@@ -1048,21 +1299,47 @@ func (r *cronRegistry) Load(ctx context.Context, repo *state.DocsRepository) err
 	if err != nil {
 		return fmt.Errorf("get cron jobs: %w", err)
 	}
-	if len(raw) == 0 {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
 		return nil // nothing persisted yet
 	}
-	var jobs []cronJobRecord
-	if err := json.Unmarshal(raw, &jobs); err != nil {
-		return fmt.Errorf("unmarshal cron jobs: %w", err)
+
+	persisted := cronPersistedState{Version: 1}
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal(raw, &persisted.Jobs); err != nil {
+			return fmt.Errorf("unmarshal legacy cron jobs: %w", err)
+		}
+	} else if err := json.Unmarshal(raw, &persisted); err != nil {
+		return fmt.Errorf("unmarshal cron state: %w", err)
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, j := range jobs {
-		if _, exists := r.jobs[j.ID]; !exists {
-			r.order = append(r.order, j.ID)
+	for _, job := range persisted.Jobs {
+		if _, exists := r.jobs[job.ID]; !exists {
+			r.order = append(r.order, job.ID)
 		}
-		r.jobs[j.ID] = j
+		r.jobs[job.ID] = job
+	}
+	if r.scratch == nil {
+		r.scratch = make(map[string]cronScratchRecord)
+	}
+	if r.scratchRevisions == nil {
+		r.scratchRevisions = make(map[string]int)
+	}
+	for id, scratch := range persisted.Scratch {
+		if _, exists := r.jobs[id]; !exists {
+			continue
+		}
+		r.scratch[id] = scratch
+		if scratch.Revision > r.scratchRevisions[id] {
+			r.scratchRevisions[id] = scratch.Revision
+		}
+	}
+	for id, revision := range persisted.ScratchRevisions {
+		if _, exists := r.jobs[id]; exists && revision > r.scratchRevisions[id] {
+			r.scratchRevisions[id] = revision
+		}
 	}
 	return nil
 }
@@ -1070,6 +1347,8 @@ func (r *cronRegistry) Load(ctx context.Context, repo *state.DocsRepository) err
 type execApprovalPendingRecord struct {
 	ID                   string         `json:"id"`
 	NodeID               string         `json:"node_id,omitempty"`
+	AgentID              *string        `json:"agent_id,omitempty"`
+	SessionKey           *string        `json:"session_key,omitempty"`
 	Command              string         `json:"command"`
 	CommandArgv          []string       `json:"command_argv,omitempty"`
 	Args                 map[string]any `json:"args,omitempty"`
@@ -1169,6 +1448,8 @@ func (r *execApprovalsRegistry) Request(req methods.ExecApprovalRequestRequest) 
 	rec := execApprovalPendingRecord{
 		ID:                   id,
 		NodeID:               req.NodeID,
+		AgentID:              req.AgentID,
+		SessionKey:           req.SessionKey,
 		Command:              req.Command,
 		CommandArgv:          append([]string(nil), req.CommandArgv...),
 		Args:                 req.Args,
@@ -1209,10 +1490,54 @@ func (r *execApprovalsRegistry) GetPending(id string) (execApprovalPendingRecord
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec, ok := r.pending[id]
-	if !ok {
+	if !ok || rec.Status != "pending" || (rec.ExpiresAt > 0 && time.Now().UnixMilli() >= rec.ExpiresAt) {
 		return execApprovalPendingRecord{}, state.ErrNotFound
 	}
-	return rec, nil
+	return cloneExecApprovalRecord(rec), nil
+}
+
+func (r *execApprovalsRegistry) ListPending() []execApprovalPendingRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	out := make([]execApprovalPendingRecord, 0, len(r.pending))
+	for _, rec := range r.pending {
+		if rec.Status != "pending" || (rec.ExpiresAt > 0 && now >= rec.ExpiresAt) {
+			continue
+		}
+		out = append(out, cloneExecApprovalRecord(rec))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Requested == out[j].Requested {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Requested < out[j].Requested
+	})
+	return out
+}
+
+func cloneExecApprovalRecord(rec execApprovalPendingRecord) execApprovalPendingRecord {
+	out := rec
+	out.CommandArgv = append([]string(nil), rec.CommandArgv...)
+	out.Args = cloneMapAny(rec.Args)
+	out.AnalysisWarnings = append([]string(nil), rec.AnalysisWarnings...)
+	if rec.CWD != nil {
+		cwd := *rec.CWD
+		out.CWD = &cwd
+	}
+	if rec.AgentID != nil {
+		agentID := *rec.AgentID
+		out.AgentID = &agentID
+	}
+	if rec.SessionKey != nil {
+		sessionKey := *rec.SessionKey
+		out.SessionKey = &sessionKey
+	}
+	if rec.Host != nil {
+		host := *rec.Host
+		out.Host = &host
+	}
+	return out
 }
 
 func (r *execApprovalsRegistry) WaitForDecision(ctx context.Context, id string, timeoutMS int) (execApprovalPendingRecord, bool, error) {

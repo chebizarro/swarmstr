@@ -12,6 +12,26 @@ import (
 
 func dispatchCron(ctx context.Context, opts ServerOptions, method string, call methods.CallRequest, cfg state.ConfigDoc) (any, int, error) {
 	switch method {
+	case methods.MethodCronGet:
+		req, err := methods.DecodeCronGetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronGet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronGet(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodCronList:
 		req, err := methods.DecodeCronListParams(call.Params)
 		if err != nil {
@@ -42,6 +62,46 @@ func dispatchCron(ctx context.Context, opts ServerOptions, method string, call m
 			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
 		}
 		out, err := opts.CronStatus(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodCronScratchGet:
+		req, err := methods.DecodeCronScratchGetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronScratchGet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronScratchGet(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodCronScratchSet:
+		req, err := methods.DecodeCronScratchSetParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.CronScratchSet == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("cron provider not configured")
+		}
+		out, err := opts.CronScratchSet(ctx, req)
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
 				return nil, http.StatusNotFound, fmt.Errorf("not found")

@@ -106,6 +106,70 @@ type ChatAbortRequest struct {
 	RunID     string `json:"run_id,omitempty"`
 }
 
+type SessionsCreateRequest struct {
+	Key              string            `json:"key,omitempty"`
+	AgentID          string            `json:"agentId,omitempty"`
+	Label            string            `json:"label,omitempty"`
+	Model            string            `json:"model,omitempty"`
+	ThinkingLevel    string            `json:"thinkingLevel,omitempty"`
+	Incognito        bool              `json:"incognito,omitempty"`
+	Visibility       string            `json:"visibility,omitempty"`
+	CatalogID        string            `json:"catalogId,omitempty"`
+	ParentSessionKey string            `json:"parentSessionKey,omitempty"`
+	SpawnDepth       int               `json:"spawnDepth,omitempty"`
+	Fork             bool              `json:"fork,omitempty"`
+	EmitCommandHooks bool              `json:"emitCommandHooks,omitempty"`
+	SucceedParent    bool              `json:"succeedsParent,omitempty"`
+	Task             string            `json:"task,omitempty"`
+	Message          string            `json:"message,omitempty"`
+	Attachments      []AttachmentInput `json:"attachments,omitempty"`
+	Worktree         bool              `json:"worktree,omitempty"`
+	WorktreeBaseRef  string            `json:"worktreeBaseRef,omitempty"`
+	WorktreeName     string            `json:"worktreeName,omitempty"`
+	ExecNode         string            `json:"execNode,omitempty"`
+	CWD              string            `json:"cwd,omitempty"`
+}
+
+func (r SessionsCreateRequest) Normalize() (SessionsCreateRequest, error) {
+	r.Key = strings.TrimSpace(r.Key)
+	r.AgentID = normalizeAgentID(r.AgentID)
+	r.Label = strings.TrimSpace(r.Label)
+	r.Model = strings.TrimSpace(r.Model)
+	r.ThinkingLevel = strings.TrimSpace(r.ThinkingLevel)
+	r.Visibility = strings.ToLower(strings.TrimSpace(r.Visibility))
+	r.CatalogID = strings.TrimSpace(r.CatalogID)
+	r.ParentSessionKey = strings.TrimSpace(r.ParentSessionKey)
+	r.Task = strings.TrimSpace(r.Task)
+	r.Message = strings.TrimSpace(r.Message)
+	r.WorktreeBaseRef = strings.TrimSpace(r.WorktreeBaseRef)
+	r.WorktreeName = strings.TrimSpace(r.WorktreeName)
+	r.ExecNode = strings.TrimSpace(r.ExecNode)
+	r.CWD = strings.TrimSpace(r.CWD)
+	if r.Visibility != "" && r.Visibility != "shared" && r.Visibility != "read-only" && r.Visibility != "suggest" && r.Visibility != "draft" {
+		return r, fmt.Errorf("visibility must be shared, read-only, suggest, or draft")
+	}
+	if (r.SpawnDepth > 0 || r.Fork || r.SucceedParent) && r.ParentSessionKey == "" {
+		return r, fmt.Errorf("parentSessionKey is required for lineage options")
+	}
+	if r.SpawnDepth < 0 {
+		return r, fmt.Errorf("spawnDepth must be positive")
+	}
+	if r.Worktree || r.WorktreeBaseRef != "" || r.WorktreeName != "" {
+		return r, fmt.Errorf("managed worktrees are not available on this gateway")
+	}
+	return r, nil
+}
+
+func DecodeSessionsCreateParams(params json.RawMessage) (SessionsCreateRequest, error) {
+	var out SessionsCreateRequest
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return out, fmt.Errorf("invalid params")
+	}
+	return out, nil
+}
+
 type SessionGetRequest struct {
 	SessionID string `json:"session_id"`
 	Key       string `json:"key,omitempty"`
@@ -615,6 +679,9 @@ func DecodeChatSendParams(params json.RawMessage) (ChatSendRequest, error) {
 		SessionID      string            `json:"session_id,omitempty"`
 		SessionIDCamel string            `json:"sessionId,omitempty"`
 		SessionKey     string            `json:"sessionKey,omitempty"`
+		Key            string            `json:"key,omitempty"`
+		AgentID        string            `json:"agentId,omitempty"`
+		AgentIDSnake   string            `json:"agent_id,omitempty"`
 		Message        string            `json:"message,omitempty"`
 		Thinking       string            `json:"thinking,omitempty"`
 		Deliver        *bool             `json:"deliver,omitempty"`
@@ -641,6 +708,9 @@ func DecodeChatSendParams(params json.RawMessage) (ChatSendRequest, error) {
 	}
 	if to == "" {
 		to = strings.TrimSpace(compat.SessionKey)
+	}
+	if to == "" {
+		to = strings.TrimSpace(compat.Key)
 	}
 	text := strings.TrimSpace(compat.Text)
 	if text == "" {
@@ -686,11 +756,13 @@ func DecodeSessionGetParams(params json.RawMessage) (SessionGetRequest, error) {
 	}
 	params = normalizeObjectParamAliases(params)
 	type sessionGetCompatRequest struct {
-		SessionID      string `json:"session_id,omitempty"`
-		SessionIDCamel string `json:"sessionId,omitempty"`
-		SessionKey     string `json:"sessionKey,omitempty"`
-		Key            string `json:"key,omitempty"`
-		Limit          int    `json:"limit,omitempty"`
+		SessionID           string `json:"session_id,omitempty"`
+		SessionIDCamel      string `json:"sessionId,omitempty"`
+		SessionKey          string `json:"sessionKey,omitempty"`
+		Key                 string `json:"key,omitempty"`
+		Limit               int    `json:"limit,omitempty"`
+		IncludeDerivedTitle bool   `json:"includeDerivedTitles,omitempty"`
+		IncludeLastMessage  bool   `json:"includeLastMessage,omitempty"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
@@ -788,6 +860,9 @@ func DecodeChatAbortParams(params json.RawMessage) (ChatAbortRequest, error) {
 		SessionID      string `json:"session_id,omitempty"`
 		SessionIDCamel string `json:"sessionId,omitempty"`
 		SessionKey     string `json:"sessionKey,omitempty"`
+		Key            string `json:"key,omitempty"`
+		AgentID        string `json:"agentId,omitempty"`
+		AgentIDSnake   string `json:"agent_id,omitempty"`
 		RunID          string `json:"run_id,omitempty"`
 		RunIDCamel     string `json:"runId,omitempty"`
 	}
@@ -803,6 +878,9 @@ func DecodeChatAbortParams(params json.RawMessage) (ChatAbortRequest, error) {
 	}
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(compat.SessionKey)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(compat.Key)
 	}
 	runID := strings.TrimSpace(compat.RunID)
 	if runID == "" {

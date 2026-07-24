@@ -9,19 +9,83 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"metiq/internal/config"
 	"metiq/internal/gateway/methods"
+	gatewayprotocol "metiq/internal/gateway/protocol"
+	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/store/state"
 )
 
 // ---------------------------------------------------------------------------
 // Pairing data helpers
 // ---------------------------------------------------------------------------
+
+// gatewayDeviceTokenValidator binds WebSocket device credentials to the
+// persisted pairing catalog. The signed connect payload still proves key
+// possession in the WS runtime; this callback proves the token/role/scopes were
+// approved and have not been revoked.
+func gatewayDeviceTokenValidator(configState *runtimeConfigStore) gatewayws.DeviceTokenValidator {
+	return func(connect gatewayprotocol.ConnectParams, token string) gatewayws.DeviceTokenDecision {
+		if configState == nil || connect.Device == nil {
+			return gatewayws.DeviceTokenDecision{Reason: "device_not_paired", Code: "DEVICE_AUTH_NOT_PAIRED"}
+		}
+		deviceID := strings.TrimSpace(connect.Device.ID)
+		role := strings.ToLower(strings.TrimSpace(connect.Role))
+		if role == "" {
+			role = "operator"
+		}
+		pairing := pairingData(configState.Get())
+		if role == "node" {
+			for _, record := range toRecordSlice(pairing["node_paired"]) {
+				if getString(record, "node_id") != deviceID {
+					continue
+				}
+				if !constantTokenEqual(token, getString(record, "token")) {
+					return gatewayws.DeviceTokenDecision{Reason: "device_token_mismatch", Code: "DEVICE_AUTH_TOKEN_MISMATCH"}
+				}
+				return gatewayws.DeviceTokenDecision{OK: true, Role: "node", Subject: deviceID}
+			}
+			return gatewayws.DeviceTokenDecision{Reason: "device_not_paired", Code: "DEVICE_AUTH_NOT_PAIRED"}
+		}
+
+		for _, record := range toRecordSlice(pairing["device_paired"]) {
+			if getString(record, "device_id") != deviceID {
+				continue
+			}
+			tokens, _ := record["tokens"].(map[string]any)
+			entry, _ := tokens[role].(map[string]any)
+			if entry == nil || !constantTokenEqual(token, getString(entry, "token")) {
+				return gatewayws.DeviceTokenDecision{Reason: "device_token_mismatch", Code: "DEVICE_AUTH_TOKEN_MISMATCH"}
+			}
+			approved := getStringSlice(entry, "scopes")
+			if len(approved) == 0 {
+				approved = getStringSlice(record, "approved_scopes")
+			}
+			if !scopesAllow(connect.Scopes, approved) {
+				return gatewayws.DeviceTokenDecision{Reason: "device_scope_escalation", Code: "DEVICE_AUTH_SCOPE_MISMATCH"}
+			}
+			granted := append([]string{}, connect.Scopes...)
+			if len(granted) == 0 {
+				granted = append([]string{}, approved...)
+			}
+			return gatewayws.DeviceTokenDecision{OK: true, Role: role, Scopes: granted, Subject: deviceID}
+		}
+		return gatewayws.DeviceTokenDecision{Reason: "device_not_paired", Code: "DEVICE_AUTH_NOT_PAIRED"}
+	}
+}
+
+func constantTokenEqual(presented, expected string) bool {
+	presented = strings.TrimSpace(presented)
+	expected = strings.TrimSpace(expected)
+	return presented != "" && expected != "" && subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) == 1
+}
 
 func pairingData(cfg state.ConfigDoc) map[string]any {
 	if cfg.Extra == nil {
@@ -123,8 +187,6 @@ func randomRequestID(prefix string) (string, error) {
 	}
 	return fmt.Sprintf("%s-%s", prefix, tok), nil
 }
-
-
 
 func redactDeviceForList(record map[string]any) map[string]any {
 	out := copyRecord(record)
@@ -330,6 +392,26 @@ func applyNodePairReject(ctx context.Context, docsRepo *state.DocsRepository, co
 	})
 }
 
+func applyNodePairRemove(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.NodePairRemoveRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		paired := toRecordSlice(pairing["node_paired"])
+		remaining := make([]map[string]any, 0, len(paired))
+		removed := false
+		for _, node := range paired {
+			if getString(node, "node_id") == req.NodeID {
+				removed = true
+				continue
+			}
+			remaining = append(remaining, node)
+		}
+		if !removed {
+			return nil, nil, state.ErrNotFound
+		}
+		pairing["node_paired"] = remaining
+		return pairing, map[string]any{"node_id": req.NodeID}, nil
+	})
+}
+
 func applyNodePairVerify(_ context.Context, configState *runtimeConfigStore, req methods.NodePairVerifyRequest) (map[string]any, error) {
 	pairing := pairingData(configState.Get())
 	for _, item := range toRecordSlice(pairing["node_paired"]) {
@@ -477,6 +559,21 @@ func applyDevicePairRemove(ctx context.Context, docsRepo *state.DocsRepository, 
 		}
 		pairing["device_paired"] = remaining
 		return pairing, map[string]any{"device_id": req.DeviceID}, nil
+	})
+}
+
+func applyDevicePairRename(ctx context.Context, docsRepo *state.DocsRepository, configState *runtimeConfigStore, req methods.DevicePairRenameRequest) (map[string]any, error) {
+	return applyPairingConfigUpdate(ctx, docsRepo, configState, func(pairing map[string]any) (map[string]any, map[string]any, error) {
+		paired := toRecordSlice(pairing["device_paired"])
+		for _, device := range paired {
+			if getString(device, "device_id") != req.DeviceID {
+				continue
+			}
+			device["label"] = req.Label
+			pairing["device_paired"] = paired
+			return pairing, map[string]any{"device_id": req.DeviceID, "label": req.Label}, nil
+		}
+		return nil, nil, state.ErrNotFound
 	})
 }
 

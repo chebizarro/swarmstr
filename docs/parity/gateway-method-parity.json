@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 103,
-    "partial": 0,
-    "missing": 221,
+    "implemented": 120,
+    "partial": 2,
+    "missing": 202,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "defer": 53,
@@ -336,16 +336,18 @@
     },
     {
       "method": "exec.approval.get",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "exec.approval.get",
+      "notes": "Returns one live, unexpired exec approval with reviewer-safe display fields.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
     },
     {
       "method": "exec.approval.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "exec.approval.list",
+      "notes": "Returns the authoritative live pending exec approvals in deterministic FIFO order.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -1505,7 +1507,7 @@
     },
     {
       "method": "sessions.messages.subscribe",
-      "status": "missing",
+        "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1513,7 +1515,7 @@
     },
     {
       "method": "sessions.messages.unsubscribe",
-      "status": "missing",
+        "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1530,7 +1532,7 @@
     },
     {
       "method": "sessions.describe",
-      "status": "missing",
+        "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1538,16 +1540,18 @@
     },
     {
       "method": "sessions.compaction.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.compaction.list",
+      "notes": "Reads persisted per-session checkpoint metadata newest-first.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.compaction.get",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.compaction.get",
+      "notes": "Reads one persisted checkpoint with gateway-v4 field names.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -1602,7 +1606,7 @@
     },
     {
       "method": "sessions.create",
-      "status": "missing",
+        "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1610,7 +1614,7 @@
     },
     {
       "method": "sessions.send",
-      "status": "missing",
+        "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1618,7 +1622,7 @@
     },
     {
       "method": "sessions.abort",
-      "status": "missing",
+        "status": "implemented",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1764,8 +1768,9 @@
     },
     {
       "method": "node.pair.remove",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "node.pair.remove",
+      "notes": "Removes persisted node trust and clears queued/in-flight runtime state.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -1808,8 +1813,9 @@
     },
     {
       "method": "device.pair.rename",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "device.pair.rename",
+      "notes": "Persists an operator label for a paired device with a 64-character bound.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -1930,8 +1936,9 @@
     },
     {
       "method": "node.invoke.progress",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "node.invoke.progress",
+      "notes": "Accepts bounded ordered chunks, deduplicates and buffers gaps, and pushes contiguous progress over WS subscriptions.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -1956,8 +1963,9 @@
     },
     {
       "method": "cron.get",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "cron.get",
+      "notes": "Returns one persisted cron job by id or jobId.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -1982,16 +1990,18 @@
     },
     {
       "method": "cron.scratch.get",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "cron.scratch.get",
+      "notes": "Returns the persisted scratch document, monotonic current revision, and byte limit.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
     },
     {
       "method": "cron.scratch.set",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "cron.scratch.set",
+      "notes": "Persists string or null scratch content with optional compare-and-set revision semantics.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -2503,24 +2513,27 @@
     },
     {
       "method": "approval.get",
-      "status": "missing",
-      "notes": "",
+      "status": "partial",
+      "metiq_method": "approval.get",
+      "notes": "Unified approval projection is implemented for exec approvals; plugin and system-agent owners remain pending.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "approval.resolve",
-      "status": "missing",
-      "notes": "",
+      "status": "partial",
+      "metiq_method": "approval.resolve",
+      "notes": "Unified first-answer resolution is implemented for exec approvals; plugin and system-agent owners remain pending.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.search",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.search",
+      "notes": "Bounded deterministic case-insensitive transcript search over persisted user and assistant messages.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"

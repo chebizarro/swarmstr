@@ -16,6 +16,20 @@ type CronStatusRequest struct {
 	ID string `json:"id"`
 }
 
+type CronJobSelectorRequest struct {
+	ID    string `json:"id,omitempty"`
+	JobID string `json:"jobId,omitempty"`
+}
+
+type CronScratchSetRequest struct {
+	ID               string          `json:"id,omitempty"`
+	JobID            string          `json:"jobId,omitempty"`
+	Content          json.RawMessage `json:"content"`
+	ExpectedRevision *int            `json:"expectedRevision,omitempty"`
+	ContentValue     string          `json:"-"`
+	Clear            bool            `json:"-"`
+}
+
 type CronAddRequest struct {
 	ID       string          `json:"id,omitempty"`
 	Schedule string          `json:"schedule"`
@@ -54,6 +68,48 @@ func (r CronStatusRequest) Normalize() (CronStatusRequest, error) {
 	r.ID = strings.TrimSpace(r.ID)
 	if r.ID == "" {
 		return r, fmt.Errorf("id is required")
+	}
+	return r, nil
+}
+
+func (r CronJobSelectorRequest) Normalize() (CronJobSelectorRequest, error) {
+	r.ID = strings.TrimSpace(r.ID)
+	r.JobID = strings.TrimSpace(r.JobID)
+	if r.ID == "" {
+		r.ID = r.JobID
+	}
+	if r.ID == "" {
+		return r, fmt.Errorf("id or jobId is required")
+	}
+	if r.JobID != "" && r.JobID != r.ID {
+		return r, fmt.Errorf("id and jobId must match")
+	}
+	return r, nil
+}
+
+func (r CronScratchSetRequest) Normalize() (CronScratchSetRequest, error) {
+	selector, err := (CronJobSelectorRequest{ID: r.ID, JobID: r.JobID}).Normalize()
+	if err != nil {
+		return r, err
+	}
+	r.ID = selector.ID
+	r.JobID = selector.JobID
+	if r.ExpectedRevision != nil && *r.ExpectedRevision < 0 {
+		return r, fmt.Errorf("expectedRevision must be non-negative")
+	}
+	raw := bytes.TrimSpace(r.Content)
+	if len(raw) == 0 {
+		return r, fmt.Errorf("content is required")
+	}
+	if bytes.Equal(raw, []byte("null")) {
+		r.Clear = true
+		return r, nil
+	}
+	if err := json.Unmarshal(raw, &r.ContentValue); err != nil {
+		return r, fmt.Errorf("content must be a string or null")
+	}
+	if len([]byte(r.ContentValue)) > 262144 {
+		return r, fmt.Errorf("content exceeds 262144 bytes")
 	}
 	return r, nil
 }
@@ -150,6 +206,18 @@ func DecodeCronStatusParams(params json.RawMessage) (CronStatusRequest, error) {
 		return CronStatusRequest{ID: id}, nil
 	}
 	return decodeMethodParams[CronStatusRequest](params)
+}
+
+func DecodeCronGetParams(params json.RawMessage) (CronJobSelectorRequest, error) {
+	return decodeMethodParams[CronJobSelectorRequest](params)
+}
+
+func DecodeCronScratchGetParams(params json.RawMessage) (CronJobSelectorRequest, error) {
+	return decodeMethodParams[CronJobSelectorRequest](params)
+}
+
+func DecodeCronScratchSetParams(params json.RawMessage) (CronScratchSetRequest, error) {
+	return decodeMethodParams[CronScratchSetRequest](params)
 }
 
 func DecodeCronAddParams(params json.RawMessage) (CronAddRequest, error) {

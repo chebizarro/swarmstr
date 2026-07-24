@@ -61,9 +61,32 @@ type ServerInfo struct {
 	ConnID  string `json:"connId"`
 }
 
+const (
+	MethodScopeOperatorRead      = "operator.read"
+	MethodScopeOperatorWrite     = "operator.write"
+	MethodScopeOperatorAdmin     = "operator.admin"
+	MethodScopeOperatorApprovals = "operator.approvals"
+	MethodScopeOperatorPairing   = "operator.pairing"
+	MethodScopeNode              = "node"
+	MethodScopeDynamic           = "dynamic"
+
+	MethodStartupUnavailableUntilSidecars = "unavailable-until-sidecars"
+)
+
+// MethodDescriptor is the public gateway policy contract for one dispatchable
+// method. It keeps listing and admission on the same scope/startup/write facts.
+type MethodDescriptor struct {
+	Name              string `json:"name"`
+	Scope             string `json:"scope"`
+	Since             string `json:"since,omitempty"`
+	Startup           string `json:"startup,omitempty"`
+	ControlPlaneWrite bool   `json:"controlPlaneWrite,omitempty"`
+}
+
 type FeatureSet struct {
-	Methods []string `json:"methods"`
-	Events  []string `json:"events"`
+	Methods           []string           `json:"methods"`
+	Events            []string           `json:"events"`
+	MethodDescriptors []MethodDescriptor `json:"methodDescriptors,omitempty"`
 }
 
 type StateVersion struct {
@@ -112,7 +135,7 @@ type HelloOK struct {
 }
 
 type HelloAuth struct {
-	DeviceToken string   `json:"deviceToken"`
+	DeviceToken string   `json:"deviceToken,omitempty"`
 	Role        string   `json:"role"`
 	Scopes      []string `json:"scopes"`
 	IssuedAtMS  int64    `json:"issuedAtMs,omitempty"`

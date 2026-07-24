@@ -1,0 +1,228 @@
+package methods
+
+import (
+	"sort"
+	"strings"
+
+	"metiq/internal/gateway/protocol"
+)
+
+const descriptorSince = "<=2026.7"
+
+// MethodDescriptors returns deterministic public policy metadata for every
+// dispatchable method. Core methods are classified explicitly by method family;
+// extension-owned names fail closed at operator.admin until their host supplies
+// a narrower descriptor.
+func MethodDescriptors(names []string) []protocol.MethodDescriptor {
+	seen := make(map[string]struct{}, len(names))
+	out := make([]protocol.MethodDescriptor, 0, len(names))
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, MethodDescriptor(name))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// MethodDescriptor resolves the canonical descriptor for one method. Unknown
+// extension methods deliberately receive admin scope rather than inheriting a
+// permissive default.
+func MethodDescriptor(name string) protocol.MethodDescriptor {
+	name = strings.TrimSpace(name)
+	d := protocol.MethodDescriptor{
+		Name:  name,
+		Scope: protocol.MethodScopeOperatorAdmin,
+		Since: descriptorSince,
+	}
+
+	if scope, ok := exactMethodScopes[name]; ok {
+		d.Scope = scope
+	} else {
+		d.Scope = inferredMethodScope(name)
+	}
+	if startupUnavailableMethods[name] {
+		d.Startup = protocol.MethodStartupUnavailableUntilSidecars
+	}
+	if controlPlaneWriteMethods[name] {
+		d.ControlPlaneWrite = true
+	}
+	return d
+}
+
+var exactMethodScopes = map[string]string{
+	MethodAgent:                       protocol.MethodScopeOperatorWrite,
+	MethodAgentWait:                   protocol.MethodScopeOperatorWrite,
+	MethodAgentIdentityGet:            protocol.MethodScopeOperatorRead,
+	MethodGatewayIdentityGet:          protocol.MethodScopeOperatorRead,
+	MethodApprovalGet:                 protocol.MethodScopeOperatorApprovals,
+	MethodApprovalResolve:             protocol.MethodScopeOperatorApprovals,
+	MethodExecApprovalGet:             protocol.MethodScopeOperatorApprovals,
+	MethodExecApprovalList:            protocol.MethodScopeOperatorApprovals,
+	MethodExecApprovalRequest:         protocol.MethodScopeOperatorApprovals,
+	MethodExecApprovalWaitDecision:    protocol.MethodScopeOperatorApprovals,
+	MethodExecApprovalResolve:         protocol.MethodScopeOperatorApprovals,
+	MethodNodeInvoke:                  protocol.MethodScopeOperatorAdmin,
+	MethodSessionsCreate:              protocol.MethodScopeOperatorAdmin,
+	MethodSessionsPatch:               protocol.MethodScopeOperatorAdmin,
+	MethodTalkConfig:                  protocol.MethodScopeOperatorAdmin,
+	MethodSkillsBins:                  protocol.MethodScopeNode,
+	MethodNodePendingPull:             protocol.MethodScopeNode,
+	MethodNodePendingAck:              protocol.MethodScopeNode,
+	MethodNodePendingDrain:            protocol.MethodScopeNode,
+	MethodNodeInvokeProgress:          protocol.MethodScopeNode,
+	MethodNodeInvokeResult:            protocol.MethodScopeNode,
+	MethodNodeEvent:                   protocol.MethodScopeNode,
+	MethodNodeResult:                  protocol.MethodScopeNode,
+	MethodNodePairList:                protocol.MethodScopeOperatorPairing,
+	MethodNodePairApprove:             protocol.MethodScopeOperatorPairing,
+	MethodNodePairReject:              protocol.MethodScopeOperatorPairing,
+	MethodNodePairRemove:              protocol.MethodScopeOperatorPairing,
+	MethodNodePairRequest:             protocol.MethodScopeNode,
+	MethodNodePairVerify:              protocol.MethodScopeNode,
+	MethodNodeRename:                  protocol.MethodScopeOperatorPairing,
+	MethodDevicePairList:              protocol.MethodScopeOperatorPairing,
+	MethodDevicePairApprove:           protocol.MethodScopeOperatorPairing,
+	MethodDevicePairReject:            protocol.MethodScopeOperatorPairing,
+	MethodDevicePairRemove:            protocol.MethodScopeOperatorPairing,
+	MethodDevicePairRename:            protocol.MethodScopeOperatorPairing,
+	MethodDeviceTokenRotate:           protocol.MethodScopeOperatorPairing,
+	MethodDeviceTokenRevoke:           protocol.MethodScopeOperatorPairing,
+	MethodExecApprovalsGet:            protocol.MethodScopeOperatorAdmin,
+	MethodExecApprovalsSet:            protocol.MethodScopeOperatorAdmin,
+	MethodExecApprovalsNodeGet:        protocol.MethodScopeOperatorAdmin,
+	MethodExecApprovalsNodeSet:        protocol.MethodScopeOperatorAdmin,
+	MethodSupportedMethods:            protocol.MethodScopeOperatorRead,
+	MethodHealth:                      protocol.MethodScopeOperatorRead,
+	MethodStatus:                      protocol.MethodScopeOperatorRead,
+	MethodStatusAlias:                 protocol.MethodScopeOperatorRead,
+	MethodDoctorMemoryStatus:          protocol.MethodScopeOperatorRead,
+	MethodLogsTail:                    protocol.MethodScopeOperatorRead,
+	MethodRuntimeObserve:              protocol.MethodScopeOperatorRead,
+	MethodRelayPolicyGet:              protocol.MethodScopeOperatorRead,
+	MethodSecurityAudit:               protocol.MethodScopeOperatorRead,
+	MethodMemorySearch:                protocol.MethodScopeOperatorRead,
+	MethodSystemPresence:              protocol.MethodScopeOperatorRead,
+	MethodLastHeartbeat:               protocol.MethodScopeOperatorRead,
+	MethodUsageStatus:                 protocol.MethodScopeOperatorRead,
+	MethodUsageCost:                   protocol.MethodScopeOperatorRead,
+	MethodModelsList:                  protocol.MethodScopeOperatorRead,
+	MethodToolsCatalog:                protocol.MethodScopeOperatorRead,
+	MethodToolsProfileGet:             protocol.MethodScopeOperatorRead,
+	MethodSkillsStatus:                protocol.MethodScopeOperatorRead,
+	MethodVoicewakeGet:                protocol.MethodScopeOperatorRead,
+	MethodTTSStatus:                   protocol.MethodScopeOperatorRead,
+	MethodTTSProviders:                protocol.MethodScopeOperatorRead,
+	MethodConfigGet:                   protocol.MethodScopeOperatorRead,
+	MethodConfigSchemaLookup:          protocol.MethodScopeOperatorRead,
+	MethodListGet:                     protocol.MethodScopeOperatorRead,
+	MethodCronGet:                     protocol.MethodScopeOperatorRead,
+	MethodCronList:                    protocol.MethodScopeOperatorRead,
+	MethodCronStatus:                  protocol.MethodScopeOperatorRead,
+	MethodCronRuns:                    protocol.MethodScopeOperatorRead,
+	MethodChannelsStatus:              protocol.MethodScopeOperatorRead,
+	MethodChannelsList:                protocol.MethodScopeOperatorRead,
+	MethodAgentsList:                  protocol.MethodScopeOperatorRead,
+	MethodAgentsActive:                protocol.MethodScopeOperatorRead,
+	MethodAgentsFilesList:             protocol.MethodScopeOperatorRead,
+	MethodAgentsFilesGet:              protocol.MethodScopeOperatorRead,
+	MethodMCPList:                     protocol.MethodScopeOperatorRead,
+	MethodMCPGet:                      protocol.MethodScopeOperatorRead,
+	MethodMCPTest:                     protocol.MethodScopeOperatorRead,
+	MethodPluginsRegistryList:         protocol.MethodScopeOperatorRead,
+	MethodPluginsRegistryGet:          protocol.MethodScopeOperatorRead,
+	MethodPluginsRegistrySearch:       protocol.MethodScopeOperatorRead,
+	MethodSessionsList:                protocol.MethodScopeOperatorRead,
+	MethodSessionGet:                  protocol.MethodScopeOperatorRead,
+	MethodSessionsDescribe:            protocol.MethodScopeOperatorRead,
+	MethodSessionsPreview:             protocol.MethodScopeOperatorRead,
+	MethodSessionsCompactionList:      protocol.MethodScopeOperatorRead,
+	MethodSessionsCompactionGet:       protocol.MethodScopeOperatorRead,
+	MethodSessionsSearch:              protocol.MethodScopeOperatorRead,
+	MethodSessionsExport:              protocol.MethodScopeOperatorRead,
+	MethodSessionsSubscribe:           protocol.MethodScopeOperatorRead,
+	MethodSessionsUnsubscribe:         protocol.MethodScopeOperatorRead,
+	MethodSessionsMessagesSubscribe:   protocol.MethodScopeOperatorRead,
+	MethodSessionsMessagesUnsubscribe: protocol.MethodScopeOperatorRead,
+	MethodChatHistory:                 protocol.MethodScopeOperatorRead,
+	MethodNodeList:                    protocol.MethodScopeOperatorRead,
+	MethodNodeDescribe:                protocol.MethodScopeOperatorRead,
+	MethodCanvasGet:                   protocol.MethodScopeOperatorRead,
+	MethodCanvasList:                  protocol.MethodScopeOperatorRead,
+	MethodTasksGet:                    protocol.MethodScopeOperatorRead,
+	MethodTasksList:                   protocol.MethodScopeOperatorRead,
+	MethodTasksDoctor:                 protocol.MethodScopeOperatorRead,
+	MethodTasksSummary:                protocol.MethodScopeOperatorRead,
+	MethodTasksTrace:                  protocol.MethodScopeOperatorRead,
+	MethodTasksAuditExport:            protocol.MethodScopeOperatorRead,
+	MethodACPPeers:                    protocol.MethodScopeOperatorRead,
+	MethodACPManagerStatus:            protocol.MethodScopeOperatorRead,
+	MethodACPSessionStatus:            protocol.MethodScopeOperatorRead,
+	MethodHooksList:                   protocol.MethodScopeOperatorRead,
+	MethodHooksInfo:                   protocol.MethodScopeOperatorRead,
+	MethodHooksCheck:                  protocol.MethodScopeOperatorRead,
+	"events.list":                     protocol.MethodScopeOperatorRead,
+	"events.subscribe":                protocol.MethodScopeOperatorRead,
+	"events.unsubscribe":              protocol.MethodScopeOperatorRead,
+}
+
+func inferredMethodScope(name string) string {
+	if name == "" {
+		return protocol.MethodScopeOperatorAdmin
+	}
+	// Ordinary runtime actions can be delegated to an operator.write token.
+	if hasAnyPrefix(name,
+		"chat.", "sessions.send", "sessions.abort", "sessions.spawn",
+		"node.pending.enqueue", "canvas.update", "canvas.delete",
+		"channels.send", "send", "poll", "wake", "talk.mode",
+		"tts.enable", "tts.disable", "tts.convert", "tts.setProvider",
+		"voicewake.set", "tasks.create", "tasks.cancel", "tasks.resume",
+		"acp.dispatch", "acp.pipeline", "acp.session.",
+	) {
+		return protocol.MethodScopeOperatorWrite
+	}
+	return protocol.MethodScopeOperatorAdmin
+}
+
+func hasAnyPrefix(value string, prefixes ...string) bool {
+	for _, prefix := range prefixes {
+		if value == prefix || strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+var startupUnavailableMethods = map[string]bool{
+	MethodAgent:          true,
+	MethodAgentWait:      true,
+	MethodChatHistory:    true,
+	MethodChatSend:       true,
+	MethodModelsList:     true,
+	MethodSessionsList:   true,
+	MethodSessionsCreate: true,
+	MethodSessionsSend:   true,
+	MethodSessionsAbort:  true,
+}
+
+var controlPlaneWriteMethods = map[string]bool{
+	MethodConfigApply:             true,
+	MethodConfigPatch:             true,
+	MethodUpdateRun:               true,
+	MethodPluginsInstall:          true,
+	MethodPluginsUninstall:        true,
+	MethodPluginsUpdate:           true,
+	MethodSoulFactoryProvision:    true,
+	MethodSoulFactoryUpdate:       true,
+	MethodSoulFactorySuspend:      true,
+	MethodSoulFactoryResume:       true,
+	MethodSoulFactoryRedeploy:     true,
+	MethodSoulFactoryRevoke:       true,
+	MethodSoulFactoryConfigReload: true,
+}

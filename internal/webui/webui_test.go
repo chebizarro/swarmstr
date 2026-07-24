@@ -110,12 +110,16 @@ func TestHandler_IncludesParityRunControlsAndToolActivity(t *testing.T) {
 	body := w.Body.String()
 	for _, want := range []string{
 		"id=\"abort-run\"",
-		"chat.abort",
+		"sessions.abort",
+		"sessions.send",
 		"sessions.reset",
 		"sessions.compact",
 		"tool.start",
 		"renderToolActivity",
 		"plugin.approval.requested",
+		"exec.approval.list",
+		"approval.resolve",
+		"reconcilePendingApprovals",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response body should contain %q", want)
@@ -317,6 +321,9 @@ func TestProtocolV4ChatStreamingContract(t *testing.T) {
 	html := string(raw)
 	for _, required := range []string{
 		"minProtocol: 4, maxProtocol: 4",
+		"scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals', 'operator.pairing']",
+		"hello.features.methodDescriptors",
+		"gatewayMethodDescriptors.get(method)",
 		"callMethod('events.subscribe'",
 		"case 'chat':",
 		"payload.runId",

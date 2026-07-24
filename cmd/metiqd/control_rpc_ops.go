@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -216,6 +215,48 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodCronGet:
+		req, err := methods.DecodeCronGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyCronGet(h.deps.cronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodCronScratchGet:
+		req, err := methods.DecodeCronScratchGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyCronScratchGet(h.deps.cronJobs, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodCronScratchSet:
+		req, err := methods.DecodeCronScratchSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyCronScratchSetPersisted(ctx, h.deps.cronJobs, docsRepo, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodCronStatus:
 		req, err := methods.DecodeCronStatusParams(in.Params)
 		if err != nil {
@@ -239,13 +280,9 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronAdd(h.deps.cronJobs, req)
+		out, err := applyCronAddPersisted(ctx, h.deps.cronJobs, docsRepo, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
-			log.Printf("cron jobs save warning (add): %v", saveErr)
-			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("cron.add persist: %w", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodCronUpdate:
@@ -257,13 +294,9 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronUpdate(h.deps.cronJobs, req)
+		out, err := applyCronUpdatePersisted(ctx, h.deps.cronJobs, docsRepo, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
-			log.Printf("cron jobs save warning (update): %v", saveErr)
-			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("cron.update persist: %w", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodCronRemove:
@@ -275,13 +308,9 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applyCronRemove(h.deps.cronJobs, req)
+		out, err := applyCronRemovePersisted(ctx, h.deps.cronJobs, docsRepo, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
-		}
-		if saveErr := h.deps.cronJobs.Save(ctx, docsRepo); saveErr != nil {
-			log.Printf("cron jobs save warning (remove): %v", saveErr)
-			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("cron.remove persist: %w", saveErr)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
 	case methods.MethodCronRun:
@@ -368,6 +397,34 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodExecApprovalGet:
+		req, err := methods.DecodeExecApprovalGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyExecApprovalGet(h.deps.execApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, true, nil
+	case methods.MethodExecApprovalList:
+		req, err := methods.DecodeExecApprovalListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyExecApprovalList(h.deps.execApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, true, nil
 	case methods.MethodExecApprovalRequest:
 		req, err := methods.DecodeExecApprovalRequestParams(in.Params)
 		if err != nil {
@@ -410,6 +467,34 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodApprovalGet:
+		req, err := methods.DecodeExecApprovalGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyApprovalGet(h.deps.execApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, true, nil
+	case methods.MethodApprovalResolve:
+		req, err := methods.DecodeApprovalResolveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := applyApprovalResolve(h.deps.execApprovals, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, true, nil
 	case methods.MethodSandboxRun:
 		req, err := methods.DecodeSandboxRunParams(in.Params)
 		if err != nil {

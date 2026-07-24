@@ -32,7 +32,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 	toolRegistry := h.deps.toolRegistry
 
 	switch method {
-	case methods.MethodChatSend:
+	case methods.MethodChatSend, methods.MethodSessionsSend:
 		req, err := methods.DecodeChatSendParams(in.Params)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
@@ -79,7 +79,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: result}, true, nil
-	case methods.MethodChatAbort:
+	case methods.MethodChatAbort, methods.MethodSessionsAbort:
 		req, err := methods.DecodeChatAbortParams(in.Params)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
@@ -100,7 +100,7 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			usageState.RecordAbort(aborted)
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "aborted": aborted > 0, "aborted_count": aborted})}, true, nil
-	case methods.MethodSessionGet:
+	case methods.MethodSessionGet, methods.MethodSessionsDescribe:
 		req, err := methods.DecodeSessionGetParams(in.Params)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
@@ -113,6 +113,40 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsCreate:
+		req, err := methods.DecodeSessionsCreateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if docsRepo == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session repository unavailable")
+		}
+		key := req.Key
+		if key == "" {
+			key = fmt.Sprintf("session-%d", time.Now().UnixNano())
+		}
+		created := false
+		session, getErr := docsRepo.GetSession(ctx, key)
+		if getErr != nil {
+			meta := map[string]any{"agent_id": req.AgentID, "label": req.Label, "model": req.Model, "thinking_level": req.ThinkingLevel, "incognito": req.Incognito, "visibility": req.Visibility, "catalog_id": req.CatalogID, "parent_session_key": req.ParentSessionKey, "spawn_depth": req.SpawnDepth, "forked": req.Fork, "task": req.Task}
+			session = state.SessionDoc{Version: 1, SessionID: key, LastInboundAt: time.Now().Unix(), Meta: meta}
+			if _, err := docsRepo.PutSession(ctx, key, session); err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			created = true
+			if sessionStore != nil {
+				entry := state.SessionEntry{SessionID: key, AgentID: req.AgentID, Label: req.Label, ModelOverride: req.Model, ThinkingLevel: req.ThinkingLevel, SpawnedBy: req.ParentSessionKey, ForkedFromParent: req.Fork, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+				if err := sessionStore.Put(key, entry); err != nil {
+					return nostruntime.ControlRPCResult{}, true, err
+				}
+			}
+		}
+		result := map[string]any{"ok": true, "key": key, "sessionId": key, "entry": session, "created": created, "runStarted": false}
 		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodSessionsList:
 		req, err := methods.DecodeSessionsListParams(in.Params)
@@ -331,6 +365,36 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: compactResult}, true, nil
+	case methods.MethodSessionsCompactionList:
+		req, err := methods.DecodeSessionsCompactionListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := listSessionCompactionCheckpoints(sessionStore, req.Key)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsCompactionGet:
+		req, err := methods.DecodeSessionsCompactionGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := getSessionCompactionCheckpoint(sessionStore, req.Key, req.CheckpointID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsSearch:
+		req, err := methods.DecodeSessionsSearchParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := searchSessionTranscripts(ctx, docsRepo, transcriptRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodSessionsExport:
 		exportReq, err := methods.DecodeSessionsExportParams(in.Params)
 		if err != nil {

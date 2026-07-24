@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode/utf8"
 )
 
 type NodePairRequest struct {
@@ -34,6 +35,10 @@ type NodePairRejectRequest struct {
 	RequestID string `json:"request_id"`
 }
 
+type NodePairRemoveRequest struct {
+	NodeID string `json:"node_id"`
+}
+
 type NodePairVerifyRequest struct {
 	NodeID string `json:"node_id"`
 	Token  string `json:"token"`
@@ -51,6 +56,11 @@ type DevicePairRejectRequest struct {
 
 type DevicePairRemoveRequest struct {
 	DeviceID string `json:"device_id"`
+}
+
+type DevicePairRenameRequest struct {
+	DeviceID string `json:"device_id"`
+	Label    string `json:"label"`
 }
 
 type DeviceTokenRotateRequest struct {
@@ -87,6 +97,13 @@ type NodeInvokeRequest struct {
 	Args      map[string]any `json:"args,omitempty"`
 	TimeoutMS int            `json:"timeout_ms,omitempty"`
 	RunID     string         `json:"run_id,omitempty"`
+}
+
+type NodeInvokeProgressRequest struct {
+	InvokeID string `json:"invoke_id"`
+	NodeID   string `json:"node_id"`
+	Seq      int    `json:"seq"`
+	Chunk    string `json:"chunk"`
 }
 
 type NodeEventRequest struct {
@@ -165,6 +182,14 @@ func (r NodePairRejectRequest) Normalize() (NodePairRejectRequest, error) {
 	return r, nil
 }
 
+func (r NodePairRemoveRequest) Normalize() (NodePairRemoveRequest, error) {
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.NodeID == "" {
+		return r, fmt.Errorf("node_id is required")
+	}
+	return r, nil
+}
+
 func (r NodePairVerifyRequest) Normalize() (NodePairVerifyRequest, error) {
 	r.NodeID = strings.TrimSpace(r.NodeID)
 	r.Token = strings.TrimSpace(r.Token)
@@ -196,6 +221,18 @@ func (r DevicePairRemoveRequest) Normalize() (DevicePairRemoveRequest, error) {
 	r.DeviceID = strings.TrimSpace(r.DeviceID)
 	if r.DeviceID == "" {
 		return r, fmt.Errorf("device_id is required")
+	}
+	return r, nil
+}
+
+func (r DevicePairRenameRequest) Normalize() (DevicePairRenameRequest, error) {
+	r.DeviceID = strings.TrimSpace(r.DeviceID)
+	r.Label = strings.TrimSpace(r.Label)
+	if r.DeviceID == "" || r.Label == "" {
+		return r, fmt.Errorf("device_id and label are required")
+	}
+	if utf8.RuneCountInString(r.Label) > 64 {
+		return r, fmt.Errorf("label must be at most 64 characters")
 	}
 	return r, nil
 }
@@ -258,6 +295,21 @@ func (r NodeInvokeRequest) Normalize() (NodeInvokeRequest, error) {
 	r.TimeoutMS = normalizeLimit(r.TimeoutMS, 30_000, 300_000)
 	if r.Args == nil {
 		r.Args = map[string]any{}
+	}
+	return r, nil
+}
+
+func (r NodeInvokeProgressRequest) Normalize() (NodeInvokeProgressRequest, error) {
+	r.InvokeID = strings.TrimSpace(r.InvokeID)
+	r.NodeID = strings.TrimSpace(r.NodeID)
+	if r.InvokeID == "" || r.NodeID == "" {
+		return r, fmt.Errorf("invoke_id and node_id are required")
+	}
+	if r.Seq < 0 {
+		return r, fmt.Errorf("seq must be non-negative")
+	}
+	if len([]byte(r.Chunk)) > 16*1024 {
+		return r, fmt.Errorf("progress chunk exceeds 16384 bytes")
 	}
 	return r, nil
 }
@@ -362,6 +414,10 @@ func DecodeNodePairRejectParams(params json.RawMessage) (NodePairRejectRequest, 
 	return decodeMethodParams[NodePairRejectRequest](params)
 }
 
+func DecodeNodePairRemoveParams(params json.RawMessage) (NodePairRemoveRequest, error) {
+	return decodeMethodParams[NodePairRemoveRequest](params)
+}
+
 func DecodeNodePairVerifyParams(params json.RawMessage) (NodePairVerifyRequest, error) {
 	return decodeMethodParams[NodePairVerifyRequest](params)
 }
@@ -383,6 +439,10 @@ func DecodeDevicePairRejectParams(params json.RawMessage) (DevicePairRejectReque
 
 func DecodeDevicePairRemoveParams(params json.RawMessage) (DevicePairRemoveRequest, error) {
 	return decodeMethodParams[DevicePairRemoveRequest](params)
+}
+
+func DecodeDevicePairRenameParams(params json.RawMessage) (DevicePairRenameRequest, error) {
+	return decodeMethodParams[DevicePairRenameRequest](params)
 }
 
 func DecodeDeviceTokenRotateParams(params json.RawMessage) (DeviceTokenRotateRequest, error) {
@@ -526,6 +586,10 @@ func DecodeNodeInvokeParams(params json.RawMessage) (NodeInvokeRequest, error) {
 		return req, nil
 	}
 	return decodeMethodParams[NodeInvokeRequest](params)
+}
+
+func DecodeNodeInvokeProgressParams(params json.RawMessage) (NodeInvokeProgressRequest, error) {
+	return decodeMethodParams[NodeInvokeProgressRequest](params)
 }
 
 func DecodeNodeEventParams(params json.RawMessage) (NodeEventRequest, error) {

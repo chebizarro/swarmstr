@@ -70,6 +70,8 @@ const (
 	EventNodePairRequested = "node.pair.requested"
 	// EventNodePairResolved is emitted when a node pair request is approved or rejected.
 	EventNodePairResolved = "node.pair.resolved"
+	// EventNodeInvokeProgress delivers accepted invocation chunks in sequence order.
+	EventNodeInvokeProgress = "node.invoke.progress"
 
 	// EventDevicePairResolved is emitted when a device pair request is approved or rejected.
 	EventDevicePairResolved = "device.pair.resolved"
@@ -134,6 +136,7 @@ var AllPushEvents = []string{
 	EventDMHealth,
 	EventNodePairRequested,
 	EventNodePairResolved,
+	EventNodeInvokeProgress,
 	EventDevicePairResolved,
 	EventTalkMode,
 	// Presence events are also emitted by the ws runtime itself.
@@ -400,11 +403,19 @@ func (s *ChatStream) Status(phase ChatRunStartupPhase) {
 }
 
 func (s *ChatStream) Delta(text string, replace bool) {
-	if text == "" {
+	s.DeltaWithMetadata(text, replace, nil, nil)
+}
+
+// DeltaWithMetadata emits an incremental or authoritative replacement delta.
+// Protocol v4 permits message and usage snapshots alongside deltaText so a
+// provider-neutral runtime can correct normalized output without a second
+// provider-specific transport path.
+func (s *ChatStream) DeltaWithMetadata(text string, replace bool, message, usage any) {
+	if text == "" && message == nil && usage == nil {
 		return
 	}
 	s.emit(func(base ChatEventBase) any {
-		return ChatDeltaEvent{ChatEventBase: base, State: ChatStateDelta, DeltaText: text, Replace: replace}
+		return ChatDeltaEvent{ChatEventBase: base, State: ChatStateDelta, DeltaText: text, Replace: replace, Message: message, Usage: usage}
 	}, false)
 }
 
@@ -638,6 +649,15 @@ type NodePairResolvedPayload struct {
 	RequestID string `json:"request_id"`
 	NodeID    string `json:"node_id,omitempty"`
 	Decision  string `json:"decision"` // "approved" | "rejected"
+}
+
+// NodeInvokeProgressPayload is the payload for EventNodeInvokeProgress.
+type NodeInvokeProgressPayload struct {
+	TS       int64  `json:"ts_ms"`
+	InvokeID string `json:"invoke_id"`
+	NodeID   string `json:"node_id"`
+	Seq      int    `json:"seq"`
+	Chunk    string `json:"chunk"`
 }
 
 // DevicePairResolvedPayload is the payload for EventDevicePairResolved.

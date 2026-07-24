@@ -772,6 +772,8 @@ const TOKEN   = '{{.Token}}';
   let ws, reconnectDelay = 1500;
   let connected = false;
   let pendingResolvers = {};
+  let gatewayMethodDescriptors = new Map();
+  let gatewayScopes = new Set();
   let seq = 0;
   let sessionID = localStorage.getItem('metiq_session') || null;
   let activeAgentID = 'main';
@@ -779,6 +781,7 @@ const TOKEN   = '{{.Token}}';
     let streamingBubble = null;
     let streamingText = '';
     const chatRunSeq = new Map();
+    const nodeInvokeProgress = new Map();
     let chatActivityVersion = 0;
     let thinkingEl = null;
   // Approval queue: pending exec/plugin approval payloads.
@@ -1431,6 +1434,16 @@ const TOKEN   = '{{.Token}}';
     addRows(addMgmtCard(grid, 'Recent runs'), resultItems(runsRes, 'runs'), (row, run) => { row.textContent = formatValue(run); });
   }
 
+  function renderNodeInvokeProgress() {
+    const card = document.getElementById('node-invoke-progress');
+    if (!card) return;
+    card.innerHTML = '';
+    const entries = Array.from(nodeInvokeProgress.values()).slice(-20);
+    addRows(card, entries, (row, progress) => {
+      row.innerHTML = `<strong>${escapeHTML(progress.nodeID || 'node')}</strong><div class="sub">#${progress.seq}: ${escapeHTML(truncate(progress.text, 180))}</div>`;
+    });
+  }
+
   async function showNodesView(token) {
     const { grid } = beginManagementView('Nodes', 'Node status, invoke, and rename operations.');
     const listRes = await callSafe('node.list', {});
@@ -1445,8 +1458,10 @@ const TOKEN   = '{{.Token}}';
       addActionButton(a, 'Status', 'node.describe', () => ({ node_id: id }));
       addActionButton(a, 'Invoke status', 'node.invoke', () => ({ node_id: id, command: 'status.get', args: {} }));
       addActionButton(a, 'Rename', 'node.rename', () => ({ node_id: id, name: prompt('New node name', n.name || id) || n.name || id }), () => showNodesView(++viewSeq));
+      addActionButton(a, 'Remove', 'node.pair.remove', () => ({ node_id: id }), () => showNodesView(++viewSeq));
     });
     addKV(addMgmtCard(grid, 'Status'), Object.keys(statusRes).sort().map(k => [k, statusRes[k]]));
+    const progress = addMgmtCard(grid, 'Invocation progress'); progress.id = 'node-invoke-progress'; renderNodeInvokeProgress();
   }
 
   async function showMCPView(token) {
@@ -1659,6 +1674,14 @@ const TOKEN   = '{{.Token}}';
         reject({ message: 'gateway is not connected' });
         return;
       }
+      const descriptor = gatewayMethodDescriptors.get(method);
+      if (descriptor && descriptor.scope && descriptor.scope !== 'dynamic' && descriptor.scope !== 'node') {
+        const allowed = gatewayScopes.has(descriptor.scope) || (descriptor.scope === 'operator.read' && gatewayScopes.has('operator.write'));
+        if (!allowed) {
+          reject({ message: 'missing scope: ' + descriptor.scope });
+          return;
+        }
+      }
       const id = nextID();
       pendingResolvers[id] = { resolve, reject };
       sendFrame({ type: 'request', id, method, params: params || {} });
@@ -1806,6 +1829,53 @@ const TOKEN   = '{{.Token}}';
     if (!currentApprovalID) showNextApproval();
   }
 
+  function normalizePendingApproval(raw, kind) {
+    if (!raw || typeof raw !== 'object') return null;
+    const approval = Object.assign({}, raw);
+    approval.id = approval.id || approval.request_id || approval.approval_id;
+    approval.kind = approval.kind || approval.approval_kind || kind || 'exec';
+    approval.status = approval.status || 'pending';
+    approval.expires_at = Number(approval.expires_at || approval.expiresAtMs || 0);
+    approval.requested_at = Number(approval.requested_at || approval.createdAtMs || 0);
+    return approval.id ? approval : null;
+  }
+
+  function approvalSortTime(approval) {
+    return Number(approval.requested_at || approval.createdAtMs || approval.expires_at || approval.expiresAtMs || 0);
+  }
+
+  async function reconcilePendingApprovals() {
+    const snapshot = await callMethod('exec.approval.list', {});
+    const authoritative = Array.isArray(snapshot)
+      ? snapshot
+      : ((snapshot && (snapshot.pending || snapshot.approvals || snapshot.items)) || []);
+    const now = Date.now();
+    const merged = new Map();
+    // Plugin approvals use a separate owner; preserve only still-live plugin entries.
+    approvalQueue.forEach(existing => {
+      const approval = normalizePendingApproval(existing);
+      if (!approval || approval.kind === 'exec' || approval.status !== 'pending') return;
+      if (approval.expires_at && approval.expires_at <= now) return;
+      merged.set(approval.id, approval);
+    });
+    authoritative.forEach(item => {
+      const approval = normalizePendingApproval(item, 'exec');
+      if (!approval || approval.status !== 'pending') return;
+      if (approval.expires_at && approval.expires_at <= now) return;
+      merged.set(approval.id, approval);
+    });
+    approvalQueue = Array.from(merged.values()).sort((a, b) => {
+      const byTime = approvalSortTime(a) - approvalSortTime(b);
+      return byTime || String(a.id).localeCompare(String(b.id));
+    });
+    if (currentApprovalID && !merged.has(currentApprovalID)) {
+      currentApprovalID = null;
+      currentApproval = null;
+    }
+    updateApprovalBadge();
+    showNextApproval();
+  }
+
   function updateApprovalBadge() {
     approvalsBadge.style.display = approvalQueue.length ? '' : 'none';
     approvalsBadge.textContent = approvalQueue.length > 1
@@ -1931,14 +2001,15 @@ const TOKEN   = '{{.Token}}';
     approvalError.textContent = '';
     try {
       const approval = currentApproval || approvalQueue.find(a => a.id === id) || {};
-      const normalizedDecision = decision === 'approve_always' ? 'approve' : decision;
-      const params = { id, decision: normalizedDecision };
+      const normalizedDecision = decision === 'approve_always'
+        ? 'allow-always'
+        : (decision === 'approve' ? 'allow-once' : 'deny');
+      const params = { id, kind: approval.kind || 'exec', decision: normalizedDecision };
       if (approval.plugin_id || approval.pluginId) params.plugin_id = approval.plugin_id || approval.pluginId;
-      if (decision === 'approve_always') params.reason = 'always allow selected in web UI';
       if (approval.kind === 'plugin') {
         throw new Error('plugin approval resolution is not registered by this gateway');
       }
-      await callMethod('exec.approval.resolve', params);
+      await callMethod('approval.resolve', params);
       approvalQueue = approvalQueue.filter(a => a.id !== id);
       currentApprovalID = null;
       currentApproval = null;
@@ -2012,7 +2083,7 @@ const TOKEN   = '{{.Token}}';
     const runSessionID = activeRunSessionID;
     abortBtn.disabled = true;
     try {
-      await callMethod('chat.abort', { session_id: runSessionID });
+      await callMethod('sessions.abort', { key: runSessionID });
       finalizeStreaming();
       setRunActive(false, runSessionID);
       addMsg('Run stopped.', 'system');
@@ -2162,6 +2233,17 @@ const TOKEN   = '{{.Token}}';
           updateApprovalBadge();
         }
         break;
+      case 'node.invoke.progress': {
+        if (!payload) break;
+        const invokeID = payload.invoke_id || payload.invokeId;
+        const nodeID = payload.node_id || payload.nodeId;
+        if (!invokeID || !Number.isInteger(payload.seq)) break;
+        const previous = nodeInvokeProgress.get(invokeID);
+        if (previous && payload.seq <= previous.seq) break;
+        nodeInvokeProgress.set(invokeID, { nodeID, seq: payload.seq, text: (previous ? previous.text : '') + (payload.chunk || '') });
+        renderNodeInvokeProgress();
+        break;
+      }
       case 'config.updated':
         addMsg('Config reloaded.', 'system');
         loadAgents();
@@ -2191,6 +2273,8 @@ const TOKEN   = '{{.Token}}';
             params: {
               client: { id: 'metiq-webui', mode: 'local', platform: navigator.platform || 'browser', version: '0.0.0', instanceId: 'webui-' + Math.random().toString(36).slice(2) },
               minProtocol: 4, maxProtocol: 4,
+              role: 'operator',
+              scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals', 'operator.pairing'],
               auth: { token: TOKEN, nonce }
             }
           });
@@ -2200,9 +2284,14 @@ const TOKEN   = '{{.Token}}';
                 if (!hello || hello.protocol !== 4) throw new Error('gateway protocol v4 is required');
                 const advertised = new Set((hello.features && hello.features.events) || []);
                 if (!advertised.has('chat')) throw new Error('gateway does not advertise protocol-v4 chat events');
-                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message'];
+                const descriptors = (hello.features && hello.features.methodDescriptors) || [];
+                if (!Array.isArray(descriptors) || descriptors.length === 0) throw new Error('gateway does not advertise method descriptors');
+                gatewayMethodDescriptors = new Map(descriptors.filter(item => item && item.name).map(item => [item.name, item]));
+                gatewayScopes = new Set((hello.auth && hello.auth.scopes) || []);
+                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress'];
                 const events = wanted.filter(name => advertised.has(name));
                 await callMethod('events.subscribe', { events });
+                await reconcilePendingApprovals();
                 connected = true;
                 reconnectDelay = 1500;
                 chatRunSeq.clear();
@@ -2248,6 +2337,8 @@ const TOKEN   = '{{.Token}}';
     ws.onerror = () => setConnected(null, 'connection error');
     ws.onclose = () => {
       connected = false;
+      gatewayMethodDescriptors = new Map();
+      gatewayScopes = new Set();
       finalizeStreaming();
       setRunActive(false);
       setConnected(null, 'reconnecting in ' + (reconnectDelay / 1000).toFixed(1) + 's…');
@@ -2282,7 +2373,7 @@ const TOKEN   = '{{.Token}}';
 
     try {
       const activityBeforeSend = chatActivityVersion;
-      const result = await callMethod('chat.send', { message: text, text, session_id: sessionID || undefined, attachments });
+      const result = await callMethod('sessions.send', { key: sessionID || undefined, message: text, attachments });
       if (result && result.session_id && result.session_id !== sessionID) {
         sessionID = result.session_id;
         localStorage.setItem('metiq_session', sessionID);

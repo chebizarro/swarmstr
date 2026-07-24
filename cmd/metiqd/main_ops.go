@@ -23,6 +23,26 @@ import (
 // Node invocation
 // ---------------------------------------------------------------------------
 
+func withActiveNode(reg *nodeInvocationRegistry, nodeID string, operation func() (map[string]any, error)) (map[string]any, error) {
+	var out map[string]any
+	err := reg.WithActiveNode(nodeID, func() error {
+		var err error
+		out, err = operation()
+		return err
+	})
+	return out, err
+}
+
+func revokeNode(reg *nodeInvocationRegistry, nodeID string, cleanup func() (map[string]any, error)) (map[string]any, error) {
+	var out map[string]any
+	err := reg.RevokeNode(nodeID, func() error {
+		var err error
+		out, err = cleanup()
+		return err
+	})
+	return out, err
+}
+
 func applyNodeInvoke(reg *nodeInvocationRegistry, req methods.NodeInvokeRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("node invoke runtime not configured")
@@ -36,6 +56,35 @@ func applyNodeInvoke(reg *nodeInvocationRegistry, req methods.NodeInvokeRequest)
 		"status":     rec.Status,
 		"created_at": rec.CreatedAt,
 	}, nil
+}
+
+func applyNodeInvokeProgress(reg *nodeInvocationRegistry, req methods.NodeInvokeProgressRequest) (nodeInvocationProgressOutcome, map[string]any, error) {
+	if reg == nil {
+		return nodeInvocationProgressOutcome{}, nil, fmt.Errorf("node invoke runtime not configured")
+	}
+	outcome, err := reg.AddProgress(req)
+	if err != nil {
+		return nodeInvocationProgressOutcome{}, nil, err
+	}
+	return outcome, map[string]any{"ok": true, "ignored": !outcome.Accepted}, nil
+}
+
+func applyNodeInvokeProgressAndEmit(reg *nodeInvocationRegistry, req methods.NodeInvokeProgressRequest, emit func(nodeInvocationProgressChunk)) (nodeInvocationProgressOutcome, map[string]any, error) {
+	if reg == nil {
+		return nodeInvocationProgressOutcome{}, nil, fmt.Errorf("node invoke runtime not configured")
+	}
+	reg.progressEmitMu.Lock()
+	defer reg.progressEmitMu.Unlock()
+	outcome, out, err := applyNodeInvokeProgress(reg, req)
+	if err != nil {
+		return nodeInvocationProgressOutcome{}, nil, err
+	}
+	if emit != nil {
+		for _, progress := range outcome.Delivered {
+			emit(progress)
+		}
+	}
+	return outcome, out, nil
 }
 
 func applyNodeEvent(reg *nodeInvocationRegistry, req methods.NodeEventRequest) (map[string]any, error) {
@@ -94,6 +143,60 @@ func applyCronStatus(reg *cronRegistry, req methods.CronStatusRequest) (map[stri
 	return map[string]any{"job": job}, nil
 }
 
+func applyCronGet(reg *cronRegistry, req methods.CronJobSelectorRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	job, ok := reg.Status(req.ID)
+	if !ok {
+		return nil, state.ErrNotFound
+	}
+	return map[string]any{
+		"id":         job.ID,
+		"schedule":   job.Schedule,
+		"method":     job.Method,
+		"params":     job.Params,
+		"enabled":    job.Enabled,
+		"created_at": job.Created,
+		"updated_at": job.Updated,
+	}, nil
+}
+
+func applyCronScratchGet(reg *cronRegistry, req methods.CronJobSelectorRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	scratch, currentRevision, err := reg.Scratch(req.ID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"scratch":         scratch,
+		"currentRevision": currentRevision,
+		"maxBytes":        cronScratchMaxBytes,
+	}, nil
+}
+
+func applyCronScratchSet(reg *cronRegistry, req methods.CronScratchSetRequest) (map[string]any, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("cron runtime not configured")
+	}
+	var content *string
+	if !req.Clear {
+		content = &req.ContentValue
+	}
+	result, err := reg.SetScratch(req.ID, content, req.ExpectedRevision)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"ok":              result.OK,
+		"scratch":         result.Scratch,
+		"currentRevision": result.CurrentRevision,
+		"maxBytes":        cronScratchMaxBytes,
+	}, nil
+}
+
 func applyCronAdd(reg *cronRegistry, req methods.CronAddRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("cron runtime not configured")
@@ -129,6 +232,62 @@ func applyCronRemove(reg *cronRegistry, req methods.CronRemoveRequest) (map[stri
 		return nil, err
 	}
 	return map[string]any{"ok": true, "id": req.ID, "removed": true}, nil
+}
+
+func applyCronScratchSetPersisted(ctx context.Context, reg *cronRegistry, repo *state.DocsRepository, req methods.CronScratchSetRequest) (map[string]any, error) {
+	var out map[string]any
+	err := reg.MutatePersisted(ctx, repo, func(staged *cronRegistry) (bool, error) {
+		var err error
+		out, err = applyCronScratchSet(staged, req)
+		if err != nil {
+			return false, err
+		}
+		changed, _ := out["ok"].(bool)
+		return changed, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cron.scratch.set persist: %w", err)
+	}
+	return out, nil
+}
+
+func applyCronAddPersisted(ctx context.Context, reg *cronRegistry, repo *state.DocsRepository, req methods.CronAddRequest) (map[string]any, error) {
+	var out map[string]any
+	err := reg.MutatePersisted(ctx, repo, func(staged *cronRegistry) (bool, error) {
+		var err error
+		out, err = applyCronAdd(staged, req)
+		return err == nil, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cron.add persist: %w", err)
+	}
+	return out, nil
+}
+
+func applyCronUpdatePersisted(ctx context.Context, reg *cronRegistry, repo *state.DocsRepository, req methods.CronUpdateRequest) (map[string]any, error) {
+	var out map[string]any
+	err := reg.MutatePersisted(ctx, repo, func(staged *cronRegistry) (bool, error) {
+		var err error
+		out, err = applyCronUpdate(staged, req)
+		return err == nil, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cron.update persist: %w", err)
+	}
+	return out, nil
+}
+
+func applyCronRemovePersisted(ctx context.Context, reg *cronRegistry, repo *state.DocsRepository, req methods.CronRemoveRequest) (map[string]any, error) {
+	var out map[string]any
+	err := reg.MutatePersisted(ctx, repo, func(staged *cronRegistry) (bool, error) {
+		var err error
+		out, err = applyCronRemove(staged, req)
+		return err == nil, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cron.remove persist: %w", err)
+	}
+	return out, nil
 }
 
 func applyCronRun(reg *cronRegistry, req methods.CronRunRequest) (map[string]any, error) {

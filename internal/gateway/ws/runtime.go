@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,11 +27,13 @@ import (
 )
 
 const (
-	MethodEventsSubscribe     = "events.subscribe"
-	MethodEventsUnsubscribe   = "events.unsubscribe"
-	MethodEventsList          = "events.list"
-	MethodSessionsSubscribe   = "sessions.subscribe"
-	MethodSessionsUnsubscribe = "sessions.unsubscribe"
+	MethodEventsSubscribe             = "events.subscribe"
+	MethodEventsUnsubscribe           = "events.unsubscribe"
+	MethodEventsList                  = "events.list"
+	MethodSessionsSubscribe           = "sessions.subscribe"
+	MethodSessionsUnsubscribe         = "sessions.unsubscribe"
+	MethodSessionsMessagesSubscribe   = "sessions.messages.subscribe"
+	MethodSessionsMessagesUnsubscribe = "sessions.messages.unsubscribe"
 
 	defaultClientEventBufferSize = 32
 )
@@ -43,17 +46,33 @@ var ErrDisabled = errors.New("gateway ws: disabled (no listen address configured
 
 type RequestHandler func(context.Context, protocol.RequestFrame) (any, *protocol.ErrorShape)
 
+// DeviceTokenDecision is returned by the daemon's persisted-pairing validator.
+// A successful decision binds the presented token to one device, role, and
+// approved scope set before the signed connect proof is accepted.
+type DeviceTokenDecision struct {
+	OK      bool
+	Role    string
+	Scopes  []string
+	Subject string
+	Reason  string
+	Code    string
+}
+
+type DeviceTokenValidator func(protocol.ConnectParams, string) DeviceTokenDecision
+
 type RuntimeOptions struct {
 	Addr                    string
 	Path                    string
 	Token                   string
 	Methods                 []string
 	Events                  []string
+	MethodDescriptors       []protocol.MethodDescriptor
 	Version                 string
 	HandshakeTTL            time.Duration
 	MaxPayloadSize          int64
 	AuthRateLimitPerMin     int
 	UnauthorizedBurstMax    int
+	ControlWriteLimitPerMin int
 	AllowedOrigins          []string
 	TrustedProxies          []string
 	AllowInsecureControlUI  bool
@@ -65,6 +84,10 @@ type RuntimeOptions struct {
 	EventBufferSize       int
 	DeltaCoalesceInterval time.Duration
 	HandleRequest         RequestHandler
+	ValidateDeviceToken   DeviceTokenValidator
+	// StartupReady reports whether sidecar-backed methods may be dispatched.
+	// Nil means ready, which matches runtimes started after daemon initialization.
+	StartupReady func() bool
 	// StaticHandler, when non-nil, is mounted at "/" in the same HTTP server
 	// as the WebSocket endpoint.  It is called only when the request path
 	// does not match Path (the WS path).
@@ -79,11 +102,12 @@ type Runtime struct {
 	clients map[string]*client
 	seq     int64 // state-version counter (event delivery uses per-client seq)
 
-	rateMu         sync.Mutex
-	rateState      map[string]rateWindow
-	allowedMethods map[string]struct{}
-	coalesceMu     sync.Mutex
-	chatCoalesce   map[string]*chatChunkCoalescer
+	rateMu            sync.Mutex
+	rateState         map[string]rateWindow
+	allowedMethods    map[string]struct{}
+	methodDescriptors map[string]protocol.MethodDescriptor
+	coalesceMu        sync.Mutex
+	chatCoalesce      map[string]*chatChunkCoalescer
 }
 
 const defaultDeltaCoalesceInterval = 100 * time.Millisecond
@@ -98,8 +122,10 @@ type client struct {
 	conn      *websocket.Conn
 	connected protocol.ConnectParams
 
-	subMu         sync.RWMutex
-	subscriptions map[string]struct{}
+	subMu              sync.RWMutex
+	subscriptions      map[string]struct{}
+	watchedSessions    map[string]struct{}
+	allSessionMessages bool
 
 	writeMu sync.Mutex
 
@@ -110,6 +136,9 @@ type client struct {
 	authMu       sync.Mutex
 	unauthorized int
 	seq          int64
+
+	controlWriteMu     sync.Mutex
+	controlWriteWindow rateWindow
 }
 
 type rateWindow struct {
@@ -119,6 +148,12 @@ type rateWindow struct {
 
 type eventSubscriptionRequest struct {
 	Events []string `json:"events"`
+}
+
+type sessionMessageSubscriptionRequest struct {
+	Key              string `json:"key"`
+	AgentID          string `json:"agentId,omitempty"`
+	IncludeApprovals bool   `json:"includeApprovals,omitempty"`
 }
 
 var sessionSubscriptionEvents = []string{
@@ -153,6 +188,9 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	if opts.UnauthorizedBurstMax <= 0 {
 		opts.UnauthorizedBurstMax = 8
 	}
+	if opts.ControlWriteLimitPerMin < 0 {
+		opts.ControlWriteLimitPerMin = 0
+	}
 	if opts.DeviceAuthSignatureSkew <= 0 {
 		opts.DeviceAuthSignatureSkew = 2 * time.Minute
 	}
@@ -170,12 +208,18 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 
+	descriptors, err := buildMethodDescriptors(opts.MethodDescriptors, opts.Methods)
+	if err != nil {
+		return nil, err
+	}
+
 	r := &Runtime{
-		opts:           opts,
-		clients:        map[string]*client{},
-		rateState:      map[string]rateWindow{},
-		allowedMethods: buildAllowedMethods(opts.Methods),
-		chatCoalesce:   map[string]*chatChunkCoalescer{},
+		opts:              opts,
+		clients:           map[string]*client{},
+		rateState:         map[string]rateWindow{},
+		allowedMethods:    buildAllowedMethods(opts.Methods),
+		methodDescriptors: descriptors,
+		chatCoalesce:      map[string]*chatChunkCoalescer{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(opts.Path, r.handleWS)
@@ -254,6 +298,9 @@ func (r *Runtime) broadcastImmediate(event string, payload any) {
 	emit := func(name string, emitPayload any) {
 		for _, c := range clients {
 			if !c.isSubscribed(name) {
+				continue
+			}
+			if isSessionMessageEvent(name) && !c.acceptsSessionMessagePayload(emitPayload) {
 				continue
 			}
 			seq := atomic.AddInt64(&c.seq, 1)
@@ -486,12 +533,13 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 	principal := r.controlPrincipal(req, connect, decision)
 
 	c := &client{
-		id:            connID,
-		conn:          conn,
-		connected:     connect,
-		subscriptions: map[string]struct{}{},
-		eventQueue:    make(chan any, r.eventBufferSize()),
-		eventDone:     make(chan struct{}),
+		id:              connID,
+		conn:            conn,
+		connected:       connect,
+		subscriptions:   map[string]struct{}{},
+		watchedSessions: map[string]struct{}{},
+		eventQueue:      make(chan any, r.eventBufferSize()),
+		eventDone:       make(chan struct{}),
 	}
 	go c.runEventWriter(r)
 	r.mu.Lock()
@@ -514,8 +562,17 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 			Version: r.opts.Version,
 			ConnID:  connID,
 		},
-		Features: protocol.FeatureSet{Methods: append([]string{}, r.opts.Methods...), Events: append([]string{}, r.opts.Events...)},
+		Features: protocol.FeatureSet{
+			Methods:           append([]string{}, r.opts.Methods...),
+			Events:            append([]string{}, r.opts.Events...),
+			MethodDescriptors: r.listMethodDescriptors(),
+		},
 		Snapshot: r.snapshot(),
+		Auth: &protocol.HelloAuth{
+			Role:       principal.Role,
+			Scopes:     append([]string{}, principal.Scopes...),
+			IssuedAtMS: time.Now().UnixMilli(),
+		},
 		Policy: protocol.HelloPolicy{
 			MaxPayload:       int(r.opts.MaxPayloadSize),
 			MaxBufferedBytes: r.maxBufferedBytes(),
@@ -556,6 +613,15 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 				"ok":    false,
 				"error": protocol.NewError(protocol.ErrorCodeInvalidRequest, fmt.Sprintf("unknown method %q", strings.TrimSpace(reqFrame.Method)), nil),
 			})
+			continue
+		}
+		if shape := r.admitMethod(c, principal, reqFrame.Method); shape != nil {
+			c.bumpUnauthorized(shape)
+			_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": false, "error": shape})
+			if c.shouldClose(r.opts.UnauthorizedBurstMax) {
+				_ = conn.Close(websocket.StatusPolicyViolation, "repeated unauthorized requests")
+				return
+			}
 			continue
 		}
 		if handled, payload, shape := r.handleInternalRequest(c, reqFrame); handled {
@@ -605,6 +671,9 @@ func (r *Runtime) handleInternalRequest(c *client, req protocol.RequestFrame) (b
 			return true, nil, protocol.NewError(protocol.ErrorCodeInvalidRequest, err.Error(), nil)
 		}
 		c.addSubscriptions(normalized)
+		if containsSessionMessageEvent(normalized) {
+			c.setAllSessionMessages(true)
+		}
 		return true, map[string]any{"events": c.listSubscriptions()}, nil
 	case MethodEventsUnsubscribe:
 		var sub eventSubscriptionRequest
@@ -620,11 +689,34 @@ func (r *Runtime) handleInternalRequest(c *client, req protocol.RequestFrame) (b
 	case MethodSessionsSubscribe:
 		events := availableEventSubset(sessionSubscriptionEvents, r.opts.Events)
 		c.addSubscriptions(events)
+		c.setAllSessionMessages(true)
 		return true, map[string]any{"subscribed": true, "events": events}, nil
 	case MethodSessionsUnsubscribe:
 		events := availableEventSubset(sessionSubscriptionEvents, r.opts.Events)
 		c.removeSubscriptions(events)
+		c.setAllSessionMessages(false)
 		return true, map[string]any{"subscribed": false, "events": events}, nil
+	case MethodSessionsMessagesSubscribe:
+		var sub sessionMessageSubscriptionRequest
+		if err := decodeStrict(req.Params, &sub); err != nil || strings.TrimSpace(sub.Key) == "" {
+			return true, nil, protocol.NewError(protocol.ErrorCodeInvalidRequest, "key is required", nil)
+		}
+		key := strings.TrimSpace(sub.Key)
+		events := availableEventSubset([]string{EventChat, EventChatMessage}, r.opts.Events)
+		c.addSubscriptions(events)
+		c.addWatchedSession(key)
+		return true, map[string]any{"ok": true, "key": key, "events": events}, nil
+	case MethodSessionsMessagesUnsubscribe:
+		var sub sessionMessageSubscriptionRequest
+		if err := decodeStrict(req.Params, &sub); err != nil || strings.TrimSpace(sub.Key) == "" {
+			return true, nil, protocol.NewError(protocol.ErrorCodeInvalidRequest, "key is required", nil)
+		}
+		key := strings.TrimSpace(sub.Key)
+		c.removeWatchedSession(key)
+		if !c.hasWatchedSessions() && !c.hasAllSessionMessages() {
+			c.removeSubscriptions([]string{EventChat, EventChatMessage})
+		}
+		return true, map[string]any{"ok": true, "key": key}, nil
 	default:
 		return false, nil, nil
 	}
@@ -662,17 +754,24 @@ func (r *Runtime) broadcastPresence() {
 }
 
 type authDecision struct {
-	OK     bool
-	Method string
-	Reason string
-	Code   string
+	OK             bool
+	Method         string
+	Reason         string
+	Code           string
+	Role           string
+	Scopes         []string
+	ScopesEnforced bool
+	Subject        string
 }
 
 type ControlPrincipal struct {
-	Authenticated bool
-	PubKey        string
-	Subject       string
-	Method        string
+	Authenticated  bool
+	PubKey         string
+	Subject        string
+	Method         string
+	Role           string
+	Scopes         []string
+	ScopesEnforced bool
 }
 
 type controlPrincipalContextKey struct{}
@@ -691,27 +790,63 @@ func contextWithControlPrincipal(ctx context.Context, principal ControlPrincipal
 
 func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams) authDecision {
 	token := connectAuthCredential(connect.Auth)
+	role := normalizedConnectRole(connect.Role)
+	if r.isTrustedProxyAuth(req) {
+		scopes := normalizedScopes(connect.Scopes)
+		if role == "operator" && len(scopes) == 0 {
+			scopes = defaultOperatorScopes()
+		}
+		return authDecision{OK: true, Method: "trusted-proxy", Role: role, Scopes: scopes, ScopesEnforced: true}
+	}
+
 	configuredToken := strings.TrimSpace(r.opts.Token)
+	if configuredToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(configuredToken)) == 1 {
+		scopes := normalizedScopes(connect.Scopes)
+		if role == "operator" && len(scopes) == 0 {
+			scopes = defaultOperatorScopes()
+		}
+		return authDecision{OK: true, Method: "token", Role: role, Scopes: scopes, ScopesEnforced: true}
+	}
+
+	if r.opts.ValidateDeviceToken != nil && hasDeviceIdentity(connect.Device) {
+		paired := r.opts.ValidateDeviceToken(connect, token)
+		if paired.OK {
+			pairedRole := normalizedConnectRole(paired.Role)
+			if pairedRole != role {
+				return authDecision{Reason: "device_role_mismatch", Code: "DEVICE_AUTH_ROLE_MISMATCH"}
+			}
+			return authDecision{
+				OK:             true,
+				Method:         "device-token",
+				Role:           pairedRole,
+				Scopes:         normalizedScopes(paired.Scopes),
+				ScopesEnforced: true,
+				Subject:        strings.TrimSpace(paired.Subject),
+			}
+		}
+		if paired.Code != "" || paired.Reason != "" {
+			return authDecision{Reason: nonEmpty(paired.Reason, "device_token_mismatch"), Code: nonEmpty(paired.Code, "DEVICE_AUTH_TOKEN_MISMATCH")}
+		}
+	}
+
 	if configuredToken != "" {
-		if r.isTrustedProxyAuth(req) {
-			return authDecision{OK: true, Method: "trusted-proxy"}
-		}
-		if subtle.ConstantTimeCompare([]byte(token), []byte(configuredToken)) == 1 {
-			return authDecision{OK: true, Method: "token"}
-		}
 		if token == "" {
 			return authDecision{Reason: "token_missing", Code: "AUTH_TOKEN_MISSING"}
 		}
 		return authDecision{Reason: "token_mismatch", Code: "AUTH_TOKEN_MISMATCH"}
 	}
-	if r.isTrustedProxyAuth(req) {
-		return authDecision{OK: true, Method: "trusted-proxy"}
-	}
-	return authDecision{OK: true, Method: "none"}
+	return authDecision{OK: true, Method: "none", Role: role, Scopes: normalizedScopes(connect.Scopes)}
 }
 
 func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectParams, auth authDecision) ControlPrincipal {
-	principal := ControlPrincipal{Authenticated: auth.OK, Method: auth.Method}
+	principal := ControlPrincipal{
+		Authenticated:  auth.OK,
+		Method:         auth.Method,
+		Role:           normalizedConnectRole(nonEmpty(auth.Role, connect.Role)),
+		Scopes:         append([]string{}, auth.Scopes...),
+		ScopesEnforced: auth.ScopesEnforced,
+		Subject:        strings.TrimSpace(auth.Subject),
+	}
 	if strings.EqualFold(strings.TrimSpace(auth.Method), "none") {
 		principal.Authenticated = false
 	}
@@ -733,7 +868,9 @@ func (r *Runtime) controlPrincipal(req *http.Request, connect protocol.ConnectPa
 	if hasDeviceIdentity(connect.Device) {
 		deviceID := strings.ToLower(strings.TrimSpace(connect.Device.ID))
 		principal.PubKey = deviceID
-		principal.Subject = deviceID
+		if principal.Subject == "" {
+			principal.Subject = deviceID
+		}
 		principal.Authenticated = true
 		if strings.EqualFold(strings.TrimSpace(principal.Method), "") || strings.EqualFold(strings.TrimSpace(principal.Method), "none") || strings.EqualFold(strings.TrimSpace(principal.Method), "token") {
 			principal.Method = "device"
@@ -1023,6 +1160,168 @@ func clientIP(remoteAddr string) string {
 	return host
 }
 
+func buildMethodDescriptors(descriptors []protocol.MethodDescriptor, methods []string) (map[string]protocol.MethodDescriptor, error) {
+	out := make(map[string]protocol.MethodDescriptor, len(descriptors))
+	if len(descriptors) == 0 {
+		return out, nil
+	}
+	validScopes := map[string]bool{
+		protocol.MethodScopeOperatorRead:      true,
+		protocol.MethodScopeOperatorWrite:     true,
+		protocol.MethodScopeOperatorAdmin:     true,
+		protocol.MethodScopeOperatorApprovals: true,
+		protocol.MethodScopeOperatorPairing:   true,
+		protocol.MethodScopeNode:              true,
+		protocol.MethodScopeDynamic:           true,
+	}
+	for _, descriptor := range descriptors {
+		name := strings.TrimSpace(descriptor.Name)
+		if name == "" {
+			return nil, fmt.Errorf("gateway method descriptor name is required")
+		}
+		if !validScopes[descriptor.Scope] {
+			return nil, fmt.Errorf("gateway method descriptor %q has invalid scope %q", name, descriptor.Scope)
+		}
+		if descriptor.Startup != "" && descriptor.Startup != protocol.MethodStartupUnavailableUntilSidecars {
+			return nil, fmt.Errorf("gateway method descriptor %q has invalid startup availability %q", name, descriptor.Startup)
+		}
+		if _, exists := out[name]; exists {
+			return nil, fmt.Errorf("duplicate gateway method descriptor %q", name)
+		}
+		descriptor.Name = name
+		out[name] = descriptor
+	}
+	for name := range buildAllowedMethods(methods) {
+		if _, ok := out[name]; !ok {
+			return nil, fmt.Errorf("gateway method %q is missing a descriptor", name)
+		}
+	}
+	return out, nil
+}
+
+func (r *Runtime) listMethodDescriptors() []protocol.MethodDescriptor {
+	if r == nil || len(r.methodDescriptors) == 0 {
+		return nil
+	}
+	out := make([]protocol.MethodDescriptor, 0, len(r.methodDescriptors))
+	for _, descriptor := range r.methodDescriptors {
+		out = append(out, descriptor)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func (r *Runtime) admitMethod(c *client, principal ControlPrincipal, method string) *protocol.ErrorShape {
+	if r == nil || len(r.methodDescriptors) == 0 {
+		return nil
+	}
+	descriptor, ok := r.methodDescriptors[strings.TrimSpace(method)]
+	if !ok {
+		return protocol.NewError(protocol.ErrorCodeInvalidRequest, "method descriptor unavailable", map[string]any{"code": "METHOD_DESCRIPTOR_MISSING"})
+	}
+	role := normalizedConnectRole(principal.Role)
+	if descriptor.Scope == protocol.MethodScopeNode {
+		if role != "node" || !principal.Authenticated {
+			return protocol.NewError(protocol.ErrorCodeInvalidRequest, "node role required", map[string]any{"code": "METHOD_NODE_ROLE_REQUIRED", "method": descriptor.Name})
+		}
+	} else {
+		if role == "node" {
+			return protocol.NewError(protocol.ErrorCodeInvalidRequest, "operator role required", map[string]any{"code": "METHOD_OPERATOR_ROLE_REQUIRED", "method": descriptor.Name})
+		}
+		if !principal.Authenticated && descriptor.Scope != protocol.MethodScopeOperatorRead {
+			return protocol.NewError(protocol.ErrorCodeInvalidRequest, "authentication required", map[string]any{"code": "METHOD_AUTH_REQUIRED", "method": descriptor.Name})
+		}
+		if descriptor.Scope != protocol.MethodScopeDynamic && principal.ScopesEnforced && !scopeAllowed(descriptor.Scope, principal.Scopes) {
+			return protocol.NewError(protocol.ErrorCodeInvalidRequest, "missing scope: "+descriptor.Scope, map[string]any{"code": "METHOD_SCOPE_REQUIRED", "method": descriptor.Name, "scope": descriptor.Scope})
+		}
+	}
+	if descriptor.Startup == protocol.MethodStartupUnavailableUntilSidecars && r.opts.StartupReady != nil && !r.opts.StartupReady() {
+		shape := protocol.NewError(protocol.ErrorCodeUnavailable, "gateway startup sidecars are not ready", map[string]any{"reason": "startup-sidecars", "method": descriptor.Name})
+		shape.Retryable = true
+		shape.RetryAfterMS = 1000
+		return shape
+	}
+	if descriptor.ControlPlaneWrite && r.opts.ControlWriteLimitPerMin > 0 && !c.allowControlWrite(r.opts.ControlWriteLimitPerMin) {
+		shape := protocol.NewError(protocol.ErrorCodeUnavailable, "control-plane write rate limit exceeded", map[string]any{"reason": "control-plane-write-flood", "method": descriptor.Name})
+		shape.Retryable = true
+		shape.RetryAfterMS = 1000
+		return shape
+	}
+	return nil
+}
+
+func (c *client) allowControlWrite(limit int) bool {
+	if c == nil || limit <= 0 {
+		return true
+	}
+	now := time.Now()
+	c.controlWriteMu.Lock()
+	defer c.controlWriteMu.Unlock()
+	window := c.controlWriteWindow
+	if window.resetAt.IsZero() || now.After(window.resetAt) {
+		window = rateWindow{resetAt: now.Add(time.Minute)}
+	}
+	if window.count >= limit {
+		c.controlWriteWindow = window
+		return false
+	}
+	window.count++
+	c.controlWriteWindow = window
+	return true
+}
+
+func normalizedConnectRole(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "node" {
+		return role
+	}
+	return "operator"
+}
+
+func normalizedScopes(scopes []string) []string {
+	seen := make(map[string]struct{}, len(scopes))
+	out := make([]string, 0, len(scopes))
+	for _, raw := range scopes {
+		scope := strings.ToLower(strings.TrimSpace(raw))
+		if scope == "" {
+			continue
+		}
+		if _, ok := seen[scope]; ok {
+			continue
+		}
+		seen[scope] = struct{}{}
+		out = append(out, scope)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func defaultOperatorScopes() []string {
+	return []string{
+		protocol.MethodScopeOperatorAdmin,
+		protocol.MethodScopeOperatorApprovals,
+		protocol.MethodScopeOperatorPairing,
+		protocol.MethodScopeOperatorRead,
+		protocol.MethodScopeOperatorWrite,
+	}
+}
+
+func scopeAllowed(required string, scopes []string) bool {
+	for _, scope := range scopes {
+		if scope == required || (required == protocol.MethodScopeOperatorRead && scope == protocol.MethodScopeOperatorWrite) {
+			return true
+		}
+	}
+	return false
+}
+
+func nonEmpty(value, fallback string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return fallback
+}
+
 func buildAllowedMethods(methods []string) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, method := range methods {
@@ -1037,6 +1336,8 @@ func buildAllowedMethods(methods []string) map[string]struct{} {
 	out[MethodEventsUnsubscribe] = struct{}{}
 	out[MethodSessionsSubscribe] = struct{}{}
 	out[MethodSessionsUnsubscribe] = struct{}{}
+	out[MethodSessionsMessagesSubscribe] = struct{}{}
+	out[MethodSessionsMessagesUnsubscribe] = struct{}{}
 	return out
 }
 
@@ -1208,6 +1509,82 @@ func (c *client) listSubscriptions() []string {
 		out = append(out, event)
 	}
 	return out
+}
+
+func containsSessionMessageEvent(events []string) bool {
+	for _, event := range events {
+		if isSessionMessageEvent(event) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSessionMessageEvent(event string) bool {
+	return event == EventChat || event == EventChatMessage
+}
+
+func (c *client) setAllSessionMessages(enabled bool) {
+	c.subMu.Lock()
+	c.allSessionMessages = enabled
+	c.subMu.Unlock()
+}
+
+func (c *client) hasAllSessionMessages() bool {
+	c.subMu.RLock()
+	defer c.subMu.RUnlock()
+	return c.allSessionMessages
+}
+
+func (c *client) addWatchedSession(key string) {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	if c.watchedSessions == nil {
+		c.watchedSessions = map[string]struct{}{}
+	}
+	c.watchedSessions[strings.TrimSpace(key)] = struct{}{}
+}
+
+func (c *client) removeWatchedSession(key string) {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	delete(c.watchedSessions, strings.TrimSpace(key))
+}
+
+func (c *client) hasWatchedSessions() bool {
+	c.subMu.RLock()
+	defer c.subMu.RUnlock()
+	return len(c.watchedSessions) > 0
+}
+
+func (c *client) acceptsSessionMessagePayload(payload any) bool {
+	key := sessionMessagePayloadKey(payload)
+	c.subMu.RLock()
+	defer c.subMu.RUnlock()
+	if c.allSessionMessages || len(c.watchedSessions) == 0 {
+		return true
+	}
+	_, ok := c.watchedSessions[key]
+	return ok
+}
+
+func sessionMessagePayloadKey(payload any) string {
+	switch p := payload.(type) {
+	case ChatStatusEvent:
+		return p.SessionKey
+	case ChatDeltaEvent:
+		return p.SessionKey
+	case ChatFinalEvent:
+		return p.SessionKey
+	case ChatAbortedEvent:
+		return p.SessionKey
+	case ChatErrorEvent:
+		return p.SessionKey
+	case ChatMessagePayload:
+		return p.SessionID
+	default:
+		return ""
+	}
 }
 
 func (c *client) bumpUnauthorized(shape *protocol.ErrorShape) {

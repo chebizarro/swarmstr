@@ -41,6 +41,8 @@ Recommended sequencing: fix critical correctness/security first (cheap, high-ris
 
 ### WS-A: Gateway protocol v4, sessions, and Web UI (owner: gateway)
 
+> **Execution update 2026-07-24:** A1, A4, A5, and A6 are complete. Post-review hardening preserved callback-only streaming while deduplicating structured deltas, made cron mutations persist-before-commit, serialized node progress publication, and fenced removed nodes before invocation/pending cleanup. A2 and A3 have landed bounded vertical slices but remain open for the real workspace file/CAS, session DAG/collaboration, and durable non-exec approval backends. A8 is blocked on real channel account lifecycle and DM-pairing hooks (`swarmstr-3597`); no synthetic state was added. A7 remains the explicit defer. Beads remains authoritative.
+
 - [ ] **A1 (L)** Protocol v4 chat streaming: replace `chat.chunk`/`turn.*` with the `chat` state-union (`status|delta|final|aborted|error`, `runId`/`seq`/`replace` semantics per `packages/gateway-protocol/src/schema/logs-chat.ts:143-223`); admission/version rejection behavior.
 - [ ] **A2 (L)** Sessions live surface: `sessions.subscribe/unsubscribe`, `sessions.messages.*`, describe/create/send/abort, files, compaction history, branches/rewind/fork, search/diff, dispatch/reclaim.
 - [ ] **A3 (M)** Approval surface: `exec.approval.get/list`, unified `approval.*`; UI reconnect reconciliation (restore pending queue after disconnect, expiry handling).

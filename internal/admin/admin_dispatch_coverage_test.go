@@ -171,11 +171,13 @@ func TestDispatchExec_Success(t *testing.T) {
 	ok := map[string]any{"ok": true}
 
 	opts := ServerOptions{
-		ExecApprovalsGet:         func(_ context.Context, _ methods.ExecApprovalsGetRequest) (map[string]any, error) { return ok, nil },
-		ExecApprovalsSet:         func(_ context.Context, _ methods.ExecApprovalsSetRequest) (map[string]any, error) { return ok, nil },
-		ExecApprovalRequest:      func(_ context.Context, _ methods.ExecApprovalRequestRequest) (map[string]any, error) { return ok, nil },
-		ExecApprovalWaitDecision: func(_ context.Context, _ methods.ExecApprovalWaitDecisionRequest) (map[string]any, error) { return ok, nil },
-		ExecApprovalResolve:      func(_ context.Context, _ methods.ExecApprovalResolveRequest) (map[string]any, error) { return ok, nil },
+		ExecApprovalsGet:    func(_ context.Context, _ methods.ExecApprovalsGetRequest) (map[string]any, error) { return ok, nil },
+		ExecApprovalsSet:    func(_ context.Context, _ methods.ExecApprovalsSetRequest) (map[string]any, error) { return ok, nil },
+		ExecApprovalRequest: func(_ context.Context, _ methods.ExecApprovalRequestRequest) (map[string]any, error) { return ok, nil },
+		ExecApprovalWaitDecision: func(_ context.Context, _ methods.ExecApprovalWaitDecisionRequest) (map[string]any, error) {
+			return ok, nil
+		},
+		ExecApprovalResolve: func(_ context.Context, _ methods.ExecApprovalResolveRequest) (map[string]any, error) { return ok, nil },
 	}
 
 	cases := []struct {
@@ -292,12 +294,14 @@ func TestDispatchPlugins_Success(t *testing.T) {
 	ok := map[string]any{"ok": true}
 
 	opts := ServerOptions{
-		PluginsInstall:        func(_ context.Context, _ methods.PluginsInstallRequest) (map[string]any, error) { return ok, nil },
-		PluginsUninstall:      func(_ context.Context, _ methods.PluginsUninstallRequest) (map[string]any, error) { return ok, nil },
-		PluginsUpdate:         func(_ context.Context, _ methods.PluginsUpdateRequest) (map[string]any, error) { return ok, nil },
-		PluginsRegistryList:   func(_ context.Context, _ methods.PluginsRegistryListRequest) (map[string]any, error) { return ok, nil },
-		PluginsRegistryGet:    func(_ context.Context, _ methods.PluginsRegistryGetRequest) (map[string]any, error) { return ok, nil },
-		PluginsRegistrySearch: func(_ context.Context, _ methods.PluginsRegistrySearchRequest) (map[string]any, error) { return ok, nil },
+		PluginsInstall:      func(_ context.Context, _ methods.PluginsInstallRequest) (map[string]any, error) { return ok, nil },
+		PluginsUninstall:    func(_ context.Context, _ methods.PluginsUninstallRequest) (map[string]any, error) { return ok, nil },
+		PluginsUpdate:       func(_ context.Context, _ methods.PluginsUpdateRequest) (map[string]any, error) { return ok, nil },
+		PluginsRegistryList: func(_ context.Context, _ methods.PluginsRegistryListRequest) (map[string]any, error) { return ok, nil },
+		PluginsRegistryGet:  func(_ context.Context, _ methods.PluginsRegistryGetRequest) (map[string]any, error) { return ok, nil },
+		PluginsRegistrySearch: func(_ context.Context, _ methods.PluginsRegistrySearchRequest) (map[string]any, error) {
+			return ok, nil
+		},
 	}
 
 	cases := []struct {
@@ -418,11 +422,13 @@ func TestDispatchNodes_NilProvider(t *testing.T) {
 		{methods.MethodNodePairList, nilParams()},
 		{methods.MethodNodePairApprove, mustJSON(t, map[string]any{"request_id": "r1"})},
 		{methods.MethodNodePairReject, mustJSON(t, map[string]any{"request_id": "r1"})},
+		{methods.MethodNodePairRemove, mustJSON(t, map[string]any{"node_id": "n1"})},
 		{methods.MethodNodePairVerify, mustJSON(t, map[string]any{"node_id": "n1", "token": "tok"})},
 		{methods.MethodDevicePairList, nilParams()},
 		{methods.MethodDevicePairApprove, mustJSON(t, map[string]any{"request_id": "r1"})},
 		{methods.MethodDevicePairReject, mustJSON(t, map[string]any{"request_id": "r1"})},
 		{methods.MethodDevicePairRemove, mustJSON(t, map[string]any{"device_id": "d1"})},
+		{methods.MethodDevicePairRename, mustJSON(t, map[string]any{"device_id": "d1", "label": "Desk"})},
 		{methods.MethodDeviceTokenRotate, mustJSON(t, map[string]any{"device_id": "d1", "role": "admin"})},
 		{methods.MethodDeviceTokenRevoke, mustJSON(t, map[string]any{"device_id": "d1", "role": "admin"})},
 		{methods.MethodNodeList, nilParams()},
@@ -430,6 +436,7 @@ func TestDispatchNodes_NilProvider(t *testing.T) {
 		{methods.MethodNodeRename, mustJSON(t, map[string]any{"node_id": "n1", "name": "New"})},
 		{methods.MethodNodeCanvasCapabilityRefresh, mustJSON(t, map[string]any{"node_id": "n1"})},
 		{methods.MethodNodeInvoke, mustJSON(t, map[string]any{"node_id": "n1", "command": "ping"})},
+		{methods.MethodNodeInvokeProgress, mustJSON(t, map[string]any{"invoke_id": "run-1", "node_id": "n1", "seq": 0, "chunk": "ok"})},
 		{methods.MethodNodeEvent, mustJSON(t, map[string]any{"run_id": "run-1", "node_id": "n1", "type": "test"})},
 		{methods.MethodNodeResult, mustJSON(t, map[string]any{"run_id": "run-1"})},
 		{methods.MethodNodePendingEnqueue, mustJSON(t, map[string]any{"node_id": "n1", "command": "test"})},
@@ -460,30 +467,35 @@ func TestDispatchNodes_Success(t *testing.T) {
 	ok := map[string]any{"ok": true}
 
 	opts := ServerOptions{
-		NodePairRequest:             func(_ context.Context, _ methods.NodePairRequest) (map[string]any, error) { return ok, nil },
-		NodePairList:                func(_ context.Context, _ methods.NodePairListRequest) (map[string]any, error) { return ok, nil },
-		NodePairApprove:             func(_ context.Context, _ methods.NodePairApproveRequest) (map[string]any, error) { return ok, nil },
-		NodePairReject:              func(_ context.Context, _ methods.NodePairRejectRequest) (map[string]any, error) { return ok, nil },
-		NodePairVerify:              func(_ context.Context, _ methods.NodePairVerifyRequest) (map[string]any, error) { return ok, nil },
-		DevicePairList:              func(_ context.Context, _ methods.DevicePairListRequest) (map[string]any, error) { return ok, nil },
-		DevicePairApprove:           func(_ context.Context, _ methods.DevicePairApproveRequest) (map[string]any, error) { return ok, nil },
-		DevicePairReject:            func(_ context.Context, _ methods.DevicePairRejectRequest) (map[string]any, error) { return ok, nil },
-		DevicePairRemove:            func(_ context.Context, _ methods.DevicePairRemoveRequest) (map[string]any, error) { return ok, nil },
-		DeviceTokenRotate:           func(_ context.Context, _ methods.DeviceTokenRotateRequest) (map[string]any, error) { return ok, nil },
-		DeviceTokenRevoke:           func(_ context.Context, _ methods.DeviceTokenRevokeRequest) (map[string]any, error) { return ok, nil },
-		NodeList:                    func(_ context.Context, _ methods.NodeListRequest) (map[string]any, error) { return ok, nil },
-		NodeDescribe:                func(_ context.Context, _ methods.NodeDescribeRequest) (map[string]any, error) { return ok, nil },
-		NodeRename:                  func(_ context.Context, _ methods.NodeRenameRequest) (map[string]any, error) { return ok, nil },
-		NodeCanvasCapabilityRefresh: func(_ context.Context, _ methods.NodeCanvasCapabilityRefreshRequest) (map[string]any, error) { return ok, nil },
-		NodeInvoke:                  func(_ context.Context, _ methods.NodeInvokeRequest) (map[string]any, error) { return ok, nil },
-		NodeEvent:                   func(_ context.Context, _ methods.NodeEventRequest) (map[string]any, error) { return ok, nil },
-		NodeResult:                  func(_ context.Context, _ methods.NodeResultRequest) (map[string]any, error) { return ok, nil },
-		NodePendingEnqueue:          func(_ context.Context, _ methods.NodePendingEnqueueRequest) (map[string]any, error) { return ok, nil },
-		NodePendingPull:             func(_ context.Context, _ methods.NodePendingPullRequest) (map[string]any, error) { return ok, nil },
-		NodePendingAck:              func(_ context.Context, _ methods.NodePendingAckRequest) (map[string]any, error) { return ok, nil },
-		NodePendingDrain:            func(_ context.Context, _ methods.NodePendingDrainRequest) (map[string]any, error) { return ok, nil },
-		ExecApprovalsNodeGet:        func(_ context.Context, _ methods.ExecApprovalsNodeGetRequest) (map[string]any, error) { return ok, nil },
-		ExecApprovalsNodeSet:        func(_ context.Context, _ methods.ExecApprovalsNodeSetRequest) (map[string]any, error) { return ok, nil },
+		NodePairRequest:   func(_ context.Context, _ methods.NodePairRequest) (map[string]any, error) { return ok, nil },
+		NodePairList:      func(_ context.Context, _ methods.NodePairListRequest) (map[string]any, error) { return ok, nil },
+		NodePairApprove:   func(_ context.Context, _ methods.NodePairApproveRequest) (map[string]any, error) { return ok, nil },
+		NodePairReject:    func(_ context.Context, _ methods.NodePairRejectRequest) (map[string]any, error) { return ok, nil },
+		NodePairRemove:    func(_ context.Context, _ methods.NodePairRemoveRequest) (map[string]any, error) { return ok, nil },
+		NodePairVerify:    func(_ context.Context, _ methods.NodePairVerifyRequest) (map[string]any, error) { return ok, nil },
+		DevicePairList:    func(_ context.Context, _ methods.DevicePairListRequest) (map[string]any, error) { return ok, nil },
+		DevicePairApprove: func(_ context.Context, _ methods.DevicePairApproveRequest) (map[string]any, error) { return ok, nil },
+		DevicePairReject:  func(_ context.Context, _ methods.DevicePairRejectRequest) (map[string]any, error) { return ok, nil },
+		DevicePairRemove:  func(_ context.Context, _ methods.DevicePairRemoveRequest) (map[string]any, error) { return ok, nil },
+		DevicePairRename:  func(_ context.Context, _ methods.DevicePairRenameRequest) (map[string]any, error) { return ok, nil },
+		DeviceTokenRotate: func(_ context.Context, _ methods.DeviceTokenRotateRequest) (map[string]any, error) { return ok, nil },
+		DeviceTokenRevoke: func(_ context.Context, _ methods.DeviceTokenRevokeRequest) (map[string]any, error) { return ok, nil },
+		NodeList:          func(_ context.Context, _ methods.NodeListRequest) (map[string]any, error) { return ok, nil },
+		NodeDescribe:      func(_ context.Context, _ methods.NodeDescribeRequest) (map[string]any, error) { return ok, nil },
+		NodeRename:        func(_ context.Context, _ methods.NodeRenameRequest) (map[string]any, error) { return ok, nil },
+		NodeCanvasCapabilityRefresh: func(_ context.Context, _ methods.NodeCanvasCapabilityRefreshRequest) (map[string]any, error) {
+			return ok, nil
+		},
+		NodeInvoke:           func(_ context.Context, _ methods.NodeInvokeRequest) (map[string]any, error) { return ok, nil },
+		NodeInvokeProgress:   func(_ context.Context, _ methods.NodeInvokeProgressRequest) (map[string]any, error) { return ok, nil },
+		NodeEvent:            func(_ context.Context, _ methods.NodeEventRequest) (map[string]any, error) { return ok, nil },
+		NodeResult:           func(_ context.Context, _ methods.NodeResultRequest) (map[string]any, error) { return ok, nil },
+		NodePendingEnqueue:   func(_ context.Context, _ methods.NodePendingEnqueueRequest) (map[string]any, error) { return ok, nil },
+		NodePendingPull:      func(_ context.Context, _ methods.NodePendingPullRequest) (map[string]any, error) { return ok, nil },
+		NodePendingAck:       func(_ context.Context, _ methods.NodePendingAckRequest) (map[string]any, error) { return ok, nil },
+		NodePendingDrain:     func(_ context.Context, _ methods.NodePendingDrainRequest) (map[string]any, error) { return ok, nil },
+		ExecApprovalsNodeGet: func(_ context.Context, _ methods.ExecApprovalsNodeGetRequest) (map[string]any, error) { return ok, nil },
+		ExecApprovalsNodeSet: func(_ context.Context, _ methods.ExecApprovalsNodeSetRequest) (map[string]any, error) { return ok, nil },
 	}
 
 	cases := []struct {
@@ -494,11 +506,13 @@ func TestDispatchNodes_Success(t *testing.T) {
 		{methods.MethodNodePairList, nilParams()},
 		{methods.MethodNodePairApprove, mustJSON(t, map[string]any{"request_id": "r1"})},
 		{methods.MethodNodePairReject, mustJSON(t, map[string]any{"request_id": "r1"})},
+		{methods.MethodNodePairRemove, mustJSON(t, map[string]any{"node_id": "n1"})},
 		{methods.MethodNodePairVerify, mustJSON(t, map[string]any{"node_id": "n1", "token": "tok"})},
 		{methods.MethodDevicePairList, nilParams()},
 		{methods.MethodDevicePairApprove, mustJSON(t, map[string]any{"request_id": "r1"})},
 		{methods.MethodDevicePairReject, mustJSON(t, map[string]any{"request_id": "r1"})},
 		{methods.MethodDevicePairRemove, mustJSON(t, map[string]any{"device_id": "d1"})},
+		{methods.MethodDevicePairRename, mustJSON(t, map[string]any{"device_id": "d1", "label": "Desk"})},
 		{methods.MethodDeviceTokenRotate, mustJSON(t, map[string]any{"device_id": "d1", "role": "admin"})},
 		{methods.MethodDeviceTokenRevoke, mustJSON(t, map[string]any{"device_id": "d1", "role": "admin"})},
 		{methods.MethodNodeList, nilParams()},
@@ -506,6 +520,7 @@ func TestDispatchNodes_Success(t *testing.T) {
 		{methods.MethodNodeRename, mustJSON(t, map[string]any{"node_id": "n1", "name": "New"})},
 		{methods.MethodNodeCanvasCapabilityRefresh, mustJSON(t, map[string]any{"node_id": "n1"})},
 		{methods.MethodNodeInvoke, mustJSON(t, map[string]any{"node_id": "n1", "command": "ping"})},
+		{methods.MethodNodeInvokeProgress, mustJSON(t, map[string]any{"invoke_id": "run-1", "node_id": "n1", "seq": 0, "chunk": "ok"})},
 		{methods.MethodNodeEvent, mustJSON(t, map[string]any{"run_id": "run-1", "node_id": "n1", "type": "test"})},
 		{methods.MethodNodeResult, mustJSON(t, map[string]any{"run_id": "run-1"})},
 		{methods.MethodNodeInvokeResult, mustJSON(t, map[string]any{"run_id": "run-1"})},
@@ -549,31 +564,41 @@ func TestDispatchNodes_NotFound(t *testing.T) {
 			"NodePairApprove",
 			methods.MethodNodePairApprove,
 			mustJSON(t, map[string]any{"request_id": "r1"}),
-			ServerOptions{NodePairApprove: func(_ context.Context, _ methods.NodePairApproveRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{NodePairApprove: func(_ context.Context, _ methods.NodePairApproveRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"NodeDescribe",
 			methods.MethodNodeDescribe,
 			mustJSON(t, map[string]any{"node_id": "n1"}),
-			ServerOptions{NodeDescribe: func(_ context.Context, _ methods.NodeDescribeRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{NodeDescribe: func(_ context.Context, _ methods.NodeDescribeRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"DevicePairApprove",
 			methods.MethodDevicePairApprove,
 			mustJSON(t, map[string]any{"request_id": "r1"}),
-			ServerOptions{DevicePairApprove: func(_ context.Context, _ methods.DevicePairApproveRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{DevicePairApprove: func(_ context.Context, _ methods.DevicePairApproveRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"NodeEvent",
 			methods.MethodNodeEvent,
 			mustJSON(t, map[string]any{"run_id": "run-1", "node_id": "n1", "type": "test"}),
-			ServerOptions{NodeEvent: func(_ context.Context, _ methods.NodeEventRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{NodeEvent: func(_ context.Context, _ methods.NodeEventRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"NodeResult",
 			methods.MethodNodeResult,
 			mustJSON(t, map[string]any{"run_id": "run-1"}),
-			ServerOptions{NodeResult: func(_ context.Context, _ methods.NodeResultRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{NodeResult: func(_ context.Context, _ methods.NodeResultRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 	}
 
@@ -772,19 +797,25 @@ func TestDispatchAgents_NotFound(t *testing.T) {
 			"UpdateAgent",
 			methods.MethodAgentsUpdate,
 			mustJSON(t, map[string]any{"agent_id": "a1"}),
-			ServerOptions{UpdateAgent: func(_ context.Context, _ methods.AgentsUpdateRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{UpdateAgent: func(_ context.Context, _ methods.AgentsUpdateRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"DeleteAgent",
 			methods.MethodAgentsDelete,
 			mustJSON(t, map[string]any{"agent_id": "a1"}),
-			ServerOptions{DeleteAgent: func(_ context.Context, _ methods.AgentsDeleteRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{DeleteAgent: func(_ context.Context, _ methods.AgentsDeleteRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"ListAgentFiles",
 			methods.MethodAgentsFilesList,
 			mustJSON(t, map[string]any{"agent_id": "a1"}),
-			ServerOptions{ListAgentFiles: func(_ context.Context, _ methods.AgentsFilesListRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{ListAgentFiles: func(_ context.Context, _ methods.AgentsFilesListRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 	}
 
@@ -821,8 +852,11 @@ func TestDispatchCron_NilProvider(t *testing.T) {
 		method string
 		params json.RawMessage
 	}{
+		{methods.MethodCronGet, mustJSON(t, map[string]any{"id": "cron-1"})},
 		{methods.MethodCronList, nilParams()},
 		{methods.MethodCronStatus, mustJSON(t, map[string]any{"id": "cron-1"})},
+		{methods.MethodCronScratchGet, mustJSON(t, map[string]any{"id": "cron-1"})},
+		{methods.MethodCronScratchSet, mustJSON(t, map[string]any{"id": "cron-1", "content": "notes"})},
 		{methods.MethodCronAdd, mustJSON(t, map[string]any{"schedule": "* * * * *", "method": "status"})},
 		{methods.MethodCronUpdate, mustJSON(t, map[string]any{"id": "cron-1", "schedule": "0 * * * *"})},
 		{methods.MethodCronRemove, mustJSON(t, map[string]any{"id": "cron-1"})},
@@ -848,30 +882,33 @@ func TestDispatchCron_Success(t *testing.T) {
 	ctx := context.Background()
 	cfg := state.ConfigDoc{}
 	ok := map[string]any{"ok": true}
-
 	opts := ServerOptions{
-		CronList:   func(_ context.Context, _ methods.CronListRequest) (map[string]any, error) { return ok, nil },
-		CronStatus: func(_ context.Context, _ methods.CronStatusRequest) (map[string]any, error) { return ok, nil },
-		CronAdd:    func(_ context.Context, _ methods.CronAddRequest) (map[string]any, error) { return ok, nil },
-		CronUpdate: func(_ context.Context, _ methods.CronUpdateRequest) (map[string]any, error) { return ok, nil },
-		CronRemove: func(_ context.Context, _ methods.CronRemoveRequest) (map[string]any, error) { return ok, nil },
-		CronRun:    func(_ context.Context, _ methods.CronRunRequest) (map[string]any, error) { return ok, nil },
-		CronRuns:   func(_ context.Context, _ methods.CronRunsRequest) (map[string]any, error) { return ok, nil },
+		CronGet:        func(_ context.Context, _ methods.CronJobSelectorRequest) (map[string]any, error) { return ok, nil },
+		CronList:       func(_ context.Context, _ methods.CronListRequest) (map[string]any, error) { return ok, nil },
+		CronStatus:     func(_ context.Context, _ methods.CronStatusRequest) (map[string]any, error) { return ok, nil },
+		CronScratchGet: func(_ context.Context, _ methods.CronJobSelectorRequest) (map[string]any, error) { return ok, nil },
+		CronScratchSet: func(_ context.Context, _ methods.CronScratchSetRequest) (map[string]any, error) { return ok, nil },
+		CronAdd:        func(_ context.Context, _ methods.CronAddRequest) (map[string]any, error) { return ok, nil },
+		CronUpdate:     func(_ context.Context, _ methods.CronUpdateRequest) (map[string]any, error) { return ok, nil },
+		CronRemove:     func(_ context.Context, _ methods.CronRemoveRequest) (map[string]any, error) { return ok, nil },
+		CronRun:        func(_ context.Context, _ methods.CronRunRequest) (map[string]any, error) { return ok, nil },
+		CronRuns:       func(_ context.Context, _ methods.CronRunsRequest) (map[string]any, error) { return ok, nil },
 	}
-
 	cases := []struct {
 		method string
 		params json.RawMessage
 	}{
+		{methods.MethodCronGet, mustJSON(t, map[string]any{"id": "cron-1"})},
 		{methods.MethodCronList, nilParams()},
 		{methods.MethodCronStatus, mustJSON(t, map[string]any{"id": "cron-1"})},
+		{methods.MethodCronScratchGet, mustJSON(t, map[string]any{"id": "cron-1"})},
+		{methods.MethodCronScratchSet, mustJSON(t, map[string]any{"id": "cron-1", "content": "notes"})},
 		{methods.MethodCronAdd, mustJSON(t, map[string]any{"schedule": "* * * * *", "method": "status"})},
 		{methods.MethodCronUpdate, mustJSON(t, map[string]any{"id": "cron-1", "schedule": "0 * * * *"})},
 		{methods.MethodCronRemove, mustJSON(t, map[string]any{"id": "cron-1"})},
 		{methods.MethodCronRun, mustJSON(t, map[string]any{"id": "cron-1"})},
 		{methods.MethodCronRuns, nilParams()},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.method, func(t *testing.T) {
 			call := methods.CallRequest{Method: tc.method, Params: tc.params}
@@ -1327,22 +1364,22 @@ func TestDispatchSystem_Success(t *testing.T) {
 	ok := map[string]any{"ok": true}
 
 	opts := ServerOptions{
-		SearchMemory:    func(_ string, _ int) []memory.IndexedMemory { return nil },
-		SandboxRun:      func(_ context.Context, _ methods.SandboxRunRequest) (map[string]any, error) { return ok, nil },
-		WizardStart:     func(_ context.Context, _ methods.WizardStartRequest) (map[string]any, error) { return ok, nil },
-		WizardNext:      func(_ context.Context, _ methods.WizardNextRequest) (map[string]any, error) { return ok, nil },
-		WizardCancel:    func(_ context.Context, _ methods.WizardCancelRequest) (map[string]any, error) { return ok, nil },
-		WizardStatus:    func(_ context.Context, _ methods.WizardStatusRequest) (map[string]any, error) { return ok, nil },
-		UpdateRun:       func(_ context.Context, _ methods.UpdateRunRequest) (map[string]any, error) { return ok, nil },
-		LastHeartbeat:   func(_ context.Context, _ methods.LastHeartbeatRequest) (map[string]any, error) { return ok, nil },
-		SetHeartbeats:   func(_ context.Context, _ methods.SetHeartbeatsRequest) (map[string]any, error) { return ok, nil },
-		Wake:            func(_ context.Context, _ methods.WakeRequest) (map[string]any, error) { return ok, nil },
-		SystemPresence:  func(_ context.Context, _ methods.SystemPresenceRequest) ([]map[string]any, error) { return nil, nil },
-		SystemEvent:     func(_ context.Context, _ methods.SystemEventRequest) (map[string]any, error) { return ok, nil },
-		Send:            func(_ context.Context, _ methods.SendRequest) (map[string]any, error) { return ok, nil },
-		SendPoll:        func(_ context.Context, _ methods.PollRequest) (map[string]any, error) { return ok, nil },
-		UsageStatus:     func(_ context.Context) (map[string]any, error) { return ok, nil },
-		AbortChat:       func(_ context.Context, _ string) (int, error) { return 1, nil },
+		SearchMemory:   func(_ string, _ int) []memory.IndexedMemory { return nil },
+		SandboxRun:     func(_ context.Context, _ methods.SandboxRunRequest) (map[string]any, error) { return ok, nil },
+		WizardStart:    func(_ context.Context, _ methods.WizardStartRequest) (map[string]any, error) { return ok, nil },
+		WizardNext:     func(_ context.Context, _ methods.WizardNextRequest) (map[string]any, error) { return ok, nil },
+		WizardCancel:   func(_ context.Context, _ methods.WizardCancelRequest) (map[string]any, error) { return ok, nil },
+		WizardStatus:   func(_ context.Context, _ methods.WizardStatusRequest) (map[string]any, error) { return ok, nil },
+		UpdateRun:      func(_ context.Context, _ methods.UpdateRunRequest) (map[string]any, error) { return ok, nil },
+		LastHeartbeat:  func(_ context.Context, _ methods.LastHeartbeatRequest) (map[string]any, error) { return ok, nil },
+		SetHeartbeats:  func(_ context.Context, _ methods.SetHeartbeatsRequest) (map[string]any, error) { return ok, nil },
+		Wake:           func(_ context.Context, _ methods.WakeRequest) (map[string]any, error) { return ok, nil },
+		SystemPresence: func(_ context.Context, _ methods.SystemPresenceRequest) ([]map[string]any, error) { return nil, nil },
+		SystemEvent:    func(_ context.Context, _ methods.SystemEventRequest) (map[string]any, error) { return ok, nil },
+		Send:           func(_ context.Context, _ methods.SendRequest) (map[string]any, error) { return ok, nil },
+		SendPoll:       func(_ context.Context, _ methods.PollRequest) (map[string]any, error) { return ok, nil },
+		UsageStatus:    func(_ context.Context) (map[string]any, error) { return ok, nil },
+		AbortChat:      func(_ context.Context, _ string) (int, error) { return 1, nil },
 	}
 
 	cases := []struct {
@@ -1488,7 +1525,9 @@ func TestDispatchSessions_NotFound(t *testing.T) {
 			methods.MethodChatHistory,
 			mustJSON(t, map[string]any{"session_id": "s1"}),
 			ServerOptions{
-				GetSession:     func(_ context.Context, _ string) (state.SessionDoc, error) { return state.SessionDoc{}, state.ErrNotFound },
+				GetSession: func(_ context.Context, _ string) (state.SessionDoc, error) {
+					return state.SessionDoc{}, state.ErrNotFound
+				},
 				ListTranscript: transcript,
 			},
 		},
@@ -1497,7 +1536,9 @@ func TestDispatchSessions_NotFound(t *testing.T) {
 			methods.MethodSessionGet,
 			mustJSON(t, map[string]any{"session_id": "s1"}),
 			ServerOptions{
-				GetSession:     func(_ context.Context, _ string) (state.SessionDoc, error) { return state.SessionDoc{}, state.ErrNotFound },
+				GetSession: func(_ context.Context, _ string) (state.SessionDoc, error) {
+					return state.SessionDoc{}, state.ErrNotFound
+				},
 				ListTranscript: transcript,
 			},
 		},
@@ -1506,7 +1547,9 @@ func TestDispatchSessions_NotFound(t *testing.T) {
 			methods.MethodSessionsPatch,
 			mustJSON(t, map[string]any{"session_id": "s1", "meta": map[string]any{}}),
 			ServerOptions{
-				GetSession: func(_ context.Context, _ string) (state.SessionDoc, error) { return state.SessionDoc{}, state.ErrNotFound },
+				GetSession: func(_ context.Context, _ string) (state.SessionDoc, error) {
+					return state.SessionDoc{}, state.ErrNotFound
+				},
 				PutSession: func(_ context.Context, _ string, _ state.SessionDoc) error { return nil },
 			},
 		},
@@ -1515,7 +1558,9 @@ func TestDispatchSessions_NotFound(t *testing.T) {
 			methods.MethodSessionsDelete,
 			mustJSON(t, map[string]any{"session_id": "s1"}),
 			ServerOptions{
-				GetSession: func(_ context.Context, _ string) (state.SessionDoc, error) { return state.SessionDoc{}, state.ErrNotFound },
+				GetSession: func(_ context.Context, _ string) (state.SessionDoc, error) {
+					return state.SessionDoc{}, state.ErrNotFound
+				},
 				PutSession: func(_ context.Context, _ string, _ state.SessionDoc) error { return nil },
 			},
 		},
@@ -1770,31 +1815,41 @@ func TestDispatchCron_NotFound(t *testing.T) {
 			"CronStatus",
 			methods.MethodCronStatus,
 			mustJSON(t, map[string]any{"id": "cron-1"}),
-			ServerOptions{CronStatus: func(_ context.Context, _ methods.CronStatusRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{CronStatus: func(_ context.Context, _ methods.CronStatusRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"CronUpdate",
 			methods.MethodCronUpdate,
 			mustJSON(t, map[string]any{"id": "cron-1", "schedule": "0 * * * *"}),
-			ServerOptions{CronUpdate: func(_ context.Context, _ methods.CronUpdateRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{CronUpdate: func(_ context.Context, _ methods.CronUpdateRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"CronRemove",
 			methods.MethodCronRemove,
 			mustJSON(t, map[string]any{"id": "cron-1"}),
-			ServerOptions{CronRemove: func(_ context.Context, _ methods.CronRemoveRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{CronRemove: func(_ context.Context, _ methods.CronRemoveRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"CronRun",
 			methods.MethodCronRun,
 			mustJSON(t, map[string]any{"id": "cron-1"}),
-			ServerOptions{CronRun: func(_ context.Context, _ methods.CronRunRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{CronRun: func(_ context.Context, _ methods.CronRunRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 		{
 			"CronRuns",
 			methods.MethodCronRuns,
 			mustJSON(t, map[string]any{"id": "cron-1"}),
-			ServerOptions{CronRuns: func(_ context.Context, _ methods.CronRunsRequest) (map[string]any, error) { return nil, state.ErrNotFound }},
+			ServerOptions{CronRuns: func(_ context.Context, _ methods.CronRunsRequest) (map[string]any, error) {
+				return nil, state.ErrNotFound
+			}},
 		},
 	}
 

@@ -18,6 +18,8 @@
     "agents.active",
     "agents.assign",
     "agents.unassign",
+    "approval.get",
+    "approval.resolve",
     "browser.request",
     "canvas.delete",
     "canvas.get",

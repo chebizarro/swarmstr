@@ -34,6 +34,9 @@ func TestHandshakeConnectSuccess(t *testing.T) {
 		},
 		clients:   map[string]*client{},
 		rateState: map[string]rateWindow{},
+		methodDescriptors: map[string]protocol.MethodDescriptor{
+			"status.get": {Name: "status.get", Scope: protocol.MethodScopeOperatorRead},
+		},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(r.handleWS))
 	defer srv.Close()
@@ -53,6 +56,15 @@ func TestHandshakeConnectSuccess(t *testing.T) {
 	helloPayload, _ := res["payload"].(map[string]any)
 	if helloPayload["type"] != "hello-ok" {
 		t.Fatalf("expected hello-ok payload, got %#v", helloPayload)
+	}
+	features, _ := helloPayload["features"].(map[string]any)
+	descriptors, _ := features["methodDescriptors"].([]any)
+	if len(descriptors) != 1 {
+		t.Fatalf("expected advertised method descriptor, got %#v", features)
+	}
+	auth, _ := helloPayload["auth"].(map[string]any)
+	if auth["role"] != "operator" {
+		t.Fatalf("expected effective operator auth metadata, got %#v", auth)
 	}
 }
 

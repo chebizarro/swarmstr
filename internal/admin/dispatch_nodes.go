@@ -86,6 +86,26 @@ func dispatchNodes(ctx context.Context, opts ServerOptions, method string, call 
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodNodePairRemove:
+		req, err := methods.DecodeNodePairRemoveParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodePairRemove == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node pairing provider not configured")
+		}
+		out, err := opts.NodePairRemove(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
 	case methods.MethodNodePairVerify:
 		req, err := methods.DecodeNodePairVerifyParams(call.Params)
 		if err != nil {
@@ -176,6 +196,26 @@ func dispatchNodes(ctx context.Context, opts ServerOptions, method string, call 
 			return nil, http.StatusNotImplemented, fmt.Errorf("device pairing provider not configured")
 		}
 		out, err := opts.DevicePairRemove(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodDevicePairRename:
+		req, err := methods.DecodeDevicePairRenameParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.DevicePairRename == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("device pairing provider not configured")
+		}
+		out, err := opts.DevicePairRename(ctx, req)
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
 				return nil, http.StatusNotFound, fmt.Errorf("not found")
@@ -314,6 +354,26 @@ func dispatchNodes(ctx context.Context, opts ServerOptions, method string, call 
 		}
 		out, err := opts.NodeInvoke(ctx, req)
 		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
+	case methods.MethodNodeInvokeProgress:
+		req, err := methods.DecodeNodeInvokeProgressParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if opts.NodeInvokeProgress == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("node invoke provider not configured")
+		}
+		out, err := opts.NodeInvokeProgress(ctx, req)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nil, http.StatusNotFound, fmt.Errorf("not found")
+			}
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil

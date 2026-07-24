@@ -30,12 +30,16 @@ func runCron(args []string) error {
 		return runCronToggle(args[1:], false)
 	case "show", "get":
 		return runCronShow(args[1:])
+	case "scratch-get":
+		return runCronScratchGet(args[1:])
+	case "scratch-set":
+		return runCronScratchSet(args[1:])
 	case "runs", "history":
 		return runCronRuns(args[1:])
 	case "run":
 		return runCronRun(args[1:])
 	default:
-		return fmt.Errorf("unknown cron sub-command %q (list|add|edit|enable|disable|show|runs|remove|run)", args[0])
+		return fmt.Errorf("unknown cron sub-command %q (list|add|edit|enable|disable|show|scratch-get|scratch-set|runs|remove|run)", args[0])
 	}
 }
 
@@ -231,6 +235,83 @@ func runCronShow(args []string) error {
 	result, err := cl.call("cron.get", map[string]any{"id": fs.Arg(0)})
 	if err != nil {
 		return fmt.Errorf("cron.get: %w", err)
+	}
+	return printJSON(result)
+}
+
+func runCronScratchGet(args []string) error {
+	fs := flag.NewFlagSet("cron scratch-get", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: metiq cron scratch-get <job-id>")
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("cron.scratch.get", map[string]any{"jobId": fs.Arg(0)})
+	if err != nil {
+		return fmt.Errorf("cron.scratch.get: %w", err)
+	}
+	return printJSON(result)
+}
+
+type optionalStringFlag struct {
+	value string
+	set   bool
+}
+
+func (f *optionalStringFlag) String() string { return f.value }
+
+func (f *optionalStringFlag) Set(value string) error {
+	f.value = value
+	f.set = true
+	return nil
+}
+
+func runCronScratchSet(args []string) error {
+	fs := flag.NewFlagSet("cron scratch-set", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath string
+	var content optionalStringFlag
+	var clear bool
+	var expectedRevision int
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
+	fs.Var(&content, "content", "scratch content (may be an empty string)")
+	fs.BoolVar(&clear, "clear", false, "clear the scratch document")
+	fs.IntVar(&expectedRevision, "expected-revision", -1, "compare-and-set revision; omitted when negative")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: metiq cron scratch-set <job-id> (--content <text>|--clear) [--expected-revision <n>]")
+	}
+	if content.set == clear {
+		return fmt.Errorf("use exactly one of --content or --clear")
+	}
+	body := map[string]any{"jobId": fs.Arg(0)}
+	if clear {
+		body["content"] = nil
+	} else {
+		body["content"] = content.value
+	}
+	if expectedRevision >= 0 {
+		body["expectedRevision"] = expectedRevision
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	result, err := cl.call("cron.scratch.set", body)
+	if err != nil {
+		return fmt.Errorf("cron.scratch.set: %w", err)
 	}
 	return printJSON(result)
 }

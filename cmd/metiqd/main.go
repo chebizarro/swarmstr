@@ -3076,10 +3076,11 @@ func main() {
 			// CronAddRequest has no label field; embed in ID prefix so it shows in list.
 			req.ID = label
 		}
-		job := controlCronJobs.Add(req)
-		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
-			log.Printf("cron_add: save: %v", saveErr)
+		out, err := applyCronAddPersisted(ctx, controlCronJobs, docsRepo, req)
+		if err != nil {
+			return "", fmt.Errorf("cron_add: %w", err)
 		}
+		job, _ := out["job"].(cronJobRecord)
 		b, _ := json.Marshal(map[string]any{"ok": true, "job_id": job.ID, "schedule": job.Schedule})
 		return string(b), nil
 	})
@@ -3097,11 +3098,8 @@ func main() {
 		if jobID == "" {
 			return "", fmt.Errorf("cron_remove: job_id is required")
 		}
-		if err := controlCronJobs.Remove(jobID); err != nil {
+		if _, err := applyCronRemovePersisted(ctx, controlCronJobs, docsRepo, methods.CronRemoveRequest{ID: jobID}); err != nil {
 			return "", fmt.Errorf("cron_remove: %w", err)
-		}
-		if saveErr := controlCronJobs.Save(ctx, docsRepo); saveErr != nil {
-			log.Printf("cron_remove: save: %v", saveErr)
 		}
 		b, _ := json.Marshal(map[string]any{"ok": true, "job_id": jobID, "removed": true})
 		return string(b), nil
@@ -4280,12 +4278,13 @@ func main() {
 			DeferredTools:        deferredTools,
 		}
 		chatStream := gatewayws.NewChatStream(wsEmitter, eventID, sessionID, activeAgentID)
-		chatStream.Status(gatewayws.ChatPhaseStartingModel)
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
-			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
-				chatStream.Delta(chunk, false)
-			})
+			projection := gatewayws.NewRuntimeChatProjection(chatStream, wsEmitter, activeAgentID)
+			projection.Start()
+			baseTurn.RuntimeEventSink = projection.RuntimeEventSink()
+			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, projection.LegacyDelta)
 		} else {
+			chatStream.Status(gatewayws.ChatPhaseStartingModel)
 			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, baseTurn)
 		}
 		if turnErr != nil {
@@ -5657,12 +5656,13 @@ func main() {
 		var turnResult agent.TurnResult
 		turnStartedAt := time.Now()
 		chatStream := gatewayws.NewChatStream(wsEmitter, eventID, sessionID, activeAgentID)
-		chatStream.Status(gatewayws.ChatPhaseStartingModel)
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
-			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, chBaseTurn, func(chunk string) {
-				chatStream.Delta(chunk, false)
-			})
+			projection := gatewayws.NewRuntimeChatProjection(chatStream, wsEmitter, activeAgentID)
+			projection.Start()
+			chBaseTurn.RuntimeEventSink = projection.RuntimeEventSink()
+			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, chBaseTurn, projection.LegacyDelta)
 		} else {
+			chatStream.Status(gatewayws.ChatPhaseStartingModel)
 			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, chBaseTurn)
 		}
 
@@ -6151,24 +6151,28 @@ func main() {
 	if gatewayWSAddr != "" {
 		wsMethods := append([]string{}, supportedMethods(configState.Get())...)
 		wsMethods = append(wsMethods, gatewayws.MethodEventsList, gatewayws.MethodEventsSubscribe, gatewayws.MethodEventsUnsubscribe)
+		wsDescriptors := methods.MethodDescriptors(wsMethods)
 		wsPath := strings.TrimSpace(gatewayWSPath)
 		if wsPath == "" {
 			wsPath = "/ws"
 		}
 		wsRuntime, err := gatewayws.Start(ctx, gatewayws.RuntimeOptions{
-			Addr:                   gatewayWSAddr,
-			Path:                   wsPath,
-			Token:                  gatewayWSToken,
-			Methods:                wsMethods,
-			Events:                 gatewayws.AllPushEvents,
-			Version:                "metiqd",
-			HandshakeTTL:           10 * time.Second,
-			AuthRateLimitPerMin:    120,
-			UnauthorizedBurstMax:   8,
-			AllowedOrigins:         allowedOrigins,
-			TrustedProxies:         trustedProxies,
-			AllowInsecureControlUI: gatewayWSAllowInsecureControlUI,
-			StaticHandler:          webui.Handler(wsPath, gatewayWSToken),
+			Addr:                    gatewayWSAddr,
+			Path:                    wsPath,
+			Token:                   gatewayWSToken,
+			Methods:                 wsMethods,
+			Events:                  gatewayws.AllPushEvents,
+			MethodDescriptors:       wsDescriptors,
+			Version:                 "metiqd",
+			HandshakeTTL:            10 * time.Second,
+			AuthRateLimitPerMin:     120,
+			UnauthorizedBurstMax:    8,
+			ControlWriteLimitPerMin: 3,
+			AllowedOrigins:          allowedOrigins,
+			TrustedProxies:          trustedProxies,
+			AllowInsecureControlUI:  gatewayWSAllowInsecureControlUI,
+			ValidateDeviceToken:     gatewayDeviceTokenValidator(configState),
+			StaticHandler:           webui.Handler(wsPath, gatewayWSToken),
 			HandleRequest: func(ctx context.Context, req gatewayprotocol.RequestFrame) (any, *gatewayprotocol.ErrorShape) {
 				principal, _ := gatewayws.PrincipalFromContext(ctx)
 				res, err := handleControlRPCRequest(ctx, gatewayControlRPCInbound(principal, req), bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
@@ -6687,10 +6691,31 @@ func main() {
 					return applyNodePairList(ctx, configState, req)
 				},
 				NodePairApprove: func(ctx context.Context, req methods.NodePairApproveRequest) (map[string]any, error) {
-					return applyNodePairApprove(ctx, docsRepo, configState, req)
+					out, err := applyNodePairApprove(ctx, docsRepo, configState, req)
+					if err == nil {
+						if node, ok := out["node"].(map[string]any); ok {
+							if nodeID, ok := node["node_id"].(string); ok {
+								nodeInvocations.AllowNode(nodeID)
+							}
+						}
+					}
+					return out, err
 				},
 				NodePairReject: func(ctx context.Context, req methods.NodePairRejectRequest) (map[string]any, error) {
 					return applyNodePairReject(ctx, docsRepo, configState, req)
+				},
+				NodePairRemove: func(ctx context.Context, req methods.NodePairRemoveRequest) (map[string]any, error) {
+					return revokeNode(nodeInvocations, req.NodeID, func() (map[string]any, error) {
+						out, err := applyNodePairRemove(ctx, docsRepo, configState, req)
+						if err != nil {
+							return nil, err
+						}
+						nodeInvocations.RemoveNode(req.NodeID)
+						if _, err := nodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID}); err != nil {
+							return nil, err
+						}
+						return out, nil
+					})
 				},
 				NodePairVerify: func(ctx context.Context, req methods.NodePairVerifyRequest) (map[string]any, error) {
 					return applyNodePairVerify(ctx, configState, req)
@@ -6706,6 +6731,9 @@ func main() {
 				},
 				DevicePairRemove: func(ctx context.Context, req methods.DevicePairRemoveRequest) (map[string]any, error) {
 					return applyDevicePairRemove(ctx, docsRepo, configState, req)
+				},
+				DevicePairRename: func(ctx context.Context, req methods.DevicePairRenameRequest) (map[string]any, error) {
+					return applyDevicePairRename(ctx, docsRepo, configState, req)
 				},
 				DeviceTokenRotate: func(ctx context.Context, req methods.DeviceTokenRotateRequest) (map[string]any, error) {
 					return applyDeviceTokenRotate(ctx, docsRepo, configState, req)
@@ -6726,25 +6754,50 @@ func main() {
 					return applyNodeCanvasCapabilityRefresh(configState, req)
 				},
 				NodeInvoke: func(_ context.Context, req methods.NodeInvokeRequest) (map[string]any, error) {
-					return applyNodeInvoke(nodeInvocations, req)
+					return withActiveNode(nodeInvocations, req.NodeID, func() (map[string]any, error) {
+						return applyNodeInvoke(nodeInvocations, req)
+					})
+				},
+				NodeInvokeProgress: func(_ context.Context, req methods.NodeInvokeProgressRequest) (map[string]any, error) {
+					return withActiveNode(nodeInvocations, req.NodeID, func() (map[string]any, error) {
+						_, out, err := applyNodeInvokeProgressAndEmit(nodeInvocations, req, func(progress nodeInvocationProgressChunk) {
+							controlServices.emitWSEvent(gatewayws.EventNodeInvokeProgress, gatewayws.NodeInvokeProgressPayload{
+								TS: time.Now().UnixMilli(), InvokeID: req.InvokeID, NodeID: req.NodeID, Seq: progress.Seq, Chunk: progress.Chunk,
+							})
+						})
+						return out, err
+					})
 				},
 				NodeEvent: func(_ context.Context, req methods.NodeEventRequest) (map[string]any, error) {
-					return applyNodeEvent(nodeInvocations, req)
+					return withActiveNode(nodeInvocations, req.NodeID, func() (map[string]any, error) {
+						return applyNodeEvent(nodeInvocations, req)
+					})
 				},
 				NodeResult: func(_ context.Context, req methods.NodeResultRequest) (map[string]any, error) {
-					return applyNodeResult(nodeInvocations, req)
+					return withActiveNode(nodeInvocations, req.NodeID, func() (map[string]any, error) {
+						return applyNodeResult(nodeInvocations, req)
+					})
 				},
 				NodePendingEnqueue: func(_ context.Context, req methods.NodePendingEnqueueRequest) (map[string]any, error) {
-					return nodePending.Enqueue(nodepending.EnqueueRequest{NodeID: req.NodeID, Command: req.Command, Args: req.Args, IdempotencyKey: req.IdempotencyKey, TTLMS: req.TTLMS})
+					return withActiveNode(nodeInvocations, req.NodeID, func() (map[string]any, error) {
+						return nodePending.Enqueue(nodepending.EnqueueRequest{NodeID: req.NodeID, Command: req.Command, Args: req.Args, IdempotencyKey: req.IdempotencyKey, TTLMS: req.TTLMS})
+					})
 				},
 				NodePendingPull: func(_ context.Context, req methods.NodePendingPullRequest) (map[string]any, error) {
-					return nodePending.Pull(req.NodeID)
+					return withActiveNode(nodeInvocations, req.NodeID, func() (map[string]any, error) { return nodePending.Pull(req.NodeID) })
 				},
 				NodePendingAck: func(_ context.Context, req methods.NodePendingAckRequest) (map[string]any, error) {
-					return nodePending.Ack(nodepending.AckRequest{NodeID: req.NodeID, IDs: req.IDs})
+					return withActiveNode(nodeInvocations, req.NodeID, func() (map[string]any, error) {
+						return nodePending.Ack(nodepending.AckRequest{NodeID: req.NodeID, IDs: req.IDs})
+					})
 				},
 				NodePendingDrain: func(_ context.Context, req methods.NodePendingDrainRequest) (map[string]any, error) {
-					return nodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID, MaxItems: req.MaxItems})
+					return withActiveNode(nodeInvocations, req.NodeID, func() (map[string]any, error) {
+						return nodePending.Drain(nodepending.DrainRequest{NodeID: req.NodeID, MaxItems: req.MaxItems})
+					})
+				},
+				CronGet: func(_ context.Context, req methods.CronJobSelectorRequest) (map[string]any, error) {
+					return applyCronGet(cronJobs, req)
 				},
 				CronList: func(_ context.Context, req methods.CronListRequest) (map[string]any, error) {
 					return applyCronList(cronJobs, req)
@@ -6752,14 +6805,20 @@ func main() {
 				CronStatus: func(_ context.Context, req methods.CronStatusRequest) (map[string]any, error) {
 					return applyCronStatus(cronJobs, req)
 				},
-				CronAdd: func(_ context.Context, req methods.CronAddRequest) (map[string]any, error) {
-					return applyCronAdd(cronJobs, req)
+				CronScratchGet: func(_ context.Context, req methods.CronJobSelectorRequest) (map[string]any, error) {
+					return applyCronScratchGet(cronJobs, req)
 				},
-				CronUpdate: func(_ context.Context, req methods.CronUpdateRequest) (map[string]any, error) {
-					return applyCronUpdate(cronJobs, req)
+				CronScratchSet: func(ctx context.Context, req methods.CronScratchSetRequest) (map[string]any, error) {
+					return applyCronScratchSetPersisted(ctx, cronJobs, docsRepo, req)
 				},
-				CronRemove: func(_ context.Context, req methods.CronRemoveRequest) (map[string]any, error) {
-					return applyCronRemove(cronJobs, req)
+				CronAdd: func(ctx context.Context, req methods.CronAddRequest) (map[string]any, error) {
+					return applyCronAddPersisted(ctx, cronJobs, docsRepo, req)
+				},
+				CronUpdate: func(ctx context.Context, req methods.CronUpdateRequest) (map[string]any, error) {
+					return applyCronUpdatePersisted(ctx, cronJobs, docsRepo, req)
+				},
+				CronRemove: func(ctx context.Context, req methods.CronRemoveRequest) (map[string]any, error) {
+					return applyCronRemovePersisted(ctx, cronJobs, docsRepo, req)
 				},
 				CronRun: func(_ context.Context, req methods.CronRunRequest) (map[string]any, error) {
 					return applyCronRun(cronJobs, req)

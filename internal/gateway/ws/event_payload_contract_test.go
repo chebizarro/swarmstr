@@ -135,6 +135,8 @@ func sampleCanonicalPayloadForEvent(event string) any {
 		return NodePairRequestedPayload{TS: 6, RequestID: "pair-1", NodeID: "node-1", Label: "Node"}
 	case EventNodePairResolved:
 		return NodePairResolvedPayload{TS: 7, RequestID: "pair-1", NodeID: "node-1", Decision: "approved"}
+	case EventNodeInvokeProgress:
+		return NodeInvokeProgressPayload{TS: 8, InvokeID: "run-1", NodeID: "node-1", Seq: 0, Chunk: "hello"}
 	case EventDevicePairResolved:
 		return DevicePairResolvedPayload{TS: 8, DeviceID: "dev-1", Label: "Phone", Decision: "approved"}
 	case "presence.updated":
