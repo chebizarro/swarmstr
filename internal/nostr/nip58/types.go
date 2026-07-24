@@ -32,14 +32,22 @@ type BadgeDefinition struct {
 	CreatedAt   int64
 }
 
+// BadgeRecipient is one pubkey awarded a badge, with an optional relay hint.
+type BadgeRecipient struct {
+	PubKey string
+	Relay  string
+}
+
 // BadgeAward describes a NIP-58 badge award event.
 type BadgeAward struct {
 	BadgeAddress string
-	Recipient    string
-	Relay        string
-	PubKey       string
-	EventID      string
-	CreatedAt    int64
+	// Recipient is the first recipient and is retained for source compatibility.
+	Recipient  string
+	Recipients []BadgeRecipient
+	Relay      string // optional relay hint on the badge-definition a tag
+	PubKey     string
+	EventID    string
+	CreatedAt  int64
 }
 
 // BadgeReference pairs a badge definition address with the award event that granted it.
@@ -89,18 +97,41 @@ func NewBadgeDefinitionEvent(dtag, name, description, image, thumb string) (nost
 	return nostr.Event{Kind: nostr.Kind(KindBadgeDefinition), CreatedAt: nostr.Now(), Tags: tags}, nil
 }
 
-// NewBadgeAwardEvent builds an unsigned NIP-58 badge award event.
+// NewBadgeAwardEvent builds a one-recipient award for source compatibility.
 func NewBadgeAwardEvent(definitionAuthor string, badgeDTag string, recipient string, relay string) (nostr.Event, error) {
+	return NewBadgeAwardEventMulti(definitionAuthor, badgeDTag, relay, []BadgeRecipient{{PubKey: recipient}})
+}
+
+// NewBadgeAwardEventMulti builds a kind-8 award with one a tag and one p tag
+// for every recipient, as required by current NIP-58.
+func NewBadgeAwardEventMulti(definitionAuthor, badgeDTag, definitionRelay string, recipients []BadgeRecipient) (nostr.Event, error) {
 	addr, err := BadgeAddress(definitionAuthor, badgeDTag)
 	if err != nil {
 		return nostr.Event{}, err
 	}
-	if strings.TrimSpace(recipient) == "" {
-		return nostr.Event{}, fmt.Errorf("nip58: award recipient is required")
+	if len(recipients) == 0 {
+		return nostr.Event{}, fmt.Errorf("nip58: at least one award recipient is required")
 	}
-	tags := nostr.Tags{{"a", addr}, {"p", recipient}}
-	if relay != "" {
-		tags[0] = append(tags[0], relay)
+	a := nostr.Tag{"a", addr}
+	if definitionRelay = strings.TrimSpace(definitionRelay); definitionRelay != "" {
+		a = append(a, definitionRelay)
+	}
+	tags := nostr.Tags{a}
+	seen := make(map[string]struct{}, len(recipients))
+	for _, recipient := range recipients {
+		pubkey := strings.TrimSpace(recipient.PubKey)
+		if pubkey == "" {
+			return nostr.Event{}, fmt.Errorf("nip58: award recipient is required")
+		}
+		if _, exists := seen[pubkey]; exists {
+			continue
+		}
+		seen[pubkey] = struct{}{}
+		p := nostr.Tag{"p", pubkey}
+		if relay := strings.TrimSpace(recipient.Relay); relay != "" {
+			p = append(p, relay)
+		}
+		tags = append(tags, p)
 	}
 	return nostr.Event{Kind: nostr.Kind(KindBadgeAward), CreatedAt: nostr.Now(), Tags: tags}, nil
 }
@@ -197,26 +228,33 @@ func ParseBadgeAward(ev *nostr.Event) (*BadgeAward, error) {
 		return nil, fmt.Errorf("nip58: unexpected badge award kind %d", ev.Kind)
 	}
 	award := &BadgeAward{PubKey: ev.PubKey.Hex(), EventID: ev.ID.Hex(), CreatedAt: int64(ev.CreatedAt)}
+	addressCount := 0
 	for _, tag := range ev.Tags {
 		if len(tag) < 2 {
 			continue
 		}
 		switch tag[0] {
 		case "a":
+			addressCount++
 			award.BadgeAddress = tag[1]
 			if len(tag) >= 3 {
 				award.Relay = tag[2]
 			}
 		case "p":
-			award.Recipient = tag[1]
+			recipient := BadgeRecipient{PubKey: tag[1]}
+			if len(tag) >= 3 {
+				recipient.Relay = tag[2]
+			}
+			award.Recipients = append(award.Recipients, recipient)
 		}
 	}
-	if award.BadgeAddress == "" {
-		return nil, fmt.Errorf("nip58: badge award missing a tag")
+	if addressCount != 1 || !strings.HasPrefix(award.BadgeAddress, fmt.Sprintf("%d:", KindBadgeDefinition)) {
+		return nil, fmt.Errorf("nip58: badge award requires one badge-definition a tag")
 	}
-	if award.Recipient == "" {
+	if len(award.Recipients) == 0 {
 		return nil, fmt.Errorf("nip58: badge award missing p tag")
 	}
+	award.Recipient = award.Recipients[0].PubKey
 	return award, nil
 }
 
@@ -327,7 +365,15 @@ func HasBadge(award *nostr.Event, definitionAuthor string, badgeDTag string, rec
 	if err != nil {
 		return false
 	}
-	return got.BadgeAddress == addr && got.Recipient == recipient
+	if got.BadgeAddress != addr {
+		return false
+	}
+	for _, awarded := range got.Recipients {
+		if awarded.PubKey == recipient {
+			return true
+		}
+	}
+	return false
 }
 
 func verifySignedEvent(ev *nostr.Event, expectedKind int) error {

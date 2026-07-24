@@ -2,6 +2,8 @@ package nip58
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	nostr "fiatjaf.com/nostr"
@@ -92,6 +94,53 @@ func TestNewBadgeDefinitionEventAndVerify(t *testing.T) {
 	}
 	if def.PubKey != testPubKey(t, kr) {
 		t.Fatalf("definition pubkey = %q", def.PubKey)
+	}
+}
+
+func TestBadgeDefinitionCurrentSpecOnlyRequiresDTag(t *testing.T) {
+	evt, err := NewBadgeDefinitionEvent("minimal", "", "", "", "")
+	if err != nil {
+		t.Fatalf("minimal current-spec badge definition: %v", err)
+	}
+	if len(evt.Tags) != 1 || len(evt.Tags[0]) != 2 || evt.Tags[0][0] != "d" || evt.Tags[0][1] != "minimal" {
+		t.Fatalf("minimal definition tags = %v", evt.Tags)
+	}
+	if _, err := ParseBadgeDefinition(&evt); err != nil {
+		t.Fatalf("parse minimal definition: %v", err)
+	}
+}
+
+func TestNewBadgeAwardEventMultiWireFormatAndRoundTrip(t *testing.T) {
+	issuer := testKeyer(t)
+	issuerPubKey := testPubKey(t, issuer)
+	first := testPubKey(t, testKeyer(t))
+	second := testPubKey(t, testKeyer(t))
+	evt, err := NewBadgeAwardEventMulti(issuerPubKey, BadgeCanDeploy, "wss://definitions.example", []BadgeRecipient{
+		{PubKey: first, Relay: "wss://first.example"}, {PubKey: second},
+	})
+	if err != nil {
+		t.Fatalf("NewBadgeAwardEventMulti: %v", err)
+	}
+	wantAddress := fmt.Sprintf("30009:%s:%s", issuerPubKey, BadgeCanDeploy)
+	want := nostr.Tags{{"a", wantAddress, "wss://definitions.example"}, {"p", first, "wss://first.example"}, {"p", second}}
+	if len(evt.Tags) != len(want) {
+		t.Fatalf("award tags = %v, want %v", evt.Tags, want)
+	}
+	for i := range want {
+		if strings.Join(evt.Tags[i], "\x00") != strings.Join(want[i], "\x00") {
+			t.Fatalf("tag[%d] = %v, want %v", i, evt.Tags[i], want[i])
+		}
+	}
+	signEvent(t, issuer, &evt)
+	award, err := VerifyBadgeAward(&evt)
+	if err != nil {
+		t.Fatalf("VerifyBadgeAward: %v", err)
+	}
+	if len(award.Recipients) != 2 || award.Recipients[0].Relay != "wss://first.example" {
+		t.Fatalf("recipients = %+v", award.Recipients)
+	}
+	if !HasBadge(&evt, issuerPubKey, BadgeCanDeploy, first) || !HasBadge(&evt, issuerPubKey, BadgeCanDeploy, second) {
+		t.Fatal("multi-recipient award did not grant both recipients")
 	}
 }
 
