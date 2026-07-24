@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -23,6 +24,19 @@ func TestAcpErrorFormattingByCategory(t *testing.T) {
 				t.Fatalf("Error() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTurnTimeoutErrorCarriesStableDetailCode(t *testing.T) {
+	err := NewTurnTimeoutError("ACP turn timed out after 1s")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout does not wrap DeadlineExceeded: %v", err)
+	}
+	if err.Code != AcpCodeTurnFailed || err.DetailCode != AcpDetailCodeTurnTimeout {
+		t.Fatalf("timeout shape = %+v", err)
+	}
+	if got := errorCode(err); got != AcpDetailCodeTurnTimeout {
+		t.Fatalf("errorCode = %q, want %q", got, AcpDetailCodeTurnTimeout)
 	}
 }
 

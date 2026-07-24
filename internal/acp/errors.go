@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -21,15 +22,17 @@ const (
 	AcpCodeInvalidRuntimeOption      = "ACP_INVALID_RUNTIME_OPTION"
 	AcpCodeSessionInitFailed         = "ACP_SESSION_INIT_FAILED"
 	AcpCodeTurnFailed                = "ACP_TURN_FAILED"
+	AcpDetailCodeTurnTimeout         = "TURN_TIMEOUT"
 )
 
 // AcpError is a typed error suitable for manager events and observability.
 type AcpError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Detail    string `json:"detail,omitempty"`
-	Retryable bool   `json:"retryable,omitempty"`
-	Err       error  `json:"-"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	Detail     string `json:"detail,omitempty"`
+	DetailCode string `json:"detail_code,omitempty"`
+	Retryable  bool   `json:"retryable,omitempty"`
+	Err        error  `json:"-"`
 }
 
 func (e AcpError) Error() string {
@@ -65,6 +68,17 @@ func (e AcpError) Is(target error) bool {
 // NewAcpRuntimeError creates an acp-core-style typed runtime error.
 func NewAcpRuntimeError(code, message string, err error) AcpError {
 	return AcpError{Code: code, Message: message, Err: err}
+}
+
+// NewTurnTimeoutError creates the stable ACP timeout shape used by manager and
+// dispatcher deadlines. It remains compatible with errors.Is DeadlineExceeded.
+func NewTurnTimeoutError(message string) AcpError {
+	return AcpError{
+		Code:       AcpCodeTurnFailed,
+		Message:    message,
+		DetailCode: AcpDetailCodeTurnTimeout,
+		Err:        context.DeadlineExceeded,
+	}
 }
 
 // ToAcpRuntimeError maps existing ACP/sentinel errors into acp-core-style typed runtime errors.

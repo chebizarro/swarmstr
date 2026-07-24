@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,6 +31,25 @@ func TestDispatcher_RegisterAndDeliver(t *testing.T) {
 	_ = ch
 }
 
+func TestDispatcher_DeliveryBeforeWaitWinsTerminalRace(t *testing.T) {
+	d := NewDispatcher()
+	taskID := "delivered-before-wait"
+	d.Register(taskID)
+	if !d.Deliver(TaskResult{TaskID: taskID, Text: "done"}) {
+		t.Fatal("delivery was not accepted")
+	}
+	result, err := d.Wait(context.Background(), taskID, time.Hour)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("result text = %q", result.Text)
+	}
+	if d.PendingCount() != 0 {
+		t.Fatalf("pending count = %d, want 0", d.PendingCount())
+	}
+}
+
 func TestDispatcher_Timeout(t *testing.T) {
 	d := NewDispatcher()
 	taskID := "t2"
@@ -37,6 +57,13 @@ func TestDispatcher_Timeout(t *testing.T) {
 	_, err := d.Wait(context.Background(), taskID, 30*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout does not wrap DeadlineExceeded: %v", err)
+	}
+	var timeoutErr AcpError
+	if !errors.As(err, &timeoutErr) || timeoutErr.DetailCode != AcpDetailCodeTurnTimeout {
+		t.Fatalf("timeout shape = %+v", err)
 	}
 }
 
@@ -181,11 +208,10 @@ func TestPipeline_Parallel_PropagatesWorkerError(t *testing.T) {
 
 func TestPipeline_Parallel_SendFailureCancelsDispatched(t *testing.T) {
 	d := NewDispatcher()
-	callCount := 0
+	var callCount atomic.Int32
 
 	sendFn := func(ctx context.Context, peerPubKey, taskID string, payload TaskPayload) error {
-		callCount++
-		if callCount == 2 {
+		if callCount.Add(1) == 2 {
 			return context.DeadlineExceeded
 		}
 		return nil

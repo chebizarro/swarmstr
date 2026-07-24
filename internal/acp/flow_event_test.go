@@ -115,12 +115,19 @@ func TestManagerTimeoutGraceRecordsTerminalEvent(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("RunTurn err=%v, want DeadlineExceeded", err)
 	}
+	var timeoutErr AcpError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Code != AcpCodeTurnFailed || timeoutErr.DetailCode != AcpDetailCodeTurnTimeout {
+		t.Fatalf("RunTurn timeout shape = %+v", err)
+	}
 	if len(events) == 0 || events[len(events)-1].Kind != EventError {
 		t.Fatalf("expected grace terminal error event, got %+v", events)
 	}
 	obs := mgr.Status(ctx)
-	if obs.Counters.TurnsTimedOut != 1 || obs.EventLedger == nil || obs.EventLedger.Events == 0 {
+	if obs.Counters.TurnsTimedOut != 1 || obs.Counters.TurnsFailed != 0 || obs.EventLedger == nil || obs.EventLedger.Events == 0 {
 		t.Fatalf("unexpected status: %+v", obs)
+	}
+	if obs.ErrorsByCode[AcpDetailCodeTurnTimeout] != 1 {
+		t.Fatalf("timeout errors_by_code = %+v", obs.ErrorsByCode)
 	}
 }
 

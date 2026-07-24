@@ -29,6 +29,7 @@ type RemoteCancelFunc func(ctx context.Context, peerPubKey, taskID, reason strin
 type pendingTask struct {
 	ch         chan TaskResult
 	worker     string
+	resolved   bool
 	cancelOnce sync.Once
 }
 
@@ -132,8 +133,12 @@ func (d *Dispatcher) RecordProgress(ctx context.Context, taskID, summary string)
 func (d *Dispatcher) Deliver(result TaskResult) bool {
 	d.mu.Lock()
 	pending, ok := d.pending[result.TaskID]
+	if ok && pending.resolved {
+		ok = false
+	}
 	if ok {
-		delete(d.pending, result.TaskID)
+		pending.resolved = true
+		pending.ch <- result
 	}
 	d.mu.Unlock()
 
@@ -157,7 +162,6 @@ func (d *Dispatcher) Deliver(result TaskResult) bool {
 		Artifacts:       artifactsPtr(result.Artifacts),
 	})
 	if ok {
-		pending.ch <- result
 		return true
 	}
 	return false
@@ -238,6 +242,9 @@ func (d *Dispatcher) finishPending(taskID string, status TaskStatus, reason stri
 func (d *Dispatcher) finishPendingWithRemote(ctx context.Context, taskID string, status TaskStatus, reason string, closeChannel bool, remoteCancel RemoteCancelFunc) (bool, error) {
 	d.mu.Lock()
 	pending, ok := d.pending[taskID]
+	if ok && pending.resolved {
+		ok = false
+	}
 	if ok {
 		delete(d.pending, taskID)
 		if closeChannel {
@@ -328,17 +335,22 @@ func (d *Dispatcher) CancelExecution(taskID, requesterPubKey, reason string) boo
 // PendingCount returns the number of in-flight tasks.
 func (d *Dispatcher) PendingCount() int {
 	d.mu.Lock()
-	n := len(d.pending)
-	d.mu.Unlock()
-	return n
+	defer d.mu.Unlock()
+	count := 0
+	for _, pending := range d.pending {
+		if !pending.resolved {
+			count++
+		}
+	}
+	return count
 }
 
 // HasPending reports whether taskID currently has a waiting dispatcher slot.
 func (d *Dispatcher) HasPending(taskID string) bool {
 	d.mu.Lock()
-	_, ok := d.pending[taskID]
-	d.mu.Unlock()
-	return ok
+	defer d.mu.Unlock()
+	pending, ok := d.pending[strings.TrimSpace(taskID)]
+	return ok && !pending.resolved
 }
 
 // Wait blocks until the result for taskID arrives or the context expires.
@@ -355,6 +367,22 @@ func (d *Dispatcher) WaitWithRemoteCancel(ctx context.Context, taskID string, ti
 	if !ok {
 		return TaskResult{}, fmt.Errorf("acp dispatcher: no pending task %q", taskID)
 	}
+	consumeResult := func(res TaskResult, channelOpen bool) (TaskResult, error) {
+		d.mu.Lock()
+		if d.pending[taskID] == pending {
+			delete(d.pending, taskID)
+		}
+		d.mu.Unlock()
+		if !channelOpen {
+			return TaskResult{}, fmt.Errorf("acp dispatcher: task %q cancelled", taskID)
+		}
+		return res, nil
+	}
+	select {
+	case res, channelOpen := <-pending.ch:
+		return consumeResult(res, channelOpen)
+	default:
+	}
 
 	var timer <-chan time.Time
 	if timeout > 0 {
@@ -364,21 +392,32 @@ func (d *Dispatcher) WaitWithRemoteCancel(ctx context.Context, taskID string, ti
 	}
 
 	select {
-	case res, ok := <-pending.ch:
-		if !ok {
-			return TaskResult{}, fmt.Errorf("acp dispatcher: task %q cancelled", taskID)
-		}
-		return res, nil
+	case res, channelOpen := <-pending.ch:
+		return consumeResult(res, channelOpen)
 	case <-ctx.Done():
-		_, cancelErr := d.finishPendingWithRemote(ctx, taskID, TaskStatusCancelled, ctx.Err().Error(), true, remoteCancel)
+		finished, cancelErr := d.finishPendingWithRemote(ctx, taskID, TaskStatusCancelled, ctx.Err().Error(), true, remoteCancel)
+		if !finished {
+			select {
+			case res, channelOpen := <-pending.ch:
+				return consumeResult(res, channelOpen)
+			default:
+			}
+		}
 		if cancelErr != nil {
 			return TaskResult{}, errors.Join(ctx.Err(), fmt.Errorf("remote cancel: %w", cancelErr))
 		}
 		return TaskResult{}, ctx.Err()
 	case <-timer:
 		reason := fmt.Sprintf("acp dispatcher: task %q timed out after %v", taskID, timeout)
-		_, cancelErr := d.finishPendingWithRemote(ctx, taskID, TaskStatusTimedOut, reason, true, remoteCancel)
-		timeoutErr := errors.New(reason)
+		finished, cancelErr := d.finishPendingWithRemote(ctx, taskID, TaskStatusTimedOut, reason, true, remoteCancel)
+		if !finished {
+			select {
+			case res, channelOpen := <-pending.ch:
+				return consumeResult(res, channelOpen)
+			default:
+			}
+		}
+		timeoutErr := NewTurnTimeoutError(reason)
 		if cancelErr != nil {
 			return TaskResult{}, errors.Join(timeoutErr, fmt.Errorf("remote cancel: %w", cancelErr))
 		}

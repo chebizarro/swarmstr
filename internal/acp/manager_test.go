@@ -16,10 +16,13 @@ type managerTestRuntime struct {
 	closes   int
 	controls int
 
-	blockRun bool
-	started  chan struct{}
-	events   []RuntimeEvent
-	ensured  []EnsureInput
+	blockRun      bool
+	started       chan struct{}
+	cancelStarted chan struct{}
+	cancelBlock   <-chan struct{}
+	cancelOnce    sync.Once
+	events        []RuntimeEvent
+	ensured       []EnsureInput
 }
 
 func (r *managerTestRuntime) EnsureSession(_ context.Context, input EnsureInput) (RuntimeHandle, error) {
@@ -60,10 +63,23 @@ func (r *managerTestRuntime) RunTurn(ctx context.Context, input TurnInput) (<-ch
 	return ch, nil
 }
 
-func (r *managerTestRuntime) Cancel(_ context.Context, _ CancelInput) error {
+func (r *managerTestRuntime) Cancel(ctx context.Context, _ CancelInput) error {
 	r.mu.Lock()
 	r.cancels++
+	started := r.cancelStarted
+	block := r.cancelBlock
 	r.mu.Unlock()
+	if started != nil {
+		r.cancelOnce.Do(func() { close(started) })
+	}
+	if block != nil {
+		select {
+		case <-block:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
 }
 
@@ -196,6 +212,101 @@ func TestManagerCancelActiveTurn(t *testing.T) {
 	obs := mgr.Status(ctx)
 	if obs.ActiveTurns != 0 || obs.Counters.TurnsCanceled == 0 {
 		t.Fatalf("unexpected manager status after cancel: %+v", obs)
+	}
+}
+
+func TestManagerConcurrentCancelPathsCallBackendOnce(t *testing.T) {
+	rt := &managerTestRuntime{}
+	mgr, _ := newTestManager(t, rt, ManagerOptions{TurnTimeoutCleanupGrace: time.Second})
+	turnCtx, cancelTurn := context.WithCancelCause(context.Background())
+	active := &managerActiveTurn{
+		Runtime:    rt,
+		Handle:     RuntimeHandle{SessionKey: "cancel-race", Backend: "test"},
+		Cancel:     cancelTurn,
+		cancelDone: make(chan struct{}),
+	}
+
+	const callers = 24
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var done sync.WaitGroup
+	ready.Add(callers)
+	done.Add(callers)
+	for i := range callers {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			reason := "turn-disconnect"
+			cause := context.Canceled
+			if i%3 == 0 {
+				reason = "turn-timeout"
+				cause = NewTurnTimeoutError("timed out")
+			} else if i%3 == 1 {
+				reason = "user-cancel"
+			}
+			_ = mgr.cancelActiveTurn(active, reason, cause)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	_, _, cancels, _, _ := rt.counts()
+	if cancels != 1 {
+		t.Fatalf("backend cancels = %d, want 1", cancels)
+	}
+	if context.Cause(turnCtx) == nil {
+		t.Fatal("turn context was not cancelled")
+	}
+}
+
+func TestManagerDisconnectCancelIsBounded(t *testing.T) {
+	started := make(chan struct{})
+	cancelStarted := make(chan struct{})
+	releaseCancel := make(chan struct{})
+	rt := &managerTestRuntime{
+		blockRun:      true,
+		started:       started,
+		cancelStarted: cancelStarted,
+		cancelBlock:   releaseCancel,
+	}
+	mgr, _ := newTestManager(t, rt, ManagerOptions{
+		DefaultTurnTimeout:      time.Minute,
+		TurnTimeoutCleanupGrace: 20 * time.Millisecond,
+	})
+	ctx, disconnect := context.WithCancel(context.Background())
+	if _, err := mgr.InitializeSession(context.Background(), InitializeSessionInput{SessionKey: "bounded-disconnect", Backend: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.RunTurn(ctx, RunSessionTurnInput{SessionKey: "bounded-disconnect", Text: "wait"})
+		runDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not start")
+	}
+	disconnect()
+	select {
+	case <-cancelStarted:
+	case <-time.After(time.Second):
+		t.Fatal("backend cancel did not start")
+	}
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunTurn err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseCancel)
+		t.Fatal("disconnect cancellation exceeded configured bound")
+	}
+	close(releaseCancel)
+	_, _, cancels, _, _ := rt.counts()
+	if cancels != 1 {
+		t.Fatalf("backend cancels = %d, want 1", cancels)
 	}
 }
 

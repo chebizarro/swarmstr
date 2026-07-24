@@ -102,13 +102,16 @@ type managerRuntimeState struct {
 }
 
 type managerActiveTurn struct {
-	Runtime   BackendRuntime
-	Handle    RuntimeHandle
-	Cancel    context.CancelFunc
-	RequestID string
-	StartedAt time.Time
-	TimedOut  bool
-	Canceled  atomic.Bool
+	Runtime    BackendRuntime
+	Handle     RuntimeHandle
+	Cancel     context.CancelCauseFunc
+	RequestID  string
+	StartedAt  time.Time
+	TimedOut   bool
+	Canceled   atomic.Bool
+	cancelOnce sync.Once
+	cancelDone chan struct{}
+	cancelErr  error
 }
 
 // ManagerCounters captures cumulative manager activity.
@@ -304,7 +307,7 @@ func NewManager(backends *BackendRegistry, sessions SessionStore, agents *AgentR
 	if opts.TurnTimeoutGrace == 0 {
 		opts.TurnTimeoutGrace = 5 * time.Second
 	}
-	if opts.TurnTimeoutCleanupGrace == 0 {
+	if opts.TurnTimeoutCleanupGrace <= 0 {
 		opts.TurnTimeoutCleanupGrace = 2 * time.Second
 	}
 	return &Manager{
@@ -431,15 +434,16 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 		return nil, acpErr
 	}
 
-	turnCtx, cancel := context.WithCancel(ctx)
+	turnCtx, cancel := context.WithCancelCause(ctx)
 	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = m.opts.DefaultTurnTimeout
 	}
-	defer cancel()
+	defer cancel(nil)
 
-	active := &managerActiveTurn{Runtime: state.Runtime, Handle: state.Handle, Cancel: cancel, RequestID: strings.TrimSpace(input.RequestID), StartedAt: m.now()}
+	active := &managerActiveTurn{Runtime: state.Runtime, Handle: state.Handle, Cancel: cancel, RequestID: strings.TrimSpace(input.RequestID), StartedAt: m.now(), cancelDone: make(chan struct{})}
 	m.setActive(key, active)
+	defer m.clearActive(key, active)
 	m.mu.Lock()
 	m.counters.TurnsStarted++
 	m.mu.Unlock()
@@ -452,15 +456,13 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 		CreatedAt:   active.StartedAt.Unix(),
 	}
 	if err := m.saveMetaWithPending(ctx, key, state.Agent, state.Mode, state.Handle, "running", "", pending, false); err != nil {
-		m.clearActive(key, active)
 		return nil, err
 	}
 
-	events, runErr := m.consumeTurn(turnCtx, cancel, state, input, timeout, active)
+	events, runErr := m.consumeTurn(turnCtx, state, input, timeout, active)
 	if errors.Is(runErr, context.DeadlineExceeded) {
 		active.TimedOut = true
 	}
-	m.clearActive(key, active)
 
 	terminal := false
 	for _, ev := range events {
@@ -512,8 +514,7 @@ func (m *Manager) CancelSession(ctx context.Context, input CancelSessionInput) e
 	}
 	if active := m.getActive(key); active != nil {
 		active.Canceled.Store(true)
-		active.Cancel()
-		return active.Runtime.Cancel(ctx, CancelInput{Handle: active.Handle, Reason: reason})
+		return m.cancelActiveTurn(active, reason, fmt.Errorf("%s: %w", reason, context.Canceled))
 	}
 
 	unlock := m.lockSession(key)
@@ -687,7 +688,7 @@ func (m *Manager) CleanupIdleRuntimeHandles(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) consumeTurn(ctx context.Context, cancelTurn context.CancelFunc, state *managerRuntimeState, input RunSessionTurnInput, timeout time.Duration, active *managerActiveTurn) ([]RuntimeEvent, error) {
+func (m *Manager) consumeTurn(ctx context.Context, state *managerRuntimeState, input RunSessionTurnInput, timeout time.Duration, active *managerActiveTurn) ([]RuntimeEvent, error) {
 	mode := strings.TrimSpace(input.Mode)
 	if mode == "" {
 		mode = "prompt"
@@ -721,6 +722,14 @@ func (m *Manager) consumeTurn(ctx context.Context, cancelTurn context.CancelFunc
 		}
 		return ev.Kind.IsTerminal()
 	}
+	closedTurn := func() ([]RuntimeEvent, error) {
+		cause := context.Cause(ctx)
+		if cause == nil {
+			return events, nil
+		}
+		_ = m.cancelActiveTurn(active, "turn-disconnect", cause)
+		return events, cause
+	}
 	var timeoutC <-chan time.Time
 	var timeoutTimer *time.Timer
 	if timeout > 0 {
@@ -732,7 +741,7 @@ func (m *Manager) consumeTurn(ctx context.Context, cancelTurn context.CancelFunc
 		select {
 		case ev, ok := <-ch:
 			if !ok {
-				return events, nil
+				return closedTurn()
 			}
 			if recordEvent(ev) {
 				return events, nil
@@ -742,17 +751,15 @@ func (m *Manager) consumeTurn(ctx context.Context, cancelTurn context.CancelFunc
 		select {
 		case ev, ok := <-ch:
 			if !ok {
-				return events, nil
+				return closedTurn()
 			}
 			if recordEvent(ev) {
 				return events, nil
 			}
 		case <-timeoutC:
-			if cancelTurn != nil {
-				cancelTurn()
-			}
-			m.cancelTimedOutTurn(state)
-			return m.drainTurnGrace(ch, &events, recordEvent)
+			timeoutErr := NewTurnTimeoutError(fmt.Sprintf("ACP turn timed out after %v", timeout))
+			_ = m.cancelActiveTurn(active, "turn-timeout", timeoutErr)
+			return m.drainTurnGrace(ch, &events, recordEvent, timeoutErr)
 		case <-ctx.Done():
 			select {
 			case ev, ok := <-ch:
@@ -761,13 +768,12 @@ func (m *Manager) consumeTurn(ctx context.Context, cancelTurn context.CancelFunc
 				}
 			default:
 			}
-			if active == nil || !active.Canceled.Load() {
-				if cancelTurn != nil {
-					cancelTurn()
-				}
-				m.cancelDisconnectedTurn(state)
+			cause := context.Cause(ctx)
+			if cause == nil {
+				cause = ctx.Err()
 			}
-			return events, ctx.Err()
+			_ = m.cancelActiveTurn(active, "turn-disconnect", cause)
+			return events, cause
 		}
 	}
 }
@@ -912,30 +918,40 @@ func (m *Manager) ensureRuntimeState(ctx context.Context, key, requestedBackend,
 	return state, nil
 }
 
-func (m *Manager) cancelTimedOutTurn(state *managerRuntimeState) {
-	if state == nil || state.Runtime == nil {
-		return
+func (m *Manager) cancelActiveTurn(active *managerActiveTurn, reason string, cause error) error {
+	if active == nil || active.Runtime == nil {
+		return nil
 	}
-	cleanupCtx := context.Background()
-	var cancel context.CancelFunc
-	if m.opts.TurnTimeoutCleanupGrace > 0 {
-		cleanupCtx, cancel = context.WithTimeout(cleanupCtx, m.opts.TurnTimeoutCleanupGrace)
-		defer cancel()
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "cancelled"
 	}
-	_ = state.Runtime.Cancel(cleanupCtx, CancelInput{Handle: state.Handle, Reason: "turn-timeout"})
+	if cause == nil {
+		cause = context.Canceled
+	}
+	active.cancelOnce.Do(func() {
+		active.Cancel(cause)
+		go func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), m.opts.TurnTimeoutCleanupGrace)
+			defer cleanupCancel()
+			active.cancelErr = active.Runtime.Cancel(cleanupCtx, CancelInput{Handle: active.Handle, Reason: reason})
+			close(active.cancelDone)
+		}()
+	})
+	waitTimer := time.NewTimer(m.opts.TurnTimeoutCleanupGrace)
+	defer waitTimer.Stop()
+	select {
+	case <-active.cancelDone:
+		return active.cancelErr
+	case <-waitTimer.C:
+		return context.DeadlineExceeded
+	}
 }
 
-func (m *Manager) cancelDisconnectedTurn(state *managerRuntimeState) {
-	if state == nil || state.Runtime == nil {
-		return
-	}
-	_ = state.Runtime.Cancel(context.Background(), CancelInput{Handle: state.Handle, Reason: "turn-disconnect"})
-}
-
-func (m *Manager) drainTurnGrace(ch <-chan RuntimeEvent, events *[]RuntimeEvent, recordEvent func(RuntimeEvent) bool) ([]RuntimeEvent, error) {
+func (m *Manager) drainTurnGrace(ch <-chan RuntimeEvent, events *[]RuntimeEvent, recordEvent func(RuntimeEvent) bool, timeoutErr error) ([]RuntimeEvent, error) {
 	grace := m.opts.TurnTimeoutGrace
 	if grace <= 0 {
-		return *events, context.DeadlineExceeded
+		return *events, timeoutErr
 	}
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
@@ -943,13 +959,13 @@ func (m *Manager) drainTurnGrace(ch <-chan RuntimeEvent, events *[]RuntimeEvent,
 		select {
 		case ev, ok := <-ch:
 			if !ok {
-				return *events, context.DeadlineExceeded
+				return *events, timeoutErr
 			}
 			if recordEvent(ev) {
-				return *events, context.DeadlineExceeded
+				return *events, timeoutErr
 			}
 		case <-timer.C:
-			return *events, context.DeadlineExceeded
+			return *events, timeoutErr
 		}
 	}
 }
@@ -1349,19 +1365,29 @@ func errorCode(err error) string {
 	if err == nil {
 		return "unknown"
 	}
+	var acpErr AcpError
+	if errors.As(err, &acpErr) {
+		if acpErr.DetailCode != "" {
+			return acpErr.DetailCode
+		}
+		if acpErr.Code != "" {
+			return acpErr.Code
+		}
+	}
+	var acpErrPtr *AcpError
+	if errors.As(err, &acpErrPtr) && acpErrPtr != nil {
+		if acpErrPtr.DetailCode != "" {
+			return acpErrPtr.DetailCode
+		}
+		if acpErrPtr.Code != "" {
+			return acpErrPtr.Code
+		}
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
 	if errors.Is(err, context.Canceled) {
 		return "canceled"
-	}
-	var acpErr AcpError
-	if errors.As(err, &acpErr) && acpErr.Code != "" {
-		return acpErr.Code
-	}
-	var acpErrPtr *AcpError
-	if errors.As(err, &acpErrPtr) && acpErrPtr != nil && acpErrPtr.Code != "" {
-		return acpErrPtr.Code
 	}
 	return "error"
 }
