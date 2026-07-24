@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,43 @@ import (
 // It receives the decoded input text and must return the result content or an error.
 type JobHandler func(ctx context.Context, jobID string, kind int, input string) (string, error)
 
+// JobInput is one NIP-90 input tag. Relay and Marker are optional.
+type JobInput struct {
+	Data   string `json:"data"`
+	Type   string `json:"type"`
+	Relay  string `json:"relay,omitempty"`
+	Marker string `json:"marker,omitempty"`
+}
+
+// JobParam is one NIP-90 param tag.
+type JobParam struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// JobRequest preserves all current-spec request fields for rich handlers.
+type JobRequest struct {
+	Event          nostr.Event
+	Inputs         []JobInput
+	Params         []JobParam
+	Output         string
+	BidMSat        int64
+	ResponseRelays []string
+	Encrypted      bool
+}
+
+// JobResult is the result returned by a rich NIP-90 handler.
+type JobResult struct {
+	Content         string
+	AmountMSat      int64
+	Invoice         string
+	PaymentRequired bool
+}
+
+// JobRequestHandler handles the complete NIP-90 request instead of the legacy
+// single-input callback.
+type JobRequestHandler func(ctx context.Context, request JobRequest) (JobResult, error)
+
 // HandlerOpts configures the DVM handler.
 type HandlerOpts struct {
 	// Keyer is the signing interface used to publish statuses and results.
@@ -34,6 +73,9 @@ type HandlerOpts struct {
 	AcceptedKinds []int
 	// OnJob is called for each accepted job request.
 	OnJob JobHandler
+	// OnRequest receives all request inputs, params, relay preferences, and
+	// encryption state. When set, it takes precedence over OnJob.
+	OnRequest JobRequestHandler
 	// MaxConcurrentJobs bounds in-flight job handlers. Defaults to 8.
 	MaxConcurrentJobs int
 }
@@ -65,8 +107,8 @@ type Handler struct {
 
 // Start creates a Handler and begins listening for job requests.
 func Start(ctx context.Context, opts HandlerOpts) (*Handler, error) {
-	if opts.OnJob == nil {
-		return nil, fmt.Errorf("dvm: OnJob handler is required")
+	if opts.OnJob == nil && opts.OnRequest == nil {
+		return nil, fmt.Errorf("dvm: OnJob or OnRequest handler is required")
 	}
 	if opts.Keyer == nil {
 		return nil, fmt.Errorf("dvm: keyer is required")
@@ -276,11 +318,15 @@ func (h *Handler) runSubscription(since int64) bool {
 				return true
 			}
 			h.wg.Add(1)
-			go func(ev nostr.Event) {
+			sourceRelay := ""
+			if re.Relay != nil {
+				sourceRelay = re.Relay.URL
+			}
+			go func(ev nostr.Event, relayURL string) {
 				defer h.wg.Done()
 				defer func() { <-h.jobSem }()
-				h.handleJob(h.ctx, ev)
-			}(re.Event)
+				h.handleJobFromRelay(h.ctx, ev, relayURL)
+			}(re.Event, sourceRelay)
 		}
 	}
 }
@@ -303,39 +349,56 @@ func (h *Handler) markSeen(id string) bool {
 }
 
 func (h *Handler) handleJob(ctx context.Context, ev nostr.Event) {
-	jobID := ev.ID.Hex()
-	reqKind := int(ev.Kind)
-	resultKind := reqKind + 1000 // 5000 → 6000, 5001 → 6001, etc.
+	h.handleJobFromRelay(ctx, ev, "")
+}
 
-	// Publish processing status (kind:7000).
-	if err := h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "processing", ""); err != nil {
-		log.Printf("dvm: publish processing status for job %s: %v", jobID, err)
+func (h *Handler) handleJobFromRelay(ctx context.Context, ev nostr.Event, sourceRelay string) {
+	request, err := h.parseJobRequest(ctx, ev)
+	if err != nil {
+		log.Printf("dvm: parse job %s: %v", ev.ID.Hex(), err)
+		return
 	}
-
-	// Extract input from "i" tags: ["i", content, type].
-	input := extractInput(ev)
+	if err := h.publishStatus(ctx, request, sourceRelay, JobResult{}, "processing", ""); err != nil {
+		log.Printf("dvm: publish processing status for job %s: %v", ev.ID.Hex(), err)
+	}
 
 	// Dispatch to the job handler.
 	jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	if h.pool != nil && jobCtx.Err() == nil {
+		go h.watchCancellation(jobCtx, request, mergeRelays(request.ResponseRelays, h.currentRelays()), cancel)
+	}
 
-	result, err := h.opts.OnJob(jobCtx, jobID, reqKind, input)
+	var result JobResult
+	if h.opts.OnRequest != nil {
+		result, err = h.opts.OnRequest(jobCtx, request)
+	} else {
+		var content string
+		content, err = h.opts.OnJob(jobCtx, ev.ID.Hex(), int(ev.Kind), legacyInput(request))
+		result.Content = content
+	}
 	if err != nil {
-		log.Printf("dvm: job %s error: %v", jobID, err)
-		if pubErr := h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "error", err.Error()); pubErr != nil {
-			log.Printf("dvm: publish error status for job %s: %v", jobID, pubErr)
+		log.Printf("dvm: job %s error: %v", ev.ID.Hex(), err)
+		if pubErr := h.publishStatus(ctx, request, sourceRelay, JobResult{}, "error", err.Error()); pubErr != nil {
+			log.Printf("dvm: publish error status for job %s: %v", ev.ID.Hex(), pubErr)
+		}
+		return
+	}
+	if result.PaymentRequired {
+		if err := h.publishStatus(ctx, request, sourceRelay, result, "payment-required", ""); err != nil {
+			log.Printf("dvm: publish payment-required status for job %s: %v", ev.ID.Hex(), err)
 		}
 		return
 	}
 
 	// Publish result (kind:6000-6999).
-	if err := h.publishResult(ctx, jobID, ev.PubKey.Hex(), resultKind, result); err != nil {
-		log.Printf("dvm: publish result for job %s: %v", jobID, err)
+	if err := h.publishResult(ctx, request, sourceRelay, result); err != nil {
+		log.Printf("dvm: publish result for job %s: %v", ev.ID.Hex(), err)
 		return
 	}
 	// Publish success status.
-	if err := h.publishStatus(ctx, jobID, ev.PubKey.Hex(), "success", ""); err != nil {
-		log.Printf("dvm: publish success status for job %s: %v", jobID, err)
+	if err := h.publishStatus(ctx, request, sourceRelay, JobResult{}, "success", ""); err != nil {
+		log.Printf("dvm: publish success status for job %s: %v", ev.ID.Hex(), err)
 	}
 }
 
@@ -343,57 +406,284 @@ func (h *Handler) signEvent(ctx context.Context, evt *nostr.Event) error {
 	return h.keyer.SignEvent(ctx, evt)
 }
 
-func (h *Handler) publishResult(ctx context.Context, jobID, requesterPubkey string, kind int, content string) error {
-	evt := nostr.Event{
-		Kind:      nostr.Kind(kind),
-		Content:   content,
-		CreatedAt: nostr.Timestamp(time.Now().Unix()),
-		Tags: nostr.Tags{
-			{"e", jobID},
-			{"p", requesterPubkey},
-			{"request", jobID},
-		},
+func (h *Handler) publishResult(ctx context.Context, request JobRequest, sourceRelay string, result JobResult) error {
+	evt, err := h.buildResultEvent(ctx, request, sourceRelay, result)
+	if err != nil {
+		return err
 	}
-	evt.PubKey = h.pubkey
-	if err := h.signEvent(ctx, &evt); err != nil {
-		return fmt.Errorf("sign result: %w", err)
-	}
-	return h.publish(ctx, evt)
+	return h.publishToRelays(ctx, preferredRelays(request.ResponseRelays, h.currentRelays()), evt)
 }
 
-func (h *Handler) publishStatus(ctx context.Context, jobID, requesterPubkey, status, extraMsg string) error {
+func (h *Handler) publishStatus(ctx context.Context, request JobRequest, sourceRelay string, result JobResult, status, extraMsg string) error {
+	evt, err := h.buildStatusEvent(ctx, request, sourceRelay, result, status, extraMsg)
+	if err != nil {
+		return err
+	}
+	return h.publishToRelays(ctx, preferredRelays(request.ResponseRelays, h.currentRelays()), evt)
+}
+
+func (h *Handler) buildResultEvent(ctx context.Context, request JobRequest, sourceRelay string, result JobResult) (nostr.Event, error) {
+	requestJSON, err := json.Marshal(request.Event)
+	if err != nil {
+		return nostr.Event{}, fmt.Errorf("marshal request event: %w", err)
+	}
+	tags := nostr.Tags{
+		eventReferenceTag(request.Event.ID.Hex(), sourceRelay),
+		{"p", request.Event.PubKey.Hex()},
+		{"request", string(requestJSON)},
+	}
+	if !request.Encrypted {
+		for _, tag := range request.Event.Tags {
+			if len(tag) > 0 && tag[0] == "i" {
+				tags = append(tags, append(nostr.Tag(nil), tag...))
+			}
+		}
+	}
+	if result.AmountMSat > 0 {
+		amount := nostr.Tag{"amount", strconv.FormatInt(result.AmountMSat, 10)}
+		if result.Invoice != "" {
+			amount = append(amount, result.Invoice)
+		}
+		tags = append(tags, amount)
+	}
+	content := result.Content
+	if request.Encrypted {
+		content, err = h.encryptNIP04(ctx, result.Content, request.Event.PubKey)
+		if err != nil {
+			return nostr.Event{}, fmt.Errorf("encrypt result: %w", err)
+		}
+		tags = append(tags, nostr.Tag{"encrypted"})
+	}
+	evt := nostr.Event{
+		Kind:      request.Event.Kind + 1000,
+		Content:   content,
+		CreatedAt: nostr.Timestamp(time.Now().Unix()),
+		Tags:      tags,
+		PubKey:    h.pubkey,
+	}
+	if err := h.signEvent(ctx, &evt); err != nil {
+		return nostr.Event{}, fmt.Errorf("sign result: %w", err)
+	}
+	return evt, nil
+}
+
+func (h *Handler) buildStatusEvent(ctx context.Context, request JobRequest, sourceRelay string, result JobResult, status, extraMsg string) (nostr.Event, error) {
 	content := status
 	if extraMsg != "" {
 		content = status + ": " + extraMsg
+	}
+	tags := nostr.Tags{
+		eventReferenceTag(request.Event.ID.Hex(), sourceRelay),
+		{"p", request.Event.PubKey.Hex()},
+		{"status", status},
+	}
+	if result.AmountMSat > 0 {
+		amount := nostr.Tag{"amount", strconv.FormatInt(result.AmountMSat, 10)}
+		if result.Invoice != "" {
+			amount = append(amount, result.Invoice)
+		}
+		tags = append(tags, amount)
+	}
+	var err error
+	if request.Encrypted && content != "" {
+		content, err = h.encryptNIP04(ctx, content, request.Event.PubKey)
+		if err != nil {
+			return nostr.Event{}, fmt.Errorf("encrypt feedback: %w", err)
+		}
+		tags = append(tags, nostr.Tag{"encrypted"})
 	}
 	evt := nostr.Event{
 		Kind:      7000,
 		Content:   content,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
-		Tags: nostr.Tags{
-			{"e", jobID},
-			{"p", requesterPubkey},
-			{"status", status},
-		},
+		Tags:      tags,
+		PubKey:    h.pubkey,
 	}
-	evt.PubKey = h.pubkey
 	if err := h.signEvent(ctx, &evt); err != nil {
-		return fmt.Errorf("sign status: %w", err)
+		return nostr.Event{}, fmt.Errorf("sign status: %w", err)
 	}
-	return h.publish(ctx, evt)
+	return evt, nil
 }
 
 func (h *Handler) publish(ctx context.Context, evt nostr.Event) error {
+	return h.publishToRelays(ctx, h.currentRelays(), evt)
+}
+
+func (h *Handler) publishToRelays(ctx context.Context, relays []string, evt nostr.Event) error {
 	publisher := h.publisher
 	if publisher == nil {
 		publisher = h.pool
 	}
 	ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if _, err := okpublish.PublishToAny(ctx2, publisher, h.currentRelays(), evt); err != nil {
+	if _, err := okpublish.PublishToAny(ctx2, publisher, relays, evt); err != nil {
 		return fmt.Errorf("publish kind %d: %w", evt.Kind, err)
 	}
 	return nil
+}
+
+func (h *Handler) parseJobRequest(ctx context.Context, ev nostr.Event) (JobRequest, error) {
+	request := JobRequest{Event: ev}
+	privateTags := nostr.Tags(nil)
+	for _, tag := range ev.Tags {
+		if len(tag) == 0 {
+			continue
+		}
+		switch tag[0] {
+		case "encrypted":
+			request.Encrypted = true
+		case "relays":
+			request.ResponseRelays = mergeRelays(tag[1:], request.ResponseRelays)
+		case "output":
+			if len(tag) > 1 {
+				request.Output = tag[1]
+			}
+		case "bid":
+			if len(tag) > 1 {
+				request.BidMSat, _ = strconv.ParseInt(tag[1], 10, 64)
+			}
+		}
+	}
+	if request.Encrypted {
+		plaintext, err := h.decryptNIP04(ctx, ev.Content, ev.PubKey)
+		if err != nil {
+			return JobRequest{}, fmt.Errorf("decrypt request: %w", err)
+		}
+		if err := json.Unmarshal([]byte(plaintext), &privateTags); err != nil {
+			return JobRequest{}, fmt.Errorf("decode encrypted request tags: %w", err)
+		}
+	} else {
+		privateTags = ev.Tags
+	}
+	for _, tag := range privateTags {
+		if len(tag) < 2 {
+			continue
+		}
+		switch tag[0] {
+		case "i":
+			input := JobInput{Data: tag[1]}
+			if len(tag) > 2 {
+				input.Type = tag[2]
+			}
+			if len(tag) > 3 {
+				input.Relay = tag[3]
+			}
+			if len(tag) > 4 {
+				input.Marker = tag[4]
+			}
+			request.Inputs = append(request.Inputs, input)
+		case "param":
+			param := JobParam{Name: tag[1]}
+			if len(tag) > 2 {
+				param.Value = tag[2]
+			}
+			request.Params = append(request.Params, param)
+		}
+	}
+	return request, nil
+}
+
+func (h *Handler) decryptNIP04(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	decrypter, ok := h.keyer.(runtime.NIP04Decrypter)
+	if !ok {
+		return "", fmt.Errorf("keyer does not support NIP-04 decryption")
+	}
+	return decrypter.DecryptNIP04(ctx, ciphertext, sender)
+}
+
+func (h *Handler) encryptNIP04(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	encrypter, ok := h.keyer.(runtime.NIP04Encrypter)
+	if !ok {
+		return "", fmt.Errorf("keyer does not support NIP-04 encryption")
+	}
+	return encrypter.EncryptNIP04(ctx, plaintext, recipient)
+}
+
+func (h *Handler) watchCancellation(ctx context.Context, request JobRequest, relays []string, cancel context.CancelFunc) {
+	filter := nostr.Filter{
+		Kinds:   []nostr.Kind{5},
+		Authors: []nostr.PubKey{request.Event.PubKey},
+		Tags:    nostr.TagMap{"e": []string{request.Event.ID.Hex()}},
+		Since:   request.Event.CreatedAt,
+	}
+	events, closed := h.pool.SubscribeManyNotifyClosed(ctx, relays, filter, nostr.SubscriptionOptions{})
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case rc, ok := <-closed:
+			if !ok {
+				closed = nil
+				continue
+			}
+			if rc.HandledAuth {
+				continue
+			}
+			return
+		case re, ok := <-events:
+			if !ok {
+				return
+			}
+			if isCancellationFor(re.Event, request.Event) {
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+func isCancellationFor(deletion, request nostr.Event) bool {
+	return deletion.Kind == 5 &&
+		deletion.PubKey == request.PubKey &&
+		deletion.CheckID() &&
+		deletion.VerifySignature() &&
+		deletion.Tags.ContainsAny("e", []string{request.ID.Hex()})
+}
+
+func eventReferenceTag(eventID, relay string) nostr.Tag {
+	tag := nostr.Tag{"e", eventID}
+	if relay != "" {
+		tag = append(tag, relay)
+	}
+	return tag
+}
+
+func mergeRelays(primary, fallback []string) []string {
+	out := make([]string, 0, len(primary)+len(fallback))
+	seen := make(map[string]struct{}, len(primary)+len(fallback))
+	for _, relay := range append(append([]string(nil), primary...), fallback...) {
+		relay = strings.TrimSpace(relay)
+		if relay == "" {
+			continue
+		}
+		if _, ok := seen[relay]; ok {
+			continue
+		}
+		seen[relay] = struct{}{}
+		out = append(out, relay)
+	}
+	return out
+}
+
+func preferredRelays(requested, fallback []string) []string {
+	if relays := mergeRelays(requested, nil); len(relays) > 0 {
+		return relays
+	}
+	return mergeRelays(fallback, nil)
+}
+
+func legacyInput(request JobRequest) string {
+	if len(request.Inputs) == 0 {
+		if request.Encrypted {
+			return ""
+		}
+		return request.Event.Content
+	}
+	if len(request.Inputs) == 1 {
+		return request.Inputs[0].Data
+	}
+	encoded, _ := json.Marshal(request.Inputs)
+	return string(encoded)
 }
 
 // extractInput pulls the first "i" tag content from a job request event.

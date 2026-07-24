@@ -286,7 +286,12 @@ func TestPublishResultReturnsErrorWhenAllRelaysReject(t *testing.T) {
 		{RelayURL: "wss://relay.test", Error: errors.New("msg: blocked: invalid event")},
 	}})
 
-	err := h.publishResult(context.Background(), "job1", strings.Repeat("1", 64), 6000, "result")
+	request := JobRequest{Event: nostr.Event{
+		ID:     nostr.ID{0xaa},
+		PubKey: nostr.PubKey{1},
+		Kind:   5000,
+	}}
+	err := h.publishResult(context.Background(), request, "", JobResult{Content: "result"})
 	if err == nil {
 		t.Fatal("expected publish error")
 	}
@@ -300,7 +305,12 @@ func TestPublishStatusSucceedsWhenRelayAccepts(t *testing.T) {
 		{RelayURL: "wss://relay.test"},
 	}})
 
-	if err := h.publishStatus(context.Background(), "job1", strings.Repeat("1", 64), "success", ""); err != nil {
+	request := JobRequest{Event: nostr.Event{
+		ID:     nostr.ID{0xaa},
+		PubKey: nostr.PubKey{1},
+		Kind:   5000,
+	}}
+	if err := h.publishStatus(context.Background(), request, "", JobResult{}, "success", ""); err != nil {
 		t.Fatalf("publishStatus returned error: %v", err)
 	}
 }
@@ -546,5 +556,221 @@ func TestCustomMaxConcurrentJobs(t *testing.T) {
 	}
 	if cap(h.jobSem) != 4 {
 		t.Fatalf("jobSem capacity = %d, want 4", cap(h.jobSem))
+	}
+}
+
+type dvmCryptoKeyer struct {
+	nostr.Keyer
+	plaintext string
+}
+
+func (k dvmCryptoKeyer) DecryptNIP04(context.Context, string, nostr.PubKey) (string, error) {
+	return k.plaintext, nil
+}
+
+func (k dvmCryptoKeyer) EncryptNIP04(_ context.Context, plaintext string, _ nostr.PubKey) (string, error) {
+	return "encrypted:" + plaintext, nil
+}
+
+func signedJobRequest(t *testing.T, tags nostr.Tags, content string) nostr.Event {
+	t.Helper()
+	signer := testSigner(t)
+	pubkey, err := signer.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := nostr.Event{
+		Kind:      5000,
+		CreatedAt: 1_700_000_000,
+		Tags:      tags,
+		Content:   content,
+		PubKey:    pubkey,
+	}
+	if err := signer.SignEvent(context.Background(), &event); err != nil {
+		t.Fatal(err)
+	}
+	return event
+}
+
+func findTag(tags nostr.Tags, name string) nostr.Tag {
+	for _, tag := range tags {
+		if len(tag) > 0 && tag[0] == name {
+			return tag
+		}
+	}
+	return nil
+}
+
+func TestParseJobRequestPreservesAllInputsParamsAndRelays(t *testing.T) {
+	h := testPublishHandler(t, dvmFakePublisher{})
+	requestEvent := signedJobRequest(t, nostr.Tags{
+		{"i", "first", "text"},
+		{"i", "second", "url", "wss://input.example", "source"},
+		{"param", "temperature", "0.2"},
+		{"output", "text/plain"},
+		{"bid", "21000"},
+		{"relays", "wss://result-a.example", "wss://result-b.example"},
+	}, "")
+
+	request, err := h.parseJobRequest(context.Background(), requestEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Inputs) != 2 || request.Inputs[0].Data != "first" ||
+		request.Inputs[1].Data != "second" || request.Inputs[1].Relay != "wss://input.example" ||
+		request.Inputs[1].Marker != "source" {
+		t.Fatalf("inputs were not preserved: %#v", request.Inputs)
+	}
+	if len(request.Params) != 1 || request.Params[0] != (JobParam{Name: "temperature", Value: "0.2"}) {
+		t.Fatalf("params were not preserved: %#v", request.Params)
+	}
+	if request.Output != "text/plain" || request.BidMSat != 21000 {
+		t.Fatalf("output/bid mismatch: output=%q bid=%d", request.Output, request.BidMSat)
+	}
+	if got := strings.Join(request.ResponseRelays, ","); got != "wss://result-a.example,wss://result-b.example" {
+		t.Fatalf("response relays = %q", got)
+	}
+
+	var legacy []JobInput
+	if err := json.Unmarshal([]byte(legacyInput(request)), &legacy); err != nil {
+		t.Fatalf("multi-input legacy payload should be JSON: %v", err)
+	}
+	if len(legacy) != 2 {
+		t.Fatalf("legacy callback lost inputs: %#v", legacy)
+	}
+}
+
+func TestBuildResultEventUsesCurrentNIP90WireFormat(t *testing.T) {
+	h := testPublishHandler(t, dvmFakePublisher{})
+	requestEvent := signedJobRequest(t, nostr.Tags{
+		{"i", "first", "text"},
+		{"i", "second", "url"},
+		{"p", h.pubkey.Hex()},
+	}, "")
+	request, err := h.parseJobRequest(context.Background(), requestEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.buildResultEvent(context.Background(), request, "wss://source.example", JobResult{
+		Content:    "finished",
+		AmountMSat: 1000,
+		Invoice:    "lnbc1invoice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != 6000 || result.Content != "finished" {
+		t.Fatalf("unexpected result event: kind=%d content=%q", result.Kind, result.Content)
+	}
+	if got := findTag(result.Tags, "e"); len(got) != 3 || got[1] != requestEvent.ID.Hex() || got[2] != "wss://source.example" {
+		t.Fatalf("e tag = %#v", got)
+	}
+	requestJSON, _ := json.Marshal(requestEvent)
+	if got := findTag(result.Tags, "request"); len(got) != 2 || got[1] != string(requestJSON) {
+		t.Fatalf("request tag must contain the stringified request event: %#v", got)
+	}
+	var inputs int
+	for _, tag := range result.Tags {
+		if len(tag) > 0 && tag[0] == "i" {
+			inputs++
+		}
+	}
+	if inputs != 2 {
+		t.Fatalf("result copied %d input tags, want 2", inputs)
+	}
+	if got := findTag(result.Tags, "amount"); len(got) != 3 || got[1] != "1000" || got[2] != "lnbc1invoice" {
+		t.Fatalf("amount tag = %#v", got)
+	}
+}
+
+func TestEncryptedRequestAndResultUseNIP04AndHideInputs(t *testing.T) {
+	base := testSigner(t)
+	pubkey, err := base.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	crypto := dvmCryptoKeyer{
+		Keyer:     base,
+		plaintext: `[["i","secret prompt","text"],["param","model","private"]]`,
+	}
+	h := &Handler{keyer: crypto, pubkey: pubkey}
+	requestEvent := signedJobRequest(t, nostr.Tags{
+		{"p", pubkey.Hex()},
+		{"encrypted"},
+		{"relays", "wss://private-result.example"},
+	}, "request-ciphertext")
+
+	request, err := h.parseJobRequest(context.Background(), requestEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !request.Encrypted || len(request.Inputs) != 1 || request.Inputs[0].Data != "secret prompt" {
+		t.Fatalf("encrypted request was not decoded: %#v", request)
+	}
+	result, err := h.buildResultEvent(context.Background(), request, "", JobResult{Content: "secret output"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "encrypted:secret output" || findTag(result.Tags, "encrypted") == nil {
+		t.Fatalf("encrypted result wire format mismatch: content=%q tags=%v", result.Content, result.Tags)
+	}
+	if findTag(result.Tags, "i") != nil {
+		t.Fatalf("encrypted result leaked plaintext input tags: %v", result.Tags)
+	}
+}
+
+func TestPaymentRequiredFeedbackUsesAmountTag(t *testing.T) {
+	h := testPublishHandler(t, dvmFakePublisher{})
+	request := JobRequest{Event: signedJobRequest(t, nostr.Tags{{"p", h.pubkey.Hex()}}, "")}
+	feedback, err := h.buildStatusEvent(context.Background(), request, "", JobResult{
+		AmountMSat: 21000,
+		Invoice:    "lnbc21invoice",
+	}, "payment-required", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findTag(feedback.Tags, "status"); len(got) != 2 || got[1] != "payment-required" {
+		t.Fatalf("status tag = %#v", got)
+	}
+	if got := findTag(feedback.Tags, "amount"); len(got) != 3 || got[1] != "21000" || got[2] != "lnbc21invoice" {
+		t.Fatalf("amount tag = %#v", got)
+	}
+}
+
+func TestCancellationRequiresSignedKind5FromRequester(t *testing.T) {
+	signer := testSigner(t)
+	pubkey, err := signer.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := nostr.Event{Kind: 5000, CreatedAt: 1_700_000_000, PubKey: pubkey}
+	if err := signer.SignEvent(context.Background(), &request); err != nil {
+		t.Fatal(err)
+	}
+	deletion := nostr.Event{
+		Kind:      5,
+		CreatedAt: request.CreatedAt + 1,
+		Tags:      nostr.Tags{{"e", request.ID.Hex()}, {"k", "5000"}},
+		PubKey:    pubkey,
+	}
+	if err := signer.SignEvent(context.Background(), &deletion); err != nil {
+		t.Fatal(err)
+	}
+	if !isCancellationFor(deletion, request) {
+		t.Fatal("valid requester deletion should cancel the active job")
+	}
+	deletion.PubKey = nostr.PubKey{99}
+	if isCancellationFor(deletion, request) {
+		t.Fatal("spoofed cancellation must be rejected")
+	}
+}
+
+func TestPreferredRelaysUsesRequestRelaysWithoutFallback(t *testing.T) {
+	got := preferredRelays(
+		[]string{"wss://requested.example", "wss://requested.example"},
+		[]string{"wss://configured.example"},
+	)
+	if len(got) != 1 || got[0] != "wss://requested.example" {
+		t.Fatalf("preferred relays = %v", got)
 	}
 }
