@@ -115,7 +115,7 @@ func TestRuntimeEmitter_nilRuntime(t *testing.T) {
 func TestAllPushEvents_containsCore(t *testing.T) {
 	required := []string{
 		EventTick, EventHealth, EventShutdown,
-		EventAgentStatus, EventChatMessage,
+		EventAgentStatus, EventChat, EventChatMessage,
 		EventCronTick, EventCronResult,
 		EventConfigUpdated, EventMCPLifecycle,
 		EventExecApprovalRequested, EventExecApprovalResolved,
@@ -124,7 +124,6 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventNodePairRequested, EventNodePairResolved,
 		EventDevicePairResolved, EventPluginLoaded,
 		EventToolStart, EventToolProgress, EventToolResult, EventToolError,
-		EventTurnResult,
 	}
 	set := make(map[string]struct{}, len(AllPushEvents))
 	for _, e := range AllPushEvents {
@@ -137,23 +136,25 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 	}
 }
 
-func TestRuntimeCoalescesChatChunksUntilFlush(t *testing.T) {
-	c := &client{id: "c1", subscriptions: map[string]struct{}{EventChatChunk: {}}, eventQueue: make(chan any, 4), eventDone: make(chan struct{})}
+func TestRuntimeCoalescesChatDeltasUntilFlush(t *testing.T) {
+	c := &client{id: "c1", subscriptions: map[string]struct{}{EventChat: {}}, eventQueue: make(chan any, 4), eventDone: make(chan struct{})}
 	r := &Runtime{opts: RuntimeOptions{DeltaCoalesceInterval: time.Hour}, clients: map[string]*client{"c1": c}, chatCoalesce: map[string]*chatChunkCoalescer{}}
-	r.Broadcast(EventChatChunk, ChatChunkPayload{SessionID: "sess", TurnID: "turn", Text: "hel", TS: 1})
-	r.Broadcast(EventChatChunk, ChatChunkPayload{SessionID: "sess", TurnID: "turn", Text: "lo", TS: 2})
+	base := ChatEventBase{RunID: "run", SessionKey: "sess"}
+	r.Broadcast(EventChat, ChatDeltaEvent{ChatEventBase: base, State: ChatStateDelta, DeltaText: "hel"})
+	base.Seq = 1
+	r.Broadcast(EventChat, ChatDeltaEvent{ChatEventBase: base, State: ChatStateDelta, DeltaText: "lo"})
 	select {
 	case frame := <-c.eventQueue:
 		t.Fatalf("chunk emitted before coalesce flush: %#v", frame)
 	default:
 	}
-	r.flushCoalescedChatChunk(chatChunkCoalesceKey("sess", "turn"))
+	r.flushCoalescedChatChunk(chatChunkCoalesceKey("sess", "run"))
 	select {
 	case frame := <-c.eventQueue:
 		m := frame.(map[string]any)
-		payload := m["payload"].(ChatChunkPayload)
-		if payload.Text != "hello" {
-			t.Fatalf("coalesced text = %q", payload.Text)
+		payload := m["payload"].(ChatDeltaEvent)
+		if payload.DeltaText != "hello" || payload.Seq != 1 {
+			t.Fatalf("coalesced payload = %+v", payload)
 		}
 		if m["seq"].(int64) != 1 {
 			t.Fatalf("seq = %#v", m["seq"])

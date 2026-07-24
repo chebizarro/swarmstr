@@ -298,7 +298,7 @@ func runtimeEventSource(event string, payload map[string]any) string {
 		case "outbound":
 			return "reply"
 		}
-	case gatewayws.EventChatChunk:
+	case gatewayws.EventChat, gatewayws.EventChatChunk:
 		return "stream"
 	}
 	return ""

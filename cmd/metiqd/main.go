@@ -1101,8 +1101,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load runtime config: %v", err)
 	}
+	managedSettings := config.ManagedSettingsFromBootstrap(cfg)
+	runtimeCfg = config.ApplyManagedSettings(runtimeCfg, managedSettings)
 	codec.SetEncrypt(runtimeCfg.StorageEncryptEnabled())
-	configState = newRuntimeConfigStore(runtimeCfg)
+	configState = newRuntimeConfigStoreWithManaged(runtimeCfg, managedSettings)
 	controlRuntimeConfig = configState
 	setRuntimeIdentityInfo(runtimeCfg, pubkey)
 
@@ -4252,14 +4254,11 @@ func main() {
 			LastAssistantTime:    lastAssistantTime,
 			DeferredTools:        deferredTools,
 		}
+		chatStream := gatewayws.NewChatStream(wsEmitter, eventID, sessionID, activeAgentID)
+		chatStream.Status(gatewayws.ChatPhaseStartingModel)
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, func(chunk string) {
-				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
-					TS:        time.Now().UnixMilli(),
-					AgentID:   activeAgentID,
-					SessionID: sessionID,
-					Text:      chunk,
-				})
+				chatStream.Delta(chunk, false)
 			})
 		} else {
 			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, baseTurn)
@@ -4291,6 +4290,15 @@ func main() {
 					}(turnStateDocs)
 				}
 				updateSessionTaskState(sessionStore, sessionID, partial.ToolTraces, partial.HistoryDelta, true)
+			}
+			if errors.Is(turnErr, context.Canceled) {
+				chatStream.Aborted(nil, turnErr.Error(), "canceled")
+			} else {
+				kind := gatewayws.ChatErrorUnknown
+				if errors.Is(turnErr, context.DeadlineExceeded) {
+					kind = gatewayws.ChatErrorTimeout
+				}
+				chatStream.Error(nil, turnErr.Error(), kind, gatewayws.ChatUsage(turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens), string(turnResult.StopReason))
 			}
 			switch {
 			case errors.Is(turnErr, context.DeadlineExceeded):
@@ -4402,12 +4410,6 @@ func main() {
 			Status:  "idle",
 			Session: sessionID,
 		})
-		wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
-			TS:        time.Now().UnixMilli(),
-			AgentID:   activeAgentID,
-			SessionID: sessionID,
-			Done:      true,
-		})
 		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "")
 		if deferredPersistence {
 			deferredSessionBatch.TurnTelemetry = turnTelemetry
@@ -4416,6 +4418,11 @@ func main() {
 			persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
 		}
 		emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
+
+		// The model turn is complete independently of downstream channel delivery.
+		// Emit the terminal chat state before hooks/reply transport so every run
+		// terminates even when delivery is suppressed, rejected, or fails.
+		chatStream.Final(gatewayws.ChatAssistantMessage(turnResult.Text), gatewayws.ChatUsage(turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens), string(turnResult.StopReason), false)
 
 		if replyFn != nil {
 			sendSuppressed := false
@@ -4455,7 +4462,9 @@ func main() {
 			AgentID:   activeAgentID,
 			SessionID: sessionID,
 			Direction: "outbound",
+			Text:      turnResult.Text,
 			EventID:   eventID,
+			RunID:     chatStream.RunID(),
 		})
 		usageState.RecordOutbound(turnResult.Text)
 		metricspkg.MessagesOutbound.Inc()
@@ -5622,14 +5631,11 @@ func main() {
 		}
 		var turnResult agent.TurnResult
 		turnStartedAt := time.Now()
+		chatStream := gatewayws.NewChatStream(wsEmitter, eventID, sessionID, activeAgentID)
+		chatStream.Status(gatewayws.ChatPhaseStartingModel)
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, chBaseTurn, func(chunk string) {
-				wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
-					TS:        time.Now().UnixMilli(),
-					AgentID:   activeAgentID,
-					SessionID: sessionID,
-					Text:      chunk,
-				})
+				chatStream.Delta(chunk, false)
 			})
 		} else {
 			turnResult, turnErr = activeRuntime.ProcessTurn(turnCtx, chBaseTurn)
@@ -5672,8 +5678,14 @@ func main() {
 				updateSessionTaskState(sessionStore, sessionID, partial.ToolTraces, partial.HistoryDelta, true)
 			}
 			if errors.Is(turnErr, context.Canceled) {
+				chatStream.Aborted(nil, turnErr.Error(), "canceled")
 				log.Printf("channel agent aborted session=%s", sessionID)
 			} else {
+				kind := gatewayws.ChatErrorUnknown
+				if errors.Is(turnErr, context.DeadlineExceeded) {
+					kind = gatewayws.ChatErrorTimeout
+				}
+				chatStream.Error(nil, turnErr.Error(), kind, gatewayws.ChatUsage(turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens), string(turnResult.StopReason))
 				log.Printf("channel agent error session=%s err=%v", sessionID, turnErr)
 			}
 			turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, turnErr, false, "", "", "")
@@ -5682,12 +5694,7 @@ func main() {
 			return turnErr
 		}
 
-		wsEmitter.Emit(gatewayws.EventChatChunk, gatewayws.ChatChunkPayload{
-			TS:        time.Now().UnixMilli(),
-			AgentID:   activeAgentID,
-			SessionID: sessionID,
-			Done:      true,
-		})
+		chatStream.Final(gatewayws.ChatAssistantMessage(turnResult.Text), gatewayws.ChatUsage(turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens), string(turnResult.StopReason), false)
 
 		inlineSteering := drainedSteering.Snapshot()
 		persistAndIngestInlineChannelSteering(ctx, docsRepo, transcriptRepo, controlServices.session.contextEngine, sessionID, chID, threadIDFromSessionID(sessionID), senderID, inlineSteering)
@@ -7549,8 +7556,14 @@ func handleACPMessage(
 		if taskPayload.TimeoutMS > 0 {
 			taskTimeout = time.Duration(taskPayload.TimeoutMS) * time.Millisecond
 		}
-		processCtx, cancel := context.WithTimeout(ctx, taskTimeout)
-		defer cancel()
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, taskTimeout)
+		defer timeoutCancel()
+		processCtx, processCancel := context.WithCancelCause(timeoutCtx)
+		defer processCancel(nil)
+		if controlServices != nil && controlServices.relay.acpDispatcher != nil {
+			releaseExecution := controlServices.relay.acpDispatcher.BindExecution(msg.TaskID, fromPubKey, processCancel)
+			defer releaseExecution()
+		}
 		var result agent.TurnResult
 		var historyEntryIDs []string
 		var workerTask state.TaskSpec
@@ -7728,6 +7741,21 @@ func handleACPMessage(
 		}
 
 		return sendResult(resultMsg)
+
+	case "cancel":
+		cancelPayload, err := acppkg.DecodeCancelPayload(msg.Payload)
+		if err != nil {
+			return fmt.Errorf("acp cancel decode task_id=%s: %w", msg.TaskID, err)
+		}
+		if controlServices == nil || controlServices.relay.acpDispatcher == nil {
+			return fmt.Errorf("acp cancel task_id=%s: dispatcher unavailable", msg.TaskID)
+		}
+		if !controlServices.relay.acpDispatcher.CancelExecution(msg.TaskID, fromPubKey, cancelPayload.Reason) {
+			log.Printf("acp cancel ignored from=%s task_id=%s", fromPubKey, msg.TaskID)
+			return nil
+		}
+		log.Printf("acp cancel accepted from=%s task_id=%s reason=%q", fromPubKey, msg.TaskID, cancelPayload.Reason)
+		return nil
 
 	case "result":
 		// Incoming result from a peer for a previously dispatched task.

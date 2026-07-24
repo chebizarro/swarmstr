@@ -26,9 +26,11 @@ import (
 )
 
 const (
-	MethodEventsSubscribe   = "events.subscribe"
-	MethodEventsUnsubscribe = "events.unsubscribe"
-	MethodEventsList        = "events.list"
+	MethodEventsSubscribe     = "events.subscribe"
+	MethodEventsUnsubscribe   = "events.unsubscribe"
+	MethodEventsList          = "events.list"
+	MethodSessionsSubscribe   = "sessions.subscribe"
+	MethodSessionsUnsubscribe = "sessions.unsubscribe"
 
 	defaultClientEventBufferSize = 32
 )
@@ -87,7 +89,7 @@ type Runtime struct {
 const defaultDeltaCoalesceInterval = 100 * time.Millisecond
 
 type chatChunkCoalescer struct {
-	payload ChatChunkPayload
+	payload ChatDeltaEvent
 	timer   *time.Timer
 }
 
@@ -117,6 +119,16 @@ type rateWindow struct {
 
 type eventSubscriptionRequest struct {
 	Events []string `json:"events"`
+}
+
+var sessionSubscriptionEvents = []string{
+	EventChat,
+	EventChatMessage,
+	EventAgentStatus,
+	EventToolStart,
+	EventToolProgress,
+	EventToolResult,
+	EventToolError,
 }
 
 func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
@@ -208,13 +220,17 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 }
 
 func (r *Runtime) Broadcast(event string, payload any) {
-	if event == EventChatChunk && r.opts.DeltaCoalesceInterval > 0 {
-		if p, ok := payload.(ChatChunkPayload); ok && p.TurnID != "" && !p.Done {
+	if event == EventChat && r.opts.DeltaCoalesceInterval > 0 {
+		if p, ok := payload.(ChatDeltaEvent); ok && p.RunID != "" && !p.Replace {
 			r.enqueueCoalescedChatChunk(p)
 			return
 		}
-		if p, ok := payload.(ChatChunkPayload); ok && p.TurnID != "" && p.Done {
-			r.flushCoalescedChatChunk(chatChunkCoalesceKey(p.SessionID, p.TurnID))
+		if p, ok := payload.(ChatDeltaEvent); ok && p.RunID != "" && p.Replace {
+			r.enqueueCoalescedChatChunk(p)
+			return
+		}
+		if key := terminalChatCoalesceKey(payload); key != "" {
+			r.flushCoalescedChatChunk(key)
 		}
 	}
 	r.broadcastImmediate(event, payload)
@@ -252,8 +268,8 @@ func (r *Runtime) broadcastImmediate(event string, payload any) {
 	}
 }
 
-func (r *Runtime) enqueueCoalescedChatChunk(payload ChatChunkPayload) {
-	key := chatChunkCoalesceKey(payload.SessionID, payload.TurnID)
+func (r *Runtime) enqueueCoalescedChatChunk(payload ChatDeltaEvent) {
+	key := chatChunkCoalesceKey(payload.SessionKey, payload.RunID)
 	r.coalesceMu.Lock()
 	entry := r.chatCoalesce[key]
 	if entry == nil {
@@ -263,19 +279,39 @@ func (r *Runtime) enqueueCoalescedChatChunk(payload ChatChunkPayload) {
 		r.coalesceMu.Unlock()
 		return
 	}
-	entry.payload.Text += payload.Text
-	entry.payload.TS = payload.TS
+	if payload.Replace {
+		entry.payload.DeltaText = payload.DeltaText
+		entry.payload.Replace = true
+	} else {
+		entry.payload.DeltaText += payload.DeltaText
+	}
+	entry.payload.Seq = payload.Seq
+	entry.payload.Message = payload.Message
+	entry.payload.Usage = payload.Usage
 	if payload.AgentID != "" {
 		entry.payload.AgentID = payload.AgentID
 	}
 	r.coalesceMu.Unlock()
 }
 
-func chatChunkCoalesceKey(sessionID, turnID string) string {
+func chatChunkCoalesceKey(sessionID, runID string) string {
 	if sessionID == "" {
 		sessionID = "__global__"
 	}
-	return sessionID + "\x00" + turnID
+	return sessionID + "\x00" + runID
+}
+
+func terminalChatCoalesceKey(payload any) string {
+	switch p := payload.(type) {
+	case ChatFinalEvent:
+		return chatChunkCoalesceKey(p.SessionKey, p.RunID)
+	case ChatAbortedEvent:
+		return chatChunkCoalesceKey(p.SessionKey, p.RunID)
+	case ChatErrorEvent:
+		return chatChunkCoalesceKey(p.SessionKey, p.RunID)
+	default:
+		return ""
+	}
 }
 
 func (r *Runtime) flushCoalescedChatChunk(key string) {
@@ -291,10 +327,10 @@ func (r *Runtime) flushCoalescedChatChunk(key string) {
 	}
 	payload := entry.payload
 	r.coalesceMu.Unlock()
-	if strings.TrimSpace(payload.Text) == "" {
+	if payload.DeltaText == "" {
 		return
 	}
-	r.broadcastImmediate(EventChatChunk, payload)
+	r.broadcastImmediate(EventChat, payload)
 }
 
 func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
@@ -365,16 +401,28 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 	}
 	negotiated, err := protocol.NegotiateProtocol(connect.MinProtocol, connect.MaxProtocol)
 	if err != nil {
+		message := "protocol mismatch"
+		reason := "protocol_mismatch"
+		closeReason := "protocol mismatch"
+		data := map[string]any{
+			"reason":        reason,
+			"requested_min": connect.MinProtocol,
+			"requested_max": connect.MaxProtocol,
+			"supported_min": protocol.MinProtocolVersion,
+			"supported_max": protocol.CurrentProtocolVersion,
+		}
+		if errors.Is(err, protocol.ErrInvalidProtocolRange) {
+			message = "invalid protocol range"
+			closeReason = message
+			data["reason"] = "invalid_protocol_range"
+		}
 		_ = writeFrame(req.Context(), conn, map[string]any{
-			"type": protocol.FrameTypeResponse,
-			"id":   reqFrame.ID,
-			"ok":   false,
-			"error": protocol.NewError(protocol.ErrorCodeInvalidRequest, "protocol mismatch", map[string]any{
-				"supported_min": protocol.MinProtocolVersion,
-				"supported_max": protocol.CurrentProtocolVersion,
-			}),
+			"type":  protocol.FrameTypeResponse,
+			"id":    reqFrame.ID,
+			"ok":    false,
+			"error": protocol.NewError(protocol.ErrorCodeInvalidRequest, message, data),
 		})
-		_ = conn.Close(websocket.StatusPolicyViolation, "protocol mismatch")
+		_ = conn.Close(websocket.StatusPolicyViolation, closeReason)
 		return
 	}
 	if err := connect.Validate(); err != nil {
@@ -558,6 +606,14 @@ func (r *Runtime) handleInternalRequest(c *client, req protocol.RequestFrame) (b
 		}
 		c.removeSubscriptions(normalized)
 		return true, map[string]any{"events": c.listSubscriptions()}, nil
+	case MethodSessionsSubscribe:
+		events := availableEventSubset(sessionSubscriptionEvents, r.opts.Events)
+		c.addSubscriptions(events)
+		return true, map[string]any{"subscribed": true, "events": events}, nil
+	case MethodSessionsUnsubscribe:
+		events := availableEventSubset(sessionSubscriptionEvents, r.opts.Events)
+		c.removeSubscriptions(events)
+		return true, map[string]any{"subscribed": false, "events": events}, nil
 	default:
 		return false, nil, nil
 	}
@@ -968,6 +1024,8 @@ func buildAllowedMethods(methods []string) map[string]struct{} {
 	out[MethodEventsList] = struct{}{}
 	out[MethodEventsSubscribe] = struct{}{}
 	out[MethodEventsUnsubscribe] = struct{}{}
+	out[MethodSessionsSubscribe] = struct{}{}
+	out[MethodSessionsUnsubscribe] = struct{}{}
 	return out
 }
 
@@ -1059,6 +1117,20 @@ func isLocalOrigin(origin string) bool {
 	}
 	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func availableEventSubset(wanted, available []string) []string {
+	allow := make(map[string]struct{}, len(available))
+	for _, event := range available {
+		allow[strings.TrimSpace(event)] = struct{}{}
+	}
+	out := make([]string, 0, len(wanted))
+	for _, event := range wanted {
+		if _, ok := allow[event]; ok {
+			out = append(out, event)
+		}
+	}
+	return out
 }
 
 func normalizeEventList(events []string, allowed []string) ([]string, error) {

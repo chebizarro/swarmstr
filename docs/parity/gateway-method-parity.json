@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 101,
+    "implemented": 103,
     "partial": 0,
-    "missing": 223,
+    "missing": 221,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "defer": 53,
@@ -1487,16 +1487,18 @@
     },
     {
       "method": "sessions.subscribe",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.subscribe",
+      "notes": "Connection-scoped event-driven subscription to the advertised chat, session status, and tool lifecycle surface.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.unsubscribe",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.unsubscribe",
+      "notes": "Removes the connection-scoped session event subscriptions without polling or timer-based completion.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"

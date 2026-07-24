@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	gatewaymethods "metiq/internal/gateway/methods"
+	gatewayws "metiq/internal/gateway/ws"
 )
 
 func TestHandler_ServesHTMLAtRoot(t *testing.T) {
@@ -293,6 +294,9 @@ func TestGatewayMethodCallsitesAreRegistered(t *testing.T) {
 	for _, method := range gatewaymethods.SupportedMethods() {
 		supported[method] = struct{}{}
 	}
+	// Event subscriptions are handled directly by the WebSocket runtime rather
+	// than the application method registry.
+	supported[gatewayws.MethodEventsSubscribe] = struct{}{}
 	var unregistered []string
 	for method := range called {
 		if _, ok := supported[method]; !ok {
@@ -302,6 +306,38 @@ func TestGatewayMethodCallsitesAreRegistered(t *testing.T) {
 	sort.Strings(unregistered)
 	if len(unregistered) > 0 {
 		t.Fatalf("ui.html calls unregistered gateway methods: %v", unregistered)
+	}
+}
+
+func TestProtocolV4ChatStreamingContract(t *testing.T) {
+	raw, err := os.ReadFile("ui.html")
+	if err != nil {
+		t.Fatalf("read ui.html: %v", err)
+	}
+	html := string(raw)
+	for _, required := range []string{
+		"minProtocol: 4, maxProtocol: 4",
+		"callMethod('events.subscribe'",
+		"case 'chat':",
+		"payload.runId",
+		"payload.sessionKey",
+		"payload.seq",
+		"payload.state === 'status'",
+		"payload.state === 'delta'",
+		"payload.state === 'final'",
+		"payload.state === 'aborted'",
+		"payload.state === 'error'",
+		"payload.replace === true",
+		"replaceStreaming(payload.deltaText",
+	} {
+		if !strings.Contains(html, required) {
+			t.Errorf("protocol-v4 Web UI missing %q", required)
+		}
+	}
+	for _, legacy := range []string{"case 'chat.chunk':", "case 'turn.result':", "case 'turn.finish':", "case 'turn.error':"} {
+		if strings.Contains(html, legacy) {
+			t.Errorf("protocol-v4 Web UI still dispatches legacy event %q", legacy)
+		}
 	}
 }
 

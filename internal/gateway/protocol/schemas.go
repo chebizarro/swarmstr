@@ -11,4 +11,10 @@ var SchemaNames = []string{
 	"StateVersion",
 	"Snapshot",
 	"ErrorShape",
+	"ChatEvent",
+	"ChatStatusEvent",
+	"ChatDeltaEvent",
+	"ChatFinalEvent",
+	"ChatAbortedEvent",
+	"ChatErrorEvent",
 }

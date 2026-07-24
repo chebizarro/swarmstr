@@ -776,9 +776,11 @@ const TOKEN   = '{{.Token}}';
   let sessionID = localStorage.getItem('metiq_session') || null;
   let activeAgentID = 'main';
   // Streaming: the current agent bubble being written to (or null).
-  let streamingBubble = null;
-  let streamingText = '';
-  let thinkingEl = null;
+    let streamingBubble = null;
+    let streamingText = '';
+    const chatRunSeq = new Map();
+    let chatActivityVersion = 0;
+    let thinkingEl = null;
   // Approval queue: pending exec/plugin approval payloads.
   let approvalQueue = [];
   let currentApprovalID = null;
@@ -1617,6 +1619,20 @@ const TOKEN   = '{{.Token}}';
     msgs.scrollTop = msgs.scrollHeight;
   }
 
+  function replaceStreaming(text) {
+    if (!streamingBubble) startStreaming();
+    streamingText = text || '';
+    streamingBubble.textContent = streamingText;
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function chatMessageText(message) {
+    if (!message) return '';
+    if (typeof message.text === 'string') return message.text;
+    if (!Array.isArray(message.content)) return '';
+    return message.content.filter(part => part && part.type === 'text' && typeof part.text === 'string').map(part => part.text).join('');
+  }
+
   function finalizeStreaming() {
     if (streamingBubble) {
       streamingBubble.classList.remove('streaming');
@@ -2044,10 +2060,11 @@ const TOKEN   = '{{.Token}}';
 
   // ── WS event dispatcher ───────────────────────────────────────────────────
   function shouldBufferLiveEvent(event, payload) {
-    if (mainView !== 'chat' || !historyLoadingSessionID || !payload || payload.session_id !== historyLoadingSessionID) return false;
-    return event === 'agent.status' || event === 'chat.chunk' || event === 'chat.message' ||
-      event === 'tool.start' || event === 'tool.progress' || event === 'tool.result' || event === 'tool.error' ||
-      event === 'turn.result' || event === 'turn.finish' || event === 'turn.error';
+    if (mainView !== 'chat' || !historyLoadingSessionID || !payload) return false;
+    const eventSession = event === 'chat' ? payload.sessionKey : (payload.session_id || payload.session);
+    if (eventSession !== historyLoadingSessionID) return false;
+    return event === 'chat' || event === 'agent.status' || event === 'chat.message' ||
+      event === 'tool.start' || event === 'tool.progress' || event === 'tool.result' || event === 'tool.error';
   }
 
   function onEvent(event, payload) {
@@ -2060,26 +2077,51 @@ const TOKEN   = '{{.Token}}';
         if (payload) {
           activeAgentID = payload.agent_id || activeAgentID;
           agentBadge.textContent = 'agent: ' + activeAgentID;
-          if (mainView === 'chat' && payload.status === 'thinking' && payload.session_id === sessionID) {
+          const statusSession = payload.session || payload.session_id;
+          if (mainView === 'chat' && payload.status === 'thinking' && statusSession === sessionID) {
             if (!streamingBubble) showThinking();
           }
-          if (mainView === 'chat' && payload.status === 'idle' && payload.session_id === sessionID) {
+          if (mainView === 'chat' && payload.status === 'idle' && statusSession === sessionID) {
             if (!streamingBubble) hideThinking();
           }
         }
         break;
-      case 'chat.chunk':
-        if (payload && payload.session_id === sessionID) {
-          if (payload.done) {
-            if (mainView === 'chat') finalizeStreaming();
-            setRunActive(false, payload.session_id);
-            loadSessions(); // Refresh session list after reply.
-          } else if (payload.text) {
-            setRunActive(true, payload.session_id);
-            if (mainView === 'chat') appendChunk(payload.text);
+      case 'chat': {
+        if (!payload || !payload.runId || !payload.sessionKey || !Number.isInteger(payload.seq) || payload.seq < 0) break;
+        const runKey = payload.sessionKey + '\u0000' + payload.runId;
+        const lastSeq = chatRunSeq.get(runKey);
+        if (lastSeq !== undefined && payload.seq <= lastSeq) break;
+        chatRunSeq.set(runKey, payload.seq);
+        chatActivityVersion++;
+        const visible = mainView === 'chat' && payload.sessionKey === sessionID;
+        if (payload.state === 'status') {
+          setRunActive(true, payload.sessionKey);
+          if (visible && !streamingBubble) showThinking();
+        } else if (payload.state === 'delta') {
+          setRunActive(true, payload.sessionKey);
+          if (visible) {
+            hideThinking();
+            if (payload.replace === true) replaceStreaming(payload.deltaText || '');
+            else if (payload.deltaText) appendChunk(payload.deltaText);
           }
+        } else if (payload.state === 'final') {
+          const finalText = chatMessageText(payload.message);
+          if (visible) {
+            if (streamingBubble) finalizeStreaming();
+            else if (finalText) addMsg(finalText, 'agent');
+          }
+          setRunActive(false, payload.sessionKey);
+          loadSessions();
+        } else if (payload.state === 'aborted' || payload.state === 'error') {
+          if (visible) {
+            finalizeStreaming();
+            if (payload.errorMessage) addMsg('⚠️ ' + payload.errorMessage, 'error-msg');
+          }
+          setRunActive(false, payload.sessionKey);
+          loadSessions();
         }
         break;
+      }
       case 'chat.message':
         if (mainView === 'chat' && payload && (!payload.session_id || payload.session_id === sessionID) && payload.direction === 'outbound' && !streamingBubble) {
           hideThinking();
@@ -2098,16 +2140,6 @@ const TOKEN   = '{{.Token}}';
         break;
       case 'tool.error':
         if (mainView === 'chat') renderToolActivity(payload, 'error');
-        break;
-      case 'turn.result':
-      case 'turn.finish':
-      case 'turn.error':
-        setRunActive(false, payload && payload.session_id);
-        if (!payload || toolSessionMatches(payload)) {
-          if (mainView === 'chat') finalizeStreaming();
-          loadSessions();
-          if (mainView === 'chat' && payload && payload.error) addMsg('⚠️ ' + payload.error, 'error-msg');
-        }
         break;
       case 'exec.approval.requested':
         if (payload) enqueueApproval(payload, null, 'exec');
@@ -2158,25 +2190,38 @@ const TOKEN   = '{{.Token}}';
             type: 'request', id, method: 'connect',
             params: {
               client: { id: 'metiq-webui', mode: 'local', platform: navigator.platform || 'browser', version: '0.0.0', instanceId: 'webui-' + Math.random().toString(36).slice(2) },
-              min_protocol: 1, max_protocol: 10,
+              minProtocol: 4, maxProtocol: 4,
               auth: { token: TOKEN, nonce }
             }
           });
           pendingResolvers[id] = {
-            resolve: () => {
-              connected = true;
-              reconnectDelay = 1500;
-              setConnected(true, 'connected');
-              loadSidebar();
-              loadCommandCatalog();
-              if (sessionID && mainView === 'chat') {
-                toolCards = {};
-                msgs.innerHTML = '';
-                addMsg('Resuming session history…', 'system');
-                updateRunControls();
-                loadSessionHistory(sessionID);
-              } else if (!sessionID && mainView === 'chat') {
-                addMsg(t('connected'), 'system');
+            resolve: async (hello) => {
+              try {
+                if (!hello || hello.protocol !== 4) throw new Error('gateway protocol v4 is required');
+                const advertised = new Set((hello.features && hello.features.events) || []);
+                if (!advertised.has('chat')) throw new Error('gateway does not advertise protocol-v4 chat events');
+                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message'];
+                const events = wanted.filter(name => advertised.has(name));
+                await callMethod('events.subscribe', { events });
+                connected = true;
+                reconnectDelay = 1500;
+                chatRunSeq.clear();
+                setConnected(true, 'connected');
+                loadSidebar();
+                loadCommandCatalog();
+                if (sessionID && mainView === 'chat') {
+                  toolCards = {};
+                  msgs.innerHTML = '';
+                  addMsg('Resuming session history…', 'system');
+                  updateRunControls();
+                  loadSessionHistory(sessionID);
+                } else if (!sessionID && mainView === 'chat') {
+                  addMsg(t('connected'), 'system');
+                }
+              } catch (err) {
+                setConnected(false, 'protocol setup failed');
+                addMsg('Connection refused: ' + (err && err.message || 'protocol setup failed'), 'error-msg');
+                if (ws) ws.close(1008, 'protocol setup failed');
               }
             },
             reject: (err) => {
@@ -2206,6 +2251,7 @@ const TOKEN   = '{{.Token}}';
       finalizeStreaming();
       setRunActive(false);
       setConnected(null, 'reconnecting in ' + (reconnectDelay / 1000).toFixed(1) + 's…');
+      Object.values(pendingResolvers).forEach(resolver => resolver.reject({ message: 'gateway disconnected' }));
       pendingResolvers = {};
       hideThinking();
       setTimeout(() => {
@@ -2235,6 +2281,7 @@ const TOKEN   = '{{.Token}}';
     showThinking();
 
     try {
+      const activityBeforeSend = chatActivityVersion;
       const result = await callMethod('chat.send', { message: text, text, session_id: sessionID || undefined, attachments });
       if (result && result.session_id && result.session_id !== sessionID) {
         sessionID = result.session_id;
@@ -2243,7 +2290,7 @@ const TOKEN   = '{{.Token}}';
         updateRunControls();
       }
       // If no streaming chunks arrived, render the final response from result.text.
-      if (!streamingBubble && result && result.text) {
+      if (chatActivityVersion === activityBeforeSend && !streamingBubble && result && result.text) {
         hideThinking();
         addMsg(result.text, 'agent');
         setRunActive(false, sessionID);

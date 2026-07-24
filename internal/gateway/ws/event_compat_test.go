@@ -9,8 +9,6 @@ func TestCompatibilityEventAliasesMappings(t *testing.T) {
 	}{
 		{EventAgentStatus, EventCompatAgent},
 		{EventAgentThinking, EventCompatAgent},
-		{EventChatMessage, EventCompatChat},
-		{EventChatChunk, EventCompatChat},
 		{EventCronTick, EventCompatCron},
 		{EventCronResult, EventCompatCron},
 		{"presence.updated", EventCompatPresence},

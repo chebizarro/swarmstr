@@ -167,6 +167,8 @@ var adminDispatchRegistry = []struct {
 		MethodChatHistory,
 		MethodSessionGet,
 		MethodSessionsList,
+		MethodSessionsSubscribe,
+		MethodSessionsUnsubscribe,
 		MethodSessionsPreview,
 		MethodSessionsPatch,
 		MethodSessionsReset,

@@ -26,6 +26,8 @@ const (
 	MethodChatAbort                   = "chat.abort"
 	MethodSessionGet                  = "session.get"
 	MethodSessionsList                = "sessions.list"
+	MethodSessionsSubscribe           = "sessions.subscribe"
+	MethodSessionsUnsubscribe         = "sessions.unsubscribe"
 	MethodSessionsPreview             = "sessions.preview"
 	MethodSessionsPatch               = "sessions.patch"
 	MethodSessionsReset               = "sessions.reset"

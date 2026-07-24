@@ -1,28 +1,41 @@
 package protocol
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestNegotiateProtocol(t *testing.T) {
-	version, err := NegotiateProtocol(1, 3)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	tests := []struct {
+		name     string
+		min, max int
+		want     int
+		wantErr  error
+	}{
+		{name: "v4 exact", min: 4, max: 4, want: 4},
+		{name: "full overlap", min: 1, max: 4, want: 4},
+		{name: "legacy overlap", min: 1, max: 3, want: 3},
+		{name: "future max", min: 2, max: 99, want: 4},
+		{name: "future only", min: 5, max: 99, wantErr: ErrUnsupportedProtocolRange},
+		{name: "reversed", min: 3, max: 2, wantErr: ErrInvalidProtocolRange},
+		{name: "zero", min: 0, max: 4, wantErr: ErrInvalidProtocolRange},
+		{name: "negative", min: -1, max: 4, wantErr: ErrInvalidProtocolRange},
 	}
-	if version != 3 {
-		t.Fatalf("version = %d, want 3", version)
-	}
-
-	version, err = NegotiateProtocol(2, 99)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if version != CurrentProtocolVersion {
-		t.Fatalf("version = %d, want %d", version, CurrentProtocolVersion)
-	}
-
-	if _, err := NegotiateProtocol(4, 5); err == nil {
-		t.Fatal("expected unsupported range error")
-	}
-	if _, err := NegotiateProtocol(3, 2); err == nil {
-		t.Fatal("expected invalid range error")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := NegotiateProtocol(tc.min, tc.max)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("error = %v, want category %v", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("version = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }

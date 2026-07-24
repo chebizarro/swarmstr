@@ -6,7 +6,13 @@
 // clean and testable.
 package ws
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
 // ─── Event name constants ─────────────────────────────────────────────────────
 
@@ -23,7 +29,9 @@ const (
 	// EventAgentThinking is emitted while the agent LLM call is in flight.
 	EventAgentThinking = "agent.thinking"
 
-	// EventChatMessage is emitted when a DM is received or a reply is sent.
+	// EventChat is the protocol-v4 chat state-union stream.
+	EventChat = "chat"
+	// EventChatMessage is retained for non-streaming inbound/outbound audit events.
 	EventChatMessage = "chat.message"
 
 	// EventCronTick is emitted when a cron job fires.
@@ -92,8 +100,10 @@ const (
 	EventTurnResult = "turn.result"
 
 	// OpenClaw compatibility alias events.
-	EventCompatAgent            = "agent"
-	EventCompatChat             = "chat"
+	EventCompatAgent = "agent"
+	// EventCompatChat is retained as a source-compatible alias. Protocol v4 owns
+	// the exact wire contract carried by EventChat.
+	EventCompatChat             = EventChat
 	EventCompatCron             = "cron"
 	EventCompatPresence         = "presence"
 	EventCompatHeartbeat        = "heartbeat"
@@ -108,6 +118,7 @@ var AllPushEvents = []string{
 	EventShutdown,
 	EventAgentStatus,
 	EventAgentThinking,
+	EventChat,
 	EventChatMessage,
 	EventCronTick,
 	EventCronResult,
@@ -128,17 +139,16 @@ var AllPushEvents = []string{
 	// Presence events are also emitted by the ws runtime itself.
 	"presence.updated",
 	"connect.challenge",
-	EventChatChunk,
 	EventThinkingDelta,
 	EventCanvasUpdate,
 	EventToolStart,
 	EventToolProgress,
 	EventToolResult,
 	EventToolError,
-	EventTurnResult,
+	// EventChatChunk and EventTurnResult remain internal telemetry sources; v4
+	// clients receive their typed EventChat projection instead.
 	// OpenClaw compatibility aliases.
 	EventCompatAgent,
-	EventCompatChat,
 	EventCompatCron,
 	EventCompatPresence,
 	EventCompatHeartbeat,
@@ -176,8 +186,6 @@ func compatibilityEventAliases(event string) []string {
 	switch event {
 	case EventAgentStatus, EventAgentThinking:
 		return []string{EventCompatAgent}
-	case EventChatMessage, EventChatChunk:
-		return []string{EventCompatChat}
 	case EventCronTick, EventCronResult:
 		return []string{EventCompatCron}
 	case "presence.updated":
@@ -222,35 +230,6 @@ func compatibilityEventProjections(event string, payload any) []compatibilityPro
 					},
 				}
 			}
-		case EventChatMessage:
-			if p, ok := payload.(ChatMessagePayload); ok {
-				projected = map[string]any{
-					"runId":      p.SessionID,
-					"sessionKey": p.SessionID,
-					"seq":        0,
-					"state":      "final",
-					"text":       p.Text,
-					"message": map[string]any{
-						"text":      p.Text,
-						"direction": p.Direction,
-					},
-				}
-			}
-		case EventChatChunk:
-			if p, ok := payload.(ChatChunkPayload); ok {
-				state := "streaming"
-				if p.Done {
-					state = "final"
-				}
-				projected = map[string]any{
-					"runId":      p.SessionID,
-					"sessionKey": p.SessionID,
-					"seq":        0,
-					"state":      state,
-					"chunk":      p.Text,
-					"text":       p.Text,
-				}
-			}
 		case EventCronTick:
 			if p, ok := payload.(CronTickPayload); ok {
 				projected = map[string]any{"action": "triggered", "jobId": p.JobID, "ts": p.TS}
@@ -283,6 +262,183 @@ func compatibilityEventProjections(event string, payload any) []compatibilityPro
 type NoopEmitter struct{}
 
 func (NoopEmitter) Emit(_ string, _ any) {}
+
+// ─── Protocol-v4 chat stream ─────────────────────────────────────────────────
+
+type ChatState string
+
+const (
+	ChatStateStatus  ChatState = "status"
+	ChatStateDelta   ChatState = "delta"
+	ChatStateFinal   ChatState = "final"
+	ChatStateAborted ChatState = "aborted"
+	ChatStateError   ChatState = "error"
+)
+
+type ChatRunStartupPhase string
+
+const (
+	ChatPhasePreparingWorkspace      ChatRunStartupPhase = "preparing_workspace"
+	ChatPhaseProvisioningEnvironment ChatRunStartupPhase = "provisioning_environment"
+	ChatPhasePreparingContext        ChatRunStartupPhase = "preparing_context"
+	ChatPhaseStartingModel           ChatRunStartupPhase = "starting_model"
+)
+
+type ChatErrorKind string
+
+const (
+	ChatErrorRefusal       ChatErrorKind = "refusal"
+	ChatErrorTimeout       ChatErrorKind = "timeout"
+	ChatErrorRateLimit     ChatErrorKind = "rate_limit"
+	ChatErrorContextLength ChatErrorKind = "context_length"
+	ChatErrorUnknown       ChatErrorKind = "unknown"
+)
+
+// ChatEventBase is shared by every member of the closed protocol-v4 chat union.
+type ChatEventBase struct {
+	RunID      string `json:"runId"`
+	SessionKey string `json:"sessionKey"`
+	AgentID    string `json:"agentId,omitempty"`
+	SpawnedBy  string `json:"spawnedBy,omitempty"`
+	Seq        int    `json:"seq"`
+}
+
+type ChatStatusEvent struct {
+	ChatEventBase
+	State ChatState           `json:"state"`
+	Phase ChatRunStartupPhase `json:"phase"`
+}
+
+type ChatDeltaEvent struct {
+	ChatEventBase
+	State     ChatState `json:"state"`
+	Message   any       `json:"message,omitempty"`
+	DeltaText string    `json:"deltaText"`
+	Replace   bool      `json:"replace,omitempty"`
+	Usage     any       `json:"usage,omitempty"`
+}
+
+type ChatFinalEvent struct {
+	ChatEventBase
+	State      ChatState `json:"state"`
+	Message    any       `json:"message,omitempty"`
+	Usage      any       `json:"usage,omitempty"`
+	StopReason string    `json:"stopReason,omitempty"`
+	Yielded    bool      `json:"yielded,omitempty"`
+}
+
+type ChatAbortedEvent struct {
+	ChatEventBase
+	State        ChatState `json:"state"`
+	Message      any       `json:"message,omitempty"`
+	ErrorMessage string    `json:"errorMessage,omitempty"`
+	StopReason   string    `json:"stopReason,omitempty"`
+}
+
+type ChatErrorEvent struct {
+	ChatEventBase
+	State        ChatState     `json:"state"`
+	Message      any           `json:"message,omitempty"`
+	ErrorMessage string        `json:"errorMessage,omitempty"`
+	ErrorKind    ChatErrorKind `json:"errorKind,omitempty"`
+	Usage        any           `json:"usage,omitempty"`
+	StopReason   string        `json:"stopReason,omitempty"`
+}
+
+var generatedChatRunID uint64
+
+// ChatStream serializes one logical run and guarantees monotonically increasing
+// payload sequence numbers. It is safe for provider callbacks to call concurrently.
+type ChatStream struct {
+	mu         sync.Mutex
+	emitter    EventEmitter
+	base       ChatEventBase
+	terminated bool
+}
+
+func NewChatStream(emitter EventEmitter, runID, sessionKey, agentID string) *ChatStream {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		runID = fmt.Sprintf("gateway-%d-%d", time.Now().UnixNano(), atomic.AddUint64(&generatedChatRunID, 1))
+	}
+	return &ChatStream{emitter: emitter, base: ChatEventBase{RunID: runID, SessionKey: strings.TrimSpace(sessionKey), AgentID: strings.TrimSpace(agentID)}}
+}
+
+func (s *ChatStream) RunID() string {
+	if s == nil {
+		return ""
+	}
+	return s.base.RunID
+}
+
+func (s *ChatStream) nextBaseLocked() ChatEventBase {
+	base := s.base
+	s.base.Seq++
+	return base
+}
+
+func (s *ChatStream) emit(build func(ChatEventBase) any, terminal bool) {
+	if s == nil || s.emitter == nil || strings.TrimSpace(s.base.SessionKey) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminated {
+		return
+	}
+	payload := build(s.nextBaseLocked())
+	if terminal {
+		s.terminated = true
+	}
+	s.emitter.Emit(EventChat, payload)
+}
+
+func (s *ChatStream) Status(phase ChatRunStartupPhase) {
+	s.emit(func(base ChatEventBase) any {
+		return ChatStatusEvent{ChatEventBase: base, State: ChatStateStatus, Phase: phase}
+	}, false)
+}
+
+func (s *ChatStream) Delta(text string, replace bool) {
+	if text == "" {
+		return
+	}
+	s.emit(func(base ChatEventBase) any {
+		return ChatDeltaEvent{ChatEventBase: base, State: ChatStateDelta, DeltaText: text, Replace: replace}
+	}, false)
+}
+
+func (s *ChatStream) Final(message, usage any, stopReason string, yielded bool) {
+	s.emit(func(base ChatEventBase) any {
+		return ChatFinalEvent{ChatEventBase: base, State: ChatStateFinal, Message: message, Usage: usage, StopReason: strings.TrimSpace(stopReason), Yielded: yielded}
+	}, true)
+}
+
+func (s *ChatStream) Aborted(message any, errorMessage, stopReason string) {
+	s.emit(func(base ChatEventBase) any {
+		return ChatAbortedEvent{ChatEventBase: base, State: ChatStateAborted, Message: message, ErrorMessage: strings.TrimSpace(errorMessage), StopReason: strings.TrimSpace(stopReason)}
+	}, true)
+}
+
+func (s *ChatStream) Error(message any, errorMessage string, kind ChatErrorKind, usage any, stopReason string) {
+	s.emit(func(base ChatEventBase) any {
+		return ChatErrorEvent{ChatEventBase: base, State: ChatStateError, Message: message, ErrorMessage: strings.TrimSpace(errorMessage), ErrorKind: kind, Usage: usage, StopReason: strings.TrimSpace(stopReason)}
+	}, true)
+}
+
+func ChatAssistantMessage(text string) any {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return map[string]any{"role": "assistant", "content": []map[string]any{{"type": "text", "text": text}}, "timestamp": time.Now().UnixMilli()}
+}
+
+func ChatUsage(inputTokens, outputTokens int64) any {
+	if inputTokens == 0 && outputTokens == 0 {
+		return nil
+	}
+	return map[string]any{"inputTokens": inputTokens, "outputTokens": outputTokens}
+}
 
 // ─── Typed payload helpers ────────────────────────────────────────────────────
 

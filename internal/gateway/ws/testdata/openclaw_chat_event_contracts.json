@@ -1,0 +1,22 @@
+{
+  "status": {
+    "required": ["runId", "sessionKey", "seq", "state", "phase"],
+    "optional": ["agentId", "spawnedBy"]
+  },
+  "delta": {
+    "required": ["runId", "sessionKey", "seq", "state", "deltaText"],
+    "optional": ["agentId", "spawnedBy", "message", "replace", "usage"]
+  },
+  "final": {
+    "required": ["runId", "sessionKey", "seq", "state"],
+    "optional": ["agentId", "spawnedBy", "message", "usage", "stopReason", "yielded"]
+  },
+  "aborted": {
+    "required": ["runId", "sessionKey", "seq", "state"],
+    "optional": ["agentId", "spawnedBy", "message", "errorMessage", "stopReason"]
+  },
+  "error": {
+    "required": ["runId", "sessionKey", "seq", "state"],
+    "optional": ["agentId", "spawnedBy", "message", "errorMessage", "errorKind", "usage", "stopReason"]
+  }
+}
