@@ -1,6 +1,7 @@
 package toolloop
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -278,6 +279,30 @@ func TestState_Reset(t *testing.T) {
 	s.mu.Unlock()
 	if n != 0 {
 		t.Fatal("expected empty history after reset")
+	}
+}
+
+func TestObserveTextThrash_DetectsCyclingWithinTextOnlyResponse(t *testing.T) {
+	state := NewTextThrashState()
+	cfg := DefaultConfig()
+	text := "Actually, I'll do X. Actually, I'll do Y. Actually, I'll do X."
+
+	r := ObserveTextThrash(state, text, "", &cfg)
+	if !r.Stuck || r.Level != Critical || r.Detector != TextDecisionThrash {
+		t.Fatalf("expected critical text-only thrash detection, got %+v", r)
+	}
+	if r.Count != 3 || !strings.Contains(r.Message, "cycling within one response") {
+		t.Fatalf("unexpected text-only thrash result: %+v", r)
+	}
+}
+
+func TestObserveTextThrash_AllowsOrdinarySelfCorrection(t *testing.T) {
+	state := NewTextThrashState()
+	cfg := DefaultConfig()
+	text := "Actually, the config is under extra.sandbox. I will update that one location."
+
+	if r := ObserveTextThrash(state, text, "", &cfg); r.Stuck {
+		t.Fatalf("ordinary single correction should not trigger: %+v", r)
 	}
 }
 

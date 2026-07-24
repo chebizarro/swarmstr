@@ -1,9 +1,14 @@
+# Requires repository secret SHAREGAP_TOKEN with read access to
+# git.sharegap.net/cascadia/cascadia-go.
 name: parity-gate
 
 on:
   pull_request:
   push:
     branches: ["**"]
+
+env:
+  GOPRIVATE: git.sharegap.net/cascadia/*
 
 jobs:
   parity:
@@ -18,6 +23,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Configure private ShareGap module access
+        env:
+          SHAREGAP_TOKEN: ${{ secrets.SHAREGAP_TOKEN }}
+        run: |
+          if [ -z "$SHAREGAP_TOKEN" ]; then
+            echo "::error::SHAREGAP_TOKEN is required to fetch git.sharegap.net/cascadia/cascadia-go"
+            exit 1
+          fi
+          git config --global url."https://oauth2:${SHAREGAP_TOKEN}@git.sharegap.net/".insteadOf "https://git.sharegap.net/"
 
       - name: Cache Go build
         uses: actions/cache@v4

@@ -75,7 +75,7 @@ Nostr relays are **untrusted**:
 
 ## Sandboxing
 
-For public-facing agents or shared deployments, enable the Docker sandbox:
+Docker is the default sandbox driver when `extra.sandbox.driver` is omitted. Agent exec calls run in ephemeral containers with networking disabled unless explicitly enabled:
 
 ```json
 {
@@ -88,7 +88,11 @@ For public-facing agents or shared deployments, enable the Docker sandbox:
 }
 ```
 
-This runs agent exec calls inside an ephemeral Docker container. See [Sandboxing](/gateway/sandboxing).
+Docker must be installed and its daemon running. If it is unavailable, sandbox creation fails closed with a `metiq doctor` hint; metiq does not silently fall back to host execution, so ordinary local development that does not execute untrusted work can continue.
+
+The `nop` driver executes directly on the host and is never implicit. It requires both `"driver": "nop"` and `"allow_unsafe_nop": true`, and should only be used for explicitly trusted local work.
+
+See [Sandboxing](/gateway/sandboxing).
 
 ## External content handling
 

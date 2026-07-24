@@ -47,6 +47,19 @@ func TestBackendRegistryUnknownDriver(t *testing.T) {
 	}
 }
 
+func TestDefaultDockerUnavailableFailsClosedWithDoctorHint(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := sandbox.New(sandbox.Config{})
+	if err == nil {
+		t.Fatal("expected missing Docker to fail closed")
+	}
+	for _, want := range []string{"Docker CLI not found", "metiq doctor", "allow_unsafe_nop=true"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing actionable hint %q", err, want)
+		}
+	}
+}
+
 func TestSSHBackendSkeleton(t *testing.T) {
 	_, err := sandbox.SSHBackend{}.New(sandbox.Config{})
 	if err == nil || !strings.Contains(err.Error(), "not configured") {

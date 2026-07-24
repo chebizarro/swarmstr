@@ -1050,6 +1050,28 @@ func TestRunAgenticLoop_LoopCritical_BlocksExecution(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_TextOnlyThrashCritical_BreaksLoop(t *testing.T) {
+	provider := &mockChatProvider{responses: []*LLMResponse{{
+		Content: "Actually, I'll do X. Actually, I'll do Y. Actually, I'll do X.",
+	}}}
+
+	resp, err := RunAgenticLoop(context.Background(), AgenticLoopConfig{
+		Provider:        provider,
+		InitialMessages: []LLMMessage{{Role: "user", Content: "choose"}},
+		MaxIterations:   5,
+		LogPrefix:       "test-text-only-thrash",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Outcome != TurnOutcomeBlocked || resp.StopReason != TurnStopReasonLoopBlocked {
+		t.Fatalf("unexpected classification: outcome=%q stop_reason=%q", resp.Outcome, resp.StopReason)
+	}
+	if strings.Contains(resp.Content, "Actually") || !strings.Contains(resp.Content, "repeatedly cycling") {
+		t.Fatalf("expected loop-breaking response, got %q", resp.Content)
+	}
+}
+
 func TestRunAgenticLoop_TextThrashWarning_EmitsEventsAndExecutesTools(t *testing.T) {
 	provider := &mockChatProvider{responses: []*LLMResponse{
 		{Content: "Actually, I should check this first.", ToolCalls: []ToolCall{{ID: "tc1", Name: "lookup", Args: map[string]any{"q": "same"}}}, NeedsToolResults: true},

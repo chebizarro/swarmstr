@@ -1,10 +1,13 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Backend constructs sandbox runners for a named execution backend.
@@ -32,8 +35,13 @@ var globalBackends = struct {
 	items map[string]Backend
 }{items: make(map[string]Backend)}
 
+const DefaultDriver = "docker"
+
 func init() {
-	mustRegisterBackend(BackendFunc{BackendName: "docker", Constructor: func(cfg Config) (SandboxRunner, error) {
+	mustRegisterBackend(BackendFunc{BackendName: DefaultDriver, Constructor: func(cfg Config) (SandboxRunner, error) {
+		if err := CheckDockerAvailability(context.Background()); err != nil {
+			return nil, err
+		}
 		return &DockerSandbox{cfg: cfg}, nil
 	}})
 	mustRegisterBackend(BackendFunc{BackendName: "nop", Constructor: func(cfg Config) (SandboxRunner, error) {
@@ -71,11 +79,11 @@ func RegisterBackend(backend Backend) error {
 	return nil
 }
 
-// ResolveBackend returns the backend registered for name. Empty name resolves to docker.
+// ResolveBackend returns the backend registered for name. Empty name resolves to Docker.
 func ResolveBackend(name string) (Backend, error) {
 	driver := normalizeDriver(name)
 	if driver == "" {
-		driver = "docker"
+		driver = DefaultDriver
 	}
 	globalBackends.RLock()
 	backend, ok := globalBackends.items[driver]
@@ -109,6 +117,25 @@ func RegisteredBackends() []string {
 
 func normalizeDriver(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// CheckDockerAvailability verifies that the default isolation backend can accept
+// work. It returns an actionable error instead of falling back to host execution.
+func CheckDockerAvailability(parent context.Context) error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("docker sandbox unavailable: Docker CLI not found in PATH; install Docker and run `metiq doctor`, or explicitly set extra.sandbox.driver=\"nop\" with allow_unsafe_nop=true only for trusted local work")
+	}
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail != "" {
+			return fmt.Errorf("docker sandbox unavailable: Docker daemon is not ready (%s); start Docker and run `metiq doctor`; untrusted work remains blocked", detail)
+		}
+		return fmt.Errorf("docker sandbox unavailable: Docker daemon is not ready (%v); start Docker and run `metiq doctor`; untrusted work remains blocked", err)
+	}
+	return nil
 }
 
 // SSHBackend is a registration skeleton for deployments that provide SSH-backed isolation.

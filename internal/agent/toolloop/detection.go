@@ -445,17 +445,18 @@ func hasLeadingTextThrashMarker(prefix, marker string) bool {
 	return next == ' ' || strings.ContainsRune(",.:;!?)]}-", rune(next))
 }
 
+var textThrashMarkers = []string{
+	"actually",
+	"wait",
+	"hold on",
+	"on second thought",
+	"let me try again",
+	"let me correct",
+	"i should instead",
+}
+
 func recognizeTextThrashPattern(prefix string) (family string, ok bool) {
-	markers := []string{
-		"actually",
-		"wait",
-		"hold on",
-		"on second thought",
-		"let me try again",
-		"let me correct",
-		"i should instead",
-	}
-	for _, marker := range markers {
+	for _, marker := range textThrashMarkers {
 		if hasLeadingTextThrashMarker(prefix, marker) {
 			return "self_correction", true
 		}
@@ -463,10 +464,71 @@ func recognizeTextThrashPattern(prefix string) (family string, ok bool) {
 	return "", false
 }
 
-// ObserveTextThrash updates per-turn text-thrash state for one assistant
-// response and reports warning/critical severity when a self-correction preamble
-// repeats with an unchanged ordered tool plan. Callers should pass an empty
-// toolPlanKey when there are no planned tool calls, which resets the detector.
+func intraResponseTextThrashCount(text string) int {
+	clauses := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		switch r {
+		case '.', '!', '?', ';', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	count := 0
+	decisions := make(map[string]int)
+	repeatedDecision := false
+	for _, clause := range clauses {
+		prefix := normalizeTextThrashPrefix(clause, 0)
+		for _, marker := range textThrashMarkers {
+			if !hasLeadingTextThrashMarker(prefix, marker) {
+				continue
+			}
+			count++
+			decision := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(prefix, marker), ",.:;!?)]}-"))
+			decision = strings.Join(strings.Fields(decision), " ")
+			if decision != "" {
+				decisions[decision]++
+				if decisions[decision] > 1 {
+					repeatedDecision = true
+				}
+			}
+			break
+		}
+	}
+	if count < 2 || (!repeatedDecision && count < defaultTextThrashCriticalThreshold) {
+		return 0
+	}
+	return count
+}
+
+func textThrashResult(count int, rc Config, warningKey, detail string) Result {
+	if count < rc.TextThrash.WarningThreshold {
+		return Result{}
+	}
+	level := Warning
+	messagePrefix := "WARNING"
+	messageSuffix := "Stop second-guessing the same decision and either act once or report the blocker."
+	if count >= rc.TextThrash.CriticalThreshold {
+		level = Critical
+		messagePrefix = "CRITICAL"
+		messageSuffix = "Execution blocked to prevent repeated decision thrashing without progress."
+	}
+	message := fmt.Sprintf("%s: Repetitive assistant decision text detected %d times (%s). %s", messagePrefix, count, detail, messageSuffix)
+	if detail == "unchanged tool plan across responses" {
+		message = fmt.Sprintf("%s: Repeated assistant self-correction text with an unchanged tool plan %d times. %s", messagePrefix, count, messageSuffix)
+	}
+	return Result{
+		Stuck:      true,
+		Level:      level,
+		Detector:   TextDecisionThrash,
+		Count:      count,
+		Message:    message,
+		WarningKey: warningKey,
+	}
+}
+
+// ObserveTextThrash checks one assistant response for repetitive self-correction
+// cycles, including text-only responses, then tracks repeated self-correction
+// preambles with an unchanged ordered tool plan across responses.
 func ObserveTextThrash(state *TextThrashState, assistantText string, toolPlanKey string, cfg *Config) Result {
 	if state == nil {
 		return Result{}
@@ -475,6 +537,10 @@ func ObserveTextThrash(state *TextThrashState, assistantText string, toolPlanKey
 	if !rc.Enabled || !rc.TextThrash.Enabled {
 		resetTextThrashState(state)
 		return Result{}
+	}
+
+	if count := intraResponseTextThrashCount(assistantText); count > 0 {
+		return textThrashResult(count, rc, "text_thrash:intra:"+compactHash(strings.ToLower(strings.TrimSpace(assistantText))), "cycling within one response")
 	}
 
 	toolPlanKey = strings.TrimSpace(toolPlanKey)
@@ -497,23 +563,12 @@ func ObserveTextThrash(state *TextThrashState, assistantText string, toolPlanKey
 		return Result{}
 	}
 
-	level := Warning
-	messagePrefix := "WARNING"
-	messageSuffix := "Continue only if the tool plan is still useful; otherwise stop retrying and report the issue."
-	if state.ConsecutiveCount >= rc.TextThrash.CriticalThreshold {
-		level = Critical
-		messagePrefix = "CRITICAL"
-		messageSuffix = "Execution blocked to prevent repeated decision thrashing without tool-call progress."
-	}
-
-	return Result{
-		Stuck:      true,
-		Level:      level,
-		Detector:   TextDecisionThrash,
-		Count:      state.ConsecutiveCount,
-		Message:    fmt.Sprintf("%s: Repeated assistant self-correction text with an unchanged tool plan %d times. %s", messagePrefix, state.ConsecutiveCount, messageSuffix),
-		WarningKey: fmt.Sprintf("text_thrash:%s:%s", patternFamily, compactHash(toolPlanKey)),
-	}
+	return textThrashResult(
+		state.ConsecutiveCount,
+		rc,
+		fmt.Sprintf("text_thrash:%s:%s", patternFamily, compactHash(toolPlanKey)),
+		"unchanged tool plan across responses",
+	)
 }
 
 // ─── Main detection function ──────────────────────────────────────────────────

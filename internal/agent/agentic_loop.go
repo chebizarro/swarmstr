@@ -264,8 +264,12 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		promoteLeakedToolCalls(resp, activeTools)
 
 		// If no tool calls or no executor, return immediately.
-		// For plain text responses, emit a single assistant message in the delta.
+		// For plain text responses, run the same loop-breaking intervention before
+		// accepting the assistant output.
 		if !resp.NeedsToolResults || len(resp.ToolCalls) == 0 || cfg.Executor == nil {
+			if handled := interveneTextOnlyThrash(ctx, cfg, textThrashState, resp, totalUsage, historyDelta, loopDetectionConfig); handled != nil {
+				return handled, nil
+			}
 			if resp.Content != "" {
 				resp.HistoryDelta = []ConversationMessage{{Role: "assistant", Content: resp.Content}}
 			}
@@ -440,8 +444,12 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		promoteLeakedToolCalls(resp, activeTools)
 		calls = resp.ToolCalls
 
-		// If the model produced text (no more tool calls), we're done.
+		// If the model produced text (no more tool calls), we're done after applying
+		// the text-only loop-breaking intervention.
 		if !resp.NeedsToolResults || len(calls) == 0 {
+			if handled := interveneTextOnlyThrash(ctx, cfg, textThrashState, resp, totalUsage, historyDelta, loopDetectionConfig); handled != nil {
+				return handled, nil
+			}
 			if resp.Content != "" {
 				historyDelta = append(historyDelta, ConversationMessage{
 					Role:    "assistant",
@@ -829,6 +837,31 @@ func appendBlockedToolResults(messages []LLMMessage, historyDelta []Conversation
 		})
 	}
 	return messages, historyDelta
+}
+
+func interveneTextOnlyThrash(ctx context.Context, cfg AgenticLoopConfig, state *toolloop.TextThrashState, resp *LLMResponse, usage ProviderUsage, history []ConversationMessage, loopCfg *toolloop.Config) *LLMResponse {
+	if resp == nil {
+		return nil
+	}
+	result := toolloop.ObserveTextThrash(state, resp.Content, "", loopCfg)
+	if !result.Stuck {
+		return nil
+	}
+	blocked := result.Level == toolloop.Critical
+	log.Printf("%s: assistant text-only thrash %s detector=%s count=%d", cfg.LogPrefix, result.Level, result.Detector, result.Count)
+	emitAssistantTextThrashEvents(ctx, cfg, nil, result, blocked)
+	if blocked {
+		resp.Content = "I stopped this response because it was repeatedly cycling between decisions without making progress. Please rephrase the request or provide a single concrete next step."
+		resp.Outcome = blockedOutcome(true)
+		resp.StopReason = blockedStopReason(true)
+	} else {
+		resp.Content = "[LOOP DETECTION] " + result.Message + "\n\n" + resp.Content
+		resp.Outcome = TurnOutcomeCompleted
+		resp.StopReason = TurnStopReasonModelText
+	}
+	resp.Usage = usage
+	resp.HistoryDelta = append(history, ConversationMessage{Role: "assistant", Content: resp.Content})
+	return resp
 }
 
 func assistantTextThrashDecision(loopResult toolloop.Result, blocked bool) ToolLoopDecision {
