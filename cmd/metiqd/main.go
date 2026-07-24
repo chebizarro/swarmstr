@@ -1392,11 +1392,14 @@ func main() {
 			}
 		}
 	}
-	// Load workspace hooks from the agent's workspace hooks/ subdirectory.
-	if wkspHooksDir := filepath.Join(workspace.ResolveWorkspaceDir(configState.Get(), ""), "hooks"); wkspHooksDir != "" {
-		if wkspHooks, err := hookspkg.ScanDir(wkspHooksDir, hookspkg.SourceWorkspace); err == nil {
-			for _, h := range wkspHooks {
-				hooksMgr.Register(h)
+	// Load workspace hooks unless trusted managed policy restricts execution to
+	// administrator-managed hooks. Bundled hooks remain part of the daemon.
+	if !managedSettings.ManagedHooksOnly {
+		if wkspHooksDir := filepath.Join(workspace.ResolveWorkspaceDir(configState.Get(), ""), "hooks"); wkspHooksDir != "" {
+			if wkspHooks, err := hookspkg.ScanDir(wkspHooksDir, hookspkg.SourceWorkspace); err == nil {
+				for _, h := range wkspHooks {
+					hooksMgr.Register(h)
+				}
 			}
 		}
 	}

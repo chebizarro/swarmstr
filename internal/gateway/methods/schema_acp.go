@@ -87,6 +87,9 @@ type ACPPipelineRequest struct {
 	// When false (default), steps run sequentially and each step receives
 	// the previous step's result as context.
 	Parallel bool `json:"parallel,omitempty"`
+	// MaxConcurrency bounds simultaneously dispatched steps when Parallel is
+	// true. Values <= 0 use the pipeline's safe default.
+	MaxConcurrency int `json:"max_concurrency,omitempty"`
 }
 
 func (r ACPDispatchRequest) Normalize() (ACPDispatchRequest, error) {
@@ -135,6 +138,9 @@ func (r ACPDispatchRequest) Normalize() (ACPDispatchRequest, error) {
 }
 
 func (r ACPPipelineRequest) Normalize() (ACPPipelineRequest, error) {
+	if r.MaxConcurrency < 0 {
+		r.MaxConcurrency = 0
+	}
 	if len(r.Steps) == 0 {
 		return r, fmt.Errorf("steps required")
 	}
@@ -257,8 +263,10 @@ func DecodeACPPipelineParams(params json.RawMessage) (ACPPipelineRequest, error)
 		TimeoutMSCamel       int64                   `json:"timeoutMs,omitempty"`
 	}
 	type acpPipelineCompat struct {
-		Steps    []acpPipelineStepCompat `json:"steps"`
-		Parallel bool                    `json:"parallel,omitempty"`
+		Steps               []acpPipelineStepCompat `json:"steps"`
+		Parallel            bool                    `json:"parallel,omitempty"`
+		MaxConcurrency      int                     `json:"max_concurrency,omitempty"`
+		MaxConcurrencyCamel int                     `json:"maxConcurrency,omitempty"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
@@ -266,7 +274,11 @@ func DecodeACPPipelineParams(params json.RawMessage) (ACPPipelineRequest, error)
 	if err := dec.Decode(&compat); err != nil {
 		return ACPPipelineRequest{}, fmt.Errorf("invalid params")
 	}
-	req := ACPPipelineRequest{Parallel: compat.Parallel}
+	maxConcurrency := compat.MaxConcurrency
+	if maxConcurrency == 0 {
+		maxConcurrency = compat.MaxConcurrencyCamel
+	}
+	req := ACPPipelineRequest{Parallel: compat.Parallel, MaxConcurrency: maxConcurrency}
 	for _, step := range compat.Steps {
 		contextMessages := step.ContextMessages
 		if len(contextMessages) == 0 {

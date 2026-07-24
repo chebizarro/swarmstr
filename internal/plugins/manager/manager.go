@@ -23,6 +23,7 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/plugins/installer"
 	"metiq/internal/plugins/lifecycle"
+	pluginmanifest "metiq/internal/plugins/manifest"
 	"metiq/internal/plugins/registry"
 	"metiq/internal/plugins/runtime"
 	"metiq/internal/plugins/sdk"
@@ -97,12 +98,24 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			m.log.Warn("plugin skipped during load", "plugin", pluginID, "err", err)
 			continue
 		}
+		hostContract := pluginmanifest.CurrentHostContract()
+		if installed, ok := lc.Resolve(pluginID); ok {
+			if err := installed.Manifest.CheckCompatibility(hostContract); err != nil {
+				issues = append(issues, fmt.Sprintf("%s: incompatible plugin manifest: %v", pluginID, err))
+				m.log.Warn("plugin manifest compatibility check failed", "plugin", pluginID, "err", err)
+				continue
+			}
+		}
 		if err := installer.VerifyPluginIntegrity(installPath); err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 			m.log.Warn("plugin integrity verification failed", "plugin", pluginID, "err", err)
 			continue
 		}
-		if _, err := installer.ValidateOpenClawPackageContract(installPath); err != nil {
+		openClawCompat, err := installer.ValidateOpenClawPackageContract(installPath)
+		if err == nil {
+			err = openClawCompat.CheckCompatibility(hostContract.HostVersion)
+		}
+		if err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 			m.log.Warn("plugin package compatibility check failed", "plugin", pluginID, "err", err)
 			continue

@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strconv"
 	"strings"
 )
@@ -30,6 +31,24 @@ type HostContract struct {
 	HostVersion      string
 	PluginAPIVersion string
 	PluginSDKVersion string
+}
+
+// CurrentHostContract returns the contracts offered by the running binary. Go
+// release builds expose their module version through build info; local builds
+// use a stable semver-compatible development version.
+func CurrentHostContract() HostContract {
+	hostVersion := "0.0.0-dev"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		candidate := strings.TrimSpace(info.Main.Version)
+		if candidate != "" && candidate != "(devel)" {
+			hostVersion = strings.TrimPrefix(candidate, "v")
+		}
+	}
+	return HostContract{
+		HostVersion:      hostVersion,
+		PluginAPIVersion: HostPluginAPIVersion,
+		PluginSDKVersion: HostPluginSDKVersion,
+	}
 }
 
 // CheckCompatibility returns a descriptive error when a manifest cannot run

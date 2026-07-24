@@ -225,6 +225,31 @@ func TestManagerBackendFailoverStopsAfterOutput(t *testing.T) {
 	}
 }
 
+func TestManagerBackendFailoverStopsAfterApprovalRequest(t *testing.T) {
+	primary := &failoverTestRuntime{id: "primary", events: []RuntimeEvent{
+		{Kind: EventApprovalRequest, ApprovalRequest: &ApprovalRequest{ID: "approval-1", Action: "write", Path: "file.txt"}},
+		{Kind: EventError, Text: "backend temporarily overloaded", Code: "OVERLOADED", Retryable: true},
+	}}
+	fallback := &failoverTestRuntime{id: "fallback", events: []RuntimeEvent{{Kind: EventDone, StopReason: "complete"}}}
+	mgr := newFailoverTestManager(t, primary, fallback, ManagerOptions{FallbackBackends: []string{"fallback"}})
+	ctx := context.Background()
+	if _, err := mgr.InitializeSession(ctx, InitializeSessionInput{SessionKey: "failover-approval", Backend: "primary"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := mgr.RunTurn(ctx, RunSessionTurnInput{SessionKey: "failover-approval", Text: "hello"})
+	var stopped BackendFailoverError
+	if !errors.As(err, &stopped) || len(stopped.Attempts) != 1 || !stopped.Attempts[0].SawOutput {
+		t.Fatalf("RunTurn err/attempts = %v / %+v", err, stopped.Attempts)
+	}
+	if len(events) != 2 || events[0].Kind != EventApprovalRequest {
+		t.Fatalf("primary events = %+v", events)
+	}
+	_, fallbackRuns, _, _ := fallback.counts()
+	if fallbackRuns != 0 {
+		t.Fatalf("fallback runs = %d, want 0 after approval request", fallbackRuns)
+	}
+}
+
 func TestManagerBackendFailoverStopsOnCancellation(t *testing.T) {
 	started := make(chan struct{})
 	primary := &failoverTestRuntime{id: "primary", blockRun: true, started: started}

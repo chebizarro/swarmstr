@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"metiq/internal/agent"
+	"metiq/internal/plugins/lifecycle"
+	pluginmanifest "metiq/internal/plugins/manifest"
 	"metiq/internal/plugins/sdk"
 	"metiq/internal/store/state"
 )
@@ -183,6 +185,41 @@ func TestManager_loadAndRegister(t *testing.T) {
 	defs := reg.Definitions()
 	if len(defs) != 1 || defs[0].Name != "my-echo/echo" {
 		t.Fatalf("expected plugin tool to be provider-visible via Definitions, got %+v", defs)
+	}
+}
+
+func TestManagerRejectsIncompatibleStaticManifestBeforeExecution(t *testing.T) {
+	dir := t.TempDir()
+	writePlugin(t, dir, "index.js", `throw new Error("plugin code executed");`)
+	lc := lifecycle.NewManager(lifecycle.DefaultLifecycleConfig(), t.TempDir())
+	_, err := lc.Install(context.Background(), pluginmanifest.Manifest{
+		SchemaVersion: pluginmanifest.SchemaVersion,
+		ID:            "incompatible-plugin",
+		Version:       "1.0.0",
+		Runtime:       pluginmanifest.RuntimeGoja,
+		Compat:        pluginmanifest.Compatibility{PluginAPI: "^2.0.0"},
+	}, dir, lifecycle.InstallOptions{
+		Scope: lifecycle.ScopeProject,
+		Source: lifecycle.InstallSource{
+			Type: "path",
+			Path: dir,
+		},
+		Enable: true,
+		Force:  true,
+	})
+	if err != nil {
+		t.Fatalf("install lifecycle fixture: %v", err)
+	}
+	cfg := lc.ApplyToConfig(state.ConfigDoc{Version: 1})
+	extensions := cfg.Extra["extensions"].(map[string]any)
+	extensions["load_paths"] = []string{dir}
+
+	err = New(testHost()).Load(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "incompatible plugin manifest") || !strings.Contains(err.Error(), "does not include") {
+		t.Fatalf("compatibility error = %v", err)
+	}
+	if strings.Contains(err.Error(), "plugin code executed") {
+		t.Fatalf("plugin executed before compatibility rejection: %v", err)
 	}
 }
 

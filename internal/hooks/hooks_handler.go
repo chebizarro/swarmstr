@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"metiq/internal/sandbox"
 )
 
 // StatusToMap converts a HookStatus to a map[string]any for JSON-RPC responses.
@@ -120,21 +121,53 @@ const ShellHandlerTimeout = 30 * time.Second
 // stdout and stderr are collected but not returned (the manager logs them at
 // debug level when the handler returns an error).
 func MakeShellHandler(scriptPath string) HookHandler {
+	baseDir := filepath.Dir(scriptPath)
+	runner, err := sandbox.New(sandbox.Config{
+		Driver:            "docker",
+		DockerImage:       "alpine:3",
+		TimeoutSeconds:    int(ShellHandlerTimeout / time.Second),
+		MemoryLimit:       "64m",
+		CPULimit:          "0.5",
+		NetworkDisabled:   true,
+		AllowNetwork:      false,
+		ReadOnlyRootFS:    true,
+		CapDrop:           []string{"ALL"},
+		SecurityOpt:       []string{"no-new-privileges"},
+		PidsLimit:         32,
+		MaxOutputBytes:    1 << 20,
+		WorkspaceDir:      baseDir,
+		ContainerWorkdir:  "/hook",
+		WorkspaceAccess:   "read_only",
+		PersistentRuntime: false,
+	})
+	if err != nil {
+		return func(*Event) error {
+			return fmt.Errorf("shell hook sandbox unavailable: %w", err)
+		}
+	}
+	return makeShellHandlerWithRunner(scriptPath, runner)
+}
+
+func makeShellHandlerWithRunner(scriptPath string, runner sandbox.SandboxRunner) HookHandler {
 	return func(event *Event) error {
+		if runner == nil {
+			return fmt.Errorf("shell hook sandbox unavailable")
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), ShellHandlerTimeout)
 		defer cancel()
 
 		ctxJSON, _ := json.Marshal(event.Context)
-		env := append(os.Environ(),
-			"HOOK_NAME="+event.Name,
-			"HOOK_TYPE="+event.EventType,
-			"HOOK_ACTION="+event.Action,
-			"HOOK_SESSION_KEY="+event.SessionKey,
-			"HOOK_CONTEXT="+string(ctxJSON),
-			"HOOK_TIMESTAMP="+event.Timestamp.UTC().Format(time.RFC3339),
-		)
+		// Deliberately do not inherit the daemon environment. Only the documented
+		// hook payload is passed into the sandbox.
+		env := []string{
+			"HOOK_NAME=" + event.Name,
+			"HOOK_TYPE=" + event.EventType,
+			"HOOK_ACTION=" + event.Action,
+			"HOOK_SESSION_KEY=" + event.SessionKey,
+			"HOOK_CONTEXT=" + string(ctxJSON),
+			"HOOK_TIMESTAMP=" + event.Timestamp.UTC().Format(time.RFC3339),
+		}
 
-		// Promote well-known context fields to dedicated env vars for convenience.
 		for _, kv := range []struct{ key, envVar string }{
 			{"from_pubkey", "HOOK_FROM_PUBKEY"},
 			{"to_pubkey", "HOOK_TO_PUBKEY"},
@@ -148,14 +181,23 @@ func MakeShellHandler(scriptPath string) HookHandler {
 			}
 		}
 
-		cmd := exec.CommandContext(ctx, "sh", scriptPath) //nolint:gosec // scriptPath is admin-controlled
-		cmd.Env = env
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("shell hook %s: %w\n%s", filepath.Base(scriptPath), err, strings.TrimSpace(string(out)))
+		execPath := scriptPath
+		workdir := filepath.Dir(scriptPath)
+		if runner.Driver() == "docker" {
+			execPath = filepath.ToSlash(filepath.Join("/hook", filepath.Base(scriptPath)))
+			workdir = "/hook"
 		}
-		// Append any output lines as hook messages.
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		result, err := runner.Run(ctx, []string{"sh", execPath}, env, workdir)
+		if err != nil {
+			return fmt.Errorf("shell hook %s sandbox failed: %w", filepath.Base(scriptPath), err)
+		}
+		if result.TimedOut {
+			return fmt.Errorf("shell hook %s timed out", filepath.Base(scriptPath))
+		}
+		if result.ExitCode != 0 {
+			return fmt.Errorf("shell hook %s exited %d\n%s", filepath.Base(scriptPath), result.ExitCode, strings.TrimSpace(result.Stderr))
+		}
+		for _, line := range strings.Split(strings.TrimSpace(result.Stdout), "\n") {
 			if line = strings.TrimSpace(line); line != "" {
 				event.Messages = append(event.Messages, line)
 			}
@@ -173,6 +215,10 @@ func MakeShellHandler(scriptPath string) HookHandler {
 // This is called after LoadBundledHooks / ScanDir so that managed and workspace
 // hooks with a handler.sh automatically become executable.
 func AttachShellHandlers(mgr *Manager) {
+	attachShellHandlersWithRunner(mgr, nil)
+}
+
+func attachShellHandlersWithRunner(mgr *Manager, runner sandbox.SandboxRunner) {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
 	for _, h := range mgr.hooks {
@@ -184,7 +230,11 @@ func AttachShellHandlers(mgr *Manager) {
 		}
 		scriptPath := filepath.Join(h.BaseDir, "handler.sh")
 		if _, err := os.Stat(scriptPath); err == nil {
-			h.Handler = MakeShellHandler(scriptPath)
+			if runner != nil {
+				h.Handler = makeShellHandlerWithRunner(scriptPath, runner)
+			} else {
+				h.Handler = MakeShellHandler(scriptPath)
+			}
 		}
 	}
 }

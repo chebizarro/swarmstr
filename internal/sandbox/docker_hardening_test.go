@@ -61,19 +61,22 @@ func TestDockerRunArgs_EnforcedEgressDoesNotDropToRoot(t *testing.T) {
 	// Egress enforcement stays outside the container: no root/NET_ADMIN wrapper,
 	// and the caller cannot override the authenticated proxy environment.
 	s := &DockerSandbox{cfg: Config{AllowNetwork: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}}}
-	runtime := &dockerEgressRuntime{network: "isolated", proxyURL: "http://metiq:token@host.docker.internal:1234"}
+	runtime := &dockerEgressRuntime{network: "isolated", proxyURL: "http://metiq:token@metiq-egress-proxy:18080"}
 	args := s.dockerRunArgsWithEgress("alpine:3", []string{"wget", "https://api.example.com"}, []string{"HTTP_PROXY=http://attacker"}, "", runtime)
 	for _, forbidden := range []string{"--cap-add=NET_ADMIN", "--user=0:0", "--network=none"} {
 		if contains(args, forbidden) {
 			t.Fatalf("enforced egress must not add %s: %#v", forbidden, args)
 		}
 	}
-	for _, required := range []string{"--network=isolated", "--add-host=host.docker.internal:host-gateway", "--user=65532:65532", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true"} {
+	for _, required := range []string{"--network=isolated", "--user=65532:65532", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true"} {
 		if !contains(args, required) {
 			t.Fatalf("enforced egress missing %s: %#v", required, args)
 		}
 	}
 	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "host.docker.internal") || contains(args, "--add-host=host.docker.internal:host-gateway") {
+		t.Fatalf("untrusted container must not receive a host gateway mapping: %#v", args)
+	}
 	if strings.Contains(joined, "iptables") {
 		t.Fatalf("in-container iptables egress wrapper must be removed: %#v", args)
 	}

@@ -64,9 +64,12 @@ func startSandboxEgressProxy(cfg Config) (*sandboxEgressProxy, error) {
 	return p, nil
 }
 
-func (p *sandboxEgressProxy) endpoint() string {
-	port := p.listener.Addr().(*net.TCPAddr).Port
-	return fmt.Sprintf("http://metiq:%s@host.docker.internal:%d", p.token, port)
+func (p *sandboxEgressProxy) port() int {
+	return p.listener.Addr().(*net.TCPAddr).Port
+}
+
+func (p *sandboxEgressProxy) endpoint(host string, port int) string {
+	return fmt.Sprintf("http://metiq:%s@%s:%d", p.token, host, port)
 }
 
 func (p *sandboxEgressProxy) close() {
@@ -206,6 +209,41 @@ func (p *sandboxEgressProxy) authorizeTarget(ctx context.Context, address string
 		}
 	}
 	return "", fmt.Errorf("egress target %q is not in the domain/CIDR allowlist", host)
+}
+
+const (
+	dockerEgressRelayAlias = "metiq-egress-proxy"
+	dockerEgressRelayPort  = 18080
+)
+
+// startDockerEgressRelay places a fixed-command relay on the internal sandbox
+// network. Only this trusted sidecar receives the host-gateway mapping; the
+// untrusted workload can reach the authenticated policy proxy by alias but has
+// no host mapping of its own.
+func startDockerEgressRelay(ctx context.Context, network string, upstreamPort int) (func(), error) {
+	suffix, err := randomHex(8)
+	if err != nil {
+		return nil, err
+	}
+	name := "metiq-egress-relay-" + suffix
+	forward := fmt.Sprintf("while true; do nc -l -p %d -e nc host.docker.internal %d; done", dockerEgressRelayPort, upstreamPort)
+	args := []string{
+		"run", "--detach", "--rm", "--name=" + name,
+		"--network=" + network, "--network-alias=" + dockerEgressRelayAlias,
+		"--add-host=host.docker.internal:host-gateway",
+		"--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+		"--pids-limit=32", "--user=65532:65532",
+		"alpine:3", "sh", "-c", forward,
+	}
+	if output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("start sandbox egress relay: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	cleanup := func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = exec.CommandContext(cleanupCtx, "docker", "rm", "--force", name).CombinedOutput()
+	}
+	return cleanup, nil
 }
 
 func createInternalDockerNetwork(ctx context.Context) (string, func(), error) {

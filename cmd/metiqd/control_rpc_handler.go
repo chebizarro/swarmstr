@@ -479,7 +479,7 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 				goal = "ACP pipeline"
 			}
 		}
-		pipeline := &acppkg.Pipeline{Steps: steps, FlowRegistry: h.deps.acpFlowRegistry, OwnerSessionKey: ownerSessionKey, Goal: goal, RemoteCancel: remoteCancel}
+		pipeline := &acppkg.Pipeline{Steps: steps, FlowRegistry: h.deps.acpFlowRegistry, OwnerSessionKey: ownerSessionKey, Goal: goal, MaxConcurrency: req.MaxConcurrency, RemoteCancel: remoteCancel}
 
 		var pipelineResults []acppkg.PipelineResult
 		var pipelineErr error

@@ -125,6 +125,9 @@ func TestNWCEncryptedPayRequestAndVerifiedResponse(t *testing.T) {
 		}
 	}
 	client := newProtocolNWCClient(t, transport, time.Second)
+	client.mu.Lock()
+	client.info = &NWCInfo{Methods: []string{NWCMethodPayInvoice}, Encryptions: []string{NWCEncryptionNIP44}}
+	client.mu.Unlock()
 	request := PaymentRequest{
 		Invoice: "lnbc-signed-invoice", PaymentHash: hash,
 		AmountMSat: 5_000, MaxFeeMSat: 20, Deadline: time.Now().Add(time.Second),
@@ -215,9 +218,6 @@ func TestNWCRequestUsesNegotiatedLegacyNIP04WireFormat(t *testing.T) {
 		return nwcResponse{ResultType: request.Method, Result: map[string]any{"balance": float64(42)}}
 	}
 	client := newProtocolNWCClient(t, transport, time.Second)
-	client.mu.Lock()
-	client.info = &NWCInfo{} // Verified info with no encryption tag means NIP-04.
-	client.mu.Unlock()
 
 	result, err := client.GetBalance(context.Background())
 	if err != nil {
@@ -230,6 +230,25 @@ func TestNWCRequestUsesNegotiatedLegacyNIP04WireFormat(t *testing.T) {
 		if len(tag) > 0 && tag[0] == "encryption" {
 			t.Fatalf("legacy NIP-04 request must omit encryption tag: %v", transport.publishedEvent.Tags)
 		}
+	}
+}
+
+func TestNWCRequestRejectsMethodMissingFromInfoEvent(t *testing.T) {
+	walletKeyer, err := NewNWCKeyer("2222222222222222222222222222222222222222222222222222222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &protocolNWCTransport{t: t, walletKeyer: walletKeyer}
+	client := newProtocolNWCClient(t, transport, time.Second)
+	client.mu.Lock()
+	client.info = &NWCInfo{Methods: []string{NWCMethodPayInvoice}, Encryptions: []string{NWCEncryptionNIP44}}
+	client.mu.Unlock()
+
+	if _, err := client.GetBalance(context.Background()); err == nil || !strings.Contains(err.Error(), "does not advertise") {
+		t.Fatalf("GetBalance error = %v, want advertised-method rejection", err)
+	}
+	if transport.publishedEvent.Kind != 0 {
+		t.Fatalf("unsupported method was published: %#v", transport.publishedEvent)
 	}
 }
 

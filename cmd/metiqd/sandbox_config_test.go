@@ -56,6 +56,31 @@ func TestSandboxRunRequestExposesAndMergesFullConfig(t *testing.T) {
 	}
 }
 
+func TestSandboxRunRequestHonorsManagedLockedSandboxPaths(t *testing.T) {
+	allowNetwork := true
+	writableRoot := true
+	daemon := state.ConfigDoc{Extra: map[string]any{
+		"sandbox": map[string]any{
+			"driver":          "docker",
+			"allow_network":   false,
+			"memory_limit":    "256m",
+			"writable_rootfs": false,
+		},
+		"managed_settings": map[string]any{
+			"locked_paths": []any{"extra.sandbox"},
+		},
+	}}
+	cfg, configuredDriver := sandboxConfigFromDaemonAndRequest(daemon, methods.SandboxRunRequest{
+		Driver:         "nop",
+		AllowNetwork:   &allowNetwork,
+		MemoryLimit:    "2g",
+		WritableRootFS: &writableRoot,
+	})
+	if configuredDriver != "docker" || cfg.Driver != "docker" || cfg.AllowNetwork || cfg.MemoryLimit != "256m" || cfg.WritableRootFS {
+		t.Fatalf("managed sandbox lock was bypassed: configured=%q cfg=%+v", configuredDriver, cfg)
+	}
+}
+
 func TestSandboxRunRequestCannotEnableUnsafeNop(t *testing.T) {
 	allow := true
 	cfg, configuredDriver := sandboxConfigFromDaemonAndRequest(state.ConfigDoc{Extra: map[string]any{

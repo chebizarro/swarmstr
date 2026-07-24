@@ -441,6 +441,16 @@ func NegotiateNWCEncryption(info NWCInfo) (string, error) {
 	return "", errors.New("NWC wallet advertises no supported encryption scheme")
 }
 
+func nwcInfoSupportsMethod(info NWCInfo, method string) bool {
+	method = strings.TrimSpace(method)
+	for _, advertised := range info.Methods {
+		if strings.TrimSpace(advertised) == method {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *NWCClient) Request(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
 	result, _, err := c.request(ctx, method, params)
 	return result, err
@@ -550,8 +560,14 @@ func (c *NWCClient) request(ctx context.Context, method string, params map[strin
 	if err != nil {
 		return nil, false, fmt.Errorf("encode NWC request: %w", err)
 	}
-	scheme := NWCEncryptionNIP44
+	// Per NIP-47, absence of an info event (or its encryption tag) means the
+	// wallet is a legacy NIP-04 peer. Upgrade only after an advertised scheme is
+	// successfully negotiated.
+	scheme := NWCEncryptionNIP04
 	if info, ok := c.Info(); ok {
+		if len(info.Methods) > 0 && !nwcInfoSupportsMethod(info, method) {
+			return nil, false, fmt.Errorf("NWC wallet does not advertise method %q", method)
+		}
 		scheme, err = NegotiateNWCEncryption(info)
 		if err != nil {
 			return nil, false, err

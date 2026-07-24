@@ -1,8 +1,10 @@
 package main
 
 import (
+	"log"
 	"strings"
 
+	configpkg "metiq/internal/config"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/sandbox"
 	"metiq/internal/store/state"
@@ -16,87 +18,103 @@ func sandboxConfigFromDaemonAndRequest(daemonCfg state.ConfigDoc, req methods.Sa
 		}
 	}
 	configuredDriver := strings.ToLower(strings.TrimSpace(cfg.Driver))
-	if strings.TrimSpace(req.Driver) != "" {
+	if strings.TrimSpace(req.Driver) != "" && !sandboxRequestOverrideLocked(daemonCfg, "driver") {
 		cfg.Driver = strings.ToLower(strings.TrimSpace(req.Driver))
 	}
-	if req.TimeoutSeconds > 0 {
+	if req.TimeoutSeconds > 0 && !sandboxRequestOverrideLocked(daemonCfg, "timeout_s") {
 		cfg.TimeoutSeconds = req.TimeoutSeconds
 	}
 	// A request may narrow the daemon's unsafe-nop opt-in, but can never enable
 	// host execution on its own.
-	if req.AllowUnsafeNop != nil {
+	if req.AllowUnsafeNop != nil && !sandboxRequestOverrideLocked(daemonCfg, "allow_unsafe_nop") {
 		cfg.AllowUnsafeNop = cfg.AllowUnsafeNop && *req.AllowUnsafeNop
 	}
-	if req.MemoryLimit != "" {
+	if req.MemoryLimit != "" && !sandboxRequestOverrideLocked(daemonCfg, "memory_limit") {
 		cfg.MemoryLimit = strings.TrimSpace(req.MemoryLimit)
 	}
-	if req.CPULimit != "" {
+	if req.CPULimit != "" && !sandboxRequestOverrideLocked(daemonCfg, "cpu_limit") {
 		cfg.CPULimit = strings.TrimSpace(req.CPULimit)
 	}
-	if req.DockerImage != "" {
+	if req.DockerImage != "" && !sandboxRequestOverrideLocked(daemonCfg, "docker_image") {
 		cfg.DockerImage = strings.TrimSpace(req.DockerImage)
 	}
-	if req.NetworkDisabled != nil {
+	if req.NetworkDisabled != nil && !sandboxRequestOverrideLocked(daemonCfg, "network_disabled") {
 		cfg.NetworkDisabled = *req.NetworkDisabled
 	}
-	if req.AllowNetwork != nil {
+	if req.AllowNetwork != nil && !sandboxRequestOverrideLocked(daemonCfg, "allow_network") {
 		cfg.AllowNetwork = *req.AllowNetwork
 	}
-	if req.AllowedDomains != nil {
+	if req.AllowedDomains != nil && !sandboxRequestOverrideLocked(daemonCfg, "allowed_domains") {
 		cfg.AllowedDomains = cleanCfgStrings(req.AllowedDomains)
 	}
-	if req.AllowedCIDRs != nil {
+	if req.AllowedCIDRs != nil && !sandboxRequestOverrideLocked(daemonCfg, "allowed_cidrs") {
 		cfg.AllowedCIDRs = cleanCfgStrings(req.AllowedCIDRs)
 	}
-	if req.EgressEnforced != nil {
+	if req.EgressEnforced != nil && !sandboxRequestOverrideLocked(daemonCfg, "egress_enforced") {
 		cfg.EgressEnforced = *req.EgressEnforced
 	}
-	if req.ReadOnlyRootFS != nil {
+	if req.ReadOnlyRootFS != nil && !sandboxRequestOverrideLocked(daemonCfg, "read_only_rootfs") {
 		cfg.ReadOnlyRootFS = *req.ReadOnlyRootFS
 	}
-	if req.WritableRootFS != nil {
+	if req.WritableRootFS != nil && !sandboxRequestOverrideLocked(daemonCfg, "writable_rootfs") {
 		cfg.WritableRootFS = *req.WritableRootFS
 	}
-	if req.CapDrop != nil {
+	if req.CapDrop != nil && !sandboxRequestOverrideLocked(daemonCfg, "cap_drop") {
 		cfg.CapDrop = cleanCfgStrings(req.CapDrop)
 	}
-	if req.SecurityOpt != nil {
+	if req.SecurityOpt != nil && !sandboxRequestOverrideLocked(daemonCfg, "security_opt") {
 		cfg.SecurityOpt = cleanCfgStrings(req.SecurityOpt)
 	}
-	if req.PidsLimit > 0 {
+	if req.PidsLimit > 0 && !sandboxRequestOverrideLocked(daemonCfg, "pids_limit") {
 		cfg.PidsLimit = req.PidsLimit
 	}
-	if req.User != "" {
+	if req.User != "" && !sandboxRequestOverrideLocked(daemonCfg, "user") {
 		cfg.User = strings.TrimSpace(req.User)
 	}
-	if req.Tmpfs != nil {
+	if req.Tmpfs != nil && !sandboxRequestOverrideLocked(daemonCfg, "tmpfs") {
 		cfg.Tmpfs = cleanCfgStrings(req.Tmpfs)
 	}
-	if req.Ulimits != nil {
+	if req.Ulimits != nil && !sandboxRequestOverrideLocked(daemonCfg, "ulimits") {
 		cfg.Ulimits = cleanCfgStrings(req.Ulimits)
 	}
-	if req.MaxOutputBytes > 0 {
+	if req.MaxOutputBytes > 0 && !sandboxRequestOverrideLocked(daemonCfg, "max_output_bytes") {
 		cfg.MaxOutputBytes = req.MaxOutputBytes
 	}
-	if req.WorkspaceDir != "" {
+	if req.WorkspaceDir != "" && !sandboxRequestOverrideLocked(daemonCfg, "workspace_dir") {
 		cfg.WorkspaceDir = strings.TrimSpace(req.WorkspaceDir)
 	}
-	if req.ContainerWorkdir != "" {
+	if req.ContainerWorkdir != "" && !sandboxRequestOverrideLocked(daemonCfg, "container_workdir") {
 		cfg.ContainerWorkdir = strings.TrimSpace(req.ContainerWorkdir)
 	}
-	if req.WorkspaceAccess != "" {
+	if req.WorkspaceAccess != "" && !sandboxRequestOverrideLocked(daemonCfg, "workspace_access") {
 		cfg.WorkspaceAccess = strings.TrimSpace(req.WorkspaceAccess)
 	}
-	if req.PersistentRuntime != nil {
+	if req.PersistentRuntime != nil && !sandboxRequestOverrideLocked(daemonCfg, "persistent_runtime") {
 		cfg.PersistentRuntime = *req.PersistentRuntime
 	}
-	if req.RuntimeScope != "" {
+	if req.RuntimeScope != "" && !sandboxRequestOverrideLocked(daemonCfg, "runtime_scope") {
 		cfg.RuntimeScope = strings.TrimSpace(req.RuntimeScope)
 	}
-	if req.RuntimeKey != "" {
+	if req.RuntimeKey != "" && !sandboxRequestOverrideLocked(daemonCfg, "runtime_key") {
 		cfg.RuntimeKey = strings.TrimSpace(req.RuntimeKey)
 	}
 	return cfg, configuredDriver
+}
+
+func sandboxRequestOverrideLocked(daemonCfg state.ConfigDoc, field string) bool {
+	managed, ok := configpkg.ManagedSettingsFromConfig(daemonCfg)
+	if !ok {
+		return false
+	}
+	target := "extra.sandbox." + strings.TrimSpace(field)
+	for _, lockedPath := range managed.LockedPaths {
+		lockedPath = strings.Trim(strings.TrimSpace(lockedPath), ".")
+		if lockedPath == "extra.sandbox" || lockedPath == target || strings.HasPrefix(target, lockedPath+".") {
+			log.Printf("managed settings ignored sandbox.run override for locked path %s", target)
+			return true
+		}
+	}
+	return false
 }
 
 func sandboxConfigFromMap(m map[string]any) sandbox.Config {

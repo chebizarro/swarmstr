@@ -97,7 +97,7 @@ func isFailoverWorthyBackendAttempt(attempt BackendAttempt) bool {
 
 func turnEventsSawOutput(events []RuntimeEvent) bool {
 	for _, event := range events {
-		if event.Kind == EventTextDelta || event.Kind == EventToolCall {
+		if event.Kind == EventTextDelta || event.Kind == EventToolCall || event.Kind == EventApprovalRequest {
 			return true
 		}
 	}

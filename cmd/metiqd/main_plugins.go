@@ -59,6 +59,7 @@ func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo
 	spec := strings.TrimSpace(getString(install, "spec"))
 	inst := installer.New()
 	var installResult installer.Result
+	var downloadProvenance *installer.InstallProvenance
 	switch source {
 	case "path", "archive":
 		if sourcePath == "" {
@@ -167,11 +168,28 @@ func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo
 		if srcURL == "" {
 			return nil, fmt.Errorf("install.url is required for source=url")
 		}
-		tmpFile, err := installer.DownloadURL(ctx, srcURL)
+		expectedDigest := strings.TrimSpace(getString(install, "checksum"))
+		if expectedDigest == "" {
+			expectedDigest = strings.TrimSpace(getString(install, "integrity"))
+		}
+		if expectedDigest == "" {
+			return nil, fmt.Errorf("install.checksum is required for source=url")
+		}
+		verifier, err := installer.NewSHA256ArtifactVerifier(expectedDigest)
+		if err != nil {
+			return nil, fmt.Errorf("invalid install.checksum: %w", err)
+		}
+		download, err := installer.DownloadURLWithOptions(ctx, srcURL, installer.DownloadOptions{
+			Verifier:            verifier,
+			RequireVerification: true,
+		})
 		if err != nil {
 			log.Printf("plugins.install url download error for %s: %v", req.PluginID, err)
 			return nil, fmt.Errorf("URL download failed: %w", err)
 		}
+		tmpFile := download.Path
+		provenance := download.Provenance
+		downloadProvenance = &provenance
 		defer os.Remove(tmpFile)
 
 		// Determine whether the download is an archive or a JS file.
@@ -214,6 +232,14 @@ func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo
 			}
 			installPath = managedPath
 		}
+		integrityRecord, err := installer.RecordPluginIntegrityWithProvenance(installPath, downloadProvenance)
+		if err != nil {
+			return nil, fmt.Errorf("record URL install provenance: %w", err)
+		}
+		installResult.Integrity = "sha256-" + integrityRecord.Hash
+		installResult.Provenance = downloadProvenance
+		install["checksum"] = "sha256:" + downloadProvenance.Artifact.Hash
+		install["integrity"] = installResult.Integrity
 		install["url"] = srcURL
 		install["installPath"] = installPath
 	default:
@@ -259,6 +285,9 @@ func (s *daemonServices) applyPluginInstallRuntime(ctx context.Context, docsRepo
 	}
 	if installResult.Stderr != "" {
 		result["stderr"] = installResult.Stderr
+	}
+	if downloadProvenance != nil {
+		result["provenance"] = downloadProvenance
 	}
 	// Notify WS clients that a plugin was installed.
 	version := ""
@@ -433,17 +462,19 @@ func lifecycleManifestFromInstall(pluginID string, install map[string]any) manif
 		Version:       version,
 		Name:          pluginID,
 		Runtime:       runtime,
+		Checksum:      strings.TrimSpace(getString(install, "checksum")),
 	}
 }
 
 func lifecycleInstallSource(install map[string]any) lifecycle.InstallSource {
 	sourceType := strings.ToLower(strings.TrimSpace(getString(install, "source")))
 	return lifecycle.InstallSource{
-		Type:    sourceType,
-		URL:     strings.TrimSpace(getString(install, "url")),
-		Package: strings.TrimSpace(getString(install, "spec")),
-		Version: strings.TrimSpace(getString(install, "version")),
-		Path:    strings.TrimSpace(getString(install, "sourcePath")),
+		Type:     sourceType,
+		URL:      strings.TrimSpace(getString(install, "url")),
+		Package:  strings.TrimSpace(getString(install, "spec")),
+		Version:  strings.TrimSpace(getString(install, "version")),
+		Path:     strings.TrimSpace(getString(install, "sourcePath")),
+		Checksum: strings.TrimSpace(getString(install, "checksum")),
 	}
 }
 
@@ -468,6 +499,9 @@ func lifecycleInstallRecord(plugin *lifecycle.InstalledPlugin) map[string]any {
 		record["version"] = plugin.Source.Version
 	} else if plugin.Manifest.Version != "" {
 		record["version"] = plugin.Manifest.Version
+	}
+	if plugin.Source.Checksum != "" {
+		record["checksum"] = plugin.Source.Checksum
 	}
 	return record
 }

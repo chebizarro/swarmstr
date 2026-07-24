@@ -49,7 +49,7 @@ func TestDownloadURLProvenanceAndPinnedDial(t *testing.T) {
 	defer srv.Close()
 	useInstallerHTTPClient(t, srv.Client())
 
-	result, err := DownloadURLWithOptions(context.Background(), srv.URL+"/plugin.js", DownloadOptions{Verifier: verifierFunc(func(_ context.Context, input ArtifactVerificationInput) (*ArtifactVerification, error) {
+	result, err := DownloadURLWithOptions(context.Background(), srv.URL+"/plugin.js", DownloadOptions{RequireVerification: true, Verifier: verifierFunc(func(_ context.Context, input ArtifactVerificationInput) (*ArtifactVerification, error) {
 		if input.Path == "" || input.Provenance.Artifact.Hash == "" {
 			t.Fatal("verifier received incomplete provenance")
 		}
@@ -68,6 +68,26 @@ func TestDownloadURLProvenanceAndPinnedDial(t *testing.T) {
 	}
 	if result.Provenance.Verification == nil || result.Provenance.Verification.Verifier != "test-signature" {
 		t.Fatalf("verification = %+v", result.Provenance.Verification)
+	}
+}
+
+func TestDownloadURLRequiredVerificationFailsWithoutVerifier(t *testing.T) {
+	_, err := DownloadURLWithOptions(context.Background(), "https://plugins.example/plugin.js", DownloadOptions{RequireVerification: true})
+	if err == nil || !strings.Contains(err.Error(), "verifier is required") {
+		t.Fatalf("required verification error = %v", err)
+	}
+}
+
+func TestSHA256ArtifactVerifierRejectsMismatch(t *testing.T) {
+	verifier, err := NewSHA256ArtifactVerifier("sha256:" + strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = verifier.Verify(context.Background(), ArtifactVerificationInput{Provenance: InstallProvenance{
+		Artifact: ArtifactDigest{Algorithm: "sha256", Hash: strings.Repeat("b", 64)},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "SHA-256 mismatch") {
+		t.Fatalf("digest mismatch error = %v", err)
 	}
 }
 

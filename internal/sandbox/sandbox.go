@@ -341,7 +341,9 @@ func (s *DockerSandbox) dockerRunArgsWithEgress(image string, cmd []string, env 
 	dockerArgs := []string{"run", "--rm", "--interactive=false"}
 
 	if egress != nil {
-		dockerArgs = append(dockerArgs, "--network="+egress.network, "--add-host=host.docker.internal:host-gateway")
+		// The untrusted container joins only the internal network. Host gateway
+		// resolution is deliberately confined to the policy-proxy relay sidecar.
+		dockerArgs = append(dockerArgs, "--network="+egress.network)
 	} else if s.cfg.dockerNetworkDisabled() {
 		dockerArgs = append(dockerArgs, "--network=none")
 	}
@@ -455,7 +457,15 @@ func (s *DockerSandbox) Run(ctx context.Context, cmd []string, env []string, wor
 			return Result{Driver: "docker"}, err
 		}
 		defer cleanupNetwork()
-		egressRuntime = &dockerEgressRuntime{network: network, proxyURL: proxy.endpoint()}
+		cleanupRelay, err := startDockerEgressRelay(ctx, network, proxy.port())
+		if err != nil {
+			return Result{Driver: "docker"}, err
+		}
+		defer cleanupRelay()
+		egressRuntime = &dockerEgressRuntime{
+			network:  network,
+			proxyURL: proxy.endpoint(dockerEgressRelayAlias, dockerEgressRelayPort),
+		}
 	}
 	dockerArgs := s.dockerRunArgsWithEgress(image, cmd, env, workdir, egressRuntime)
 

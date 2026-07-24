@@ -38,7 +38,8 @@ type RegistryIndex struct {
 }
 
 type DownloadOptions struct {
-	Verifier ArtifactVerifier
+	Verifier            ArtifactVerifier
+	RequireVerification bool
 }
 
 type DownloadResult struct {
@@ -53,6 +54,38 @@ type ArtifactVerificationInput struct {
 
 type ArtifactVerifier interface {
 	Verify(context.Context, ArtifactVerificationInput) (*ArtifactVerification, error)
+}
+
+type sha256ArtifactVerifier struct {
+	expected string
+}
+
+// NewSHA256ArtifactVerifier returns a verifier for a caller-supplied artifact
+// digest. Accepted forms are sha256:<hex>, sha256-<hex>, or raw 64-byte hex.
+func NewSHA256ArtifactVerifier(expected string) (ArtifactVerifier, error) {
+	normalized := strings.TrimSpace(expected)
+	lower := strings.ToLower(normalized)
+	switch {
+	case strings.HasPrefix(lower, "sha256:"):
+		normalized = strings.TrimSpace(normalized[len("sha256:"):])
+	case strings.HasPrefix(lower, "sha256-"):
+		normalized = strings.TrimSpace(normalized[len("sha256-"):])
+	}
+	if len(normalized) != sha256.Size*2 {
+		return nil, fmt.Errorf("plugin artifact checksum must be a SHA-256 hex digest")
+	}
+	if _, err := hex.DecodeString(normalized); err != nil {
+		return nil, fmt.Errorf("plugin artifact checksum must be valid hex: %w", err)
+	}
+	return sha256ArtifactVerifier{expected: strings.ToLower(normalized)}, nil
+}
+
+func (v sha256ArtifactVerifier) Verify(_ context.Context, input ArtifactVerificationInput) (*ArtifactVerification, error) {
+	actual := strings.ToLower(strings.TrimSpace(input.Provenance.Artifact.Hash))
+	if actual == "" || actual != v.expected {
+		return nil, fmt.Errorf("SHA-256 mismatch: expected %s, got %s", v.expected, actual)
+	}
+	return &ArtifactVerification{Verifier: "sha256", Identity: "sha256:" + v.expected}, nil
 }
 
 var (
@@ -276,6 +309,9 @@ func DownloadURL(ctx context.Context, rawURL string) (string, error) {
 }
 
 func DownloadURLWithOptions(ctx context.Context, rawURL string, options DownloadOptions) (DownloadResult, error) {
+	if options.RequireVerification && options.Verifier == nil {
+		return DownloadResult{}, fmt.Errorf("plugin artifact verifier is required")
+	}
 	u, err := parsePluginURL(rawURL)
 	if err != nil {
 		return DownloadResult{}, err

@@ -1,12 +1,42 @@
 package hooks
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"metiq/internal/sandbox"
 )
+
+type testShellSandbox struct{}
+
+func (testShellSandbox) Driver() string { return "test" }
+
+func (testShellSandbox) Run(ctx context.Context, command []string, env []string, workdir string) (sandbox.Result, error) {
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Env = append([]string{"PATH=/usr/bin:/bin"}, env...)
+	cmd.Dir = workdir
+	out, err := cmd.CombinedOutput()
+	result := sandbox.Result{Driver: "test", Stdout: string(out)}
+	if err == nil {
+		return result, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		result.ExitCode = exitErr.ExitCode()
+		result.Stderr = string(out)
+		return result, nil
+	}
+	return result, err
+}
+
+func makeTestShellHandler(t *testing.T, script string) HookHandler {
+	t.Helper()
+	return makeShellHandlerWithRunner(script, testShellSandbox{})
+}
 
 // ─── RegisterBundledHandlers ─────────────���───────────────────────────────────
 
@@ -501,7 +531,7 @@ func TestMakeShellHandler_Success(t *testing.T) {
 	script := filepath.Join(dir, "handler.sh")
 	os.WriteFile(script, []byte("#!/bin/sh\necho \"hook ran: $HOOK_NAME\"\n"), 0o755)
 
-	handler := MakeShellHandler(script)
+	handler := makeTestShellHandler(t, script)
 	ev := &Event{
 		EventType:  "command",
 		Action:     "new",
@@ -542,7 +572,7 @@ echo "CHAN=$HOOK_CHANNEL_ID"
 echo "CONTENT=$HOOK_CONTENT"
 `), 0o755)
 
-	handler := MakeShellHandler(script)
+	handler := makeTestShellHandler(t, script)
 	ev := &Event{
 		EventType:  "message",
 		Action:     "received",
@@ -595,7 +625,7 @@ func TestMakeShellHandler_NonZeroExit(t *testing.T) {
 	script := filepath.Join(dir, "handler.sh")
 	os.WriteFile(script, []byte("#!/bin/sh\necho 'oops'\nexit 1\n"), 0o755)
 
-	handler := MakeShellHandler(script)
+	handler := makeTestShellHandler(t, script)
 	ev := &Event{
 		Name:      "test:fail",
 		Timestamp: time.Now(),
@@ -622,7 +652,7 @@ func TestMakeShellHandler_NoContextKeys(t *testing.T) {
 	script := filepath.Join(dir, "handler.sh")
 	os.WriteFile(script, []byte("#!/bin/sh\necho ok\n"), 0o755)
 
-	handler := MakeShellHandler(script)
+	handler := makeTestShellHandler(t, script)
 	ev := &Event{
 		Name:      "test:ok",
 		Timestamp: time.Now(),
@@ -643,7 +673,7 @@ func TestMakeShellHandler_MultiLineOutput(t *testing.T) {
 	script := filepath.Join(dir, "handler.sh")
 	os.WriteFile(script, []byte("#!/bin/sh\necho line1\necho line2\necho line3\n"), 0o755)
 
-	handler := MakeShellHandler(script)
+	handler := makeTestShellHandler(t, script)
 	ev := &Event{
 		Name:      "test:multi",
 		Timestamp: time.Now(),
@@ -667,7 +697,7 @@ func TestMakeShellHandler_EmptyOutput(t *testing.T) {
 	script := filepath.Join(dir, "handler.sh")
 	os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755)
 
-	handler := MakeShellHandler(script)
+	handler := makeTestShellHandler(t, script)
 	ev := &Event{
 		Name:      "test:empty",
 		Timestamp: time.Now(),
@@ -688,7 +718,7 @@ func TestMakeShellHandler_TimestampEnvVar(t *testing.T) {
 	script := filepath.Join(dir, "handler.sh")
 	os.WriteFile(script, []byte("#!/bin/sh\necho \"TS=$HOOK_TIMESTAMP\"\n"), 0o755)
 
-	handler := MakeShellHandler(script)
+	handler := makeTestShellHandler(t, script)
 	ts := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
 	ev := &Event{
 		Name:      "test:ts",
@@ -713,7 +743,7 @@ func TestMakeShellHandler_ContextJSON(t *testing.T) {
 	script := filepath.Join(dir, "handler.sh")
 	os.WriteFile(script, []byte("#!/bin/sh\necho \"CTX=$HOOK_CONTEXT\"\n"), 0o755)
 
-	handler := MakeShellHandler(script)
+	handler := makeTestShellHandler(t, script)
 	ev := &Event{
 		Name:      "test:ctx",
 		Timestamp: time.Now(),
@@ -757,7 +787,7 @@ func TestAttachShellHandlers_AttachesScript(t *testing.T) {
 		t.Fatal("handler should be nil before attach")
 	}
 
-	AttachShellHandlers(mgr)
+	attachShellHandlersWithRunner(mgr, testShellSandbox{})
 
 	if mgr.hooks[0].Handler == nil {
 		t.Fatal("handler should be attached after AttachShellHandlers")
@@ -794,7 +824,7 @@ func TestAttachShellHandlers_SkipsExistingHandler(t *testing.T) {
 		Source:  SourceBundled,
 	})
 
-	AttachShellHandlers(mgr)
+	attachShellHandlersWithRunner(mgr, testShellSandbox{})
 
 	// Verify the original handler is preserved.
 	ev := &Event{Name: "test", Timestamp: time.Now(), Context: map[string]any{}, Messages: []string{}}
@@ -812,7 +842,7 @@ func TestAttachShellHandlers_SkipsNoBaseDir(t *testing.T) {
 		Source:  SourceManaged,
 	})
 
-	AttachShellHandlers(mgr)
+	attachShellHandlersWithRunner(mgr, testShellSandbox{})
 
 	if mgr.hooks[0].Handler != nil {
 		t.Error("hook with no BaseDir should not get a handler")
@@ -831,7 +861,7 @@ func TestAttachShellHandlers_SkipsMissingScript(t *testing.T) {
 		Source:  SourceManaged,
 	})
 
-	AttachShellHandlers(mgr)
+	attachShellHandlersWithRunner(mgr, testShellSandbox{})
 
 	if mgr.hooks[0].Handler != nil {
 		t.Error("hook without handler.sh should not get a handler")
