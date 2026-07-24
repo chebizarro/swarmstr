@@ -35,6 +35,57 @@ func TestStatusConstants(t *testing.T) {
 	}
 }
 
+func TestBuildStatusEventUsesCurrentNIP38WireFormat(t *testing.T) {
+	evt, err := BuildStatusEvent("music", "Intergalactic - Beastie Boys", 1692845589)
+	if err != nil {
+		t.Fatalf("BuildStatusEvent: %v", err)
+	}
+	if evt.Kind != 30315 || evt.Content != "Intergalactic - Beastie Boys" {
+		t.Fatalf("unexpected event envelope: %+v", evt)
+	}
+	want := nostr.Tags{{"d", "music"}, {"expiration", "1692845589"}}
+	if len(evt.Tags) != len(want) {
+		t.Fatalf("tags = %v, want %v", evt.Tags, want)
+	}
+	for i := range want {
+		if len(evt.Tags[i]) != len(want[i]) {
+			t.Fatalf("tag[%d] = %v, want %v", i, evt.Tags[i], want[i])
+		}
+		for j := range want[i] {
+			if evt.Tags[i][j] != want[i][j] {
+				t.Fatalf("tag[%d] = %v, want %v", i, evt.Tags[i], want[i])
+			}
+		}
+	}
+	for _, tag := range evt.Tags {
+		if len(tag) > 0 && tag[0] == "status" {
+			t.Fatalf("current NIP-38 must not emit legacy status tag: %v", evt.Tags)
+		}
+	}
+}
+
+func TestParseStatusEventReadsCurrentAndLegacyWireFormats(t *testing.T) {
+	current, err := ParseStatusEvent(nostr.Event{
+		Kind: 30315, Content: "Working", Tags: nostr.Tags{{"d", "general"}},
+	})
+	if err != nil {
+		t.Fatalf("parse current: %v", err)
+	}
+	if current.Type != "general" || current.Content != "Working" || current.LegacyCategory != "" {
+		t.Fatalf("current = %+v", current)
+	}
+
+	legacy, err := ParseStatusEvent(nostr.Event{
+		Kind: 30315, Content: "working on a task", Tags: nostr.Tags{{"d", "cascadia:agent"}, {"status", "typing"}},
+	})
+	if err != nil {
+		t.Fatalf("parse legacy: %v", err)
+	}
+	if legacy.Type != "typing" || legacy.Content != "working on a task" || legacy.LegacyCategory != "cascadia:agent" {
+		t.Fatalf("legacy = %+v", legacy)
+	}
+}
+
 // ─── HeartbeatOptions / NewHeartbeat ──────────────────────────────────────────
 
 func TestNewHeartbeat_Disabled(t *testing.T) {

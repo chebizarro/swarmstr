@@ -26,6 +26,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -151,7 +153,8 @@ type HeartbeatOptions struct {
 	IdleInterval time.Duration
 	// DefaultContent is optional free-form text published with the idle status.
 	DefaultContent string
-	// Category is the d-tag category (default: CategoryAgent).
+	// Category is deprecated. NIP-38 requires d to contain the status type;
+	// it is retained only so older configuration still decodes.
 	Category string
 	// Enabled can be set to false to skip all publishing (no-op mode).
 	Enabled bool
@@ -188,10 +191,6 @@ func NewHeartbeat(parent context.Context, opts HeartbeatOptions) (*Heartbeat, er
 	if opts.IdleInterval <= 0 {
 		opts.IdleInterval = 5 * time.Minute
 	}
-	if opts.Category == "" {
-		opts.Category = CategoryAgent
-	}
-
 	pk, err := opts.Keyer.GetPublicKey(parent)
 	if err != nil {
 		return nil, fmt.Errorf("nip38: get public key: %w", err)
@@ -300,20 +299,78 @@ func (h *Heartbeat) loop() {
 	}
 }
 
-func (h *Heartbeat) publish(ctx context.Context, status, content string, expiry int64) {
-	tags := nostr.Tags{
-		{"d", h.opts.Category},
-		{"status", status},
-	}
-	if expiry > 0 {
-		tags = append(tags, nostr.Tag{"expiration", fmt.Sprintf("%d", expiry)})
-	}
+// UserStatus is the interoperable NIP-38 representation. LegacyCategory is
+// populated only when parsing swarmstr's former d=<category>, status=<type>
+// encoding.
+type UserStatus struct {
+	Type           string
+	Content        string
+	Expiration     int64
+	LegacyCategory string
+}
 
-	evt := nostr.Event{
+// BuildStatusEvent constructs an unsigned current-spec kind-30315 event.
+func BuildStatusEvent(statusType, content string, expiry int64) (nostr.Event, error) {
+	statusType = strings.TrimSpace(statusType)
+	if statusType == "" {
+		return nostr.Event{}, fmt.Errorf("status type is required")
+	}
+	tags := nostr.Tags{{"d", statusType}}
+	if expiry > 0 {
+		tags = append(tags, nostr.Tag{"expiration", strconv.FormatInt(expiry, 10)})
+	}
+	return nostr.Event{
 		Kind:      nostr.Kind(events.KindNIP38Status),
 		Content:   content,
 		CreatedAt: nostr.Now(),
 		Tags:      tags,
+	}, nil
+}
+
+// ParseStatusEvent reads current NIP-38 events and the pre-parity swarmstr
+// encoding where the actual type was stored in a custom status tag.
+func ParseStatusEvent(evt nostr.Event) (UserStatus, error) {
+	if evt.Kind != nostr.Kind(events.KindNIP38Status) {
+		return UserStatus{}, fmt.Errorf("unexpected status kind %d", evt.Kind)
+	}
+	var parsed UserStatus
+	parsed.Content = evt.Content
+	var legacyType string
+	for _, tag := range evt.Tags {
+		if len(tag) < 2 {
+			continue
+		}
+		switch tag[0] {
+		case "d":
+			parsed.Type = strings.TrimSpace(tag[1])
+		case "status":
+			legacyType = strings.TrimSpace(tag[1])
+		case "expiration":
+			if tag[1] == "" {
+				continue
+			}
+			expiry, err := strconv.ParseInt(tag[1], 10, 64)
+			if err != nil || expiry <= 0 {
+				return UserStatus{}, fmt.Errorf("invalid expiration tag %q", tag[1])
+			}
+			parsed.Expiration = expiry
+		}
+	}
+	if legacyType != "" {
+		parsed.LegacyCategory = parsed.Type
+		parsed.Type = legacyType
+	}
+	if parsed.Type == "" {
+		return UserStatus{}, fmt.Errorf("status event missing d tag")
+	}
+	return parsed, nil
+}
+
+func (h *Heartbeat) publish(ctx context.Context, status, content string, expiry int64) {
+	evt, err := BuildStatusEvent(status, content, expiry)
+	if err != nil {
+		log.Printf("nip38: build status event: %v", err)
+		return
 	}
 
 	if err := h.opts.Keyer.SignEvent(ctx, &evt); err != nil {
