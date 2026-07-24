@@ -2,230 +2,265 @@ package nip60_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/nostr/nip60"
 )
 
-// ─── stub encryptor ───────────────────────────────────────────────────────────
+var fixedNow = time.Unix(1_800_000_000, 0)
 
-type stubEncryptor struct{ pubkey string }
+type testEncryptor struct {
+	pubkey       string
+	decrypts     int
+	decryptError error
+}
 
-func (s *stubEncryptor) Encrypt(_ context.Context, _ string, plaintext string) (string, error) {
+func (s *testEncryptor) Encrypt(_ context.Context, _ string, plaintext string) (string, error) {
 	return "enc:" + plaintext, nil
 }
-
-func (s *stubEncryptor) Decrypt(_ context.Context, _ string, ciphertext string) (string, error) {
-	if len(ciphertext) > 4 && ciphertext[:4] == "enc:" {
-		return ciphertext[4:], nil
+func (s *testEncryptor) Decrypt(_ context.Context, _ string, ciphertext string) (string, error) {
+	s.decrypts++
+	if s.decryptError != nil {
+		return "", s.decryptError
 	}
-	return ciphertext, nil
+	return strings.TrimPrefix(ciphertext, "enc:"), nil
+}
+func (s *testEncryptor) PublicKeyHex() string { return s.pubkey }
+
+type testSigner struct{ sk nostr.SecretKey }
+
+func (s testSigner) Sign(_ context.Context, ev *nostr.Event) error { return ev.Sign(s.sk) }
+
+type eventStore struct {
+	events       []nostr.Event
+	publishErr   error
+	publishKinds []nostr.Kind
 }
 
-func (s *stubEncryptor) PublicKeyHex() string { return s.pubkey }
-
-// ─── stub signer ─────────────────────────────────────────────────────────────
-
-type stubSigner struct{ pubkey string }
-
-func (s *stubSigner) Sign(_ context.Context, ev *nostr.Event) error {
-	// no-op stub: leave ID/Sig at zero values
+func (s *eventStore) publish(_ context.Context, ev nostr.Event) error {
+	s.publishKinds = append(s.publishKinds, ev.Kind)
+	if s.publishErr != nil {
+		return s.publishErr
+	}
+	s.events = append(s.events, ev)
 	return nil
 }
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
-// hexPubkey is a valid 64-char hex pubkey for test use.
-const hexPubkey = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-
-// ─── tests ─────────────────────────────────────────────────────────────────────
-
-func TestPublishAndFetchWallet(t *testing.T) {
-	ctx := context.Background()
-
-	var published []nostr.Event
-	publishFn := func(_ context.Context, ev nostr.Event) error {
-		published = append(published, ev)
-		return nil
-	}
-	queryFn := func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) {
-		if len(published) == 0 {
-			return nil, nil
+func (s *eventStore) query(_ context.Context, filter nostr.Filter) ([]*nostr.Event, error) {
+	var out []*nostr.Event
+	for i := range s.events {
+		ev := &s.events[i]
+		if len(filter.Kinds) > 0 && !containsKind(filter.Kinds, ev.Kind) {
+			continue
 		}
-		ev := published[len(published)-1]
-		return []*nostr.Event{&ev}, nil
-	}
-
-	enc := &stubEncryptor{pubkey: hexPubkey}
-	signer := &stubSigner{pubkey: hexPubkey}
-	client := nip60.NewWalletClient(enc, signer, publishFn, queryFn)
-
-	mints := []nip60.MintEntry{
-		{URL: "https://mint.example.com", Units: []string{"sat"}},
-	}
-
-	ev, err := client.PublishWallet(ctx, "test-wallet", mints, "sat")
-	if err != nil {
-		t.Fatalf("PublishWallet error: %v", err)
-	}
-	if int(ev.Kind) != nip60.KindWallet {
-		t.Errorf("expected kind %d, got %d", nip60.KindWallet, ev.Kind)
-	}
-
-	content, _, err := client.FetchWallet(ctx, hexPubkey)
-	if err != nil {
-		t.Fatalf("FetchWallet error: %v", err)
-	}
-	if content.Name != "test-wallet" {
-		t.Errorf("expected name 'test-wallet', got %q", content.Name)
-	}
-	if len(content.Mints) != 1 || content.Mints[0].URL != "https://mint.example.com" {
-		t.Errorf("unexpected mints: %+v", content.Mints)
-	}
-}
-
-func TestPublishAndFetchUnspentTokens(t *testing.T) {
-	ctx := context.Background()
-
-	var published []nostr.Event
-	publishFn := func(_ context.Context, ev nostr.Event) error {
-		published = append(published, ev)
-		return nil
-	}
-	queryFn := func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) {
-		result := make([]*nostr.Event, len(published))
-		for i := range published {
-			ev := published[i]
-			result[i] = &ev
+		if len(filter.Authors) > 0 && !containsAuthor(filter.Authors, ev.PubKey) {
+			continue
 		}
-		return result, nil
+		out = append(out, ev)
 	}
+	return out, nil
+}
 
-	enc := &stubEncryptor{pubkey: hexPubkey}
-	signer := &stubSigner{pubkey: hexPubkey}
-	client := nip60.NewWalletClient(enc, signer, publishFn, queryFn)
-
-	proofs := []nip60.Proof{
-		{Amount: 100, ID: "keyset1", Secret: "secret1", C: "sig1"},
-		{Amount: 50, ID: "keyset1", Secret: "secret2", C: "sig2"},
+func containsKind(kinds []nostr.Kind, kind nostr.Kind) bool {
+	for _, candidate := range kinds {
+		if candidate == kind {
+			return true
+		}
 	}
+	return false
+}
+func containsAuthor(authors []nostr.PubKey, author nostr.PubKey) bool {
+	for _, candidate := range authors {
+		if candidate == author {
+			return true
+		}
+	}
+	return false
+}
 
-	ev, err := client.PublishUnspentToken(ctx, "https://mint.example.com", proofs)
+func newHarness(t *testing.T) (*nip60.WalletClient, *testEncryptor, *eventStore, nostr.SecretKey) {
+	t.Helper()
+	sk, err := nostr.SecretKeyFromHex(strings.Repeat("1", 64))
 	if err != nil {
-		t.Fatalf("PublishUnspentToken error: %v", err)
+		t.Fatal(err)
 	}
-	if int(ev.Kind) != nip60.KindUnspentToken {
-		t.Errorf("expected kind %d, got %d", nip60.KindUnspentToken, ev.Kind)
-	}
+	enc := &testEncryptor{pubkey: nostr.GetPublicKey(sk).Hex()}
+	store := &eventStore{}
+	client := nip60.NewWalletClient(enc, testSigner{sk}, store.publish, store.query, nip60.WithClock(func() time.Time { return fixedNow }))
+	return client, enc, store, sk
+}
 
-	tokens, _, err := client.FetchUnspentTokens(ctx, hexPubkey)
+func TestPublishAndFetchWalletValidatesAndDecrypts(t *testing.T) {
+	client, _, _, _ := newHarness(t)
+	ev, err := client.PublishWalletWithPrivkey(context.Background(), "wallet-secret", []nip60.MintEntry{{URL: "https://MINT.example/", Units: []string{"SAT", "sat"}}}, "sat")
 	if err != nil {
-		t.Fatalf("FetchUnspentTokens error: %v", err)
+		t.Fatal(err)
 	}
-	if len(tokens) != 1 {
-		t.Fatalf("expected 1 token bundle, got %d", len(tokens))
+	if ev.Kind != nip60.KindWallet || !ev.CheckID() || !ev.VerifySignature() {
+		t.Fatalf("invalid published wallet event: %+v", ev)
 	}
-	if tokens[0].Mint != "https://mint.example.com" {
-		t.Errorf("unexpected mint: %q", tokens[0].Mint)
+	wallet, _, err := client.FetchWallet(context.Background(), ev.PubKey.Hex())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(tokens[0].Proofs) != 2 {
-		t.Errorf("expected 2 proofs, got %d", len(tokens[0].Proofs))
+	if wallet.Privkey != "wallet-secret" || len(wallet.Mints) != 1 || wallet.Mints[0].URL != "https://mint.example" {
+		t.Fatalf("unexpected wallet: %+v", wallet)
 	}
 }
 
-func TestTokenHistoryKind(t *testing.T) {
-	ctx := context.Background()
-
-	var published []nostr.Event
-	publishFn := func(_ context.Context, ev nostr.Event) error {
-		published = append(published, ev)
-		return nil
+func TestFetchWalletRejectsInvalidEventBeforeDecrypt(t *testing.T) {
+	client, enc, store, sk := newHarness(t)
+	ev := nostr.Event{Kind: nip60.KindWallet, CreatedAt: nostr.Timestamp(fixedNow.Unix()), Content: `enc:[["privkey","x"],["mint","https://mint.example"]]`}
+	if err := ev.Sign(sk); err != nil {
+		t.Fatal(err)
 	}
-	queryFn := func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) { return nil, nil }
-
-	enc := &stubEncryptor{pubkey: hexPubkey}
-	signer := &stubSigner{pubkey: hexPubkey}
-	client := nip60.NewWalletClient(enc, signer, publishFn, queryFn)
-
-	ev, err := client.PublishTokenHistory(ctx, "in", 100, "sat", "https://mint.example.com", "received nutzap")
-	if err != nil {
-		t.Fatalf("PublishTokenHistory error: %v", err)
+	ev.Content += "tampered"
+	store.events = append(store.events, ev)
+	_, _, err := client.FetchWallet(context.Background(), nostr.GetPublicKey(sk).Hex())
+	if err == nil {
+		t.Fatal("expected invalid event rejection")
 	}
-	if int(ev.Kind) != nip60.KindTokenHistory {
-		t.Errorf("expected kind %d, got %d", nip60.KindTokenHistory, ev.Kind)
+	if enc.decrypts != 0 {
+		t.Fatalf("decrypt called %d times before validation", enc.decrypts)
 	}
 }
 
-func TestPublishWalletUsesNIP60EncryptedTagArray(t *testing.T) {
+func TestFetchUnspentTokensDerivesLiveStateFromDelAndDeletion(t *testing.T) {
+	client, _, _, _ := newHarness(t)
 	ctx := context.Background()
-	var published nostr.Event
-	client := nip60.NewWalletClient(&stubEncryptor{pubkey: hexPubkey}, &stubSigner{pubkey: hexPubkey}, func(_ context.Context, ev nostr.Event) error {
-		published = ev
-		return nil
-	}, func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) { return nil, nil })
-
-	ev, err := client.PublishWalletWithPrivkey(ctx, "wallet-privkey", []nip60.MintEntry{{URL: "https://mint.example.com", Units: []string{"sat", "usd"}}}, "sat")
+	old, err := client.PublishUnspentToken(ctx, "https://mint.example", []nip60.Proof{{Amount: 4, ID: "ks", Secret: "old", C: "02aa"}})
 	if err != nil {
-		t.Fatalf("PublishWalletWithPrivkey error: %v", err)
+		t.Fatal(err)
 	}
-	if int(ev.Kind) != 17375 {
-		t.Fatalf("wallet kind = %d, want 17375", ev.Kind)
+	result, err := client.PublishRolloverTransition(ctx, nip60.RolloverRequest{
+		Mint: "https://mint.example", Unit: "sat",
+		Proofs:            []nip60.Proof{{Amount: 3, ID: "ks", Secret: "new", C: "02bb"}},
+		DestroyedEventIDs: []string{old.ID.Hex()},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(ev.Tags) != 0 {
-		t.Fatalf("wallet event should not have public d tag: %v", ev.Tags)
+	if result.Deletion == nil || result.CreatedToken == nil {
+		t.Fatalf("incomplete transition: %+v", result)
 	}
-	want := `enc:[["privkey","wallet-privkey"],["mint","https://mint.example.com","sat","usd"]]`
-	if published.Content != want {
-		t.Fatalf("wallet content = %q, want %q", published.Content, want)
+	tokens, events, err := client.FetchUnspentTokens(ctx, old.PubKey.Hex())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 1 || len(events) != 1 || events[0].ID != result.CreatedToken.ID || tokens[0].Del[0] != old.ID.Hex() {
+		t.Fatalf("unexpected live state tokens=%+v events=%+v", tokens, events)
 	}
 }
 
-func TestPublishTokenRolloverAndDeletion(t *testing.T) {
+func TestDeletedSuccessorDoesNotResurrectPredecessor(t *testing.T) {
+	client, _, _, _ := newHarness(t)
 	ctx := context.Background()
-	var published []nostr.Event
-	client := nip60.NewWalletClient(&stubEncryptor{pubkey: hexPubkey}, &stubSigner{pubkey: hexPubkey}, func(_ context.Context, ev nostr.Event) error {
-		published = append(published, ev)
-		return nil
-	}, func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) { return nil, nil })
-
-	_, err := client.PublishUnspentTokenWithRollover(ctx, "https://mint.example.com", "sat", []nip60.Proof{{Amount: 1, ID: "ks", Secret: "s", C: "c"}}, []string{"old-token"})
+	old, _ := client.PublishUnspentToken(ctx, "https://mint.example", []nip60.Proof{{Amount: 2, ID: "ks", Secret: "old", C: "c1"}})
+	transition, err := client.PublishRolloverTransition(ctx, nip60.RolloverRequest{Mint: "https://mint.example", Unit: "sat", Proofs: []nip60.Proof{{Amount: 1, ID: "ks", Secret: "new", C: "c2"}}, DestroyedEventIDs: []string{old.ID.Hex()}})
 	if err != nil {
-		t.Fatalf("PublishUnspentTokenWithRollover error: %v", err)
+		t.Fatal(err)
 	}
-	if published[0].Content != `enc:{"mint":"https://mint.example.com","unit":"sat","proofs":[{"amount":1,"id":"ks","secret":"s","C":"c"}],"del":["old-token"]}` {
-		t.Fatalf("unexpected token content: %q", published[0].Content)
+	if _, err := client.PublishTokenDeletion(ctx, transition.CreatedToken.ID.Hex()); err != nil {
+		t.Fatal(err)
 	}
-
-	del, err := client.PublishTokenDeletion(ctx, "old-token")
+	tokens, _, err := client.FetchUnspentTokens(ctx, old.PubKey.Hex())
 	if err != nil {
-		t.Fatalf("PublishTokenDeletion error: %v", err)
+		t.Fatal(err)
 	}
-	if int(del.Kind) != 5 {
-		t.Fatalf("deletion kind = %d, want 5", del.Kind)
-	}
-	if len(del.Tags) < 2 || del.Tags[0][0] != "k" || del.Tags[0][1] != "7375" || del.Tags[1][0] != "e" || del.Tags[1][1] != "old-token" {
-		t.Fatalf("unexpected deletion tags: %v", del.Tags)
+	if len(tokens) != 0 {
+		t.Fatalf("destroyed predecessor resurrected: %+v", tokens)
 	}
 }
 
-func TestPublishTokenHistoryEncryptedTagsAndPublicRedeemed(t *testing.T) {
-	ctx := context.Background()
-	var published nostr.Event
-	client := nip60.NewWalletClient(&stubEncryptor{pubkey: hexPubkey}, &stubSigner{pubkey: hexPubkey}, func(_ context.Context, ev nostr.Event) error {
-		published = ev
-		return nil
-	}, func(_ context.Context, _ nostr.Filter) ([]*nostr.Event, error) { return nil, nil })
+func TestRolloverCreatePrecedesDeletionAndReportsPartialFailure(t *testing.T) {
+	client, _, store, _ := newHarness(t)
+	oldID := strings.Repeat("a", 64)
+	calls := 0
+	// A routed publisher lets the first publish succeed and the deletion fail.
+	client, enc, _, sk := newHarness(t)
+	client = nip60.NewWalletClient(enc, testSigner{sk}, nil, func(context.Context, nostr.Filter) ([]*nostr.Event, error) { return nil, nil },
+		nip60.WithClock(func() time.Time { return fixedNow }),
+		nip60.WithRouting(nil, func(_ context.Context, _ []string, ev nostr.Event) error {
+			calls++
+			store.publishKinds = append(store.publishKinds, ev.Kind)
+			if calls == 2 {
+				return errors.New("relay rejected deletion")
+			}
+			return nil
+		}, nil))
+	result, err := client.PublishRolloverTransition(context.Background(), nip60.RolloverRequest{Mint: "https://mint.example", Unit: "sat", Proofs: []nip60.Proof{{Amount: 1, ID: "ks", Secret: "s", C: "c"}}, DestroyedEventIDs: []string{oldID}})
+	if err == nil || result == nil || result.CreatedToken == nil || result.Deletion != nil {
+		t.Fatalf("expected partial transition, result=%+v err=%v", result, err)
+	}
+	if len(store.publishKinds) != 2 || store.publishKinds[0] != nip60.KindUnspentToken || store.publishKinds[1] != nip60.KindDeletion {
+		t.Fatalf("wrong transition order: %v", store.publishKinds)
+	}
+}
 
-	_, err := client.PublishTokenHistoryTags(ctx, [][]string{{"direction", "in"}, {"amount", "1"}, {"unit", "sat"}, {"e", "new-token", "", "created"}}, nostr.Tags{{"e", "nutzap-event", "wss://relay", "redeemed"}})
+func TestTokenHistoryRequiresEventReferences(t *testing.T) {
+	client, _, _, _ := newHarness(t)
+	if _, err := client.PublishTokenHistory(context.Background(), "in", 1, "sat", "https://mint.example", ""); err == nil {
+		t.Fatal("expected reference-free history rejection")
+	}
+	created := strings.Repeat("b", 64)
+	redeemed := strings.Repeat("c", 64)
+	ev, err := client.PublishTokenHistory(context.Background(), "in", 1, "sat", "https://mint.example", "", nip60.HistoryRef{EventID: created, Marker: "created"}, nip60.HistoryRef{EventID: redeemed, RelayHint: "wss://relay.example", Marker: "redeemed"})
 	if err != nil {
-		t.Fatalf("PublishTokenHistoryTags error: %v", err)
+		t.Fatal(err)
 	}
-	if published.Content != `enc:[["direction","in"],["amount","1"],["unit","sat"],["e","new-token","","created"]]` {
-		t.Fatalf("unexpected history content: %q", published.Content)
+	if !strings.Contains(ev.Content, created) || len(ev.Tags) != 1 || ev.Tags[0][3] != "redeemed" {
+		t.Fatalf("unexpected history event: %+v", ev)
 	}
-	if len(published.Tags) != 1 || published.Tags[0][3] != "redeemed" {
-		t.Fatalf("expected public redeemed e tag, got %v", published.Tags)
+}
+
+func TestQuotePublishAndFetch(t *testing.T) {
+	client, _, _, _ := newHarness(t)
+	ev, err := client.PublishQuote(context.Background(), "quote-123", "https://mint.example/", fixedNow.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != nip60.KindQuote {
+		t.Fatalf("kind=%d", ev.Kind)
+	}
+	quotes, err := client.FetchActiveQuotes(context.Background(), ev.PubKey.Hex())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quotes) != 1 || quotes[0].QuoteID != "quote-123" || quotes[0].Mint != "https://mint.example" {
+		t.Fatalf("unexpected quotes: %+v", quotes)
+	}
+}
+
+func TestWalletRoutingPrefersKind10019Relays(t *testing.T) {
+	client, enc, store, sk := newHarness(t)
+	info := nostr.Event{Kind: nip60.KindNutzapInfo, CreatedAt: nostr.Timestamp(fixedNow.Unix()), Tags: nostr.Tags{{"relay", "wss://wallet.example/"}}}
+	if err := info.Sign(sk); err != nil {
+		t.Fatal(err)
+	}
+	store.events = append(store.events, info)
+	wallet := nostr.Event{Kind: nip60.KindWallet, CreatedAt: nostr.Timestamp(fixedNow.Unix()), Content: `enc:[["privkey","x"],["mint","https://mint.example"]]`}
+	if err := wallet.Sign(sk); err != nil {
+		t.Fatal(err)
+	}
+	store.events = append(store.events, wallet)
+	var routed [][]string
+	client = nip60.NewWalletClient(enc, testSigner{sk}, store.publish, store.query,
+		nip60.WithClock(func() time.Time { return fixedNow }),
+		nip60.WithRouting(func(ctx context.Context, relays []string, filter nostr.Filter) ([]*nostr.Event, error) {
+			routed = append(routed, append([]string(nil), relays...))
+			return store.query(ctx, filter)
+		}, nil, func(context.Context, string, nip60.RelayPurpose) ([]string, error) {
+			return []string{"wss://nip65.example"}, nil
+		}))
+	if _, _, err := client.FetchWallet(context.Background(), enc.pubkey); err != nil {
+		t.Fatal(err)
+	}
+	if len(routed) < 2 || len(routed[0]) != 1 || routed[0][0] != "wss://nip65.example" || len(routed[1]) != 1 || routed[1][0] != "wss://wallet.example" {
+		t.Fatalf("unexpected routes: %v", routed)
 	}
 }

@@ -11,6 +11,7 @@ require (
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/coder/websocket v1.8.13
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
 	github.com/dop251/goja v0.0.0-20260305124333-6a7976c22267
 	github.com/fatih/color v1.19.0
 	github.com/fsnotify/fsnotify v1.9.0
@@ -53,7 +54,6 @@ require (
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/decred/dcrd/lru v1.1.2 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
