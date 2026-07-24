@@ -5761,39 +5761,29 @@ func main() {
 
 		// ── Deliver reply ─────────────────────────────────────────────────
 		outboundText := turnResult.Text
-		audioSent := false
-		audioPath, isMedia := extractMediaOutputPath(turnResult.Text)
+		mediaSent := false
+		mediaPath, isMedia := extractMediaOutputPath(turnResult.Text)
 		if isMedia {
-			if ah, ok := rawHandle.(sdk.AudioHandle); ok {
-				audioData, readErr := os.ReadFile(filepath.FromSlash(audioPath))
-				if readErr != nil {
-					log.Printf("channel audio read error channel=%s path=%s err=%v", chID, audioPath, readErr)
-				} else {
-					format := strings.TrimPrefix(strings.ToLower(filepath.Ext(audioPath)), ".")
-					if format == "" {
-						format = "mp3"
-					}
-					if sendErr := ah.SendAudio(turnCtx, audioData, format); sendErr != nil {
-						log.Printf("channel audio send error channel=%s session=%s err=%v", chID, sessionID, sendErr)
-					} else {
-						audioSent = true
-						metricspkg.MessagesOutbound.Inc()
-						wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
-							TS:        time.Now().UnixMilli(),
-							ChannelID: chID,
-							Direction: "outbound",
-							From:      activeAgentID,
-							Text:      "[audio]",
-						})
-						logBuffer.Append("info", fmt.Sprintf("channel audio reply sent channel=%s session=%s", chID, sessionID))
-					}
-				}
+			dispatch := dispatchChannelMediaReply(turnCtx, rawHandle, senderID, mediaPath)
+			if dispatch.err != nil {
+				log.Printf("channel media send error channel=%s session=%s path=%s err=%v", chID, sessionID, mediaPath, dispatch.err)
 			}
-			if !audioSent {
-				outboundText = fmt.Sprintf("[audio generated] %s", audioPath)
+			if dispatch.sent {
+				mediaSent = true
+				metricspkg.MessagesOutbound.Inc()
+				wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+					TS:        time.Now().UnixMilli(),
+					ChannelID: chID,
+					Direction: "outbound",
+					From:      activeAgentID,
+					Text:      "[" + dispatch.method + "]",
+				})
+				logBuffer.Append("info", fmt.Sprintf("channel %s reply sent channel=%s session=%s", dispatch.method, chID, sessionID))
+			} else {
+				outboundText = mediaReplyFallbackText(mediaPath)
 			}
 		}
-		if !audioSent {
+		if !mediaSent {
 			var seForUsage *state.SessionEntry
 			if sessionStore != nil {
 				if se, ok := sessionStore.Get(sessionID); ok {
@@ -5805,7 +5795,7 @@ func main() {
 			// Strip timestamp annotations that LLM may have copied from conversation history
 			outboundText = stripTimestampAnnotations(outboundText)
 		}
-		if !audioSent && handle != nil && outboundText != "" {
+		if !mediaSent && handle != nil && outboundText != "" {
 			var sendOK bool
 			outboundText, sendOK = applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: chID, SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID})
 			if !sendOK {
