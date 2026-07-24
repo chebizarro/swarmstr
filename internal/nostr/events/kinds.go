@@ -113,6 +113,7 @@ const (
 	KindPR               Kind = 1618
 	KindPRUpdate         Kind = 1619
 	KindIssue            Kind = 1621
+	KindNIP34GraspList   Kind = 10317
 	KindStatusOpen       Kind = 1630
 	KindStatusApplied    Kind = 1631
 	KindStatusClosed     Kind = 1632

@@ -214,6 +214,7 @@ func TestKindConstants_Values(t *testing.T) {
 		{"PR", KindPR, 1618},
 		{"PRUpdate", KindPRUpdate, 1619},
 		{"Issue", KindIssue, 1621},
+		{"NIP34GraspList", KindNIP34GraspList, 10317},
 		{"StatusOpen", KindStatusOpen, 1630},
 		{"StatusApplied", KindStatusApplied, 1631},
 		{"StatusClosed", KindStatusClosed, 1632},
