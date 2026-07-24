@@ -5,12 +5,13 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
 // GatewayMethods exposes Matrix action/client/send operations through the plugin interface.
 func (p *MatrixPlugin) GatewayMethods() []sdk.GatewayMethod {
-	return []sdk.GatewayMethod{
+	return channels.AccountScopedGatewayMethods(p.ID(), []sdk.GatewayMethod{
 		{
 			Method:      "matrix.send",
 			Description: "Send a Matrix room message",
@@ -94,7 +95,7 @@ func (p *MatrixPlugin) GatewayMethods() []sdk.GatewayMethod {
 			}
 			return b.EditMessage(ctx, eventID, text)
 		}),
-	}
+	})
 }
 
 type matrixActionFunc func(context.Context, *matrixBot, map[string]any) error

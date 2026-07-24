@@ -92,7 +92,7 @@ func (s *SlackPlugin) ConfigSchema() map[string]any {
 // Capabilities declares the features supported by the Slack Bot channel.
 func (s *SlackPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Typing:       false, // Slack removed bot typing API in 2021
+		Typing:       true, // Assistant threads expose status-based typing lifecycle.
 		Reactions:    true,
 		Threads:      true,
 		Audio:        false,
@@ -102,7 +102,7 @@ func (s *SlackPlugin) Capabilities() sdk.ChannelCapabilities {
 }
 
 func (s *SlackPlugin) GatewayMethods() []sdk.GatewayMethod {
-	return []sdk.GatewayMethod{
+	return channels.AccountScopedGatewayMethods(s.ID(), []sdk.GatewayMethod{
 		{
 			Method:      "slack.send",
 			Description: "Send a message to a Slack channel",
@@ -124,7 +124,7 @@ func (s *SlackPlugin) GatewayMethods() []sdk.GatewayMethod {
 				return map[string]any{"ok": true, "ts": ts}, nil
 			},
 		},
-	}
+	})
 }
 
 func (s *SlackPlugin) Connect(
@@ -201,6 +201,7 @@ type slackBot struct {
 	botUserID      string
 	signingSecret  string
 	defaultBlocks  []map[string]any
+	lastThreadTS   string
 	onMessage      func(sdk.InboundChannelMessage)
 	seenEvents     map[string]struct{}
 	done           chan struct{}
@@ -220,6 +221,45 @@ func (b *slackBot) client(timeout time.Duration) *http.Client {
 func (b *slackBot) Send(ctx context.Context, text string) error {
 	_, err := b.SendWithReceipt(ctx, text)
 	return err
+}
+
+// SendTyping maps the shared typing capability to Slack Assistant thread
+// status. Slack removed the legacy bot typing API, so status is only emitted
+// when an inbound/outbound thread context is known.
+func (b *slackBot) SendTyping(ctx context.Context, _ int) error {
+	b.mu.Lock()
+	threadTS := b.lastThreadTS
+	b.mu.Unlock()
+	if threadTS == "" {
+		return nil
+	}
+	return b.SetThreadStatus(ctx, threadTS, "is typing...")
+}
+
+// ClearTyping clears the Assistant thread status at the end of a turn.
+func (b *slackBot) ClearTyping(ctx context.Context) error {
+	b.mu.Lock()
+	threadTS := b.lastThreadTS
+	b.mu.Unlock()
+	if threadTS == "" {
+		return nil
+	}
+	return b.SetThreadStatus(ctx, threadTS, "")
+}
+
+// SetThreadStatus updates Slack's Assistant thread status for explicit
+// start/update/clear lifecycle calls.
+func (b *slackBot) SetThreadStatus(ctx context.Context, threadID, status string) error {
+	threadID = strings.TrimPrefix(strings.TrimSpace(threadID), "slack-")
+	if threadID == "" {
+		return fmt.Errorf("slack SetThreadStatus: threadID is required")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"channel_id": b.slackChannelID,
+		"thread_ts":  threadID,
+		"status":     status,
+	})
+	return b.slackPost(ctx, slackAPIBase+"/assistant.threads.setStatus", body)
 }
 
 func (b *slackBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
@@ -299,12 +339,35 @@ func (b *slackBot) EditMessage(ctx context.Context, eventID, newText string) err
 // SendInThread posts a reply in a Slack thread.
 // threadID is the Slack message timestamp of the parent message (the thread root).
 func (b *slackBot) SendInThread(ctx context.Context, threadID, text string) error {
-	body, _ := json.Marshal(map[string]any{
+	_, err := b.SendInThreadWithReceipt(ctx, threadID, text)
+	return err
+}
+
+func (b *slackBot) SendInThreadWithReceipt(ctx context.Context, threadID, text string) (channels.DeliveryReceipt, error) {
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "slack", Attempts: 1, CreatedAt: time.Now()}
+	threadID = strings.TrimPrefix(strings.TrimSpace(threadID), "slack-")
+	if threadID == "" {
+		err := fmt.Errorf("slack SendInThread: threadID is required")
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	ts, err := postSlackMessagePayloadWithClient(ctx, b.client(15*time.Second), b.restScheduler, b.token, map[string]any{
 		"channel":   b.slackChannelID,
 		"text":      text,
 		"thread_ts": threadID,
 	})
-	return b.slackPost(ctx, slackAPIBase+"/chat.postMessage", body)
+	if ts != "" {
+		receipt.MessageID = "slack-" + ts
+	}
+	if err != nil {
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
+	}
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
 }
 
 // slackPost is a convenience helper for authenticated Slack API POSTs.
@@ -474,6 +537,11 @@ func (b *slackBot) handleInteractionPayload(raw string) {
 }
 
 func (b *slackBot) processSlackEvent(event slackEvent) {
+	if event.ThreadTS == "" && event.ParentUserID != "" {
+		if recovered := b.recoverSlackThreadTS(context.Background(), event); recovered != "" {
+			event.ThreadTS = recovered
+		}
+	}
 	if event.Channel != "" && event.Channel != b.slackChannelID {
 		return
 	}
@@ -495,6 +563,11 @@ func (b *slackBot) processSlackEvent(event slackEvent) {
 		return
 	}
 	rawThreadID := strings.TrimSpace(event.ThreadTS)
+	if rawThreadID != "" {
+		b.mu.Lock()
+		b.lastThreadTS = rawThreadID
+		b.mu.Unlock()
+	}
 	threadID := ""
 	replyToEventID := ""
 	if rawThreadID != "" && rawThreadID != event.Ts {
@@ -522,15 +595,50 @@ type slackEventEnvelope struct {
 }
 
 type slackEvent struct {
-	Type     string      `json:"type"`
-	Subtype  string      `json:"subtype,omitempty"`
-	User     string      `json:"user"`
-	BotID    string      `json:"bot_id,omitempty"`
-	Text     string      `json:"text"`
-	Ts       string      `json:"ts"`
-	ThreadTS string      `json:"thread_ts,omitempty"`
-	Channel  string      `json:"channel"`
-	Files    []slackFile `json:"files,omitempty"`
+	Type         string      `json:"type"`
+	Subtype      string      `json:"subtype,omitempty"`
+	User         string      `json:"user"`
+	BotID        string      `json:"bot_id,omitempty"`
+	Text         string      `json:"text"`
+	Ts           string      `json:"ts"`
+	ThreadTS     string      `json:"thread_ts,omitempty"`
+	ParentUserID string      `json:"parent_user_id,omitempty"`
+	Channel      string      `json:"channel"`
+	Files        []slackFile `json:"files,omitempty"`
+}
+
+func (b *slackBot) recoverSlackThreadTS(ctx context.Context, event slackEvent) string {
+	if strings.TrimSpace(event.Channel) == "" || strings.TrimSpace(event.Ts) == "" {
+		return ""
+	}
+	query := url.Values{}
+	query.Set("channel", event.Channel)
+	query.Set("latest", event.Ts)
+	query.Set("inclusive", "true")
+	query.Set("limit", "1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, slackAPIBase+"/conversations.history?"+query.Encode(), nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+b.token)
+	resp, err := slackDo(ctx, b.client(15*time.Second), b.restScheduler, req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var result struct {
+		OK       bool         `json:"ok"`
+		Messages []slackEvent `json:"messages"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil || !result.OK {
+		return ""
+	}
+	for _, message := range result.Messages {
+		if message.Ts == event.Ts && strings.TrimSpace(message.ThreadTS) != "" {
+			return strings.TrimSpace(message.ThreadTS)
+		}
+	}
+	return ""
 }
 
 type slackFile struct {
@@ -619,6 +727,10 @@ func postSlackMessageWithClient(ctx context.Context, client *http.Client, schedu
 	if len(blocks) > 0 {
 		payload["blocks"] = blocks
 	}
+	return postSlackMessagePayloadWithClient(ctx, client, scheduler, token, payload)
+}
+
+func postSlackMessagePayloadWithClient(ctx context.Context, client *http.Client, scheduler *channels.RESTScheduler, token string, payload map[string]any) (string, error) {
 	body, _ := json.Marshal(payload)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

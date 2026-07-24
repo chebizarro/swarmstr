@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,8 +57,8 @@ func TestPlugin_ConfigSchema(t *testing.T) {
 func TestPlugin_Capabilities(t *testing.T) {
 	p := &SlackPlugin{}
 	caps := p.Capabilities()
-	if !caps.Reactions || !caps.Threads || !caps.Edit {
-		t.Error("expected Reactions, Threads, Edit capabilities")
+	if !caps.Typing || !caps.Reactions || !caps.Threads || !caps.Edit {
+		t.Error("expected Typing, Reactions, Threads, Edit capabilities")
 	}
 }
 
@@ -317,6 +318,117 @@ func TestBotID(t *testing.T) {
 }
 
 // ─── Events API thread metadata ──────────────────────────────────────────────
+
+func TestSlackAssistantThreadTypingLifecycle(t *testing.T) {
+	var payloads []map[string]any
+	bot := &slackBot{
+		channelID:      "slack-main",
+		slackChannelID: "C123",
+		token:          "xoxb-test",
+		onMessage:      func(sdk.InboundChannelMessage) {},
+		done:           make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/api/assistant.threads.setStatus" {
+				t.Fatalf("unexpected status path: %s", req.URL.Path)
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer xoxb-test" {
+				t.Fatalf("unexpected authorization: %q", got)
+			}
+			var payload map[string]any
+			_ = json.NewDecoder(req.Body).Decode(&payload)
+			payloads = append(payloads, payload)
+			return jsonResponse(req, `{"ok":true}`), nil
+		})},
+	}
+	bot.processSlackEvent(slackEvent{Type: "message", Channel: "C123", User: "U123", Text: "thread reply", Ts: "171.200", ThreadTS: "171.100"})
+	if err := bot.SendTyping(context.Background(), 0); err != nil {
+		t.Fatalf("SendTyping: %v", err)
+	}
+	if err := bot.SetThreadStatus(context.Background(), "slack-171.100", "working"); err != nil {
+		t.Fatalf("SetThreadStatus: %v", err)
+	}
+	if err := bot.ClearTyping(context.Background()); err != nil {
+		t.Fatalf("ClearTyping: %v", err)
+	}
+	if len(payloads) != 3 {
+		t.Fatalf("expected start/update/clear payloads, got %#v", payloads)
+	}
+	wantStatuses := []string{"is typing...", "working", ""}
+	for i, want := range wantStatuses {
+		if payloads[i]["channel_id"] != "C123" || payloads[i]["thread_ts"] != "171.100" || payloads[i]["status"] != want {
+			t.Fatalf("payload %d = %#v, want status %q", i, payloads[i], want)
+		}
+	}
+}
+
+func TestSlackTypingWithoutThreadIsNoop(t *testing.T) {
+	calls := 0
+	bot := &slackBot{
+		channelID: "slack-main",
+		done:      make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return jsonResponse(req, `{"ok":true}`), nil
+		})},
+	}
+	if err := bot.SendTyping(context.Background(), 0); err != nil {
+		t.Fatalf("SendTyping: %v", err)
+	}
+	if err := bot.ClearTyping(context.Background()); err != nil {
+		t.Fatalf("ClearTyping: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("typing without a thread made %d API calls", calls)
+	}
+}
+
+func TestSendInThreadWithReceiptRoutesAndReturnsMessageID(t *testing.T) {
+	var payload map[string]any
+	bot := &slackBot{
+		channelID:      "slack-main",
+		slackChannelID: "C123",
+		token:          "xoxb-test",
+		done:           make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/api/chat.postMessage" {
+				t.Fatalf("unexpected path: %s", req.URL.Path)
+			}
+			_ = json.NewDecoder(req.Body).Decode(&payload)
+			return jsonResponse(req, `{"ok":true,"ts":"171.222"}`), nil
+		})},
+	}
+	receipt, err := bot.SendInThreadWithReceipt(context.Background(), "slack-171.100", "threaded draft")
+	if err != nil {
+		t.Fatalf("SendInThreadWithReceipt: %v", err)
+	}
+	if payload["thread_ts"] != "171.100" || payload["channel"] != "C123" {
+		t.Fatalf("unexpected thread routing payload: %#v", payload)
+	}
+	if receipt.MessageID != "slack-171.222" {
+		t.Fatalf("unexpected receipt: %+v", receipt)
+	}
+}
+
+func TestSlackEvents_RecoversMissingThreadTimestamp(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	bot := &slackBot{
+		channelID:      "slack-main",
+		slackChannelID: "C123",
+		token:          "xoxb-test",
+		onMessage:      func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
+		done:           make(chan struct{}),
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/api/conversations.history" || req.URL.Query().Get("latest") != "171.200" || req.URL.Query().Get("inclusive") != "true" {
+				t.Fatalf("unexpected recovery request: %s", req.URL.String())
+			}
+			return jsonResponse(req, `{"ok":true,"messages":[{"ts":"171.200","thread_ts":"171.100"}]}`), nil
+		})},
+	}
+	bot.processSlackEvent(slackEvent{Type: "message", Channel: "C123", User: "U123", ParentUserID: "U999", Text: "reply", Ts: "171.200"})
+	if len(delivered) != 1 || delivered[0].ThreadID != "171.100" || delivered[0].ReplyToEventID != "slack-171.100" {
+		t.Fatalf("expected recovered thread metadata, got %+v", delivered)
+	}
+}
 
 func TestSlackEvents_PopulatesThreadMetadata(t *testing.T) {
 	var delivered []sdk.InboundChannelMessage

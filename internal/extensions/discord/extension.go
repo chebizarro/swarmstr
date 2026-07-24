@@ -100,7 +100,7 @@ func (d *DiscordPlugin) Capabilities() sdk.ChannelCapabilities {
 }
 
 func (d *DiscordPlugin) GatewayMethods() []sdk.GatewayMethod {
-	return []sdk.GatewayMethod{
+	return channels.AccountScopedGatewayMethods(d.ID(), []sdk.GatewayMethod{
 		{
 			Method:      "discord.send",
 			Description: "Send a message to a Discord channel",
@@ -251,7 +251,7 @@ func (d *DiscordPlugin) GatewayMethods() []sdk.GatewayMethod {
 			}
 			return fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s", discordAPIBase, channelID, messageID, url.PathEscape(emoji)), nil, nil
 		}),
-	}
+	})
 }
 
 func (d *DiscordPlugin) Connect(

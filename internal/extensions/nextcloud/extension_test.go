@@ -35,7 +35,7 @@ func TestPlugin_ConfigSchema(t *testing.T) {
 		t.Fatal("ConfigSchema must not be nil")
 	}
 	props, _ := schema["properties"].(map[string]any)
-	for _, key := range []string{"base_url", "username", "app_password", "room_token"} {
+	for _, key := range []string{"base_url", "username", "app_password", "room_token", "allow_polling"} {
 		if _, ok := props[key]; !ok {
 			t.Errorf("missing expected property %q", key)
 		}
@@ -113,19 +113,24 @@ func TestConnect_MissingRequiredConfig(t *testing.T) {
 	}
 }
 
-func TestConnect_ValidConfig_PollingMode(t *testing.T) {
+func TestConnect_PollingRequiresExplicitOptIn(t *testing.T) {
 	p := &NextcloudPlugin{}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	cfg := map[string]any{
+	base := map[string]any{
 		"base_url":     "http://localhost:9999",
 		"username":     "bot",
 		"app_password": "secret",
 		"room_token":   "abc123",
 	}
-	handle, err := p.Connect(ctx, "nc-test", cfg, func(sdk.InboundChannelMessage) {})
+	if _, err := p.Connect(context.Background(), "nc-default", base, func(sdk.InboundChannelMessage) {}); err == nil || !strings.Contains(err.Error(), "allow_polling=true") {
+		t.Fatalf("expected event-driven default to reject implicit polling, got %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	base["allow_polling"] = true
+	handle, err := p.Connect(ctx, "nc-opt-in", base, func(sdk.InboundChannelMessage) {})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("explicit polling opt-in: %v", err)
 	}
 	handle.Close()
 }

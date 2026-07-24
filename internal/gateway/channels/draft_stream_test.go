@@ -9,6 +9,7 @@ import (
 type draftTestHandle struct {
 	id       string
 	sent     []string
+	threads  []string
 	edits    []string
 	deletes  []string
 	nextID   string
@@ -27,6 +28,15 @@ func (h *draftTestHandle) SendWithReceipt(ctx context.Context, text string) (Del
 	id := h.nextID
 	if id == "" {
 		id = "draft-1"
+	}
+	return DeliveryReceipt{ChannelID: h.id, MessageID: id, Status: DeliveryDelivered, CreatedAt: time.Now(), DeliveredAt: time.Now()}, nil
+}
+func (h *draftTestHandle) SendInThreadWithReceipt(ctx context.Context, threadID, text string) (DeliveryReceipt, error) {
+	h.threads = append(h.threads, threadID+":"+text)
+	h.lastText = text
+	id := h.nextID
+	if id == "" {
+		id = "draft-thread-1"
 	}
 	return DeliveryReceipt{ChannelID: h.id, MessageID: id, Status: DeliveryDelivered, CreatedAt: time.Now(), DeliveredAt: time.Now()}, nil
 }
@@ -87,6 +97,34 @@ func TestDraftStreamController_EditFinalizeDelete(t *testing.T) {
 	}
 	if len(h.deletes) != 1 || h.deletes[0] != "msg-1" {
 		t.Fatalf("expected delete msg-1, got %+v", h.deletes)
+	}
+}
+
+func TestDraftStreamController_ThreadedDraftEditsInPlace(t *testing.T) {
+	h := &draftTestHandle{id: "ch", nextID: "thread-msg-1"}
+	c := NewDraftStreamController(h, DraftStreamOptions{ThreadID: "topic-42", MinEditInterval: time.Hour})
+	if err := c.Append(context.Background(), "partial"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if len(h.sent) != 0 || len(h.threads) != 1 || h.threads[0] != "topic-42:partial" {
+		t.Fatalf("expected threaded draft creation, sent=%v threads=%v", h.sent, h.threads)
+	}
+	if _, err := c.Finalize(context.Background(), "final"); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if len(h.edits) != 1 || h.edits[0] != "thread-msg-1:final" {
+		t.Fatalf("expected final in-place edit, got %v", h.edits)
+	}
+}
+
+func TestDraftStreamController_ThreadRequiresReceiptSupport(t *testing.T) {
+	h := &draftSendOnlyHandle{id: "ch"}
+	c := NewDraftStreamController(h, DraftStreamOptions{ThreadID: "topic-42"})
+	if _, err := c.Finalize(context.Background(), "final"); err == nil {
+		t.Fatal("expected explicit error when threaded receipt sends are unsupported")
+	}
+	if len(h.sent) != 0 {
+		t.Fatalf("threaded draft must not fall back to root send: %v", h.sent)
 	}
 }
 

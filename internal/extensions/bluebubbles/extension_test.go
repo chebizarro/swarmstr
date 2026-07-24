@@ -31,7 +31,7 @@ func TestPlugin_ConfigSchema(t *testing.T) {
 		t.Fatal("ConfigSchema must not be nil")
 	}
 	props, _ := schema["properties"].(map[string]any)
-	for _, key := range []string{"server_url", "password", "chat_guid"} {
+	for _, key := range []string{"server_url", "password", "chat_guid", "allow_polling"} {
 		if _, ok := props[key]; !ok {
 			t.Errorf("ConfigSchema missing expected property %q", key)
 		}

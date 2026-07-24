@@ -15,7 +15,8 @@
 //	  "smtp_pass": "app-password",           // optional: defaults to imap_pass
 //	  "from_addr": "you@gmail.com",          // From: header for outbound
 //	  "mailbox": "INBOX",                    // optional: default INBOX
-//	  "poll_interval_s": 30,                 // optional: default 30s
+//	  "allow_polling": false,                 // explicit opt-in when IMAP IDLE is unavailable
+//	  "poll_interval_s": 30,                  // optional: default 30s when polling is allowed
 //	  "allowed_senders": ["boss@corp.com"]   // optional: allow-list
 //	}
 package email
@@ -34,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -57,6 +59,7 @@ func (e *EmailPlugin) ConfigSchema() map[string]any {
 		"smtp_pass":       "",
 		"from_addr":       "user@example.com",
 		"mailbox":         "INBOX",
+		"allow_polling":   false,
 		"poll_interval_s": 30,
 		"allowed_senders": []string{},
 	}
@@ -95,6 +98,7 @@ func (e *EmailPlugin) Connect(
 	if mailbox == "" {
 		mailbox = "INBOX"
 	}
+	allowPolling := channels.PollingFallbackEnabled(cfg)
 	pollSeconds := intCfg(cfg, "poll_interval_s", 30)
 	if pollSeconds < 5 {
 		pollSeconds = 5
@@ -127,15 +131,15 @@ func (e *EmailPlugin) Connect(
 		smtpPass:       smtpPass,
 		fromAddr:       fromAddr,
 		mailbox:        mailbox,
+		allowPolling:   allowPolling,
 		pollInterval:   time.Duration(pollSeconds) * time.Second,
 		allowedSenders: allowedSenders,
 		onMessage:      onMessage,
 		seenUIDs:       map[string]bool{},
 	}
 
-	// Prefer event-driven IMAP IDLE; run() falls back to periodic IMAP SEARCH
-	// polling (a documented, non-event-driven fallback) when the server does not
-	// advertise the IDLE capability or the IDLE connection cannot be established.
+	// Prefer event-driven IMAP IDLE. Periodic IMAP SEARCH is used only when the
+	// server lacks IDLE and allow_polling is explicitly enabled.
 	runCtx, cancel := context.WithCancel(ctx)
 	b.cancel = cancel
 	go b.run(runCtx)
@@ -154,6 +158,7 @@ type emailBot struct {
 	smtpPass       string
 	fromAddr       string
 	mailbox        string
+	allowPolling   bool
 	pollInterval   time.Duration
 	allowedSenders map[string]bool
 	onMessage      func(sdk.InboundChannelMessage)
@@ -297,9 +302,8 @@ func (b *emailBot) deliver(msgs []imapMessage) {
 
 // ─── Event-driven inbound (IMAP IDLE) ────────────────────────────────────
 
-// run prefers event-driven IMAP IDLE (RFC 2177) and falls back to periodic IMAP
-// SEARCH polling (a documented, non-event-driven fallback) when the server does
-// not advertise IDLE.
+// run prefers event-driven IMAP IDLE (RFC 2177). If the server does not
+// advertise IDLE, SEARCH polling runs only with explicit allow_polling opt-in.
 func (b *emailBot) run(ctx context.Context) {
 	backoff := 2 * time.Second
 	for {
@@ -308,7 +312,11 @@ func (b *emailBot) run(ctx context.Context) {
 		}
 		unsupported, err := b.idleCycle(ctx)
 		if unsupported {
-			log.Printf("email channel %s: server does not advertise IMAP IDLE; using IMAP SEARCH polling fallback (host=%s user=%s poll=%s)", b.channelID, b.imapHost, b.imapUser, b.pollInterval)
+			if !b.allowPolling {
+				log.Printf("email channel %s: server does not advertise IMAP IDLE; polling fallback disabled (set allow_polling=true to opt in)", b.channelID)
+				return
+			}
+			log.Printf("email channel %s: server does not advertise IMAP IDLE; using explicitly enabled IMAP SEARCH polling fallback (host=%s user=%s poll=%s)", b.channelID, b.imapHost, b.imapUser, b.pollInterval)
 			b.poll(ctx)
 			return
 		}
@@ -331,8 +339,8 @@ func (b *emailBot) run(ctx context.Context) {
 
 // idleCycle connects, verifies IDLE support, and watches the mailbox using IMAP
 // IDLE until the session ends. It returns unsupported=true (with a nil error) if
-// the server does not advertise IDLE, signalling a permanent fallback to
-// polling.
+// the server does not advertise IDLE, allowing the caller to reject delivery or
+// enter the explicitly enabled polling fallback.
 func (b *emailBot) idleCycle(ctx context.Context) (unsupported bool, err error) {
 	ic, err := imapDialLogin(ctx, b.imapHost, b.imapUser, b.imapPass)
 	if err != nil {

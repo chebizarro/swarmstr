@@ -23,6 +23,10 @@ import (
 // the channel plugins whose kind matches a configured entry.  Returns the
 // number of plugins registered.
 func RegisterConfigured(cfg state.ConfigDoc) int {
+	// Populate the shared account resolver before gateway methods are exposed so
+	// every action-capable channel can resolve named/default account settings.
+	channels.ConfigureChannelAccounts(cfg.NostrChannels)
+
 	// Collect unique kinds referenced by the config.
 	needed := map[string]struct{}{}
 	for _, ch := range cfg.NostrChannels {

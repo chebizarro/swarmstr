@@ -41,6 +41,10 @@ func TestSignalPlugin_ConfigSchema(t *testing.T) {
 			t.Fatalf("expected %q in required fields", f)
 		}
 	}
+	props, _ := schema["properties"].(map[string]any)
+	if _, ok := props["allow_polling"]; !ok {
+		t.Fatal("expected allow_polling opt-in property")
+	}
 }
 
 func TestSignalPlugin_Connect_MissingConfig(t *testing.T) {

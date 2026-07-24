@@ -465,7 +465,7 @@ func TestSendInThread_NoChatID(t *testing.T) {
 	}
 }
 
-func TestSendInThread_PostsSendMessage(t *testing.T) {
+func TestSendInThread_UsesForumTopicNotReplyTarget(t *testing.T) {
 	var gotBody map[string]any
 	bot := &telegramBot{
 		channelID:  "tg-1",
@@ -474,15 +474,28 @@ func TestSendInThread_PostsSendMessage(t *testing.T) {
 		done:       make(chan struct{}),
 		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			json.NewDecoder(req.Body).Decode(&gotBody)
-			return jsonResponse(req, `{"ok":true}`), nil
+			return jsonResponse(req, `{"ok":true,"result":{"message_id":777}}`), nil
 		})},
 	}
-	err := bot.SendInThread(context.Background(), "100", "reply text")
+	receipt, err := bot.SendInThreadWithReceipt(context.Background(), "100", "reply text")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if gotBody["reply_to_message_id"] != float64(100) {
-		t.Fatalf("expected reply_to_message_id=100, got %v", gotBody["reply_to_message_id"])
+	if gotBody["message_thread_id"] != float64(100) {
+		t.Fatalf("expected message_thread_id=100, got %v", gotBody["message_thread_id"])
+	}
+	if _, conflated := gotBody["reply_to_message_id"]; conflated {
+		t.Fatalf("forum topic must not be sent as reply_to_message_id: %#v", gotBody)
+	}
+	if receipt.MessageID != "tg-777" {
+		t.Fatalf("unexpected threaded receipt: %+v", receipt)
+	}
+}
+
+func TestSendInThread_RejectsInvalidForumTopic(t *testing.T) {
+	bot := &telegramBot{channelID: "tg-1", token: "tok", lastChatID: "42", done: make(chan struct{})}
+	if err := bot.SendInThread(context.Background(), "not-a-topic", "reply"); err == nil {
+		t.Fatal("expected invalid message_thread_id error")
 	}
 }
 

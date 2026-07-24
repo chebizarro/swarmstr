@@ -201,8 +201,12 @@ func TestMatrixBot_SendInThread(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := bot.SendInThread(context.Background(), "$root1", "thread reply"); err != nil {
+	receipt, err := bot.SendInThreadWithReceipt(context.Background(), "$root1", "thread reply")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if receipt.MessageID != "$ev3" {
+		t.Fatalf("unexpected threaded receipt: %+v", receipt)
 	}
 	rel, _ := received["m.relates_to"].(map[string]any)
 	if rel["rel_type"] != "m.thread" {
@@ -210,6 +214,13 @@ func TestMatrixBot_SendInThread(t *testing.T) {
 	}
 	if rel["event_id"] != "$root1" {
 		t.Fatalf("expected event_id=$root1, got %v", rel["event_id"])
+	}
+	if rel["is_falling_back"] != true {
+		t.Fatalf("expected Matrix fallback relation, got %#v", rel)
+	}
+	inReplyTo, _ := rel["m.in_reply_to"].(map[string]any)
+	if inReplyTo["event_id"] != "$root1" {
+		t.Fatalf("expected fallback reply to thread root, got %#v", inReplyTo)
 	}
 }
 
@@ -292,6 +303,29 @@ func TestHandleEvent_Delivers(t *testing.T) {
 	}
 	if delivered[0].Text != "hello" {
 		t.Fatalf("unexpected text: %q", delivered[0].Text)
+	}
+}
+
+func TestHandleEvent_BindsThreadAndReplyMetadata(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	bot := &matrixBot{
+		channelID:      "test-ch",
+		selfUserID:     "@bot:server.com",
+		allowedSenders: map[string]bool{},
+		onMessage:      func(m sdk.InboundChannelMessage) { delivered = append(delivered, m) },
+	}
+	content, _ := json.Marshal(map[string]any{
+		"msgtype": "m.text",
+		"body":    "thread reply",
+		"m.relates_to": map[string]any{
+			"rel_type":      "m.thread",
+			"event_id":      "$root",
+			"m.in_reply_to": map[string]any{"event_id": "$previous"},
+		},
+	})
+	bot.handleEvent(matrixEvent{EventID: "$reply", Type: "m.room.message", Sender: "@alice:server.com", Content: content})
+	if len(delivered) != 1 || delivered[0].ThreadID != "$root" || delivered[0].ReplyToEventID != "$previous" {
+		t.Fatalf("expected Matrix thread bindings, got %+v", delivered)
 	}
 }
 

@@ -41,6 +41,10 @@ func TestMattermostPlugin_ConfigSchema(t *testing.T) {
 			t.Fatalf("expected %q in required fields", field)
 		}
 	}
+	props, _ := schema["properties"].(map[string]any)
+	if _, ok := props["allow_polling"]; !ok {
+		t.Fatal("expected allow_polling opt-in property")
+	}
 }
 
 func TestMattermostPlugin_Connect_MissingConfig(t *testing.T) {

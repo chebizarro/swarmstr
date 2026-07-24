@@ -3,8 +3,8 @@
 // Supports two inbound modes:
 //   - Webhook push (preferred): register an HTTP handler at webhook_path;
 //     Nextcloud Talk posts new messages to this URL.
-//   - Polling: if webhook_path is empty, poll the Talk API every poll_interval_s
-//     seconds (default 5).
+//   - Polling fallback: disabled by default; requires allow_polling=true when
+//     webhook_path is empty.
 //
 // Outbound messages are sent via the OCS v2 chat REST API.
 //
@@ -19,6 +19,7 @@
 //	  "app_password":     "app-password",               // required
 //	  "room_token":       "abc123",                     // required: Talk room token
 //	  "webhook_path":     "/webhooks/nextcloud/my-ch",  // optional; enables push mode
+//	  "allow_polling":    false,                         // explicit opt-in fallback
 //	  "poll_interval_s":  5,                            // optional; polling interval (push mode disables this)
 //	  "allowed_senders":  []                            // optional: allowlist of Nextcloud usernames
 //	}
@@ -38,6 +39,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -75,9 +77,13 @@ func (p *NextcloudPlugin) ConfigSchema() map[string]any {
 				"type":        "string",
 				"description": "Optional HTTP path for push mode. If set, Nextcloud posts new messages here.",
 			},
+			"allow_polling": map[string]any{
+				"type":        "boolean",
+				"description": "Explicitly allow Talk API polling when webhook push is not configured. Default false.",
+			},
 			"poll_interval_s": map[string]any{
 				"type":        "integer",
-				"description": "Polling interval in seconds when not using webhook push (default 5).",
+				"description": "Polling interval in seconds when explicitly enabled (default 5).",
 			},
 			"allowed_senders": map[string]any{
 				"type":        "array",
@@ -125,6 +131,10 @@ func (p *NextcloudPlugin) Connect(
 	}
 
 	webhookPath, _ := cfg["webhook_path"].(string)
+	allowPolling := channels.PollingFallbackEnabled(cfg)
+	if strings.TrimSpace(webhookPath) == "" && !allowPolling {
+		return nil, fmt.Errorf("nextcloud-talk channel %q: webhook_path is required for event-driven delivery; set allow_polling=true to explicitly enable the polling fallback", channelID)
+	}
 
 	bot := &nextcloudBot{
 		channelID:      channelID,
@@ -143,9 +153,9 @@ func (p *NextcloudPlugin) Connect(
 		registerWebhook(channelID, bot)
 		log.Printf("nextcloud-talk: webhook registered channel=%s path=%s", channelID, webhookPath)
 	} else {
-		// Polling mode.
+		// Explicitly enabled polling fallback.
 		go bot.pollLoop(ctx, pollInterval)
-		log.Printf("nextcloud-talk: polling mode channel=%s interval=%v", channelID, pollInterval)
+		log.Printf("nextcloud-talk: explicitly enabled polling fallback channel=%s interval=%v", channelID, pollInterval)
 	}
 	return bot, nil
 }

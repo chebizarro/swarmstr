@@ -424,8 +424,11 @@ func (b *matrixBot) handleEvent(ev matrixEvent) {
 		} `json:"info,omitempty"`
 		// Relation for threaded/edited messages.
 		RelatesTo *struct {
-			RelType string `json:"rel_type"`
-			EventID string `json:"event_id"`
+			RelType   string `json:"rel_type"`
+			EventID   string `json:"event_id"`
+			InReplyTo *struct {
+				EventID string `json:"event_id"`
+			} `json:"m.in_reply_to,omitempty"`
 		} `json:"m.relates_to"`
 	}
 	if err := json.Unmarshal(ev.Content, &content); err != nil {
@@ -454,13 +457,25 @@ func (b *matrixBot) handleEvent(ev matrixEvent) {
 		return
 	}
 
+	threadID := ""
+	replyToEventID := ""
+	if content.RelatesTo != nil {
+		if content.RelatesTo.RelType == "m.thread" {
+			threadID = content.RelatesTo.EventID
+		}
+		if content.RelatesTo.InReplyTo != nil {
+			replyToEventID = content.RelatesTo.InReplyTo.EventID
+		}
+	}
 	b.onMessage(sdk.InboundChannelMessage{
-		ChannelID: b.channelID,
-		SenderID:  ev.Sender,
-		Text:      content.Body,
-		EventID:   ev.EventID,
-		MediaURL:  mediaURL,
-		MediaMIME: mediaMIME,
+		ChannelID:      b.channelID,
+		SenderID:       ev.Sender,
+		Text:           content.Body,
+		EventID:        ev.EventID,
+		ThreadID:       threadID,
+		ReplyToEventID: replyToEventID,
+		MediaURL:       mediaURL,
+		MediaMIME:      mediaMIME,
 	})
 }
 
@@ -631,17 +646,26 @@ func (b *matrixBot) RemoveReaction(ctx context.Context, eventID, _ string) error
 // SendInThread posts a threaded reply by setting m.relates_to with rel_type m.thread.
 // threadID is the Matrix event ID of the thread root.
 func (b *matrixBot) SendInThread(ctx context.Context, threadID, text string) error {
-	txn := b.txnCounter.Add(1)
-	path := fmt.Sprintf("/rooms/%s/send/m.room.message/%d",
-		url.PathEscape(b.roomID), txn)
-	return b.doJSON(ctx, http.MethodPut, path, map[string]any{
+	_, err := b.SendInThreadWithReceipt(ctx, threadID, text)
+	return err
+}
+
+func (b *matrixBot) SendInThreadWithReceipt(ctx context.Context, threadID, text string) (channels.DeliveryReceipt, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		err := fmt.Errorf("matrix SendInThread: threadID is required")
+		return channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "matrix", Attempts: 1, CreatedAt: time.Now(), Status: channels.DeliveryFailed, Error: err.Error()}, err
+	}
+	return b.sendRoomMessage(ctx, map[string]any{
 		"msgtype": "m.text",
 		"body":    text,
 		"m.relates_to": map[string]any{
-			"rel_type": "m.thread",
-			"event_id": threadID,
+			"rel_type":        "m.thread",
+			"event_id":        threadID,
+			"is_falling_back": true,
+			"m.in_reply_to":   map[string]any{"event_id": threadID},
 		},
-	}, nil)
+	})
 }
 
 // ─── EditHandle ───────────────────────────────────────────────────────────────

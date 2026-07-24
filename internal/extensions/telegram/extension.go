@@ -108,7 +108,7 @@ func (t *TelegramPlugin) Capabilities() sdk.ChannelCapabilities {
 }
 
 func (t *TelegramPlugin) GatewayMethods() []sdk.GatewayMethod {
-	return []sdk.GatewayMethod{
+	return channels.AccountScopedGatewayMethods(t.ID(), []sdk.GatewayMethod{
 		{
 			Method:      "telegram.send",
 			Description: "Send a message to a Telegram chat",
@@ -162,7 +162,7 @@ func (t *TelegramPlugin) GatewayMethods() []sdk.GatewayMethod {
 				return map[string]any{"ok": true}, nil
 			},
 		},
-	}
+	})
 }
 
 func (t *TelegramPlugin) Connect(
@@ -726,40 +726,48 @@ func (b *telegramBot) EditMessage(ctx context.Context, eventID, newText string) 
 
 // ─── ThreadHandle ────────────────────────────────────────────────────────────
 
-// SendInThread sends a reply to a specific message using reply_to_message_id.
-// threadID should be the numeric Telegram message ID (string form) to reply to.
+// SendInThread sends to a Telegram forum topic using message_thread_id.
+// Replies to a specific message are a separate reply_to_message_id concern and
+// must not be conflated with forum-topic routing.
 func (b *telegramBot) SendInThread(ctx context.Context, threadID, text string) error {
+	_, err := b.SendInThreadWithReceipt(ctx, threadID, text)
+	return err
+}
+
+func (b *telegramBot) SendInThreadWithReceipt(ctx context.Context, threadID, text string) (channels.DeliveryReceipt, error) {
 	b.mu.Lock()
 	chatID := b.lastChatID
 	b.mu.Unlock()
+	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "telegram", Attempts: 1, CreatedAt: time.Now()}
 	if chatID == "" {
-		return fmt.Errorf("telegram %s: no chat ID known", b.channelID)
+		err := fmt.Errorf("telegram %s: no chat ID known", b.channelID)
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
 	}
-	replyTo, _ := strconv.ParseInt(threadID, 10, 64)
-	payload := map[string]any{
-		"chat_id": chatID,
-		"text":    text,
+	messageThreadID, err := strconv.ParseInt(strings.TrimSpace(threadID), 10, 64)
+	if err != nil || messageThreadID <= 0 {
+		err = fmt.Errorf("telegram SendInThread: invalid message_thread_id %q", threadID)
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
 	}
-	if replyTo > 0 {
-		payload["reply_to_message_id"] = replyTo
+	messageID, err := telegramPostJSONMessageID(ctx, b.client(15*time.Second), b.token, "sendMessage", map[string]any{
+		"chat_id":           chatID,
+		"message_thread_id": messageThreadID,
+		"text":              text,
+	})
+	if messageID != "" {
+		receipt.MessageID = "tg-" + messageID
 	}
-	body, _ := json.Marshal(payload)
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.token)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		receipt.Status = channels.DeliveryFailed
+		receipt.Error = err.Error()
+		return receipt, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := b.client(15 * time.Second).Do(req)
-	if err != nil {
-		return fmt.Errorf("telegram sendInThread: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("telegram sendInThread: HTTP %d: %s", resp.StatusCode, raw)
-	}
-	return nil
+	receipt.Status = channels.DeliveryDelivered
+	receipt.DeliveredAt = time.Now()
+	return receipt, nil
 }
 
 func (b *telegramBot) poll(ctx context.Context) {

@@ -123,7 +123,7 @@ func (w *WhatsAppPlugin) Capabilities() sdk.ChannelCapabilities {
 }
 
 func (w *WhatsAppPlugin) GatewayMethods() []sdk.GatewayMethod {
-	return []sdk.GatewayMethod{
+	return channels.AccountScopedGatewayMethods(w.ID(), []sdk.GatewayMethod{
 		{
 			Method:      "whatsapp.send",
 			Description: "Send a WhatsApp message via the Meta Cloud API",
@@ -182,7 +182,7 @@ func (w *WhatsAppPlugin) GatewayMethods() []sdk.GatewayMethod {
 				return map[string]any{"ok": true, "message_id": msgID}, nil
 			},
 		},
-	}
+	})
 }
 
 func (w *WhatsAppPlugin) Connect(

@@ -32,7 +32,7 @@ func TestPlugin_ConfigSchema(t *testing.T) {
 		t.Fatal("expected non-nil schema")
 	}
 	// Schema uses example-value format, check required keys exist
-	for _, key := range []string{"imap_host", "smtp_host", "from_addr", "mailbox"} {
+	for _, key := range []string{"imap_host", "smtp_host", "from_addr", "mailbox", "allow_polling"} {
 		if _, exists := schema[key]; !exists {
 			t.Errorf("missing key: %s", key)
 		}

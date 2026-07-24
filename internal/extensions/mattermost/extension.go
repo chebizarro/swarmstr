@@ -11,13 +11,13 @@
 //	  "team_name":       "myteam",                           // required: team slug
 //	  "channel_name":    "town-square",                      // required: channel slug to listen on
 //	  "allowed_senders": [],                                 // optional: allowlist of usernames
-//	  "require_mention": false                               // optional: only respond when mentioned
+//	  "require_mention": false,                              // optional: only respond when mentioned
+//	  "allow_polling": false                                 // explicit opt-in REST fallback
 //	}
 //
 // Inbound messages are delivered event-driven via the Mattermost WebSocket
-// events API (/api/v4/websocket, "posted" events).  If that endpoint cannot be
-// reached, the plugin falls back to REST /posts?since polling at 3s intervals
-// as a documented, non-event-driven fallback.  Outbound sends use POST
+// events API (/api/v4/websocket, "posted" events). REST /posts?since polling is
+// disabled by default and requires allow_polling=true. Outbound sends use POST
 // /api/v4/posts.
 //
 // To add a Mattermost channel to your metiq config:
@@ -51,6 +51,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -92,6 +93,10 @@ func (p *MattermostPlugin) ConfigSchema() map[string]any {
 			"require_mention": map[string]any{
 				"type":        "boolean",
 				"description": "Only process messages that mention the bot.",
+			},
+			"allow_polling": map[string]any{
+				"type":        "boolean",
+				"description": "Explicitly allow REST /posts polling if WebSocket events are unavailable. Default false.",
 			},
 		},
 		"required": []string{"base_url", "bot_token", "team_name", "channel_name"},
@@ -154,6 +159,7 @@ func (p *MattermostPlugin) Connect(
 		channelName:    channelName,
 		allowedSenders: allowedSenders,
 		requireMention: requireMention,
+		allowPolling:   channels.PollingFallbackEnabled(cfg),
 		onMessage:      onMessage,
 		done:           make(chan struct{}),
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
@@ -170,9 +176,8 @@ func (p *MattermostPlugin) Connect(
 		log.Printf("mattermost: could not fetch bot user ID for channel %s: %v", channelID, err)
 	}
 
-	// Prefer the event-driven WebSocket events API; run() falls back to REST
-	// /posts polling (a documented, non-event-driven fallback) only if the
-	// WebSocket endpoint cannot be reached.
+	// Prefer the event-driven WebSocket events API. REST /posts polling is used
+	// only when the WebSocket cannot be reached and allow_polling is enabled.
 	runCtx, cancel := context.WithCancel(ctx)
 	bot.cancel = cancel
 	go bot.run(runCtx)
@@ -194,6 +199,7 @@ type mmBot struct {
 	selfUsername   string
 	allowedSenders map[string]bool
 	requireMention bool
+	allowPolling   bool
 	onMessage      func(sdk.InboundChannelMessage)
 	userNameByID   map[string]string
 	// lastSince is the cursor for polling (Unix ms).
@@ -501,16 +507,19 @@ func (b *mmBot) handlePost(post mmPost, senderUsername string) {
 
 const mmMaxReconnects = 10
 
-// run prefers the event-driven WebSocket events API and falls back to REST
-// polling (a documented, non-event-driven fallback) if the WebSocket endpoint
-// cannot be reached.
+// run prefers the event-driven WebSocket events API. REST polling requires
+// explicit allow_polling opt-in when the WebSocket endpoint cannot be reached.
 func (b *mmBot) run(ctx context.Context) {
 	conn, err := b.dialWS(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("mattermost: channel=%s WebSocket events API unavailable (%v); using REST /posts polling fallback (team=%s, channel=%s)", b.channelID, err, b.teamName, b.channelName)
+		if !b.allowPolling {
+			log.Printf("mattermost: channel=%s WebSocket events API unavailable (%v); REST polling fallback disabled (set allow_polling=true to opt in)", b.channelID, err)
+			return
+		}
+		log.Printf("mattermost: channel=%s WebSocket events API unavailable (%v); using explicitly enabled REST /posts polling fallback (team=%s, channel=%s)", b.channelID, err, b.teamName, b.channelName)
 		b.poll(ctx)
 		return
 	}
@@ -549,7 +558,7 @@ func (b *mmBot) wsURL() string {
 // dialWS connects to the WebSocket events API, authenticates with the bot
 // token, and returns once the server confirms the connection (a "hello" event
 // or an OK status reply). A non-nil error means the WebSocket transport is
-// unavailable and callers should fall back to polling.
+// unavailable and callers may use an explicitly enabled fallback.
 func (b *mmBot) dialWS(ctx context.Context) (*websocket.Conn, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -594,9 +603,8 @@ func (b *mmBot) dialWS(ctx context.Context) (*websocket.Conn, error) {
 	}
 }
 
-// serveWS reads events from conn, reconnecting with backoff on failure. If it
-// cannot re-establish the WebSocket after mmMaxReconnects attempts it falls
-// back to REST polling.
+// serveWS reads events from conn, reconnecting with backoff on failure. After
+// mmMaxReconnects attempts it stops unless REST polling was explicitly enabled.
 func (b *mmBot) serveWS(ctx context.Context, conn *websocket.Conn) {
 	backoff := time.Second
 	attempts := 0
@@ -632,7 +640,11 @@ func (b *mmBot) serveWS(ctx context.Context, conn *websocket.Conn) {
 				backoff *= 2
 			}
 			if attempts >= mmMaxReconnects {
-				log.Printf("mattermost: channel=%s giving up on WebSocket after %d attempts; using REST /posts polling fallback", b.channelID, attempts)
+				if !b.allowPolling {
+					log.Printf("mattermost: channel=%s giving up on WebSocket after %d attempts; REST polling fallback disabled", b.channelID, attempts)
+					return
+				}
+				log.Printf("mattermost: channel=%s giving up on WebSocket after %d attempts; using explicitly enabled REST /posts polling fallback", b.channelID, attempts)
 				b.poll(ctx)
 				return
 			}

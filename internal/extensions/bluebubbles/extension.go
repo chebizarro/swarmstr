@@ -3,9 +3,7 @@
 // BlueBubbles is a self-hosted iMessage relay server.  This plugin receives new
 // messages event-driven via the BlueBubbles Socket.IO push endpoint
 // (Engine.IO v4 over WebSocket, "new-message" events) and sends replies via the
-// REST API.  If the Socket.IO endpoint cannot be reached, it falls back to
-// polling the REST message endpoint on a short interval — a documented,
-// non-event-driven fallback.
+// REST API. REST polling is disabled by default and requires allow_polling=true.
 //
 // Registration: import _ "metiq/internal/extensions/bluebubbles" in the
 // daemon main.go to include this plugin in the binary.
@@ -16,12 +14,13 @@
 //	  "server_url":      "http://192.168.1.10:1234",  // required: BlueBubbles server base URL
 //	  "password":        "secret",                    // required: server password
 //	  "chat_guid":       "iMessage;-;+11234567890",   // required: iMessage chat GUID
+//	  "allow_polling":   false,                         // explicit opt-in REST fallback
 //	  "allowed_senders": []                           // optional: handle/number allowlist
 //	}
 //
 // No inbound webhook endpoint is required — the plugin opens an outbound
-// Socket.IO WebSocket to the BlueBubbles server for inbound push (with REST
-// polling as a fallback) and makes outbound REST calls to send.
+// Socket.IO WebSocket to the BlueBubbles server for inbound push. REST polling
+// requires explicit allow_polling opt-in. Outbound sends use REST.
 package bluebubbles
 
 import (
@@ -39,6 +38,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -67,6 +67,10 @@ func (p *BlueBubblesPlugin) ConfigSchema() map[string]any {
 			"chat_guid": map[string]any{
 				"type":        "string",
 				"description": "iMessage chat GUID, e.g. iMessage;-;+11234567890 or iMessage;+;chatroom-uuid.",
+			},
+			"allow_polling": map[string]any{
+				"type":        "boolean",
+				"description": "Explicitly allow REST message polling if Socket.IO push is unavailable. Default false.",
 			},
 			"allowed_senders": map[string]any{
 				"type":        "array",
@@ -112,6 +116,7 @@ func (p *BlueBubblesPlugin) Connect(
 		serverURL:      serverURL,
 		password:       password,
 		chatGUID:       chatGUID,
+		allowPolling:   channels.PollingFallbackEnabled(cfg),
 		allowedSenders: allowedSenders,
 		onMessage:      onMessage,
 		done:           make(chan struct{}),
@@ -136,6 +141,7 @@ type bbBot struct {
 	serverURL      string
 	password       string
 	chatGUID       string
+	allowPolling   bool
 	allowedSenders map[string]bool
 	onMessage      func(sdk.InboundChannelMessage)
 	done           chan struct{}
@@ -160,9 +166,8 @@ func (b *bbBot) Close() {
 	}
 }
 
-// run seeds dedup state, then prefers the event-driven Socket.IO push transport,
-// falling back to REST polling (a documented, non-event-driven fallback) if it
-// is unavailable.
+// run seeds dedup state, then prefers the event-driven Socket.IO push transport.
+// REST polling runs only when Socket.IO is unavailable and allow_polling is set.
 func (b *bbBot) run(ctx context.Context) {
 	b.mu.Lock()
 	b.seenGUIDs = map[string]struct{}{}
@@ -182,7 +187,11 @@ func (b *bbBot) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("bluebubbles: channel=%s Socket.IO push unavailable (%v); using REST polling fallback (server=%s)", b.channelID, err, b.serverURL)
+		if !b.allowPolling {
+			log.Printf("bluebubbles: channel=%s Socket.IO push unavailable (%v); REST polling fallback disabled (set allow_polling=true to opt in)", b.channelID, err)
+			return
+		}
+		log.Printf("bluebubbles: channel=%s Socket.IO push unavailable (%v); using explicitly enabled REST polling fallback (server=%s)", b.channelID, err, b.serverURL)
 		b.pollLoop(ctx)
 	}
 }
@@ -315,8 +324,8 @@ func (b *bbBot) socketURL() string {
 }
 
 // runSocket connects the Socket.IO client and serves events, reconnecting with
-// backoff. It returns an error (triggering the polling fallback) only if the
-// initial connection fails or reconnection is exhausted.
+// backoff. It returns an error only if the initial connection fails or
+// reconnection is exhausted; callers may then use an explicitly enabled fallback.
 func (b *bbBot) runSocket(ctx context.Context) error {
 	conn, err := b.socketConnect(ctx)
 	if err != nil {

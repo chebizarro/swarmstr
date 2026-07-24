@@ -14,7 +14,8 @@
 //	  "api_url":         "http://localhost:8080",  // required: sidecar base URL
 //	  "account":         "+15551234567",            // required: E.164 sender number
 //	  "allowed_senders": [],                        // optional: E.164 allowlist
-//	  "poll_interval_ms": 3000                      // default 3000
+//	  "allow_polling": false,                        // explicit opt-in REST fallback
+//	  "poll_interval_ms": 3000                       // default 3000 when enabled
 //	}
 //
 // To add a Signal channel to your metiq config:
@@ -76,9 +77,13 @@ func (p *SignalPlugin) ConfigSchema() map[string]any {
 				"items":       map[string]any{"type": "string"},
 				"description": "Optional E.164 phone number allowlist.",
 			},
+			"allow_polling": map[string]any{
+				"type":        "boolean",
+				"description": "Explicitly allow REST receive polling if WebSocket receive is unavailable. Default false.",
+			},
 			"poll_interval_ms": map[string]any{
 				"type":        "integer",
-				"description": "Polling interval in milliseconds. Default 3000.",
+				"description": "Polling interval in milliseconds when explicitly enabled. Default 3000.",
 			},
 		},
 		"required": []string{"api_url", "account"},
@@ -133,15 +138,15 @@ func (p *SignalPlugin) Connect(
 		apiURL:         apiURL,
 		account:        account,
 		allowedSenders: allowedSenders,
+		allowPolling:   channels.PollingFallbackEnabled(cfg),
 		pollInterval:   pollInterval,
 		onMessage:      onMessage,
 		done:           make(chan struct{}),
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
 	}
 
-	// Prefer the event-driven signal-cli JSON-RPC WebSocket receive stream;
-	// run() falls back to REST /v1/receive polling (a documented,
-	// non-event-driven fallback) only if the WebSocket cannot be reached.
+	// Prefer the event-driven signal-cli JSON-RPC WebSocket receive stream. REST
+	// /v1/receive polling requires explicit allow_polling opt-in.
 	runCtx, cancel := context.WithCancel(ctx)
 	bot.cancel = cancel
 	go bot.run(runCtx)
@@ -156,6 +161,7 @@ type signalBot struct {
 	apiURL         string
 	account        string
 	allowedSenders map[string]bool
+	allowPolling   bool
 	pollInterval   time.Duration
 	onMessage      func(sdk.InboundChannelMessage)
 	done           chan struct{}
@@ -176,12 +182,10 @@ func (b *signalBot) Close() {
 	}
 }
 
-// ─── Polling (documented fallback) ──────────────────────────────────────────
+// ─── Polling (explicit opt-in fallback) ─────────────────────────────────────
 //
 // poll is a wait-and-check loop over the signal-cli REST receive endpoint. It is
-// a documented fallback for the not-yet-implemented signal-cli JSON-RPC
-// WebSocket push transport; prefer implementing push before relying on this in
-// production.
+// non-event-driven and must only run when allow_polling is explicitly enabled.
 func (b *signalBot) poll(ctx context.Context) {
 	backoff := b.pollInterval
 	if backoff <= 0 {
@@ -307,16 +311,19 @@ func (b *signalBot) deliverEnvelope(env signalEnvelope) {
 
 const signalMaxReconnects = 10
 
-// run prefers the event-driven JSON-RPC WebSocket receive stream and falls back
-// to REST /v1/receive polling (a documented, non-event-driven fallback) if the
-// WebSocket cannot be reached.
+// run prefers the event-driven JSON-RPC WebSocket receive stream. REST polling
+// is available only with explicit allow_polling opt-in.
 func (b *signalBot) run(ctx context.Context) {
 	conn, err := b.dialWS(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("signal: channel=%s JSON-RPC WebSocket receive unavailable (%v); using REST /v1/receive polling fallback (account=%s, sidecar=%s)", b.channelID, err, b.account, b.apiURL)
+		if !b.allowPolling {
+			log.Printf("signal: channel=%s JSON-RPC WebSocket receive unavailable (%v); REST polling fallback disabled (set allow_polling=true to opt in)", b.channelID, err)
+			return
+		}
+		log.Printf("signal: channel=%s JSON-RPC WebSocket receive unavailable (%v); using explicitly enabled REST /v1/receive polling fallback (account=%s, sidecar=%s)", b.channelID, err, b.account, b.apiURL)
 		b.poll(ctx)
 		return
 	}
@@ -347,7 +354,7 @@ func (b *signalBot) dialWS(ctx context.Context) (*websocket.Conn, error) {
 }
 
 // serveWS reads streamed envelopes, reconnecting with backoff. After
-// signalMaxReconnects consecutive failures it falls back to REST polling.
+// signalMaxReconnects failures it stops unless REST polling was explicitly enabled.
 func (b *signalBot) serveWS(ctx context.Context, conn *websocket.Conn) {
 	backoff := b.pollInterval
 	if backoff <= 0 {
@@ -382,7 +389,11 @@ func (b *signalBot) serveWS(ctx context.Context, conn *websocket.Conn) {
 			}
 			log.Printf("signal: channel=%s WebSocket reconnect failed (%v)", b.channelID, derr)
 			if attempts >= signalMaxReconnects {
-				log.Printf("signal: channel=%s giving up on WebSocket after %d attempts; using REST /v1/receive polling fallback", b.channelID, attempts)
+				if !b.allowPolling {
+					log.Printf("signal: channel=%s giving up on WebSocket after %d attempts; REST polling fallback disabled", b.channelID, attempts)
+					return
+				}
+				log.Printf("signal: channel=%s giving up on WebSocket after %d attempts; using explicitly enabled REST /v1/receive polling fallback", b.channelID, attempts)
 				b.poll(ctx)
 				return
 			}
