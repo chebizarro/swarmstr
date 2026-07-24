@@ -5,8 +5,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 COMPOSE=(docker compose -f "$HERE/docker-compose.yml")
 PROBE_BIN="${TMPDIR:-/tmp}/swarmstr-fips-probe-${USER:-user}"
+SERVER_A_LOG="${TMPDIR:-/tmp}/swarmstr-e7-a.log"
+SERVER_B_LOG="${TMPDIR:-/tmp}/swarmstr-e7-b.log"
 FIPS_TEST_IMAGE="${FIPS_TEST_IMAGE:-fips-test:latest}"
 FIPS_REAL_DAEMON_REQUIRED="${FIPS_REAL_DAEMON_REQUIRED:-0}"
+FIPS_DIAGNOSTICS_DIR="${FIPS_DIAGNOSTICS_DIR:-}"
 export FIPS_TEST_IMAGE
 
 NPUB_A="npub1sjlh2c3x9w7kjsqg2ay080n2lff2uvt325vpan33ke34rn8l5jcqawh57m"
@@ -18,7 +21,7 @@ STARTED=false
 
 cleanup() {
   "$STARTED" && "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-  rm -f "$PROBE_BIN"
+  rm -f "$PROBE_BIN" "$SERVER_A_LOG" "$SERVER_B_LOG"
 }
 diagnostics() {
   for container in "$RELAY" "$NODE_A" "$NODE_B"; do
@@ -36,7 +39,14 @@ on_exit() {
   status=$?
   trap - EXIT
   if (( status != 0 )) && "$STARTED"; then
-    diagnostics
+    if [[ -n "$FIPS_DIAGNOSTICS_DIR" ]]; then
+      mkdir -p "$FIPS_DIAGNOSTICS_DIR"
+      diagnostics 2>&1 | tee "$FIPS_DIAGNOSTICS_DIR/diagnostics.log" >&2
+      [[ -f "$SERVER_A_LOG" ]] && cp "$SERVER_A_LOG" "$FIPS_DIAGNOSTICS_DIR/server-a.log"
+      [[ -f "$SERVER_B_LOG" ]] && cp "$SERVER_B_LOG" "$FIPS_DIAGNOSTICS_DIR/server-b.log"
+    else
+      diagnostics
+    fi
   fi
   cleanup
   exit "$status"
@@ -105,11 +115,11 @@ docker exec "$NODE_A" rm -f /tmp/swarmstr-e7-a.ready
 docker exec "$NODE_B" rm -f /tmp/swarmstr-e7-b.ready
 docker exec "$NODE_A" /usr/local/bin/swarmstr-fips-probe serve \
   --self "$NPUB_A" --peer "$NPUB_B" --expect-text "B to A" \
-  --ready-file /tmp/swarmstr-e7-a.ready >/tmp/swarmstr-e7-a.log 2>&1 &
+  --ready-file /tmp/swarmstr-e7-a.ready >"$SERVER_A_LOG" 2>&1 &
 SERVER_A=$!
 docker exec "$NODE_B" /usr/local/bin/swarmstr-fips-probe serve \
   --self "$NPUB_B" --peer "$NPUB_A" --expect-text "A to B" \
-  --ready-file /tmp/swarmstr-e7-b.ready >/tmp/swarmstr-e7-b.log 2>&1 &
+  --ready-file /tmp/swarmstr-e7-b.ready >"$SERVER_B_LOG" 2>&1 &
 SERVER_B=$!
 
 # Listener readiness is a health check. No delivery assertion polls.
@@ -149,7 +159,7 @@ docker exec "$NODE_B" /usr/local/bin/swarmstr-fips-probe control \
 
 wait "$SERVER_A"
 wait "$SERVER_B"
-cat /tmp/swarmstr-e7-a.log
-cat /tmp/swarmstr-e7-b.log
+cat "$SERVER_A_LOG"
+cat "$SERVER_B_LOG"
 
 echo "real FIPS daemon interoperability PASSED"

@@ -1,0 +1,117 @@
+name: FIPS real-daemon interoperability
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/fips-real-daemon.yml"
+      - "go.mod"
+      - "go.sum"
+      - "internal/nostr/runtime/**"
+      - "testing/fips/**"
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fips-real-daemon-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FIPS_REPOSITORY: jmcorgan/fips
+  FIPS_REF: fc8ebd5a06d6f042c57f03107f403116365a16b4
+
+jobs:
+  interop:
+    name: Real FIPS daemon interop
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout swarmstr
+        uses: actions/checkout@v4
+
+      - name: Checkout FIPS daemon
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FIPS_REPOSITORY }}
+          ref: ${{ env.FIPS_REF }}
+          path: fips
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-fips-interop-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-fips-interop-
+
+      - name: Install FIPS build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev libdbus-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.94.1
+          cache: false
+          rustflags: ""
+
+      - name: Cache Cargo registry and FIPS build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fips/target
+          key: ${{ runner.os }}-cargo-fips-${{ env.FIPS_REF }}-${{ hashFiles('fips/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fips-${{ env.FIPS_REF }}-
+            ${{ runner.os }}-cargo-fips-
+
+      - name: Build FIPS daemon binaries
+        working-directory: fips
+        run: cargo build --release --locked
+
+      - name: Prepare FIPS image context
+        run: |
+          install -m 0755 fips/target/release/fips fips/testing/docker/fips
+          install -m 0755 fips/target/release/fipsctl fips/testing/docker/fipsctl
+          install -m 0755 fips/target/release/fipstop fips/testing/docker/fipstop
+          install -m 0755 fips/target/release/fips-gateway fips/testing/docker/fips-gateway
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build FIPS test image
+        uses: docker/build-push-action@v6
+        with:
+          context: fips/testing/docker
+          load: true
+          platforms: linux/amd64
+          tags: fips-test:latest
+          cache-from: type=gha,scope=fips-real-daemon
+          cache-to: type=gha,mode=max,scope=fips-real-daemon
+
+      - name: Run mandatory real-daemon suite
+        env:
+          FIPS_DIAGNOSTICS_DIR: artifacts/fips-real-daemon
+          FIPS_REAL_DAEMON_REQUIRED: "1"
+          FIPS_TEST_PLATFORM: linux/amd64
+        run: ./testing/fips/real-daemon/run.sh
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fips-real-daemon-diagnostics
+          path: artifacts/fips-real-daemon
+          if-no-files-found: warn
+          retention-days: 7

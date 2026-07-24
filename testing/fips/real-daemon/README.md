@@ -38,6 +38,17 @@ Make absence fatal in CI:
 FIPS_REAL_DAEMON_REQUIRED=1 ./testing/fips/real-daemon/run.sh
 ```
 
+Persist failure diagnostics before containers are removed:
+
+```bash
+FIPS_DIAGNOSTICS_DIR=artifacts/fips-real-daemon \
+FIPS_REAL_DAEMON_REQUIRED=1 \
+./testing/fips/real-daemon/run.sh
+```
+
+The diagnostics directory receives bounded daemon/relay logs, peer/link state,
+and any application-listener logs.
+
 Select another local image or platform:
 
 ```bash
@@ -84,24 +95,29 @@ FIPS_TEST_PLATFORM=linux/amd64 ./testing/fips/real-daemon/run.sh
 The reference build script is authoritative; keep these commands aligned with
 `fips/testing/scripts/build.sh` if its target or image name changes.
 
-## Known local Docker Desktop blocker (2026-07-24)
+## Linux CI
 
-The FIPS source itself builds natively on this host:
+`.github/workflows/fips-real-daemon.yml` is the mandatory Linux execution path.
+It runs for relevant pull requests, nightly, and by manual dispatch. The job:
 
-```bash
-cd /Users/bizarro/Documents/Dev/fips
-CARGO_TARGET_DIR=/tmp/fips-target cargo build --release --bin fips
-```
+1. checks out `jmcorgan/fips` at the pinned `FIPS_REF`;
+2. caches the Cargo registry, git dependencies, and release build separately
+   from the Docker layer cache;
+3. builds all daemon binaries with the FIPS checkout's pinned Rust toolchain;
+4. builds and loads `fips-test:latest` for `linux/amd64`;
+5. runs this suite with `FIPS_REAL_DAEMON_REQUIRED=1`; and
+6. uploads failure diagnostics for seven days.
 
-The local Docker Desktop daemon could not produce the Linux test image:
+Update `FIPS_REF` deliberately when swarmstr adopts a newer daemon revision.
+The pin keeps nightly results reproducible and prevents an unrelated daemon
+branch update from silently changing the interop contract.
 
-1. BuildKit remained stuck resolving already-cached base image metadata
-   (`docker/dockerfile:1` and `ubuntu:latest`).
-2. The legacy builder stalled while accepting even a pre-archived, target-free
-   source context.
-3. A disposable Ubuntu compile container progressed through dependency
-   compilation but `rustables` bindgen failed because `libclang.so` was absent.
+## Local Docker Desktop result (2026-07-24)
 
-Per WS-E scope, the suite is therefore committed as opt-in and E7 remains open
-until it passes on a healthy Linux/Docker runner. See the linked beads hardening
-issue for CI/image work; do not replace these tests with loopback mocks.
+A plain Docker build completed once supplied with all four binaries, so the
+previous Docker Desktop metadata hang was not reproduced. The locally available
+native macOS binaries cannot run in the Linux image (`Exec format error`), and
+this host does not currently have `cargo-zigbuild` or a Linux Rust target
+installed. Use the documented macOS cross-build above for another local attempt;
+the Linux workflow avoids that cross-compilation dependency and is the reliable
+mandatory path.
