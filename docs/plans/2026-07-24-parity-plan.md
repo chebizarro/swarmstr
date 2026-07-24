@@ -37,6 +37,8 @@ Recommended sequencing: fix critical correctness/security first (cheap, high-ris
 
 ## Phase 2 — Workstreams (parallelizable)
 
+> **Status 2026-07-24:** First execution round complete across all seven workstreams (commits `3d27cd4..81bffe2`), followed by an adversarial audit of all 38 closed child issues (13 reopened for material gaps, all 13 remediated and re-closed; commits `5be7175`, `81bffe2`). Full `go build`/`go test`/`ci-parity` green. Live per-item state is tracked in beads (`bd epic status`): WS-A 1/9, WS-B 4/6, WS-C 3/5, WS-D 4/6, WS-E 8/9, WS-F 11/14, WS-G 6/9 children closed. Remaining open children (largest: WS-A sessions/approvals/cron/nodes surface, B5/B6 providers, F9 NIP-46, G5–G7 SDK/Vault/lint) are accurately scoped in their issues. Checkbox lists below reflect the original plan; beads is authoritative.
+
 ### WS-A: Gateway protocol v4, sessions, and Web UI (owner: gateway)
 
 - [ ] **A1 (L)** Protocol v4 chat streaming: replace `chat.chunk`/`turn.*` with the `chat` state-union (`status|delta|final|aborted|error`, `runId`/`seq`/`replace` semantics per `packages/gateway-protocol/src/schema/logs-chat.ts:143-223`); admission/version rejection behavior.
