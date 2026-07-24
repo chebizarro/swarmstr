@@ -33,6 +33,8 @@ const EventSessionSharing = "session.sharing"
 // ErrForbidden marks collaboration authorization failures.
 var ErrForbidden = errors.New("forbidden")
 
+var errTypingParams = errors.New("sessionKey and sessionId are required")
+
 // Identity is the wire shape used for sharing actors and identity catalogs.
 type Identity struct {
 	Type  string `json:"type"`
@@ -502,6 +504,7 @@ func (s *Service) DropConnection(connectionID string) {
 	}
 	s.mu.Lock()
 	delete(s.observerVisible, connectionID)
+	s.dropTypingConnectionLocked(connectionID)
 	s.mu.Unlock()
 }
 

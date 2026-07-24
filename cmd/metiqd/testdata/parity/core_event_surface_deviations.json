@@ -22,6 +22,8 @@
     "relay.health",
     "session.placement",
     "session.sharing",
+    "session.suggestion",
+    "session.typing",
     "sessions.changed",
     "thinking.delta",
     "tool.error",

@@ -1478,6 +1478,31 @@ const TOKEN   = '{{.Token}}';
       showSessionSharingPanel(grid, sid);
     });
     addRow.appendChild(addMember);
+    const suggestionsRes = await callSafe('session.suggestions.list', { sessionKey: sid });
+    const suggestHeader = document.createElement('div'); suggestHeader.className = 'sub'; card.appendChild(suggestHeader);
+    if (suggestionsRes.error) {
+      suggestHeader.textContent = `Suggestions unavailable: ${suggestionsRes.error}`;
+    } else {
+      const suggestions = suggestionsRes.suggestions || [];
+      suggestHeader.textContent = `Suggestions (${suggestions.length})`;
+      addRows(card, suggestions, (row, suggestion) => {
+        row.innerHTML = `<strong>${escapeHTML(truncate(suggestion.text, 80))}</strong><div class="sub">${escapeHTML(suggestion.author && (suggestion.author.label || suggestion.author.id) || '')} · ${escapeHTML(suggestion.state)}</div>`;
+        if (suggestion.state !== 'pending') return;
+        const rowActions = document.createElement('div'); rowActions.className = 'action-row'; row.appendChild(rowActions);
+        addActionButton(rowActions, 'Send', 'session.suggestions.resolve', () => ({ sessionKey: sid, id: suggestion.id, resolution: 'send' }), () => showSessionSharingPanel(grid, sid));
+        addActionButton(rowActions, 'Dismiss', 'session.suggestions.resolve', () => ({ sessionKey: sid, id: suggestion.id, resolution: 'dismiss' }), () => showSessionSharingPanel(grid, sid));
+      });
+    }
+    const suggestRow = document.createElement('div'); suggestRow.className = 'action-row'; card.appendChild(suggestRow);
+    const suggestionText = document.createElement('input'); suggestionText.className = 'mini-input'; suggestionText.placeholder = 'suggest a message'; suggestRow.appendChild(suggestionText);
+    const addSuggestion = document.createElement('button'); addSuggestion.className = 'mini-btn'; addSuggestion.textContent = 'Suggest';
+    addSuggestion.addEventListener('click', async () => {
+      if (!suggestionText.value.trim()) return;
+      const result = await callSafe('session.suggestions.add', { sessionKey: sid, text: suggestionText.value.trim() });
+      if (result.error) { status.textContent = `Suggestion failed: ${result.error}`; return; }
+      showSessionSharingPanel(grid, sid);
+    });
+    suggestRow.appendChild(addSuggestion);
   }
 
   async function showSessionsView(token) {
@@ -1690,6 +1715,33 @@ const TOKEN   = '{{.Token}}';
 
   function hideThinking() {
     if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+  }
+
+  let typingIndicatorEl = null;
+  let typingIndicatorTimer = null;
+  function showTypingIndicator(who, typing) {
+    if (typingIndicatorTimer) { clearTimeout(typingIndicatorTimer); typingIndicatorTimer = null; }
+    if (!typing) {
+      if (typingIndicatorEl) { typingIndicatorEl.remove(); typingIndicatorEl = null; }
+      return;
+    }
+    if (!typingIndicatorEl) {
+      typingIndicatorEl = document.createElement('div');
+      typingIndicatorEl.className = 'sub';
+      msgs.appendChild(typingIndicatorEl);
+    }
+    typingIndicatorEl.textContent = `${who} is typing…`;
+    msgs.scrollTop = msgs.scrollHeight;
+    typingIndicatorTimer = setTimeout(() => showTypingIndicator(who, false), 4000);
+  }
+
+  let lastTypingSentAt = 0;
+  function sendTypingSignal(typing) {
+    if (!connected || !sessionID) return;
+    const now = Date.now();
+    if (typing && now - lastTypingSentAt < 1500) return;
+    lastTypingSentAt = typing ? now : 0;
+    callSafe('session.typing', { sessionKey: sessionID, sessionId: sessionID, typing });
   }
 
   function setConnected(ok, label) {
@@ -2291,6 +2343,11 @@ const TOKEN   = '{{.Token}}';
         }
         break;
       }
+      case 'session.typing':
+        if (mainView === 'chat' && payload && payload.sessionKey === sessionID && payload.actor) {
+          showTypingIndicator(payload.actor.label || payload.actor.id || 'Someone', payload.typing === true);
+        }
+        break;
       case 'chat.message':
         if (mainView === 'chat' && payload && (!payload.session_id || payload.session_id === sessionID) && payload.direction === 'outbound' && !streamingBubble) {
           hideThinking();
@@ -2386,7 +2443,7 @@ const TOKEN   = '{{.Token}}';
                 if (!Array.isArray(descriptors) || descriptors.length === 0) throw new Error('gateway does not advertise method descriptors');
                 gatewayMethodDescriptors = new Map(descriptors.filter(item => item && item.name).map(item => [item.name, item]));
                 gatewayScopes = new Set((hello.auth && hello.auth.scopes) || []);
-                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress'];
+                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion'];
                 const events = wanted.filter(name => advertised.has(name));
                 await callMethod('events.subscribe', { events });
                 await reconcilePendingApprovals();
@@ -2550,6 +2607,7 @@ const TOKEN   = '{{.Token}}';
     input.style.height = 'auto';
     input.style.height = input.scrollHeight + 'px';
     renderSlashMenu();
+    sendTypingSignal(input.value.trim().length > 0);
   });
   document.querySelector('footer').addEventListener('dragover', e => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); });
   document.querySelector('footer').addEventListener('dragleave', e => { e.currentTarget.classList.remove('drag-over'); });

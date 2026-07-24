@@ -227,6 +227,10 @@ var adminDispatchRegistry = []struct {
 		MethodSessionMembersAdd,
 		MethodSessionMembersRemove,
 		MethodSessionsObserverVisibility,
+		MethodSessionSuggestionsAdd,
+		MethodSessionSuggestionsList,
+		MethodSessionSuggestionsResolve,
+		MethodSessionTyping,
 	}},
 	{AdminDispatchTasks, []string{
 		MethodTasksCreate,

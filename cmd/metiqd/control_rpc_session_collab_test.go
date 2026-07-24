@@ -99,3 +99,65 @@ func TestSessionsObserverVisibilityRequiresConnection(t *testing.T) {
 		t.Fatal("observer visibility must be recorded for the connection")
 	}
 }
+
+func TestSessionSuggestionsAndTypingRPC(t *testing.T) {
+	ctx, handler, coordinator := newCollabTestHandler(t)
+	ownerCtx := principalCtx(ctx, "alice", "operator.write", "operator.read")
+	suggesterCtx := principalCtx(ctx, "bob", "operator.write", "operator.read")
+
+	call := func(callCtx context.Context, method, params string) (nostruntime.ControlRPCResult, error) {
+		result, handled, err := handler.handleSessionCollabRPC(callCtx, nostruntime.ControlRPCInbound{Method: method, Params: json.RawMessage(params)}, method, state.ConfigDoc{})
+		if !handled {
+			t.Fatalf("%s must be handled", method)
+		}
+		return result, err
+	}
+	if _, err := call(ownerCtx, "session.visibility.set", `{"sessionKey":"session-a","visibility":"suggest"}`); err != nil {
+		t.Fatal(err)
+	}
+	added, err := call(suggesterCtx, "session.suggestions.add", `{"sessionKey":"session-a","text":"try a smaller diff"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suggestion := added.Result.(map[string]any)["suggestion"].(sessioncoord.Suggestion)
+	if suggestion.State != "pending" || suggestion.Author.ID != "bob" {
+		t.Fatalf("unexpected suggestion: %+v", suggestion)
+	}
+	listed, err := call(ownerCtx, "session.suggestions.list", `{"sessionKey":"session-a"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows := listed.Result.(map[string]any)["suggestions"].([]sessioncoord.Suggestion); len(rows) != 1 {
+		t.Fatalf("owner must list pending suggestions: %+v", rows)
+	}
+	if _, err := call(suggesterCtx, "session.suggestions.resolve", `{"sessionKey":"session-a","id":"`+suggestion.ID+`","resolution":"dismiss"}`); err == nil {
+		t.Fatal("viewer resolve must be forbidden")
+	}
+	resolved, err := call(ownerCtx, "session.suggestions.resolve", `{"sessionKey":"session-a","id":"`+suggestion.ID+`","resolution":"dismiss"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolved.Result.(map[string]any)["suggestion"].(sessioncoord.Suggestion); got.State != "dismissed" {
+		t.Fatalf("unexpected resolution: %+v", got)
+	}
+
+	// Typing requires a WS connection id to broadcast; identity accounting is
+	// exercised in the sessioncoord tests.
+	typingParams := `{"sessionKey":"session-a","sessionId":"session-a","typing":true}`
+	quiet, err := call(ownerCtx, "session.typing", typingParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quiet.Result.(map[string]any)["broadcast"] != false {
+		t.Fatal("typing without a connection must not broadcast")
+	}
+	connCtx := gatewayws.ContextWithConnectionID(ownerCtx, "conn-typing")
+	loud, err := call(connCtx, "session.typing", typingParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loud.Result.(map[string]any)["broadcast"] != true {
+		t.Fatal("connection-scoped identified typing must broadcast")
+	}
+	_ = coordinator
+}

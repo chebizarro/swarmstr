@@ -39,6 +39,10 @@ const (
 	EventSessionsChanged = "sessions.changed"
 	// EventSessionSharing reports session visibility and membership transitions.
 	EventSessionSharing = "session.sharing"
+	// EventSessionSuggestion reports suggestion add/resolve transitions.
+	EventSessionSuggestion = "session.suggestion"
+	// EventSessionTyping reports connection-scoped collaborator typing state.
+	EventSessionTyping = "session.typing"
 
 	// EventCronTick is emitted when a cron job fires.
 	EventCronTick = "cron.tick"
@@ -135,6 +139,8 @@ var AllPushEvents = []string{
 	EventSessionPlacement,
 	EventSessionsChanged,
 	EventSessionSharing,
+	EventSessionSuggestion,
+	EventSessionTyping,
 	EventCronTick,
 	EventCronResult,
 	EventConfigUpdated,
