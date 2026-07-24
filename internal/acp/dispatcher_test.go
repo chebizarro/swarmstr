@@ -2,6 +2,8 @@ package acp
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -279,6 +281,190 @@ func TestPipeline_Sequential_PreservesWorkerMetadata(t *testing.T) {
 	}
 	if results[0].Worker == nil || results[0].Worker.SessionID != "acp:peer1" || len(results[0].Worker.HistoryEntryIDs) != 2 {
 		t.Fatalf("worker metadata = %#v", results[0].Worker)
+	}
+}
+
+func TestDispatcher_WaitCancellationSendsRemoteCancelOnce(t *testing.T) {
+	d := NewDispatcher()
+	taskID := "remote-cancel"
+	if _, err := d.RegisterTaskWithError(context.Background(), TaskRecord{
+		TaskID: taskID,
+		Worker: &WorkerTaskMetadata{PubKey: "worker-a"},
+	}); err != nil {
+		t.Fatalf("register task: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int32
+	remoteCancel := func(_ context.Context, peerPubKey, gotTaskID, reason string) error {
+		calls.Add(1)
+		if peerPubKey != "worker-a" || gotTaskID != taskID {
+			t.Fatalf("remote cancel target = %q/%q", peerPubKey, gotTaskID)
+		}
+		if reason != context.Canceled.Error() {
+			t.Fatalf("remote cancel reason = %q", reason)
+		}
+		return nil
+	}
+	if _, err := d.WaitWithRemoteCancel(ctx, taskID, time.Hour, remoteCancel); err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if cancelled, err := d.CancelRemote(context.Background(), taskID, "duplicate", remoteCancel); err != nil || cancelled {
+		t.Fatalf("duplicate CancelRemote = (%v, %v), want (false, nil)", cancelled, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("remote cancel calls = %d, want 1", got)
+	}
+}
+
+func TestDispatcher_CancelRemoteConcurrentDeduplicates(t *testing.T) {
+	d := NewDispatcher()
+	taskID := "concurrent-cancel"
+	if _, err := d.RegisterTaskWithError(context.Background(), TaskRecord{
+		TaskID: taskID,
+		Worker: &WorkerTaskMetadata{PubKey: "worker-a"},
+	}); err != nil {
+		t.Fatalf("register task: %v", err)
+	}
+	var calls atomic.Int32
+	remoteCancel := func(context.Context, string, string, string) error {
+		calls.Add(1)
+		return nil
+	}
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = d.CancelRemote(context.Background(), taskID, "stop", remoteCancel)
+		}()
+	}
+	wg.Wait()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("remote cancel calls = %d, want 1", got)
+	}
+}
+
+func TestDispatcher_CancelExecutionAuthenticatesRequester(t *testing.T) {
+	d := NewDispatcher()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	release := d.BindExecution("worker-task", "requester-a", cancel)
+	defer release()
+
+	if d.CancelExecution("worker-task", "requester-b", "forged") {
+		t.Fatal("forged requester cancelled execution")
+	}
+	if context.Cause(ctx) != nil {
+		t.Fatalf("forged cancellation changed cause: %v", context.Cause(ctx))
+	}
+	if !d.CancelExecution("worker-task", "requester-a", "requested stop") {
+		t.Fatal("authorized requester did not cancel execution")
+	}
+	if got := context.Cause(ctx); got == nil || got.Error() != "requested stop" {
+		t.Fatalf("cancellation cause = %v", got)
+	}
+	if d.CancelExecution("worker-task", "requester-a", "duplicate") {
+		t.Fatal("duplicate cancellation was not idempotent")
+	}
+}
+
+func TestPipeline_ParallelBoundsConcurrency(t *testing.T) {
+	d := NewDispatcher()
+	type startedTask struct {
+		peer   string
+		taskID string
+	}
+	started := make(chan startedTask, 4)
+	sendFn := func(_ context.Context, peerPubKey, taskID string, _ TaskPayload) error {
+		started <- startedTask{peer: peerPubKey, taskID: taskID}
+		return nil
+	}
+	p := &Pipeline{MaxConcurrency: 2, Steps: []Step{
+		{PeerPubKey: "p1", Instructions: "a"},
+		{PeerPubKey: "p2", Instructions: "b"},
+		{PeerPubKey: "p3", Instructions: "c"},
+		{PeerPubKey: "p4", Instructions: "d"},
+	}}
+	type outcome struct {
+		results []PipelineResult
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		results, err := p.RunParallel(context.Background(), d, sendFn)
+		done <- outcome{results: results, err: err}
+	}()
+
+	first := <-started
+	second := <-started
+	select {
+	case extra := <-started:
+		t.Fatalf("step %q started above concurrency limit", extra.peer)
+	default:
+	}
+	d.Deliver(TaskResult{TaskID: first.taskID, Text: first.peer})
+	d.Deliver(TaskResult{TaskID: second.taskID, Text: second.peer})
+	third := <-started
+	fourth := <-started
+	d.Deliver(TaskResult{TaskID: third.taskID, Text: third.peer})
+	d.Deliver(TaskResult{TaskID: fourth.taskID, Text: fourth.peer})
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("RunParallel: %v", got.err)
+	}
+	if len(got.results) != 4 {
+		t.Fatalf("result count = %d, want 4", len(got.results))
+	}
+}
+
+func TestPipeline_ParallelFailureCancelsActiveSibling(t *testing.T) {
+	d := NewDispatcher()
+	type startedTask struct {
+		peer   string
+		taskID string
+	}
+	started := make(chan startedTask, 2)
+	cancelled := make(chan startedTask, 2)
+	p := &Pipeline{
+		MaxConcurrency: 2,
+		Steps: []Step{
+			{PeerPubKey: "p1", Instructions: "a"},
+			{PeerPubKey: "p2", Instructions: "b"},
+		},
+		RemoteCancel: func(_ context.Context, peerPubKey, taskID, _ string) error {
+			cancelled <- startedTask{peer: peerPubKey, taskID: taskID}
+			return nil
+		},
+	}
+	sendFn := func(_ context.Context, peerPubKey, taskID string, _ TaskPayload) error {
+		started <- startedTask{peer: peerPubKey, taskID: taskID}
+		return nil
+	}
+	type outcome struct {
+		results []PipelineResult
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		results, err := p.RunParallel(context.Background(), d, sendFn)
+		done <- outcome{results: results, err: err}
+	}()
+
+	failed := <-started
+	sibling := <-started
+	d.Deliver(TaskResult{TaskID: failed.taskID, Error: "worker failed"})
+	gotCancel := <-cancelled
+	if gotCancel != sibling {
+		t.Fatalf("cancelled task = %+v, want active sibling %+v", gotCancel, sibling)
+	}
+	got := <-done
+	if got.err == nil {
+		t.Fatal("expected pipeline failure")
+	}
+	if len(got.results) != 2 {
+		t.Fatalf("result count = %d, want 2", len(got.results))
 	}
 }
 

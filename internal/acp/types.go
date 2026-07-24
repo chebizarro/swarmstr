@@ -32,7 +32,7 @@ const Version = 1
 
 // Message is an ACP control message exchanged between agent DM keypairs.
 type Message struct {
-	// ACPType discriminates this message as ACP (value: "task" | "result" | "ping" | "pong").
+	// ACPType discriminates this message as ACP (value: "task" | "result" | "cancel" | "ping" | "pong").
 	ACPType string `json:"acp_type"`
 	// Version is the ACP protocol version.
 	Version int `json:"acp_version"`
@@ -109,6 +109,12 @@ type WorkerMetadata struct {
 	TurnResult *agent.TurnResultMetadata `json:"turn_result,omitempty"`
 	// TransportUsed records which transport delivered this result (fips, nip17, nip04).
 	TransportUsed string `json:"transport_used,omitempty"`
+}
+
+// CancelPayload is the Payload for messages with ACPType = "cancel".
+type CancelPayload struct {
+	// Reason describes why the requester no longer needs the remote turn.
+	Reason string `json:"reason,omitempty"`
 }
 
 type ResultPayload struct {
@@ -286,6 +292,36 @@ func DecodeResultPayload(payload map[string]any) (ResultPayload, error) {
 	}
 	if len(out.Artifacts) > 0 {
 		out.Artifacts = cloneArtifacts(out.Artifacts)
+	}
+	return out, nil
+}
+
+// NewCancel builds a cancellation request for an in-progress remote task.
+func NewCancel(taskID, senderPubKey string, p CancelPayload) Message {
+	return Message{
+		ACPType:      "cancel",
+		Version:      Version,
+		TaskID:       taskID,
+		SenderPubKey: senderPubKey,
+		Payload: map[string]any{
+			"reason": p.Reason,
+		},
+		CreatedAt: time.Now().Unix(),
+	}
+}
+
+// DecodeCancelPayload normalizes a generic ACP cancellation payload.
+func DecodeCancelPayload(payload map[string]any) (CancelPayload, error) {
+	if payload == nil {
+		return CancelPayload{}, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return CancelPayload{}, err
+	}
+	var out CancelPayload
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return CancelPayload{}, err
 	}
 	return out, nil
 }

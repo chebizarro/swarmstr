@@ -199,6 +199,32 @@ func TestHandleACPMessageRepliesWithPongForPing(t *testing.T) {
 	}
 }
 
+func TestHandleACPMessageCancelAuthenticatesRequester(t *testing.T) {
+	d := acppkg.NewDispatcher()
+	executionCtx, cancelExecution := context.WithCancelCause(context.Background())
+	release := d.BindExecution("task-cancel", "peer-pubkey", cancelExecution)
+	defer release()
+	prev := controlServices
+	controlServices = &daemonServices{}
+	controlServices.relay.acpDispatcher = d
+	defer func() { controlServices = prev }()
+
+	dm := nostruntime.InboundDM{Reply: func(_ context.Context, _ string) error { return nil }}
+	cancelMsg := acppkg.NewCancel("task-cancel", testACPSenderPubKey, acppkg.CancelPayload{Reason: "requester stopped"})
+	if err := handleACPMessage(context.Background(), cancelMsg, "other-peer", dm, agent.NewAgentRuntimeRegistry(nil), agent.NewAgentSessionRouter(), nil, nil, nil); err != nil {
+		t.Fatalf("handle forged ACP cancel: %v", err)
+	}
+	if context.Cause(executionCtx) != nil {
+		t.Fatalf("forged cancel changed cause: %v", context.Cause(executionCtx))
+	}
+	if err := handleACPMessage(context.Background(), cancelMsg, "peer-pubkey", dm, agent.NewAgentRuntimeRegistry(nil), agent.NewAgentSessionRouter(), nil, nil, nil); err != nil {
+		t.Fatalf("handle authorized ACP cancel: %v", err)
+	}
+	if got := context.Cause(executionCtx); got == nil || got.Error() != "requester stopped" {
+		t.Fatalf("authorized cancel cause = %v", got)
+	}
+}
+
 func TestHandleACPMessageDeliversPongToDispatcher(t *testing.T) {
 	d := acppkg.NewDispatcher()
 	pending := d.Register("task-pong")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -22,14 +23,29 @@ type TaskResult struct {
 	Artifacts    []ArtifactPayload
 }
 
+// RemoteCancelFunc sends a cancellation event to the worker that owns taskID.
+type RemoteCancelFunc func(ctx context.Context, peerPubKey, taskID, reason string) error
+
+type pendingTask struct {
+	ch         chan TaskResult
+	worker     string
+	cancelOnce sync.Once
+}
+
+type executionCancellation struct {
+	owner  string
+	cancel context.CancelCauseFunc
+}
+
 // Dispatcher manages ACP task dispatches. In-flight wakeups remain channel
 // based, while lifecycle state is mirrored to a TaskStore so tasks survive
 // process restarts and can be queried after completion.
 type Dispatcher struct {
-	mu      sync.Mutex
-	pending map[string]chan TaskResult
-	store   TaskStore
-	now     func() time.Time
+	mu         sync.Mutex
+	pending    map[string]*pendingTask
+	executions map[string]*executionCancellation
+	store      TaskStore
+	now        func() time.Time
 }
 
 // NewDispatcher returns a ready-to-use Dispatcher backed by an in-memory task store.
@@ -43,7 +59,12 @@ func NewDispatcherWithStore(store TaskStore) *Dispatcher {
 	if store == nil {
 		store = NewInMemoryTaskStore()
 	}
-	return &Dispatcher{pending: make(map[string]chan TaskResult), store: store, now: time.Now}
+	return &Dispatcher{
+		pending:    make(map[string]*pendingTask),
+		executions: make(map[string]*executionCancellation),
+		store:      store,
+		now:        time.Now,
+	}
 }
 
 // TaskStore exposes the dispatcher's persistent task store.
@@ -86,7 +107,11 @@ func (d *Dispatcher) RegisterTaskWithError(ctx context.Context, record TaskRecor
 		return ch, err
 	}
 	d.mu.Lock()
-	d.pending[record.TaskID] = ch
+	worker := ""
+	if record.Worker != nil {
+		worker = strings.TrimSpace(record.Worker.PubKey)
+	}
+	d.pending[record.TaskID] = &pendingTask{ch: ch, worker: worker}
 	d.mu.Unlock()
 	return ch, nil
 }
@@ -106,7 +131,7 @@ func (d *Dispatcher) RecordProgress(ctx context.Context, taskID, summary string)
 // Returns true if the task was pending and the result was delivered.
 func (d *Dispatcher) Deliver(result TaskResult) bool {
 	d.mu.Lock()
-	ch, ok := d.pending[result.TaskID]
+	pending, ok := d.pending[result.TaskID]
 	if ok {
 		delete(d.pending, result.TaskID)
 	}
@@ -132,7 +157,7 @@ func (d *Dispatcher) Deliver(result TaskResult) bool {
 		Artifacts:       artifactsPtr(result.Artifacts),
 	})
 	if ok {
-		ch <- result
+		pending.ch <- result
 		return true
 	}
 	return false
@@ -207,23 +232,97 @@ func isBlockedTerminalText(text string) bool {
 }
 
 func (d *Dispatcher) finishPending(taskID string, status TaskStatus, reason string, closeChannel bool) {
+	_, _ = d.finishPendingWithRemote(context.Background(), taskID, status, reason, closeChannel, nil)
+}
+
+func (d *Dispatcher) finishPendingWithRemote(ctx context.Context, taskID string, status TaskStatus, reason string, closeChannel bool, remoteCancel RemoteCancelFunc) (bool, error) {
 	d.mu.Lock()
-	ch, ok := d.pending[taskID]
+	pending, ok := d.pending[taskID]
 	if ok {
 		delete(d.pending, taskID)
 		if closeChannel {
-			close(ch)
+			close(pending.ch)
 		}
 	}
 	d.mu.Unlock()
-	if ok {
-		now := d.now()
-		delivery := DeliveryFailed
-		if status == TaskStatusCancelled {
-			delivery = DeliveryNotApplicable
-		}
-		_ = d.store.Update(context.Background(), taskID, TaskPatch{Status: taskStatusPtr(status), DeliveryStatus: deliveryStatusPtr(delivery), EndedAt: timePtrPtr(&now), LastEventAt: timePtrPtr(&now), Error: stringPtr(reason), TerminalSummary: stringPtr(reason)})
+	if !ok {
+		return false, nil
 	}
+
+	var cancelErr error
+	if remoteCancel != nil && pending.worker != "" {
+		pending.cancelOnce.Do(func() {
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			cancelErr = remoteCancel(cancelCtx, pending.worker, taskID, reason)
+		})
+	}
+	now := d.now()
+	delivery := DeliveryFailed
+	if status == TaskStatusCancelled {
+		delivery = DeliveryNotApplicable
+	}
+	_ = d.store.Update(context.Background(), taskID, TaskPatch{Status: taskStatusPtr(status), DeliveryStatus: deliveryStatusPtr(delivery), EndedAt: timePtrPtr(&now), LastEventAt: timePtrPtr(&now), Error: stringPtr(reason), TerminalSummary: stringPtr(reason)})
+	return true, cancelErr
+}
+
+// CancelRemote terminates local pending state and sends at most one remote
+// cancellation event for taskID.
+func (d *Dispatcher) CancelRemote(ctx context.Context, taskID, reason string, remoteCancel RemoteCancelFunc) (bool, error) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "cancelled"
+	}
+	return d.finishPendingWithRemote(ctx, taskID, TaskStatusCancelled, reason, true, remoteCancel)
+}
+
+// BindExecution registers the cancel function for an inbound worker turn. The
+// returned cleanup only removes the same binding, so a reused task ID cannot
+// accidentally unbind a newer execution.
+func (d *Dispatcher) BindExecution(taskID, ownerPubKey string, cancel context.CancelCauseFunc) func() {
+	taskID = strings.TrimSpace(taskID)
+	ownerPubKey = strings.TrimSpace(ownerPubKey)
+	if taskID == "" || cancel == nil {
+		return func() {}
+	}
+	entry := &executionCancellation{owner: ownerPubKey, cancel: cancel}
+	d.mu.Lock()
+	if d.executions == nil {
+		d.executions = make(map[string]*executionCancellation)
+	}
+	d.executions[taskID] = entry
+	d.mu.Unlock()
+	return func() {
+		d.mu.Lock()
+		if d.executions[taskID] == entry {
+			delete(d.executions, taskID)
+		}
+		d.mu.Unlock()
+	}
+}
+
+// CancelExecution interrupts an inbound worker turn only when the cancellation
+// sender matches the requester that created it. Deleting before invoking cancel
+// makes duplicate cancel events idempotent.
+func (d *Dispatcher) CancelExecution(taskID, requesterPubKey, reason string) bool {
+	taskID = strings.TrimSpace(taskID)
+	requesterPubKey = strings.TrimSpace(requesterPubKey)
+	d.mu.Lock()
+	entry, ok := d.executions[taskID]
+	if ok && entry.owner != "" && entry.owner != requesterPubKey {
+		ok = false
+	}
+	if ok {
+		delete(d.executions, taskID)
+	}
+	d.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "remote requester cancelled task"
+	}
+	entry.cancel(errors.New(reason))
+	return true
 }
 
 // PendingCount returns the number of in-flight tasks.
@@ -244,8 +343,14 @@ func (d *Dispatcher) HasPending(taskID string) bool {
 
 // Wait blocks until the result for taskID arrives or the context expires.
 func (d *Dispatcher) Wait(ctx context.Context, taskID string, timeout time.Duration) (TaskResult, error) {
+	return d.WaitWithRemoteCancel(ctx, taskID, timeout, nil)
+}
+
+// WaitWithRemoteCancel is Wait plus one-shot remote worker cancellation on
+// context cancellation or timeout.
+func (d *Dispatcher) WaitWithRemoteCancel(ctx context.Context, taskID string, timeout time.Duration, remoteCancel RemoteCancelFunc) (TaskResult, error) {
 	d.mu.Lock()
-	ch, ok := d.pending[taskID]
+	pending, ok := d.pending[taskID]
 	d.mu.Unlock()
 	if !ok {
 		return TaskResult{}, fmt.Errorf("acp dispatcher: no pending task %q", taskID)
@@ -259,17 +364,24 @@ func (d *Dispatcher) Wait(ctx context.Context, taskID string, timeout time.Durat
 	}
 
 	select {
-	case res, ok := <-ch:
+	case res, ok := <-pending.ch:
 		if !ok {
 			return TaskResult{}, fmt.Errorf("acp dispatcher: task %q cancelled", taskID)
 		}
 		return res, nil
 	case <-ctx.Done():
-		d.finishPending(taskID, TaskStatusCancelled, ctx.Err().Error(), true)
+		_, cancelErr := d.finishPendingWithRemote(ctx, taskID, TaskStatusCancelled, ctx.Err().Error(), true, remoteCancel)
+		if cancelErr != nil {
+			return TaskResult{}, errors.Join(ctx.Err(), fmt.Errorf("remote cancel: %w", cancelErr))
+		}
 		return TaskResult{}, ctx.Err()
 	case <-timer:
 		reason := fmt.Sprintf("acp dispatcher: task %q timed out after %v", taskID, timeout)
-		d.finishPending(taskID, TaskStatusTimedOut, reason, true)
-		return TaskResult{}, fmt.Errorf("%s", reason)
+		_, cancelErr := d.finishPendingWithRemote(ctx, taskID, TaskStatusTimedOut, reason, true, remoteCancel)
+		timeoutErr := errors.New(reason)
+		if cancelErr != nil {
+			return TaskResult{}, errors.Join(timeoutErr, fmt.Errorf("remote cancel: %w", cancelErr))
+		}
+		return TaskResult{}, timeoutErr
 	}
 }

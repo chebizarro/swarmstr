@@ -360,7 +360,15 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 			if timeout == 0 {
 				timeout = 60 * time.Second
 			}
-			result, waitErr := h.deps.acpDispatcher.Wait(ctx, taskID, timeout)
+			remoteCancel := func(cancelCtx context.Context, peerPubKey, cancelTaskID, reason string) error {
+				cancelMsg := acppkg.NewCancel(cancelTaskID, senderPubKey, acppkg.CancelPayload{Reason: reason})
+				encoded, marshalErr := json.Marshal(cancelMsg)
+				if marshalErr != nil {
+					return fmt.Errorf("marshal cancel: %w", marshalErr)
+				}
+				return sendACPDMWithTransport(cancelCtx, dmBus, dmScheme, peerPubKey, string(encoded))
+			}
+			result, waitErr := h.deps.acpDispatcher.WaitWithRemoteCancel(ctx, taskID, timeout, remoteCancel)
 			if waitErr != nil {
 				return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.dispatch: wait: %w", waitErr)
 			}
@@ -415,8 +423,23 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 			bindACPTaskID(&payload, taskID)
 			recordACPDelegatedChild(h.deps.sessionStore, payload, taskID)
 			acpMsg := acppkg.NewTask(taskID, senderPubKey, payload)
-			encoded, _ := json.Marshal(acpMsg)
+			encoded, marshalErr := json.Marshal(acpMsg)
+			if marshalErr != nil {
+				return fmt.Errorf("marshal task: %w", marshalErr)
+			}
 			return sendACPDMWithTransport(ctx, dmBus, dmScheme, peerPubKey, string(encoded))
+		}
+		remoteCancel := func(cancelCtx context.Context, peerPubKey, taskID, reason string) error {
+			dmBus, dmScheme, err := resolveACPDMTransport(cfg, peerPubKey)
+			if err != nil {
+				return err
+			}
+			cancelMsg := acppkg.NewCancel(taskID, dmBus.PublicKey(), acppkg.CancelPayload{Reason: reason})
+			encoded, marshalErr := json.Marshal(cancelMsg)
+			if marshalErr != nil {
+				return fmt.Errorf("marshal cancel: %w", marshalErr)
+			}
+			return sendACPDMWithTransport(cancelCtx, dmBus, dmScheme, peerPubKey, string(encoded))
 		}
 
 		steps := make([]acppkg.Step, 0, len(req.Steps))
@@ -456,7 +479,7 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 				goal = "ACP pipeline"
 			}
 		}
-		pipeline := &acppkg.Pipeline{Steps: steps, FlowRegistry: h.deps.acpFlowRegistry, OwnerSessionKey: ownerSessionKey, Goal: goal}
+		pipeline := &acppkg.Pipeline{Steps: steps, FlowRegistry: h.deps.acpFlowRegistry, OwnerSessionKey: ownerSessionKey, Goal: goal, RemoteCancel: remoteCancel}
 
 		var pipelineResults []acppkg.PipelineResult
 		var pipelineErr error

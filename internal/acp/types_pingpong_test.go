@@ -2,6 +2,23 @@ package acp
 
 import "testing"
 
+func TestCancelBuilderAndDecoder(t *testing.T) {
+	cancel := NewCancel("task-cancel-1", "sender-a", CancelPayload{Reason: "deadline exceeded"})
+	if cancel.ACPType != "cancel" || cancel.Version != Version {
+		t.Fatalf("unexpected cancel envelope: %+v", cancel)
+	}
+	if cancel.TaskID != "task-cancel-1" || cancel.SenderPubKey != "sender-a" {
+		t.Fatalf("unexpected cancel routing: %+v", cancel)
+	}
+	decoded, err := DecodeCancelPayload(cancel.Payload)
+	if err != nil {
+		t.Fatalf("DecodeCancelPayload: %v", err)
+	}
+	if decoded.Reason != "deadline exceeded" {
+		t.Fatalf("cancel reason = %q", decoded.Reason)
+	}
+}
+
 func TestPingPongBuildersAndDecoders(t *testing.T) {
 	ping := NewPing("task-ping-1", "sender-a", PingPayload{Nonce: "nonce-1"})
 	if ping.ACPType != "ping" {

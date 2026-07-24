@@ -75,9 +75,23 @@ type Pipeline struct {
 	OwnerSessionKey string
 	// Goal describes the pipeline objective in the flow record.
 	Goal string
+	// MaxConcurrency bounds simultaneously dispatched remote steps. Values <= 0
+	// use the safe default of four.
+	MaxConcurrency int
+	// RemoteCancel publishes an authenticated cancellation event to a worker.
+	RemoteCancel RemoteCancelFunc
 }
 
 // stepTimeout returns the effective per-step deadline.
+const defaultPipelineMaxConcurrency = 4
+
+func (p *Pipeline) maxConcurrency() int {
+	if p != nil && p.MaxConcurrency > 0 {
+		return p.MaxConcurrency
+	}
+	return defaultPipelineMaxConcurrency
+}
+
 func stepTimeout(ms int64) time.Duration {
 	if ms > 0 {
 		return time.Duration(ms) * time.Millisecond
@@ -133,7 +147,7 @@ func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFu
 		}
 		d.MarkRunning(ctx, taskID)
 
-		res, err := d.Wait(ctx, taskID, stepTimeout(step.TimeoutMS))
+		res, err := d.WaitWithRemoteCancel(ctx, taskID, stepTimeout(step.TimeoutMS), p.RemoteCancel)
 		_ = ch // ch was consumed by Wait
 		if err != nil {
 			results = append(results, PipelineResult{
@@ -165,75 +179,102 @@ func (p *Pipeline) RunSequential(ctx context.Context, d *Dispatcher, send SendFu
 func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc) ([]PipelineResult, error) {
 	results := make([]PipelineResult, len(p.Steps))
 	taskIDs := make([]string, len(p.Steps))
+	for i, step := range p.Steps {
+		taskIDs[i] = GenerateTaskID()
+		if step.Task != nil && strings.TrimSpace(step.Task.TaskID) != "" {
+			taskIDs[i] = strings.TrimSpace(step.Task.TaskID)
+		}
+	}
 	flowID, _ := p.ensureFlow(ctx)
 	p.markFlowRunning(ctx, flowID, 0)
 
-	// Register and dispatch all tasks.
-	for i, step := range p.Steps {
-		taskID := GenerateTaskID()
-		if step.Task != nil && strings.TrimSpace(step.Task.TaskID) != "" {
-			taskID = strings.TrimSpace(step.Task.TaskID)
-		}
-		taskIDs[i] = taskID
-		stepArtifacts := cloneArtifacts(step.Artifacts)
-		if _, err := d.RegisterTaskWithError(ctx, TaskRecord{TaskID: taskID, FlowID: flowID, StepIndex: i, RequesterSessionKey: p.OwnerSessionKey, Instructions: step.Instructions, Label: step.Label, Worker: &WorkerTaskMetadata{PubKey: step.PeerPubKey}, Artifacts: stepArtifacts}); err != nil {
-			p.blockFlow(ctx, flowID, taskID, err.Error())
-			return nil, fmt.Errorf("pipeline step %d register: %w", i, err)
-		}
-		p.appendFlowTask(ctx, flowID, taskID)
-		if err := send(ctx, step.PeerPubKey, taskID, TaskPayload{
-			Instructions:    step.Instructions,
-			Task:            step.Task,
-			ContextMessages: cloneContextMessages(step.ContextMessages),
-			MemoryScope:     step.MemoryScope,
-			ToolProfile:     strings.TrimSpace(step.ToolProfile),
-			EnabledTools:    cloneStrings(step.EnabledTools),
-			ParentContext:   cloneParentContext(step.ParentContext),
-			TimeoutMS:       step.TimeoutMS,
-			Artifacts:       stepArtifacts,
-		}); err != nil {
-			p.blockFlow(ctx, flowID, taskID, err.Error())
-			// Cancel all already-registered sibling tasks on send failure.
-			for j := 0; j <= i; j++ {
-				if taskIDs[j] != "" {
-					d.Cancel(taskIDs[j])
-				}
-			}
-			return nil, fmt.Errorf("pipeline step %d send: %w", i, err)
-		}
-		d.MarkRunning(ctx, taskID)
-	}
-
-	// Wait for all results concurrently.
+	parallelCtx, cancelPipeline := context.WithCancelCause(ctx)
+	defer cancelPipeline(nil)
+	semaphore := make(chan struct{}, p.maxConcurrency())
 	var wg sync.WaitGroup
-	var mu sync.Mutex
+	var errMu sync.Mutex
 	var firstErr error
+	setFirstError := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		first := firstErr == nil
+		if first {
+			firstErr = err
+		}
+		errMu.Unlock()
+		if first {
+			cancelPipeline(err)
+		}
+	}
 
 	for i, step := range p.Steps {
 		i, step, taskID := i, step, taskIDs[i]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res, err := d.Wait(ctx, taskID, stepTimeout(step.TimeoutMS))
-			mu.Lock()
-			defer mu.Unlock()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-parallelCtx.Done():
+				err := context.Cause(parallelCtx)
+				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Error: err.Error()}
+				setFirstError(err)
+				return
+			}
+			if err := context.Cause(parallelCtx); err != nil {
+				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Error: err.Error()}
+				setFirstError(err)
+				return
+			}
+
+			stepArtifacts := cloneArtifacts(step.Artifacts)
+			if _, err := d.RegisterTaskWithError(parallelCtx, TaskRecord{TaskID: taskID, FlowID: flowID, StepIndex: i, RequesterSessionKey: p.OwnerSessionKey, Instructions: step.Instructions, Label: step.Label, Worker: &WorkerTaskMetadata{PubKey: step.PeerPubKey}, Artifacts: stepArtifacts}); err != nil {
+				err = fmt.Errorf("pipeline step %d register: %w", i, err)
+				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Error: err.Error()}
+				setFirstError(err)
+				return
+			}
+			p.appendFlowTask(parallelCtx, flowID, taskID)
+			if err := send(parallelCtx, step.PeerPubKey, taskID, TaskPayload{
+				Instructions:    step.Instructions,
+				Task:            step.Task,
+				ContextMessages: cloneContextMessages(step.ContextMessages),
+				MemoryScope:     step.MemoryScope,
+				ToolProfile:     strings.TrimSpace(step.ToolProfile),
+				EnabledTools:    cloneStrings(step.EnabledTools),
+				ParentContext:   cloneParentContext(step.ParentContext),
+				TimeoutMS:       step.TimeoutMS,
+				Artifacts:       stepArtifacts,
+			}); err != nil {
+				d.Cancel(taskID)
+				err = fmt.Errorf("pipeline step %d send: %w", i, err)
+				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Error: err.Error()}
+				setFirstError(err)
+				return
+			}
+			d.MarkRunning(parallelCtx, taskID)
+
+			res, err := d.WaitWithRemoteCancel(parallelCtx, taskID, stepTimeout(step.TimeoutMS), p.RemoteCancel)
 			if err != nil {
 				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Error: err.Error()}
-				if firstErr == nil {
-					firstErr = err
-				}
-			} else {
-				artifacts := resultArtifacts(res)
-				results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error, SenderPubKey: res.SenderPubKey, Worker: cloneWorkerMetadata(res.Worker), TokensUsed: res.TokensUsed, CompletedAt: res.CompletedAt, Artifacts: artifacts}
-				if res.Error != "" && firstErr == nil {
-					firstErr = fmt.Errorf("pipeline step %d worker error: %s", i, res.Error)
-				}
+				setFirstError(err)
+				return
+			}
+			artifacts := resultArtifacts(res)
+			results[i] = PipelineResult{StepIndex: i, TaskID: taskID, Text: res.Text, Error: res.Error, SenderPubKey: res.SenderPubKey, Worker: cloneWorkerMetadata(res.Worker), TokensUsed: res.TokensUsed, CompletedAt: res.CompletedAt, Artifacts: artifacts}
+			if res.Error != "" {
+				setFirstError(fmt.Errorf("pipeline step %d worker error: %s", i, res.Error))
 			}
 		}()
 	}
 	wg.Wait()
-	if firstErr != nil {
-		p.failFlow(ctx, flowID, firstErr.Error())
+	errMu.Lock()
+	err := firstErr
+	errMu.Unlock()
+	if err != nil {
+		p.failFlow(ctx, flowID, err.Error())
 	} else {
 		var allArtifacts []ArtifactPayload
 		for _, result := range results {
@@ -241,7 +282,7 @@ func (p *Pipeline) RunParallel(ctx context.Context, d *Dispatcher, send SendFunc
 		}
 		p.finishFlow(ctx, flowID, allArtifacts)
 	}
-	return results, firstErr
+	return results, err
 }
 
 // AggregateResults joins all step texts into a single string, separated by a
