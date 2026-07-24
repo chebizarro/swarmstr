@@ -1,6 +1,42 @@
 package agent
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestMistralStreamDefaultsStayOnMistral(t *testing.T) {
+	compat := (&MistralChatProvider{}).openAICompatibleProvider()
+	if compat.BaseURL != "https://api.mistral.ai/v1" || compat.Model != "mistral-large-latest" {
+		t.Fatalf("compat=%#v", compat)
+	}
+}
+
+func TestMistralStreamDelegatesOpenAICompatibleSSE(t *testing.T) {
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"mis"}}]}`)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"tral"}}]}`)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
+	}))
+	defer srv.Close()
+	p := &MistralChatProvider{BaseURL: srv.URL, APIKey: "secret", Model: "mistral-large-latest", Client: srv.Client()}
+	var chunks []string
+	result, err := p.Stream(context.Background(), Turn{UserText: "hi"}, func(chunk string) { chunks = append(chunks, chunk) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "mistral" || len(chunks) != 2 || auth != "Bearer secret" {
+		t.Fatalf("result=%#v chunks=%#v auth=%q", result, chunks, auth)
+	}
+}
 
 func TestMistralBuildRequestRequiresToolCallIDs(t *testing.T) {
 	p := &MistralChatProvider{Model: "mistral-large-latest"}

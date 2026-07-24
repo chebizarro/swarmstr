@@ -126,6 +126,43 @@ func TestHTTPProvider_NoToolsSingleCall(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatProvider_StreamReportsFinalUsage(t *testing.T) {
+	var requestedUsage bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			StreamOptions struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requestedUsage = body.StreamOptions.IncludeUsage
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"ok"}}]}`)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, `data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}`)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
+	}))
+	defer srv.Close()
+
+	var usage TurnUsage
+	p := &OpenAIChatProvider{BaseURL: srv.URL, Model: "gpt-4o", Client: srv.Client()}
+	result, err := p.Stream(context.Background(), Turn{UserText: "hi", RuntimeEventSink: func(event RuntimeEvent) {
+		if event.Type == RuntimeEventUsage {
+			usage = event.Usage
+		}
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requestedUsage || result.Usage.InputTokens != 7 || result.Usage.OutputTokens != 3 || result.Usage.CacheReadTokens != 2 {
+		t.Fatalf("requested=%v usage=%#v", requestedUsage, result.Usage)
+	}
+	if usage.InputTokens != 7 || usage.OutputTokens != 3 || usage.CacheReadTokens != 2 {
+		t.Fatalf("runtime usage=%#v", usage)
+	}
+}
+
 func TestOpenAIChatProvider_Stream_LargeSSEChunk(t *testing.T) {
 	longText := strings.Repeat("x", 120*1024)
 

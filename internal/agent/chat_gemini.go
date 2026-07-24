@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -184,7 +185,7 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 	var textBuf strings.Builder
 	var toolCalls []ToolCall
 	for _, part := range out.Candidates[0].Content.Parts {
-		if part.Text != "" {
+		if part.Text != "" && !part.Thought {
 			textBuf.WriteString(part.Text)
 		}
 		if part.FunctionCall != nil && part.FunctionCall.Name != "" {
@@ -223,3 +224,117 @@ func (p *GeminiChatProvider) Chat(ctx context.Context, messages []LLMMessage, to
 		NeedsToolResults: needsToolResults,
 	}, nil
 }
+
+func (p *GeminiChatProvider) streamRequest(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (ProviderResult, error) {
+	return p.streamRequestWithSink(ctx, messages, tools, opts, nil)
+}
+
+func (p *GeminiChatProvider) streamRequestWithSink(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions, emit ProviderStreamEventSink) (ProviderResult, error) {
+	messages = PrepareTranscriptMessages(messages, ResolveGeminiTranscriptPolicy(p.Model))
+	apiKey := strings.TrimSpace(p.APIKey)
+	if apiKey == "" {
+		for _, envKey := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"} {
+			if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+				apiKey = v
+				break
+			}
+		}
+	}
+	if apiKey == "" {
+		return ProviderResult{}, fmt.Errorf("Gemini API key not configured (set GEMINI_API_KEY)")
+	}
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = "gemini-2.0-flash"
+	}
+
+	var systemInstruction *geminiContent
+	contents := make([]geminiContent, 0, len(messages))
+	toolNamesByID := make(map[string]string)
+	for _, m := range messages {
+		switch m.Role {
+		case "system":
+			systemInstruction = &geminiContent{Parts: []geminiPart{{Text: m.Content}}}
+		case "user":
+			contents = append(contents, geminiContent{Role: "user", Parts: buildGeminiParts(m.Content, m.Images)})
+		case "assistant":
+			content := geminiContent{Role: "model"}
+			if m.Content != "" {
+				content.Parts = append(content.Parts, geminiPart{Text: m.Content})
+			}
+			for _, tc := range m.ToolCalls {
+				toolNamesByID[tc.ID] = tc.Name
+				content.Parts = append(content.Parts, geminiPart{FunctionCall: &geminiFunctionCall{Name: tc.Name, Args: tc.Args}})
+			}
+			if len(content.Parts) > 0 {
+				contents = append(contents, content)
+			}
+		case "tool":
+			name := m.ToolCallID
+			if resolved := toolNamesByID[m.ToolCallID]; resolved != "" {
+				name = resolved
+			}
+			contents = append(contents, geminiContent{Role: "function", Parts: []geminiPart{{FunctionResponse: &geminiFunctionResponse{Name: name, Response: map[string]any{"result": m.Content}}}}})
+		}
+	}
+	geminiTools := toolDefsToGemini(tools)
+	reqBody := geminiRequest{Contents: contents, SystemInstruction: systemInstruction, GenerationConfig: geminiResponseFormatGenerationConfig(opts.ResponseFormat), Tools: geminiTools}
+	profile := p.PromptCacheProfile()
+	if profile.Enabled && profile.UseGeminiCachedContent {
+		if cachedName := resolveGeminiCache(ctx, apiKey, model, systemInstruction, geminiTools, p.Client); cachedName != "" {
+			reqBody.CachedContent = cachedName
+			reqBody.SystemInstruction = nil
+			reqBody.Tools = nil
+		}
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s", model, apiKey)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 120 * time.Second}
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return ProviderResult{}, fmt.Errorf("gemini stream request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return ProviderResult{}, fmt.Errorf("gemini stream: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	return consumeGeminiLikeStream(resp.Body, emit)
+}
+
+// StreamEvents implements native Gemini streamGenerateContent SSE.
+func (p *GoogleGeminiProvider) StreamEvents(ctx context.Context, turn Turn, emit ProviderStreamEventSink) (ProviderResult, error) {
+	return runProviderEventStream(emit, func(emit ProviderStreamEventSink) (ProviderResult, error) {
+		chat := &GeminiChatProvider{APIKey: p.APIKey, Model: p.Model, Client: p.Client, PromptCache: promptCacheProfilePtr(p.PromptCacheProfile())}
+		messages := buildLLMMessagesFromTurnWithProfile(turn, "", p.PromptCacheProfile())
+		// streamRequest performs transport setup; use an event-aware equivalent so
+		// provider events are emitted directly from the shared Gemini accumulator.
+		return chat.streamRequestEvents(ctx, messages, turn.Tools, chatOptionsFromTurn(turn, p.PromptCacheProfile()), emit)
+	})
+}
+
+func (p *GeminiChatProvider) streamRequestEvents(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions, emit ProviderStreamEventSink) (ProviderResult, error) {
+	// Reuse streamRequest construction through a one-shot cloned provider transport
+	// is not possible without buffering; this method mirrors only the final request
+	// dispatch while sharing the response accumulator.
+	return p.streamRequestWithSink(ctx, messages, tools, opts, emit)
+}
+
+func (p *GoogleGeminiProvider) Stream(ctx context.Context, turn Turn, onChunk func(string)) (ProviderResult, error) {
+	return streamEventsAsLegacy(ctx, turn, onChunk, p)
+}
+
+var _ EventStreamingProvider = (*GoogleGeminiProvider)(nil)
+var _ StreamingProvider = (*GoogleGeminiProvider)(nil)

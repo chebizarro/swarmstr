@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"metiq/internal/agent/toolrepair"
 	ctxengine "metiq/internal/context"
 	pluginhooks "metiq/internal/plugins/hooks"
 	"metiq/internal/policy"
@@ -337,8 +339,9 @@ type StreamingRuntime interface {
 }
 
 type ProviderRuntime struct {
-	provider Provider
-	tools    ToolExecutor
+	provider  Provider
+	tools     ToolExecutor
+	lifecycle *runtimeLifecycleState
 }
 
 // ToolCallToRef converts a ToolCall (with map args) to a ToolCallRef (with
@@ -351,7 +354,7 @@ func NewProviderRuntime(provider Provider, tools ToolExecutor) (*ProviderRuntime
 	if provider == nil {
 		return nil, fmt.Errorf("provider is required")
 	}
-	return &ProviderRuntime{provider: provider, tools: tools}, nil
+	return &ProviderRuntime{provider: provider, tools: tools, lifecycle: newRuntimeLifecycleState()}, nil
 }
 
 func NewRuntimeFromEnv(tools ToolExecutor) (Runtime, error) {
@@ -372,17 +375,23 @@ func (r *ProviderRuntime) Filtered(allowed map[string]bool) Runtime {
 		return r
 	}
 	return &ProviderRuntime{
-		provider: r.provider,
-		tools:    FilteredToolExecutor(r.tools, allowed),
+		provider:  r.provider,
+		tools:     FilteredToolExecutor(r.tools, allowed),
+		lifecycle: r.lifecycle,
 	}
 }
 
-func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResult, error) {
+func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (result TurnResult, err error) {
 	turn.ToolEventSink = toolLifecycleSinkForRuntime(turn.ToolEventSink, turn.RuntimeEventSink)
 	ctx = ensureMutationTrackingContext(ctx)
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {
 		return TurnResult{}, fmt.Errorf("empty user turn")
+	}
+	r.ensureSessionStarted(ctx, turn)
+	defer func() { emitAgentEndHook(ctx, turn, result, err) }()
+	if err = emitBeforeAgentHook(ctx, turn); err != nil {
+		return TurnResult{}, err
 	}
 	// Inject session ID into context so tools can read it without requiring
 	// the LLM to echo it back as an explicit parameter.
@@ -406,7 +415,7 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 	if err != nil {
 		return TurnResult{}, turnCancellationCause(ctx, err)
 	}
-	result, err := r.buildResult(ctx, turn, gen, trackedTools)
+	result, err = r.buildResult(ctx, turn, gen, trackedTools)
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -421,20 +430,23 @@ func (r *ProviderRuntime) ProcessTurn(ctx context.Context, turn Turn) (TurnResul
 // delivered via onChunk as they arrive; otherwise Generate() is called and
 // the full text is delivered in one onChunk call.  Tool calls are executed
 // after streaming completes using the configured ToolExecutor.
-func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, onChunk func(text string)) (TurnResult, error) {
+func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, onChunk func(text string)) (result TurnResult, err error) {
 	turn.ToolEventSink = toolLifecycleSinkForRuntime(turn.ToolEventSink, turn.RuntimeEventSink)
-	onChunk = runtimeEventStreamingCallback(turn, onChunk)
 	ctx = ensureMutationTrackingContext(ctx)
 	turn.UserText = strings.TrimSpace(turn.UserText)
 	if turn.UserText == "" {
 		return TurnResult{}, fmt.Errorf("empty user turn")
+	}
+	r.ensureSessionStarted(ctx, turn)
+	defer func() { emitAgentEndHook(ctx, turn, result, err) }()
+	if err = emitBeforeAgentHook(ctx, turn); err != nil {
+		return TurnResult{}, err
 	}
 	if turn.SessionID != "" {
 		ctx = ContextWithSessionID(ctx, turn.SessionID)
 	}
 	frozenTools := SnapshotToolExecutor(r.tools)
 	trackedTools := NewMutationTrackingToolExecutor(frozenTools)
-	// Auto-inject tool definitions (same as ProcessTurn).
 	if len(turn.Tools) == 0 && trackedTools != nil {
 		if dp, ok := trackedTools.(interface{ Definitions() []ToolDefinition }); ok {
 			turn.Tools = dp.Definitions()
@@ -444,23 +456,89 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		turn.Executor = trackedTools
 	}
 
+	emitStreamLifecycleRuntimeEvent(turn, RuntimeEventStreamStart, nil)
 	var gen ProviderResult
-	var err error
+	var lastStreamUsage ProviderUsage
 
-	if sp, ok := r.provider.(StreamingProvider); ok {
-		startedAt := time.Now()
-		gen, err = sp.Stream(ctx, turn, onChunk)
+	startedAt := time.Now()
+	if sp, ok := r.provider.(EventStreamingProvider); ok {
+		var normalizer *toolrepair.StreamNormalizer
+		if len(turn.Tools) > 0 {
+			defs := make([]toolrepair.ToolDefinition, 0, len(turn.Tools))
+			for _, def := range turn.Tools {
+				defs = append(defs, toolrepair.ToolDefinition{Name: def.Name})
+			}
+			normalizer = toolrepair.NewStreamNormalizer(defs)
+		}
+		var normalizedText strings.Builder
+		var promotedCalls []ToolCall
+		sawTextEvent := false
+		emitStableText := func(text string) {
+			if text == "" {
+				return
+			}
+			normalizedText.WriteString(text)
+			if onChunk != nil {
+				onChunk(text)
+			}
+			emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventAssistantDelta, SessionID: turn.SessionID, TurnID: turn.TurnID, ContentBlockIndex: 0, Delta: text, Trace: turn.Trace})
+		}
+		consumeNormalized := func(out toolrepair.StreamOutput) {
+			emitStableText(out.Text)
+			for _, repaired := range out.Calls {
+				promotedCalls = append(promotedCalls, ToolCall{ID: repaired.ID, Name: repaired.Name, Args: repaired.Args})
+			}
+		}
+		gen, err = sp.StreamEvents(ctx, turn, func(evt ProviderStreamEvent) {
+			switch evt.Type {
+			case ProviderStreamTextDelta:
+				if evt.TextDelta != "" {
+					sawTextEvent = true
+					if normalizer != nil {
+						consumeNormalized(normalizer.Feed(evt.TextDelta))
+					} else {
+						emitStableText(evt.TextDelta)
+					}
+				}
+			case ProviderStreamThinkingDelta:
+				emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventThinkingDelta, SessionID: turn.SessionID, TurnID: turn.TurnID, Delta: evt.ThinkingDelta, Trace: turn.Trace})
+			case ProviderStreamToolCallDelta:
+				d := evt.ToolCallDelta
+				emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventAssistantToolCallDelta, SessionID: turn.SessionID, TurnID: turn.TurnID, ContentBlockIndex: d.Index, ToolCallID: d.ID, ToolName: d.Name, Delta: d.ArgumentsDelta, Trace: turn.Trace})
+			case ProviderStreamUsage:
+				if hasProviderUsage(evt.Usage) && !providerUsageEqual(evt.Usage, lastStreamUsage) {
+					lastStreamUsage = evt.Usage
+					emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventUsage, SessionID: turn.SessionID, TurnID: turn.TurnID, Usage: providerUsageToTurnUsage(evt.Usage), Trace: turn.Trace})
+				}
+			}
+		})
+		if err == nil && normalizer != nil {
+			consumeNormalized(normalizer.Flush())
+			if sawTextEvent {
+				gen.Text = normalizedText.String()
+			}
+			for _, call := range promotedCalls {
+				idx := len(gen.ToolCalls)
+				gen.ToolCalls = append(gen.ToolCalls, call)
+				args, _ := json.Marshal(call.Args)
+				emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventAssistantToolCallDelta, SessionID: turn.SessionID, TurnID: turn.TurnID, ContentBlockIndex: idx, ToolCallID: call.ID, ToolName: call.Name, Delta: string(args), Trace: turn.Trace})
+			}
+		}
+		emitProviderRoundtripSpan(ctx, "stream_events", turn, startedAt, err)
+	} else if sp, ok := r.provider.(StreamingProvider); ok {
+		gen, err = sp.Stream(ctx, turn, runtimeEventStreamingCallback(turn, onChunk))
 		emitProviderRoundtripSpan(ctx, "stream", turn, startedAt, err)
 	} else {
-		startedAt := time.Now()
 		gen, err = r.provider.Generate(ctx, turn)
 		emitProviderRoundtripSpan(ctx, "stream_generate", turn, startedAt, err)
 		if err == nil && onChunk != nil {
-			onChunk(gen.Text)
+			runtimeEventStreamingCallback(turn, onChunk)(gen.Text)
 		}
 	}
 	if err != nil {
-		return TurnResult{}, turnCancellationCause(ctx, err)
+		err = turnCancellationCause(ctx, err)
+		emitStreamLifecycleRuntimeEvent(turn, RuntimeEventStreamError, err)
+		return TurnResult{}, err
 	}
 
 	if len(gen.ToolCalls) > 0 && len(gen.HistoryDelta) == 0 {
@@ -468,22 +546,30 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		for _, call := range gen.ToolCalls {
 			refs = append(refs, ToolCallRefForPersistence(trackedTools, call))
 		}
-		gen.HistoryDelta = append(gen.HistoryDelta, ConversationMessage{
-			Role:      "assistant",
-			Content:   strings.TrimSpace(gen.Text),
-			ToolCalls: refs,
-		})
+		gen.HistoryDelta = append(gen.HistoryDelta, ConversationMessage{Role: "assistant", Content: strings.TrimSpace(gen.Text), ToolCalls: refs})
 	}
 
-	result, err := r.buildResult(ctx, turn, gen, trackedTools)
+	result, err = r.buildResult(ctx, turn, gen, trackedTools)
 	if err != nil {
+		emitStreamLifecycleRuntimeEvent(turn, RuntimeEventStreamError, err)
 		return TurnResult{}, err
 	}
-	emitTurnUsageRuntimeEvent(turn, result.Usage)
+	if !hasProviderUsage(lastStreamUsage) || !providerUsageEqual(lastStreamUsage, gen.Usage) {
+		emitTurnUsageRuntimeEvent(turn, result.Usage)
+	}
 	emitAssistantMessageRuntimeEvent(turn, gen)
 	runContextAfterTurn(ctx, turn, result)
 	runPostSamplingHooks(ctx, turn, result)
+	emitStreamLifecycleRuntimeEvent(turn, RuntimeEventStreamEnd, nil)
 	return result, nil
+}
+
+func emitStreamLifecycleRuntimeEvent(turn Turn, eventType RuntimeEventType, err error) {
+	evt := RuntimeEvent{Type: eventType, SessionID: turn.SessionID, TurnID: turn.TurnID, Trace: turn.Trace}
+	if err != nil {
+		evt.Error = err.Error()
+	}
+	emitRuntimeEvent(turn.RuntimeEventSink, evt)
 }
 
 func emitProviderRoundtripSpan(ctx context.Context, phase string, turn Turn, startedAt time.Time, callErr error) {

@@ -19,19 +19,24 @@ type RunOutcome struct {
 
 // SubagentRunRecord tracks a single subagent invocation through its lifecycle.
 type SubagentRunRecord struct {
-	RunID                string     `json:"run_id"`
-	ChildSessionKey      string     `json:"child_session_key"`
-	RequesterSessionKey  string     `json:"requester_session_key"`
-	RequesterDisplayKey  string     `json:"requester_display_key"`
-	Task                 string     `json:"task"`
-	Cleanup              string     `json:"cleanup"` // "delete" | "keep"
-	Label                string     `json:"label,omitempty"`
-	RunTimeoutSeconds    int        `json:"run_timeout_seconds,omitempty"`
-	CreatedAt            int64      `json:"created_at"`
-	StartedAt            int64      `json:"started_at,omitempty"`
-	EndedAt              int64      `json:"ended_at,omitempty"`
-	Outcome              *RunOutcome `json:"outcome,omitempty"`
-	SuppressAnnounce     string     `json:"suppress_announce,omitempty"` // "steer-restart" | "killed"
+	RunID               string      `json:"run_id"`
+	ParentRunID         string      `json:"parent_run_id,omitempty"`
+	AgentID             string      `json:"agent_id,omitempty"`
+	ParentAgentID       string      `json:"parent_agent_id,omitempty"`
+	Depth               int         `json:"depth,omitempty"`
+	Budget              Budget      `json:"budget,omitempty"`
+	ChildSessionKey     string      `json:"child_session_key"`
+	RequesterSessionKey string      `json:"requester_session_key"`
+	RequesterDisplayKey string      `json:"requester_display_key"`
+	Task                string      `json:"task"`
+	Cleanup             string      `json:"cleanup"` // "delete" | "keep"
+	Label               string      `json:"label,omitempty"`
+	RunTimeoutSeconds   int         `json:"run_timeout_seconds,omitempty"`
+	CreatedAt           int64       `json:"created_at"`
+	StartedAt           int64       `json:"started_at,omitempty"`
+	EndedAt             int64       `json:"ended_at,omitempty"`
+	Outcome             *RunOutcome `json:"outcome,omitempty"`
+	SuppressAnnounce    string      `json:"suppress_announce,omitempty"` // "steer-restart" | "killed"
 }
 
 // Registry is a concurrent-safe in-memory store for subagent run records.

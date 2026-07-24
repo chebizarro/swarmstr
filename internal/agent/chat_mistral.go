@@ -99,6 +99,31 @@ func (p *MistralChatProvider) buildRequest(messages []LLMMessage, tools []ToolDe
 	return req, nil
 }
 
+// StreamEvents delegates Mistral's OpenAI-compatible SSE protocol to the shared
+// OpenAI streaming implementation while retaining the native buffered adapter.
+func (p *MistralChatProvider) StreamEvents(ctx context.Context, turn Turn, emit ProviderStreamEventSink) (ProviderResult, error) {
+	return p.openAICompatibleProvider().StreamEvents(ctx, turn, emit)
+}
+
+func (p *MistralChatProvider) openAICompatibleProvider() *OpenAIChatProvider {
+	baseURL := strings.TrimSpace(p.BaseURL)
+	if baseURL == "" {
+		baseURL = "https://api.mistral.ai/v1"
+	}
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = "mistral-large-latest"
+	}
+	return &OpenAIChatProvider{BaseURL: baseURL, APIKey: p.APIKey, Model: model, Client: p.Client}
+}
+
+func (p *MistralChatProvider) Stream(ctx context.Context, turn Turn, onChunk func(string)) (ProviderResult, error) {
+	return streamEventsAsLegacy(ctx, turn, onChunk, p)
+}
+
+var _ EventStreamingProvider = (*MistralChatProvider)(nil)
+var _ StreamingProvider = (*MistralChatProvider)(nil)
+
 func normalizeKimiModelID(model string) string {
 	m := strings.TrimSpace(model)
 	for _, p := range []string{"moonshot/", "kimi/", "kimicode/"} {

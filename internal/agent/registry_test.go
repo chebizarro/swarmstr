@@ -118,6 +118,22 @@ func TestDefaultProviderRegistry_OpenAICompatibleDescriptor(t *testing.T) {
 	}
 }
 
+func TestBuiltinStreamingCapabilitiesAreHonest(t *testing.T) {
+	reg := DefaultProviderRegistry()
+	for _, id := range []string{"openai", "anthropic", "gemini", "mistral", "moonshot", "groq", "minimax", "vertex", "ollama", "lmstudio"} {
+		desc, ok := reg.Descriptor(id)
+		if !ok || !desc.Capabilities.SupportsStreaming {
+			t.Fatalf("provider %s streaming descriptor=%#v ok=%v", id, desc.Capabilities, ok)
+		}
+	}
+	for _, id := range []string{"openai-responses", "azure-responses"} {
+		desc, ok := reg.Descriptor(id)
+		if !ok || desc.Capabilities.SupportsStreaming {
+			t.Fatalf("provider %s must not advertise an unimplemented stream: %#v", id, desc.Capabilities)
+		}
+	}
+}
+
 func TestDefaultProviderRegistry_BaseURLEnvOverride(t *testing.T) {
 	t.Setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11435/v1/")
 	baseURL, envKey := resolveOpenAICompat("ollama/llama3")

@@ -549,6 +549,14 @@ func (p *AnthropicProvider) Stream(ctx context.Context, turn Turn, onChunk func(
 	return chat.StreamMessages(ctx, messages, turn.Tools, opts, turn.SessionID, turn.TurnID, turn.RuntimeEventSink, onChunk)
 }
 
+// StreamEvents exposes Anthropic text, thinking, tool-call, usage, and terminal
+// events through the provider-neutral stream contract.
+func (p *AnthropicProvider) StreamEvents(ctx context.Context, turn Turn, emit ProviderStreamEventSink) (ProviderResult, error) {
+	return legacyStreamAsEvents(ctx, turn, emit, p.Stream)
+}
+
+var _ EventStreamingProvider = (*AnthropicProvider)(nil)
+
 // chatProvider returns a ChatProvider for this AnthropicProvider.
 // It handles both API-key and OAuth authentication.
 func (p *AnthropicProvider) chatProvider() ChatProvider {

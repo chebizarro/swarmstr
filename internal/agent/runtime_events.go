@@ -22,6 +22,9 @@ const (
 	RuntimeEventToolResult             RuntimeEventType = "tool_result"
 	RuntimeEventToolError              RuntimeEventType = "tool_error"
 	RuntimeEventUsage                  RuntimeEventType = "usage"
+	RuntimeEventStreamStart            RuntimeEventType = "stream_start"
+	RuntimeEventStreamEnd              RuntimeEventType = "stream_end"
+	RuntimeEventStreamError            RuntimeEventType = "stream_error"
 )
 
 // RuntimeEvent is the provider/tool/session-neutral schema for runtime

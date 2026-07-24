@@ -286,11 +286,11 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 	// routing and budgeting code can reason about cost without a separate catalog.
 	openAIGPT4oCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 128000, CostPer1KInput: 0.0025, CostPer1KOutput: 0.0100}
 	anthropicClaudeCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 200000, CostPer1KInput: 0.0030, CostPer1KOutput: 0.0150}
-	geminiFlashCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: false, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 1000000, CostPer1KInput: 0.0003, CostPer1KOutput: 0.0025}
+	geminiFlashCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 1000000, CostPer1KInput: 0.0003, CostPer1KOutput: 0.0025}
 	openAICompatCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true}
 	mistralCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, ContextWindowTokens: 128000}
-	responsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576}
-	vertexCaps := ProviderCapabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1000000}
+	responsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: false, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576}
+	vertexCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1000000}
 
 	mkOpenAICompat := func(id, name string, aliases, prefixes []string, baseURL, apiKeyEnv, baseURLEnv string) ProviderDescriptor {
 		desc := ProviderDescriptor{

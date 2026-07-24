@@ -15,6 +15,40 @@ func newGeminiRewriteClient(srv *httptest.Server) *http.Client {
 	return newRewriteClient(srv.Client(), "https://generativelanguage.googleapis.com", srv.URL)
 }
 
+func TestGoogleGeminiProvider_StreamEvents(t *testing.T) {
+	var path, alt, key string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, alt, key = r.URL.Path, r.URL.Query().Get("alt"), r.URL.Query().Get("key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(": heartbeat\r\n\r\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"plan\",\"thought\":true},{\"text\":\"hel\"}]}}]}\r\n\r\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"lo\"},{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"q\":\"x\"}}}]}}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":4,\"cachedContentTokenCount\":1}}\r\n\r\n"))
+	}))
+	defer srv.Close()
+
+	provider := &GoogleGeminiProvider{APIKey: "test-key", Model: "gemini-2.0-flash", Client: newGeminiRewriteClient(srv)}
+	var events []ProviderStreamEvent
+	result, err := provider.StreamEvents(context.Background(), Turn{UserText: "hi"}, func(evt ProviderStreamEvent) { events = append(events, evt) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/v1beta/models/gemini-2.0-flash:streamGenerateContent" || alt != "sse" || key != "test-key" {
+		t.Fatalf("request path=%q alt=%q key=%q", path, alt, key)
+	}
+	if result.Text != "hello" || len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "lookup" || result.Usage.InputTokens != 3 || result.Usage.CacheReadTokens != 1 {
+		t.Fatalf("result=%#v", result)
+	}
+	want := []ProviderStreamEventType{ProviderStreamStart, ProviderStreamThinkingDelta, ProviderStreamTextDelta, ProviderStreamTextDelta, ProviderStreamToolCallDelta, ProviderStreamUsage, ProviderStreamEnd}
+	if len(events) != len(want) {
+		t.Fatalf("events=%#v", events)
+	}
+	for i := range want {
+		if events[i].Type != want[i] {
+			t.Fatalf("event[%d]=%q want %q", i, events[i].Type, want[i])
+		}
+	}
+}
+
 // TestGeminiChatProvider_TextResponse exercises the real Chat request/response
 // path: it asserts the outbound request JSON (system instruction + user
 // contents) and parses a realistic text-only Gemini response with usage.

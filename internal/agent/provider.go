@@ -502,8 +502,9 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 	}
 
 	params := openai.ChatCompletionNewParams{
-		Model:    shared.ChatModel(model),
-		Messages: sdkMsgs,
+		Model:         shared.ChatModel(model),
+		Messages:      sdkMsgs,
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)},
 	}
 	if len(turn.Tools) > 0 {
 		params.Tools = translateToolsToOpenAISDK(turn.Tools)
@@ -538,9 +539,18 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 	toolAcc := map[int]*toolCallAcc{}
 	maxToolIndex := -1
 	var textBuf strings.Builder
+	var usage ProviderUsage
 
 	for stream.Next() {
 		chunk := stream.Current()
+		if chunk.JSON.Usage.Valid() {
+			usage = ProviderUsage{
+				InputTokens:     chunk.Usage.PromptTokens,
+				OutputTokens:    chunk.Usage.CompletionTokens,
+				CacheReadTokens: chunk.Usage.PromptTokensDetails.CachedTokens,
+			}
+			emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventUsage, SessionID: turn.SessionID, TurnID: turn.TurnID, Usage: providerUsageToTurnUsage(usage), Trace: turn.Trace})
+		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
@@ -607,8 +617,17 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 	return ProviderResult{
 		Text:      textBuf.String(),
 		ToolCalls: toolCalls,
+		Usage:     usage,
 	}, nil
 }
+
+// StreamEvents implements provider-neutral structured streaming while preserving
+// the battle-tested OpenAI-compatible SSE parser used by hosted and local adapters.
+func (p *OpenAIChatProvider) StreamEvents(ctx context.Context, turn Turn, emit ProviderStreamEventSink) (ProviderResult, error) {
+	return legacyStreamAsEvents(ctx, turn, emit, p.Stream)
+}
+
+var _ EventStreamingProvider = (*OpenAIChatProvider)(nil)
 
 // ─── Google Gemini provider ───────────────────────────────────────────────────
 
@@ -687,13 +706,16 @@ type geminiFuncDecl struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
+type geminiResponsePart struct {
+	Text         string              `json:"text,omitempty"`
+	Thought      bool                `json:"thought,omitempty"`
+	FunctionCall *geminiFunctionCall `json:"functionCall,omitempty"`
+}
+
 type geminiResponse struct {
 	Candidates []struct {
 		Content struct {
-			Parts []struct {
-				Text         string              `json:"text,omitempty"`
-				FunctionCall *geminiFunctionCall `json:"functionCall,omitempty"`
-			} `json:"parts"`
+			Parts []geminiResponsePart `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
 	UsageMetadata *geminiUsageMetadata `json:"usageMetadata,omitempty"`
