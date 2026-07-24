@@ -394,31 +394,18 @@ func TestDisruption_NIP17BackfillWindowCoversBackdating(t *testing.T) {
 }
 
 func TestDisruption_NIP17NormalizeSinceWithRecentCheckpoint(t *testing.T) {
-	// A recent checkpoint (5min ago): normalizeNIP17Since subtracts the full
-	// backfill window, then clamps to floor=now-backfill. Result should be
-	// approximately now - backfill.
 	checkpoint := time.Now().Add(-5 * time.Minute).Unix()
-	since := normalizeNIP17Since(checkpoint)
-	now := time.Now().Unix()
-
-	expectedFloor := now - int64(nip17GiftWrapBackfill.Seconds())
-	if since < expectedFloor-60 || since > expectedFloor+60 {
-		t.Fatalf("NIP-17 since %d not near floor %d for recent checkpoint %d", since, expectedFloor, checkpoint)
+	want := checkpoint - int64(nip17GiftWrapBackfill.Seconds())
+	if got := normalizeNIP17Since(checkpoint); got != want {
+		t.Fatalf("NIP-17 since %d, want checkpoint-preserving value %d", got, want)
 	}
 }
 
 func TestDisruption_NIP17NormalizeSinceWithOldCheckpoint(t *testing.T) {
-	// A very old checkpoint (2 hours ago) should be pulled forward
-	// to at most now - backfill.
-	checkpoint := time.Now().Add(-2 * time.Hour).Unix()
-	since := normalizeNIP17Since(checkpoint)
-	now := time.Now().Unix()
-
-	// Since should be approximately now - backfill.
-	expectedMin := now - int64(nip17GiftWrapBackfill.Seconds()) - 60
-	expectedMax := now - int64(nip17GiftWrapBackfill.Seconds()) + 60
-	if since < expectedMin || since > expectedMax {
-		t.Fatalf("NIP-17 since %d out of expected range [%d, %d]", since, expectedMin, expectedMax)
+	checkpoint := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	want := checkpoint - int64(nip17GiftWrapBackfill.Seconds())
+	if got := normalizeNIP17Since(checkpoint); got != want {
+		t.Fatalf("NIP-17 since %d, want historical value %d", got, want)
 	}
 }
 
@@ -625,12 +612,6 @@ func TestDisruption_TimestampThresholdInvariantsAcrossBuses(t *testing.T) {
 	}
 	if !timestampTooOld(now.Add(-DMReplayWindowDefault-time.Second).Unix(), now, DMReplayWindowDefault) {
 		t.Fatal("timestamp just beyond DM replay threshold must be rejected")
-	}
-	if timestampTooOld(now.Add(-nip17MaxPastAge).Unix(), now, nip17MaxPastAge) {
-		t.Fatal("exact NIP-17 max-past-age threshold must be accepted")
-	}
-	if !timestampTooOld(now.Add(-nip17MaxPastAge-time.Second).Unix(), now, nip17MaxPastAge) {
-		t.Fatal("timestamp just beyond NIP-17 max-past-age threshold must be rejected")
 	}
 }
 

@@ -47,11 +47,40 @@ const (
 
 	// nip17ReconnectBackoffMax caps the exponential backoff for relay reconnection.
 	nip17ReconnectBackoffMax = 10 * time.Minute
-
-	nip17MaxPastAge = nip17GiftWrapBackfill + time.Hour
 )
 
 var ErrRecipientNotNIP17Ready = errors.New("recipient is not NIP-17 ready: no kind:10050 DM relay list")
+
+// NIP17Participant identifies a member of a NIP-17 room. RelayURL is an
+// optional p-tag hint; delivery still uses the participant's kind-10050 list.
+type NIP17Participant struct {
+	PubKey   string
+	RelayURL string
+}
+
+// NIP17Room is the participant set that defines a NIP-17 chat room. The sender
+// is represented by the rumor pubkey and must not be repeated in Participants.
+type NIP17Room struct {
+	Participants []NIP17Participant
+	Subject      string
+}
+
+// NIP17FileMessage contains the mandatory kind-15 fields from NIP-17.
+type NIP17FileMessage struct {
+	URL                 string
+	FileType            string
+	EncryptionAlgorithm string
+	DecryptionKey       string
+	DecryptionNonce     string
+	SHA256              string
+	OriginalSHA256      string
+	Size                string
+	Dimensions          string
+	Thumbhash           string
+	Blurhash            string
+	Thumbnail           string
+	Fallbacks           []string
+}
 
 // NIP17BusOptions mirrors DMBusOptions so the two buses are interchangeable.
 type NIP17BusOptions struct {
@@ -191,41 +220,246 @@ func (b *NIP17Bus) Close() {
 	b.wg.Wait()
 }
 
-// SendDM sends a NIP-17 gift-wrapped DM to toPubKey.
-// It first attempts to discover the recipient's DM relay list (kind 10050);
-// if not found the recipient is not considered ready for NIP-17 DMs.
+// SendDM sends a one-to-one kind-14 NIP-17 message.
 func (b *NIP17Bus) SendDM(ctx context.Context, toPubKey string, text string) error {
-	pk, err := ParsePubKey(toPubKey)
+	return b.SendRoomMessage(ctx, NIP17Room{Participants: []NIP17Participant{{PubKey: toPubKey}}}, text)
+}
+
+// SendRoomMessage sends a kind-14 message to every participant in a room and
+// stores a separately wrapped copy for the sender.
+func (b *NIP17Bus) SendRoomMessage(ctx context.Context, room NIP17Room, text string) error {
+	text, err := normalizeOutboundDMText(text)
 	if err != nil {
 		return err
 	}
-	// Normalize outbound text: trim whitespace and reject empty messages.
-	// Unlike NIP-04, NIP-17 does not enforce a fixed plaintext size limit
-	// because gift-wrap overhead is different and relay acceptance depends
-	// on the final serialized event size, not plaintext rune count.
-	var textErr error
-	text, textErr = normalizeOutboundDMText(text)
-	if textErr != nil {
-		return textErr
-	}
+	return b.sendNIP17Rumor(ctx, nostr.KindDirectMessage, text, room, nil)
+}
 
-	theirRelays, err := b.lookupDMRelays(ctx, pk)
+// SendRoomReply sends a kind-14 direct reply. The e tag is the direct parent
+// message, as specified by NIP-17.
+func (b *NIP17Bus) SendRoomReply(ctx context.Context, room NIP17Room, parentEventID, relayHint, text string) error {
+	if _, err := nostr.IDFromHex(strings.TrimSpace(parentEventID)); err != nil {
+		return fmt.Errorf("invalid reply event id: %w", err)
+	}
+	text, err := normalizeOutboundDMText(text)
 	if err != nil {
 		return err
 	}
-	ourRelays := b.currentRelays()
+	tag := nostr.Tag{"e", strings.TrimSpace(parentEventID)}
+	if hint := strings.TrimSpace(relayHint); hint != "" {
+		tag = append(tag, hint)
+	}
+	return b.sendNIP17Rumor(ctx, nostr.KindDirectMessage, text, room, nostr.Tags{tag})
+}
 
-	return nip17.PublishMessage(
-		ctx,
-		text,
-		nostr.Tags{},
-		b.pool,
-		ourRelays,
-		theirRelays,
-		b.kr,
-		pk,
-		nil, // no event modifier
-	)
+// SendFileMessage sends a kind-15 encrypted file message.
+func (b *NIP17Bus) SendFileMessage(ctx context.Context, room NIP17Room, file NIP17FileMessage, parentEventID, relayHint string) error {
+	tags := nostr.Tags{
+		{"file-type", strings.TrimSpace(file.FileType)},
+		{"encryption-algorithm", strings.TrimSpace(file.EncryptionAlgorithm)},
+		{"decryption-key", strings.TrimSpace(file.DecryptionKey)},
+		{"decryption-nonce", strings.TrimSpace(file.DecryptionNonce)},
+		{"x", strings.TrimSpace(file.SHA256)},
+	}
+	optional := []struct{ name, value string }{
+		{"ox", file.OriginalSHA256}, {"size", file.Size}, {"dim", file.Dimensions},
+		{"thumbhash", file.Thumbhash}, {"blurhash", file.Blurhash}, {"thumb", file.Thumbnail},
+	}
+	for _, item := range optional {
+		if value := strings.TrimSpace(item.value); value != "" {
+			tags = append(tags, nostr.Tag{item.name, value})
+		}
+	}
+	for _, fallback := range file.Fallbacks {
+		if fallback = strings.TrimSpace(fallback); fallback != "" {
+			tags = append(tags, nostr.Tag{"fallback", fallback})
+		}
+	}
+	if parentEventID = strings.TrimSpace(parentEventID); parentEventID != "" {
+		if _, err := nostr.IDFromHex(parentEventID); err != nil {
+			return fmt.Errorf("invalid reply event id: %w", err)
+		}
+		tag := nostr.Tag{"e", parentEventID}
+		if hint := strings.TrimSpace(relayHint); hint != "" {
+			tag = append(tag, hint, "reply")
+		} else {
+			tag = append(tag, "", "reply")
+		}
+		tags = append(tags, tag)
+	}
+	return b.sendNIP17Rumor(ctx, nostr.KindFileMessage, strings.TrimSpace(file.URL), room, tags)
+}
+
+// SendReaction sends a wrapped NIP-25 kind-7 reaction in the room.
+func (b *NIP17Bus) SendReaction(ctx context.Context, room NIP17Room, targetEventID, relayHint, reaction string) error {
+	targetEventID = strings.TrimSpace(targetEventID)
+	if _, err := nostr.IDFromHex(targetEventID); err != nil {
+		return fmt.Errorf("invalid reaction target event id: %w", err)
+	}
+	tag := nostr.Tag{"e", targetEventID}
+	if hint := strings.TrimSpace(relayHint); hint != "" {
+		tag = append(tag, hint)
+	}
+	return b.sendNIP17Rumor(ctx, nostr.KindReaction, reaction, room, nostr.Tags{tag})
+}
+
+// DeleteMessages sends a wrapped NIP-09 kind-5 deletion request to the room.
+func (b *NIP17Bus) DeleteMessages(ctx context.Context, room NIP17Room, reason string, eventIDs ...string) error {
+	if len(eventIDs) == 0 {
+		return fmt.Errorf("at least one event id is required")
+	}
+	tags := make(nostr.Tags, 0, len(eventIDs)+1)
+	for _, eventID := range eventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if _, err := nostr.IDFromHex(eventID); err != nil {
+			return fmt.Errorf("invalid deletion event id: %w", err)
+		}
+		tags = append(tags, nostr.Tag{"e", eventID})
+	}
+	tags = append(tags, nostr.Tag{"k", fmt.Sprint(nostr.KindDirectMessage)})
+	return b.sendNIP17Rumor(ctx, nostr.KindDeletion, reason, room, tags)
+}
+
+func (b *NIP17Bus) sendNIP17Rumor(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) error {
+	rumor, recipients, err := b.buildNIP17Rumor(kind, content, room, extraTags)
+	if err != nil {
+		return err
+	}
+	return b.publishNIP17Rumor(ctx, rumor, recipients)
+}
+
+func (b *NIP17Bus) buildNIP17Rumor(kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) (nostr.Event, []nostr.PubKey, error) {
+	if len(room.Participants) == 0 {
+		return nostr.Event{}, nil, fmt.Errorf("nip17 room requires at least one participant")
+	}
+	tags := make(nostr.Tags, 0, len(room.Participants)+len(extraTags)+1)
+	recipients := make([]nostr.PubKey, 0, len(room.Participants))
+	seen := make(map[nostr.PubKey]struct{}, len(room.Participants))
+	for _, participant := range room.Participants {
+		pk, err := ParsePubKey(strings.TrimSpace(participant.PubKey))
+		if err != nil {
+			return nostr.Event{}, nil, fmt.Errorf("invalid room participant: %w", err)
+		}
+		if pk == b.public {
+			return nostr.Event{}, nil, fmt.Errorf("room participants must not repeat the sender pubkey")
+		}
+		if _, exists := seen[pk]; exists {
+			continue
+		}
+		seen[pk] = struct{}{}
+		recipients = append(recipients, pk)
+		tag := nostr.Tag{"p", pk.Hex()}
+		if hint := strings.TrimSpace(participant.RelayURL); hint != "" {
+			tag = append(tag, hint)
+		}
+		tags = append(tags, tag)
+	}
+	if subject := strings.TrimSpace(room.Subject); subject != "" {
+		tags = append(tags, nostr.Tag{"subject", subject})
+	}
+	for _, tag := range extraTags {
+		tags = append(tags, append(nostr.Tag(nil), tag...))
+	}
+	rumor := nostr.Event{
+		Kind: kind, PubKey: b.public, CreatedAt: nostr.Now(), Tags: tags, Content: content,
+	}
+	rumor.ID = rumor.GetID()
+	if err := validateNIP17RumorKind(rumor); err != nil {
+		return nostr.Event{}, nil, err
+	}
+	return rumor, recipients, nil
+}
+
+func (b *NIP17Bus) publishNIP17Rumor(ctx context.Context, rumor nostr.Event, recipients []nostr.PubKey) error {
+	if b.pool == nil || b.kr == nil {
+		return fmt.Errorf("nip17 publisher is not initialized")
+	}
+	type target struct {
+		pubkey nostr.PubKey
+		relays []string
+		wrap   nostr.Event
+	}
+	targets := make([]target, 0, len(recipients)+1)
+	allRecipients := append(append([]nostr.PubKey(nil), recipients...), b.public)
+	for _, recipient := range allRecipients {
+		var relays []string
+		if recipient == b.public {
+			relays = b.currentRelays()
+		} else {
+			var err error
+			relays, err = b.lookupDMRelays(ctx, recipient)
+			if err != nil {
+				return fmt.Errorf("resolve DM relays for %s: %w", recipient.Hex(), err)
+			}
+		}
+		if len(relays) == 0 {
+			return fmt.Errorf("no DM relays for %s", recipient.Hex())
+		}
+		wrap, err := nip59.GiftWrap(
+			rumor,
+			recipient,
+			func(plaintext string) (string, error) { return b.kr.Encrypt(ctx, plaintext, recipient) },
+			func(evt *nostr.Event) error { return b.kr.SignEvent(ctx, evt) },
+			nil,
+		)
+		if err != nil {
+			return fmt.Errorf("gift wrap for %s: %w", recipient.Hex(), err)
+		}
+		targets = append(targets, target{pubkey: recipient, relays: relays, wrap: wrap})
+	}
+
+	results := make(chan error, len(targets))
+	for _, target := range targets {
+		target := target
+		go func() {
+			if err := b.publishNIP17Wrap(ctx, target.wrap, target.relays); err != nil {
+				results <- fmt.Errorf("publish for %s: %w", target.pubkey.Hex(), err)
+				return
+			}
+			results <- nil
+		}()
+	}
+	var failures []error
+	for range targets {
+		if err := <-results; err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (b *NIP17Bus) publishNIP17Wrap(ctx context.Context, wrap nostr.Event, relays []string) error {
+	results := make(chan error, len(relays))
+	for _, relayURL := range relays {
+		relayURL := relayURL
+		go func() {
+			relay, err := b.pool.EnsureRelay(relayURL)
+			if err == nil {
+				err = relay.Publish(ctx, wrap)
+				if err != nil && strings.HasPrefix(err.Error(), "auth-required:") {
+					if authErr := relay.Auth(ctx, b.kr.SignEvent); authErr == nil {
+						err = relay.Publish(ctx, wrap)
+					} else {
+						err = authErr
+					}
+				}
+			}
+			results <- err
+		}()
+	}
+	var failures []error
+	accepted := false
+	for range relays {
+		if err := <-results; err != nil {
+			failures = append(failures, err)
+		} else {
+			accepted = true
+		}
+	}
+	if accepted {
+		return nil
+	}
+	return fmt.Errorf("no relay accepted gift wrap: %w", errors.Join(failures...))
 }
 
 // SendDMWithScheme sends a DM using an explicit encryption scheme request.
@@ -271,14 +505,13 @@ func (b *NIP17Bus) Relays() []string { return b.currentRelays() }
 // ──────────────────────────────────────────────────────────────────────────────
 
 func normalizeNIP17Since(sinceUnix int64) int64 {
-	floor := time.Now().Add(-nip17GiftWrapBackfill).Unix()
 	if sinceUnix <= 0 {
-		return floor
+		return time.Now().Add(-nip17GiftWrapBackfill).Unix()
 	}
+	// A caller-provided checkpoint may intentionally request history older than
+	// the default backfill window. NIP-17/NIP-59 place no maximum age on valid
+	// rumors, so preserve that request while adding the gift-wrap skew cushion.
 	adjusted := sinceUnix - int64(nip17GiftWrapBackfill.Seconds())
-	if adjusted < floor {
-		adjusted = floor
-	}
 	if adjusted < 0 {
 		return 0
 	}
@@ -535,6 +768,7 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 	}
 
 	senderPubkey := rumor.PubKey
+	recipients, subject, replyTo, replyRoom := nip17RumorMetadata(rumor, b.public)
 	msg := InboundDM{
 		EventID:    eventID,
 		FromPubKey: senderPubkey.Hex(),
@@ -542,8 +776,13 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 		RelayURL:   "", // gift wraps hide relay; not available here
 		CreatedAt:  int64(rumor.CreatedAt),
 		Scheme:     "nip17",
+		Kind:       rumor.Kind,
+		Tags:       cloneNostrTags(rumor.Tags),
+		Recipients: recipients,
+		Subject:    subject,
+		ReplyTo:    replyTo,
 		Reply: func(ctx context.Context, reply string) error {
-			return b.SendDM(ctx, senderPubkey.Hex(), reply)
+			return b.SendRoomReply(ctx, replyRoom, eventID, "", reply)
 		},
 	}
 
@@ -606,14 +845,13 @@ func (b *NIP17Bus) validateGiftWrapEvent(evt nostr.Event, now time.Time) error {
 	if timestampTooFarFuture(int64(evt.CreatedAt), now, inboundEventMaxFutureSkew) {
 		return fmt.Errorf("gift wrap timestamp from the future")
 	}
-	if timestampTooOld(int64(evt.CreatedAt), now, nip17MaxPastAge) {
-		return fmt.Errorf("gift wrap timestamp too old")
-	}
 	return nil
 }
 
 func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
-	if rumor.Kind != nostr.KindDirectMessage {
+	switch rumor.Kind {
+	case nostr.KindDirectMessage, nostr.KindFileMessage, nostr.KindReaction, nostr.KindDeletion:
+	default:
 		return fmt.Errorf("unexpected rumor kind=%d", rumor.Kind)
 	}
 
@@ -650,10 +888,119 @@ func (b *NIP17Bus) validateRumorEvent(rumor nostr.Event, now time.Time) error {
 	if timestampTooFarFuture(int64(rumor.CreatedAt), now, inboundEventMaxFutureSkew) {
 		return fmt.Errorf("rumor timestamp from the future")
 	}
-	if timestampTooOld(int64(rumor.CreatedAt), now, nip17MaxPastAge) {
-		return fmt.Errorf("rumor timestamp too old")
+	return validateNIP17RumorKind(rumor)
+}
+
+func validateNIP17RumorKind(rumor nostr.Event) error {
+	switch rumor.Kind {
+	case nostr.KindDirectMessage:
+		return nil
+	case nostr.KindFileMessage:
+		if strings.TrimSpace(rumor.Content) == "" {
+			return fmt.Errorf("kind-15 file URL is required")
+		}
+		for _, name := range []string{"file-type", "encryption-algorithm", "decryption-key", "decryption-nonce", "x"} {
+			if nip17TagValue(rumor.Tags, name) == "" {
+				return fmt.Errorf("kind-15 missing %s tag", name)
+			}
+		}
+		if algorithm := nip17TagValue(rumor.Tags, "encryption-algorithm"); algorithm != "aes-gcm" {
+			return fmt.Errorf("kind-15 unsupported encryption algorithm %q", algorithm)
+		}
+		if _, err := nostr.IDFromHex(nip17TagValue(rumor.Tags, "x")); err != nil {
+			return fmt.Errorf("kind-15 invalid x hash: %w", err)
+		}
+		return nil
+	case nostr.KindReaction:
+		target := nip17LastTagValue(rumor.Tags, "e")
+		if _, err := nostr.IDFromHex(target); err != nil {
+			return fmt.Errorf("kind-7 reaction missing valid e tag: %w", err)
+		}
+		return nil
+	case nostr.KindDeletion:
+		found := false
+		for _, tag := range rumor.Tags {
+			if len(tag) < 2 || (tag[0] != "e" && tag[0] != "a") {
+				continue
+			}
+			found = true
+			if tag[0] == "e" {
+				if _, err := nostr.IDFromHex(tag[1]); err != nil {
+					return fmt.Errorf("kind-5 invalid e tag: %w", err)
+				}
+			}
+		}
+		if !found {
+			return fmt.Errorf("kind-5 deletion requires an e or a tag")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported NIP-17 rumor kind=%d", rumor.Kind)
 	}
-	return nil
+}
+
+func nip17RumorMetadata(rumor nostr.Event, local nostr.PubKey) (recipients []string, subject, replyTo string, room NIP17Room) {
+	seenRoom := map[string]struct{}{}
+	addRoom := func(pubkey, relay string) {
+		if pubkey == "" || pubkey == local.Hex() {
+			return
+		}
+		if _, exists := seenRoom[pubkey]; exists {
+			return
+		}
+		seenRoom[pubkey] = struct{}{}
+		room.Participants = append(room.Participants, NIP17Participant{PubKey: pubkey, RelayURL: relay})
+	}
+	addRoom(rumor.PubKey.Hex(), "")
+	for _, tag := range rumor.Tags {
+		if len(tag) < 2 {
+			continue
+		}
+		switch tag[0] {
+		case "p":
+			recipients = append(recipients, tag[1])
+			relay := ""
+			if len(tag) >= 3 {
+				relay = tag[2]
+			}
+			addRoom(tag[1], relay)
+		case "subject":
+			subject = tag[1]
+		case "e":
+			if rumor.Kind != nostr.KindDeletion {
+				replyTo = tag[1]
+			}
+		}
+	}
+	room.Subject = subject
+	return recipients, subject, replyTo, room
+}
+
+func nip17TagValue(tags nostr.Tags, name string) string {
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == name {
+			return strings.TrimSpace(tag[1])
+		}
+	}
+	return ""
+}
+
+func nip17LastTagValue(tags nostr.Tags, name string) string {
+	value := ""
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == name {
+			value = strings.TrimSpace(tag[1])
+		}
+	}
+	return value
+}
+
+func cloneNostrTags(tags nostr.Tags) nostr.Tags {
+	cloned := make(nostr.Tags, len(tags))
+	for i, tag := range tags {
+		cloned[i] = append(nostr.Tag(nil), tag...)
+	}
+	return cloned
 }
 
 func (b *NIP17Bus) markSeen17(id string) bool {

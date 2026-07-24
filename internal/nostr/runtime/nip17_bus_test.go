@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,27 +21,16 @@ func TestNormalizeNIP17SinceDefaultsToGiftWrapBackfillWindow(t *testing.T) {
 	}
 }
 
-func TestNormalizeNIP17SinceBackfillsCheckpointByGiftWrapWindow(t *testing.T) {
-	now := time.Now().Unix()
-	recent := now - 120
-	beforeFloor := time.Now().Add(-nip17GiftWrapBackfill).Unix()
-	got := normalizeNIP17Since(recent)
-	afterFloor := time.Now().Add(-nip17GiftWrapBackfill).Unix()
-	if got < beforeFloor || got > afterFloor {
-		t.Fatalf("expected adjusted since clamped within [%d, %d], got %d", beforeFloor, afterFloor, got)
+func TestNormalizeNIP17SinceBackfillsCallerCheckpointWithoutAgeClamp(t *testing.T) {
+	checkpoint := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	want := checkpoint - int64(nip17GiftWrapBackfill.Seconds())
+	if got := normalizeNIP17Since(checkpoint); got != want {
+		t.Fatalf("normalizeNIP17Since() = %d, want preserved historical checkpoint %d", got, want)
 	}
 }
 
 func TestNormalizeNIP17SinceClampsToZero(t *testing.T) {
-	// Since values far in the past are clamped to the backfill floor rather than
-	// scanning arbitrarily far back.
-	beforeFloor := time.Now().Add(-nip17GiftWrapBackfill).Unix()
-	got := normalizeNIP17Since(60)
-	afterFloor := time.Now().Add(-nip17GiftWrapBackfill).Unix()
-	if got < beforeFloor || got > afterFloor {
-		t.Fatalf("expected floor clamp within [%d, %d], got %d", beforeFloor, afterFloor, got)
-	}
-	if got < 0 {
+	if got := normalizeNIP17Since(60); got != 0 {
 		t.Fatalf("expected non-negative clamp, got %d", got)
 	}
 }
@@ -130,10 +120,11 @@ func TestNIP17ValidateRumorEvent(t *testing.T) {
 		t.Fatal("expected future-skew validation error")
 	}
 
-	past := rumor
-	past.CreatedAt = nostr.Timestamp(time.Now().Add(-nip17MaxPastAge - time.Second).Unix())
-	if err := bus.validateRumorEvent(past, time.Now()); err == nil {
-		t.Fatal("expected past-age validation error")
+	historical := rumor
+	historical.CreatedAt = nostr.Timestamp(time.Now().Add(-30 * 24 * time.Hour).Unix())
+	historical.ID = historical.GetID()
+	if err := bus.validateRumorEvent(historical, time.Now()); err != nil {
+		t.Fatalf("NIP-17 permits historical rumors, got: %v", err)
 	}
 }
 
@@ -145,18 +136,97 @@ func TestNIP17TimestampBounds(t *testing.T) {
 	if !timestampTooFarFuture(now.Add(inboundEventMaxFutureSkew+time.Second).Unix(), now, inboundEventMaxFutureSkew) {
 		t.Fatal("expected future timestamp to be rejected")
 	}
-	if !timestampTooOld(now.Add(-nip17MaxPastAge-time.Second).Unix(), now, nip17MaxPastAge) {
-		t.Fatal("expected old timestamp to be rejected")
-	}
-}
-
-func TestNIP17TimestampBoundsAtExactThresholds(t *testing.T) {
-	now := time.Unix(time.Now().Unix(), 0)
 	if timestampTooFarFuture(now.Add(inboundEventMaxFutureSkew).Unix(), now, inboundEventMaxFutureSkew) {
 		t.Fatal("timestamp at exact future skew threshold should be accepted")
 	}
-	if timestampTooOld(now.Add(-nip17MaxPastAge).Unix(), now, nip17MaxPastAge) {
-		t.Fatal("timestamp at exact max-past-age threshold should be accepted")
+}
+
+func TestNIP17AcceptsCurrentSpecRumorKinds(t *testing.T) {
+	bus, _, recipient := newTestNIP17BusIdentity(t)
+	sender := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	targetID := strings.Repeat("a", 64)
+	tests := []struct {
+		name    string
+		kind    nostr.Kind
+		content string
+		tags    nostr.Tags
+	}{
+		{name: "chat", kind: nostr.KindDirectMessage, content: "hello", tags: nostr.Tags{{"p", recipient.Hex()}}},
+		{name: "file", kind: nostr.KindFileMessage, content: "https://files.example/ciphertext", tags: nostr.Tags{
+			{"p", recipient.Hex()}, {"file-type", "image/png"}, {"encryption-algorithm", "aes-gcm"},
+			{"decryption-key", "secret"}, {"decryption-nonce", "nonce"}, {"x", targetID},
+		}},
+		{name: "reaction", kind: nostr.KindReaction, content: "👍", tags: nostr.Tags{{"p", recipient.Hex()}, {"e", targetID}}},
+		{name: "deletion", kind: nostr.KindDeletion, content: "sent by mistake", tags: nostr.Tags{{"p", recipient.Hex()}, {"e", targetID}, {"k", "14"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rumor := unsignedRumorEvent(t, sender, nostr.Event{Kind: tt.kind, CreatedAt: nostr.Now(), Tags: tt.tags, Content: tt.content})
+			if err := bus.validateRumorEvent(rumor, time.Now()); err != nil {
+				t.Fatalf("validate kind %d: %v", tt.kind, err)
+			}
+		})
+	}
+}
+
+func TestNIP17BuildRoomRumorWireFormat(t *testing.T) {
+	bus, _, _ := newTestNIP17BusIdentity(t)
+	first := otherNIP17PubKey(t)
+	thirdKeyer := testControlKeyer(t, "3333333333333333333333333333333333333333333333333333333333333333")
+	third, err := thirdKeyer.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("third pubkey: %v", err)
+	}
+	parentID := strings.Repeat("b", 64)
+	rumor, recipients, err := bus.buildNIP17Rumor(nostr.KindDirectMessage, "room hello", NIP17Room{
+		Participants: []NIP17Participant{
+			{PubKey: first.Hex(), RelayURL: "wss://first.example"},
+			{PubKey: third.Hex()},
+		},
+		Subject: "current topic",
+	}, nostr.Tags{{"e", parentID, "wss://reply.example"}})
+	if err != nil {
+		t.Fatalf("build rumor: %v", err)
+	}
+	if rumor.Kind != nostr.KindDirectMessage || rumor.Content != "room hello" || rumor.PubKey != bus.public {
+		t.Fatalf("unexpected rumor envelope: %+v", rumor)
+	}
+	if len(recipients) != 2 || len(rumor.Tags) != 4 {
+		t.Fatalf("recipients=%v tags=%v", recipients, rumor.Tags)
+	}
+	wantTags := nostr.Tags{
+		{"p", first.Hex(), "wss://first.example"}, {"p", third.Hex()},
+		{"subject", "current topic"}, {"e", parentID, "wss://reply.example"},
+	}
+	for i := range wantTags {
+		if strings.Join(rumor.Tags[i], "\x00") != strings.Join(wantTags[i], "\x00") {
+			t.Fatalf("tag[%d] = %v, want %v", i, rumor.Tags[i], wantTags[i])
+		}
+	}
+	if rumor.ID != rumor.GetID() || rumor.Sig != ([64]byte{}) {
+		t.Fatal("rumor must have a canonical id and remain unsigned")
+	}
+}
+
+func TestNIP17RumorMetadataPreservesRoomSubjectAndReply(t *testing.T) {
+	bus, _, local := newTestNIP17BusIdentity(t)
+	sender := otherNIP17PubKey(t)
+	thirdKeyer := testControlKeyer(t, "3333333333333333333333333333333333333333333333333333333333333333")
+	third, _ := thirdKeyer.GetPublicKey(context.Background())
+	parentID := strings.Repeat("c", 64)
+	rumor := nostr.Event{PubKey: sender, Kind: nostr.KindDirectMessage, Tags: nostr.Tags{
+		{"p", local.Hex()}, {"p", third.Hex(), "wss://third.example"},
+		{"subject", "group topic"}, {"e", parentID},
+	}}
+	recipients, subject, replyTo, room := nip17RumorMetadata(rumor, bus.public)
+	if len(recipients) != 2 || subject != "group topic" || replyTo != parentID {
+		t.Fatalf("recipients=%v subject=%q replyTo=%q", recipients, subject, replyTo)
+	}
+	if len(room.Participants) != 2 || room.Participants[0].PubKey != sender.Hex() || room.Participants[1].PubKey != third.Hex() {
+		t.Fatalf("reply room = %+v", room)
+	}
+	if room.Subject != "group topic" {
+		t.Fatalf("reply room subject = %q", room.Subject)
 	}
 }
 
@@ -222,8 +292,11 @@ func TestStartNIP17BusRejectsMismatchedHubPubKey(t *testing.T) {
 }
 
 func TestNIP17SendDMRequiresRecipientKind10050(t *testing.T) {
-	bus, keyer, recipientPubKey := newTestNIP17BusIdentity(t)
+	bus, keyer, _ := newTestNIP17BusIdentity(t)
+	recipientPubKey := otherNIP17PubKey(t)
 	bus.kr = keyer
+	bus.pool = NewPoolNIP42(keyer)
+	defer bus.pool.Close("test")
 	bus.relays = []string{"wss://configured-write.example"}
 	bus.testLookupDMRelays = func(context.Context, nostr.PubKey) []string { return nil }
 
@@ -234,7 +307,8 @@ func TestNIP17SendDMRequiresRecipientKind10050(t *testing.T) {
 }
 
 func TestNIP17SendDMUsesAdvertisedKind10050Relays(t *testing.T) {
-	bus, keyer, recipientPubKey := newTestNIP17BusIdentity(t)
+	bus, keyer, _ := newTestNIP17BusIdentity(t)
+	recipientPubKey := otherNIP17PubKey(t)
 	bus.kr = keyer
 	bus.pool = NewPoolNIP42(keyer)
 	bus.pool.Close("test")
@@ -411,6 +485,16 @@ func newTestNIP17BusIdentity(t *testing.T) (*NIP17Bus, nostr.Keyer, nostr.PubKey
 	return &NIP17Bus{public: pub}, keyer, pub
 }
 
+func otherNIP17PubKey(t *testing.T) nostr.PubKey {
+	t.Helper()
+	keyer := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
+	pubkey, err := keyer.GetPublicKey(context.Background())
+	if err != nil {
+		t.Fatalf("GetPublicKey: %v", err)
+	}
+	return pubkey
+}
+
 func signedEvent(t *testing.T, keyer nostr.Keyer, evt nostr.Event) nostr.Event {
 	t.Helper()
 	if err := keyer.SignEvent(context.Background(), &evt); err != nil {
@@ -433,7 +517,8 @@ func unsignedRumorEvent(t *testing.T, keyer nostr.Keyer, evt nostr.Event) nostr.
 // TestNIP17SendDMAcceptsLongMessages verifies that NIP-17 outbound messages
 // are not artificially limited by the NIP-04 size constraint.
 func TestNIP17SendDMAcceptsLongMessages(t *testing.T) {
-	bus, keyer, recipientPubKey := newTestNIP17BusIdentity(t)
+	bus, keyer, _ := newTestNIP17BusIdentity(t)
+	recipientPubKey := otherNIP17PubKey(t)
 	bus.kr = keyer
 	// Note: We don't set up a pool, so the actual publish will fail.
 	// We're only testing that validation doesn't reject long messages.
@@ -457,7 +542,8 @@ func TestNIP17SendDMAcceptsLongMessages(t *testing.T) {
 // TestNIP17SendDMRejectsEmptyMessages verifies that empty/whitespace-only
 // messages are still rejected.
 func TestNIP17SendDMRejectsEmptyMessages(t *testing.T) {
-	bus, keyer, recipientPubKey := newTestNIP17BusIdentity(t)
+	bus, keyer, _ := newTestNIP17BusIdentity(t)
+	recipientPubKey := otherNIP17PubKey(t)
 	bus.kr = keyer
 
 	tests := []struct {

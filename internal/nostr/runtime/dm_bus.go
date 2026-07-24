@@ -29,6 +29,14 @@ type InboundDM struct {
 	RelayURL   string
 	CreatedAt  int64
 	Scheme     string
+	// Kind and Tags preserve the decrypted rumor wire format for NIP-17
+	// file messages, reactions, and deletion requests. They are zero/nil for
+	// transports that do not expose a Nostr rumor.
+	Kind       nostr.Kind
+	Tags       nostr.Tags
+	Recipients []string
+	Subject    string
+	ReplyTo    string
 	Reply      func(ctx context.Context, text string) error
 }
 
