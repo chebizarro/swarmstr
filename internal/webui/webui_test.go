@@ -4,8 +4,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
+
+	gatewaymethods "metiq/internal/gateway/methods"
 )
 
 func TestHandler_ServesHTMLAtRoot(t *testing.T) {
@@ -242,8 +246,8 @@ func TestHandler_IncludesExpandedWebUIViewsAndCatalog(t *testing.T) {
 		"data-view=\"cron\"", "showCronView", "cron.add", "cron.run", "cron.remove",
 		"data-view=\"nodes\"", "showNodesView", "node.describe", "node.invoke", "node.rename",
 		"data-view=\"mcp\"", "showMCPView", "mcp.test", "mcp.auth.start", "mcp.reconnect",
-		"data-view=\"skills\"", "showSkillsView", "skills.install", "skills.enable", "skills.disable",
-		"sessions.export", "sessions.prune", "command.catalog", "/command-catalog.json", "loadCommandCatalog",
+		"data-view=\"skills\"", "showSkillsView", "skills.install", "skills.update",
+		"sessions.export", "sessions.prune", "/command-catalog.json", "loadCommandCatalog",
 		"Relay URLs", "Nostr pubkey", "Agent roster", "Files", "Tools", "Skills",
 	} {
 		if !strings.Contains(body, want) {
@@ -256,6 +260,48 @@ func TestHandler_IncludesExpandedWebUIViewsAndCatalog(t *testing.T) {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("response body should not contain unregistered method %q", unwanted)
 		}
+	}
+}
+
+func TestGatewayMethodCallsitesAreRegistered(t *testing.T) {
+	raw, err := os.ReadFile("ui.html")
+	if err != nil {
+		t.Fatalf("read ui.html: %v", err)
+	}
+	html := string(raw)
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`\b(?:callMethod|callSafe)\(\s*['"]([A-Za-z0-9_.-]+)['"]`),
+		regexp.MustCompile(`\baddActionButton\([^,\n]+,\s*['"][^'"]+['"]\s*,\s*['"]([A-Za-z0-9_.-]+)['"]`),
+	}
+	called := map[string]struct{}{}
+	for _, pattern := range patterns {
+		for _, match := range pattern.FindAllStringSubmatch(html, -1) {
+			called[match[1]] = struct{}{}
+		}
+	}
+	if len(called) == 0 {
+		t.Fatal("gateway callsite parser found no methods in ui.html")
+	}
+	// The only identifier-based occurrences are the callMethod definition and
+	// the two helpers above; concrete callsites must remain string literals so
+	// this test can prove their registration.
+	if got := len(regexp.MustCompile(`\bcallMethod\(\s*[A-Za-z_$]`).FindAllStringIndex(html, -1)); got != 3 {
+		t.Fatalf("ui.html introduced a dynamic callMethod callsite (identifier occurrences=%d, want 3)", got)
+	}
+
+	supported := map[string]struct{}{}
+	for _, method := range gatewaymethods.SupportedMethods() {
+		supported[method] = struct{}{}
+	}
+	var unregistered []string
+	for method := range called {
+		if _, ok := supported[method]; !ok {
+			unregistered = append(unregistered, method)
+		}
+	}
+	sort.Strings(unregistered)
+	if len(unregistered) > 0 {
+		t.Fatalf("ui.html calls unregistered gateway methods: %v", unregistered)
 	}
 }
 

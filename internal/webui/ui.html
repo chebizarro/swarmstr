@@ -974,7 +974,7 @@ const TOKEN   = '{{.Token}}';
       { command: '/status', text: '/status', desc: 'Show gateway status', source: 'gateway' },
     ];
     try {
-      const res = connected ? await callSafe('command.catalog', {}) : await fetch('/command-catalog.json').then(r => r.json());
+      const res = await fetch('/command-catalog.json').then(r => r.json());
       const items = res.commands || res.items || res.slash_commands || fallback;
       slashCommands = items.map(item => ({
         cmd: item.cmd || item.command || item.name,
@@ -1363,14 +1363,14 @@ const TOKEN   = '{{.Token}}';
 
   async function showAgentsView(selected, token) {
     const { grid } = beginManagementView('Agents', 'Configured agents with status, files, tools, and skills panels.');
-    const [res, statusRes, skillsRes] = await Promise.all([callSafe('agents.list', {}), callSafe('agents.status', {}), callSafe('skills.status', {})]);
+    const [res, skillsRes] = await Promise.all([callSafe('agents.list', {}), callSafe('skills.status', {})]);
     if (token && !isViewCurrent('agents', token)) return;
     const agents = resultItems(res, 'agents');
     const agent = selected || agents.find(a => (a.id || a.agent_id) === activeAgentID) || agents[0] || {};
     addRows(addMgmtCard(grid, 'Agent roster'), agents, (row, a) => {
       row.innerHTML = `<strong>${escapeHTML(a.id || a.agent_id || 'agent')}</strong><div class="sub">model: ${escapeHTML(a.model || '—')} · tools: ${escapeHTML(a.tool_profile || a.toolProfile || 'default')}</div>`;
     });
-    addKV(addMgmtCard(grid, 'Status'), [['ID', agent.id || agent.agent_id], ['Name', agent.name], ['Model', agent.model], ['Runtime', agent.runtime], ['Status raw', statusRes], ['Error', res.error || statusRes.error]]);
+    addKV(addMgmtCard(grid, 'Status'), [['ID', agent.id || agent.agent_id], ['Name', agent.name], ['Model', agent.model], ['Runtime', agent.runtime], ['Status', agent.status], ['Error', res.error]]);
     addRows(addMgmtCard(grid, 'Files'), agent.files || agent.open_files || agent.workspace_files || [], (row, f) => { row.textContent = typeof f === 'string' ? f : formatValue(f); });
     addRows(addMgmtCard(grid, 'Tools'), agent.tools || agent.tool_names || agent.enabled_tools || [], (row, tool) => { row.innerHTML = `<strong>${escapeHTML(tool.name || tool.id || tool)}</strong><div class="sub">${escapeHTML(tool.description || tool.source || '')}</div>`; });
     addRows(addMgmtCard(grid, 'Skills'), agent.skills || skillsRes.skills || [], (row, sk) => { row.innerHTML = `<strong>${escapeHTML(skillKeyOf(sk) || sk)}</strong><div class="sub">${escapeHTML(sk.status || sk.enabled || sk.source || '')}</div>`; });
@@ -1468,8 +1468,8 @@ const TOKEN   = '{{.Token}}';
       const key=skillKeyOf(sk); row.innerHTML = `<strong>${escapeHTML(key || 'skill')}</strong><div class="sub">${escapeHTML(sk.status || sk.enabled || sk.description || '')}</div>`;
       const a=document.createElement('div'); a.className='action-row'; row.appendChild(a);
       addActionButton(a, 'Check', 'skills.status', () => ({ skill_key: key }));
-      addActionButton(a, 'Enable', 'skills.enable', () => ({ skill_key: key }), () => showSkillsView(++viewSeq));
-      addActionButton(a, 'Disable', 'skills.disable', () => ({ skill_key: key }), () => showSkillsView(++viewSeq));
+      addActionButton(a, 'Enable', 'skills.update', () => ({ skill_key: key, enabled: true }), () => showSkillsView(++viewSeq));
+      addActionButton(a, 'Disable', 'skills.update', () => ({ skill_key: key, enabled: false }), () => showSkillsView(++viewSeq));
     });
     const install=addMgmtCard(grid, 'Install'); const name=document.createElement('input'); name.className='mini-input'; name.placeholder='skill name'; const a=document.createElement('div'); a.className='action-row'; a.appendChild(name); install.appendChild(a);
     addActionButton(a, 'Install', 'skills.install', () => ({ name: name.value, install_id: 'webui-' + Date.now() }), () => showSkillsView(++viewSeq));
@@ -1919,10 +1919,10 @@ const TOKEN   = '{{.Token}}';
       const params = { id, decision: normalizedDecision };
       if (approval.plugin_id || approval.pluginId) params.plugin_id = approval.plugin_id || approval.pluginId;
       if (decision === 'approve_always') params.reason = 'always allow selected in web UI';
-      const method = approval.kind === 'plugin'
-        ? (approval.resolve_method || approval.method || 'plugins.approval.resolve')
-        : 'exec.approval.resolve';
-      await callMethod(method, params);
+      if (approval.kind === 'plugin') {
+        throw new Error('plugin approval resolution is not registered by this gateway');
+      }
+      await callMethod('exec.approval.resolve', params);
       approvalQueue = approvalQueue.filter(a => a.id !== id);
       currentApprovalID = null;
       currentApproval = null;

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "category_values": ["implement", "accepted-deviation", "defer"],
+  "notes": "Every advertised OpenClaw gateway method is classified exactly once by its leading method group. 'implement' includes methods already present in Metiq and methods assigned to a future workstream; this file does not implement those methods.",
+  "groups": [
+    {
+      "id": "core-runtime",
+      "prefixes": ["agent", "agents", "audit", "commands", "config", "diagnostics", "gateway", "health", "last-heartbeat", "logs", "models", "secrets", "send", "set-heartbeats", "status", "system", "system-event", "system-presence", "tasks", "tools", "update", "usage", "wake", "wizard"],
+      "category": "implement",
+      "workstream": "WS-A/core",
+      "rationale": "Core operator/runtime methods are part of the supported or planned Metiq control surface; gaps remain backlog rather than accepted incompatibilities."
+    },
+    {
+      "id": "sessions-chat-v4",
+      "prefixes": ["approval", "chat", "session", "sessions", "ui"],
+      "category": "implement",
+      "workstream": "WS-A",
+      "rationale": "Session lifecycle, collaboration, approvals, and protocol-v4 chat are the primary WS-A parity target."
+    },
+    {
+      "id": "gateway-lifecycle",
+      "prefixes": ["channels", "cron", "device", "exec", "node"],
+      "category": "implement",
+      "workstream": "WS-A",
+      "rationale": "Channel lifecycle, cron, approvals, and node/device management map to WS-A items A3 and A5-A8."
+    },
+    {
+      "id": "memory-health",
+      "prefixes": ["doctor", "migrations"],
+      "category": "implement",
+      "workstream": "WS-C",
+      "rationale": "Memory diagnostics and migration controls align with the existing memory subsystem and WS-C lifecycle work."
+    },
+    {
+      "id": "plugin-skill-security",
+      "prefixes": ["plugin", "plugins", "skills"],
+      "category": "implement",
+      "workstream": "WS-G",
+      "rationale": "Plugin approvals, package lifecycle, and skill curation belong to the WS-G platform/security roadmap."
+    },
+    {
+      "id": "media-and-messaging",
+      "prefixes": ["message", "talk", "tts", "voicewake"],
+      "category": "implement",
+      "workstream": "WS-D/runtime",
+      "rationale": "Messaging and media methods extend existing channel, voice, and TTS capabilities rather than defining an incompatible product boundary."
+    },
+    {
+      "id": "nostr-user-identity",
+      "prefixes": ["users"],
+      "category": "accepted-deviation",
+      "workstream": "Nostr identity",
+      "rationale": "OpenClaw durable local user profiles and email aliases differ from Metiq's Nostr-pubkey identity and event-derived profile model."
+    },
+    {
+      "id": "openclaw-branded-control-ui",
+      "prefixes": ["controlUi", "openclaw"],
+      "category": "accepted-deviation",
+      "workstream": "none",
+      "rationale": "These methods are OpenClaw-branded editor/setup or Control UI integrations; Metiq exposes its own Web UI and migration surfaces instead."
+    },
+    {
+      "id": "workspace-interactive-surfaces",
+      "prefixes": ["artifacts", "attach", "board", "conversations", "environments", "fs", "mcp", "question", "taskSuggestions", "terminal", "worktrees"],
+      "category": "defer",
+      "workstream": "WS-A/A7",
+      "rationale": "Terminal, worktree, filesystem, board/conversation, attachment, artifact, MCP-app, and interactive-question surfaces are explicitly deferred until the core protocol-v4/session work lands."
+    }
+  ],
+  "method_notes": {
+    "chat.abort": "Operator abort remains unconditional. Busy queue-mode interrupt is tool-aware: it aborts only when active tools are interruptible and otherwise defers newest input as urgent active-run steering.",
+    "config.schema.lookup": "Returns schema for a specific config path; full schema when path is empty."
+  }
+}

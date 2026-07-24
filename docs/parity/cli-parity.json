@@ -1,71 +1,422 @@
 {
-  "schema_version": 1,
-  "generated_for": "metiq cli/new-groups",
+  "schema_version": 2,
+  "generated_for": "metiq CLI parity",
   "reference": {
     "project": "openclaw",
-    "files": [
-      "/Users/bizarro/Documents/Dev/openclaw/src/cli/program/core-command-descriptors.ts",
-      "/Users/bizarro/Documents/Dev/openclaw/src/cli/program/subcli-descriptors.ts"
-    ]
+    "revision": "5ff16901ef4a8532844000505a6e6ad0cae74a2a",
+    "files": {
+      "src/cli/program/core-command-descriptors.ts": "5f83f1327250592e7cedf928ab1008e2cfe8d1de342094570549c2115e4a6aa4",
+      "src/cli/program/subcli-descriptors.ts": "d12e9232d555518bc5d6d9ab695564c121a44ff59c33ff9160d04de19b093513"
+    }
   },
-  "status_values": ["implemented", "deviation", "missing"],
+  "captured_at": "2026-07-24",
+  "status_values": [
+    "implemented",
+    "deviation",
+    "missing"
+  ],
+  "summary": {
+    "openclaw_command_count": 65,
+    "status_counts": {
+      "deviation": 16,
+      "implemented": 36,
+      "missing": 13
+    }
+  },
   "groups": [
-    {"name": "acp", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/acp_cmd.go", "methods": ["acp.dispatch", "acp.pipeline", "acp.manager.status"]},
-    {"name": "commitments", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/commitments_cmd.go", "methods": ["commitments.list", "commitments.add", "commitments.status"]},
-    {"name": "sandbox", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/sandbox_cmd.go", "methods": ["sandbox.run"]},
-    {"name": "message", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/message_cmd.go", "methods": ["send"]},
-    {"name": "send", "reference_source": "metiq-extension", "status": "implemented", "metiq_entry": "cmd/metiq/message_cmd.go", "methods": ["send"]},
-    {"name": "transcripts", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/transcripts_cmd.go", "methods": ["sessions.list", "sessions.export"]},
-    {"name": "system", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/system_cmd.go", "methods": ["status.get", "health", "supportedmethods"]},
-    {"name": "setup", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "onboard", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "configure", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "config", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "backup", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "migrate", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "doctor", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "agents", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "status", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "health", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "sessions", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "tasks", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "daemon", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "logs", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "models", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "approvals", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "exec-policy", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "nodes", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "cron", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "qa", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "hooks", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "plugins", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "channels", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "security", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "secrets", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "skills", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "update", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "completion", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "mcp", "reference_source": "core", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "qr", "reference_source": "subcli", "status": "implemented", "metiq_entry": "cmd/metiq/registry.go"},
-    {"name": "devices", "reference_source": "subcli", "status": "deviation", "rationale": "Device pairing and token management require a larger device-auth subsystem that is not present in metiq gateway methods."},
-    {"name": "pairing", "reference_source": "subcli", "status": "deviation", "rationale": "Secure DM pairing approval flows require additional pairing state and UX beyond thin gateway wrappers."},
-    {"name": "dashboard", "reference_source": "core", "status": "deviation", "rationale": "Control UI launch is OpenClaw-specific and no metiq dashboard subsystem is available."},
-    {"name": "tui", "reference_source": "subcli", "status": "deviation", "rationale": "Terminal UI is an interactive client subsystem, not an existing gateway method wrapper."},
-    {"name": "terminal", "reference_source": "subcli", "status": "deviation", "rationale": "Alias for OpenClaw TUI; omitted with TUI subsystem deviation."},
-    {"name": "chat", "reference_source": "subcli", "status": "deviation", "rationale": "OpenClaw local terminal chat UI is not present as a metiq gateway subsystem."},
-    {"name": "docs", "reference_source": "subcli", "status": "deviation", "rationale": "Live docs search is OpenClaw documentation infrastructure, not a metiq gateway feature."},
-    {"name": "reset", "reference_source": "core", "status": "deviation", "rationale": "Reset local config/state is destructive lifecycle UX and outside this thin-wrapper scope."},
-    {"name": "uninstall", "reference_source": "core", "status": "deviation", "rationale": "Uninstall service/data flow is destructive packaging lifecycle UX and outside this thin-wrapper scope."},
-    {"name": "crestodian", "reference_source": "core", "status": "missing", "rationale": "OpenClaw setup/repair assistant has no metiq equivalent."},
-    {"name": "agent", "reference_source": "core", "status": "missing", "rationale": "No new metiq top-level singular agent command was added in this scope; existing agents group covers management."},
-    {"name": "gateway", "reference_source": "subcli", "status": "missing", "rationale": "Metiq uses gw and daemon commands instead of an OpenClaw gateway group."},
-    {"name": "infer", "reference_source": "subcli", "status": "missing", "rationale": "Provider-backed inference command group is not present in the requested gateway-wrapper scope."},
-    {"name": "capability", "reference_source": "subcli", "status": "missing", "rationale": "OpenClaw infer alias; no metiq infer group exists."},
-    {"name": "node", "reference_source": "subcli", "status": "missing", "rationale": "Metiq has nodes/node alias for remote node management, not OpenClaw headless node host service."},
-    {"name": "dns", "reference_source": "subcli", "status": "missing", "rationale": "DNS discovery helpers are not present as metiq gateway methods."},
-    {"name": "proxy", "reference_source": "subcli", "status": "missing", "rationale": "OpenClaw debug proxy is not present in metiq."},
-    {"name": "webhooks", "reference_source": "subcli", "status": "missing", "rationale": "Webhook helpers are not present as metiq gateway methods."},
-    {"name": "clawbot", "reference_source": "subcli", "status": "missing", "rationale": "Legacy OpenClaw aliases do not apply to metiq."},
-    {"name": "directory", "reference_source": "subcli", "status": "missing", "rationale": "Contact/group directory lookup is channel-specific OpenClaw functionality not present in metiq."}
+    {
+      "name": "setup",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "crestodian",
+      "reference_source": "core",
+      "status": "missing",
+      "rationale": "Hidden deprecated OpenClaw setup alias; it has no Metiq equivalent."
+    },
+    {
+      "name": "onboard",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "configure",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "config",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "claws",
+      "reference_source": "core",
+      "status": "deviation",
+      "rationale": "Experimental OpenClaw Claws are an OpenClaw-specific package concept and are not exposed as a Metiq command group."
+    },
+    {
+      "name": "backup",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "migrate",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "doctor",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "dashboard",
+      "reference_source": "core",
+      "status": "deviation",
+      "rationale": "Control UI launch and token handoff are OpenClaw-specific; Metiq serves its Web UI from the daemon."
+    },
+    {
+      "name": "reset",
+      "reference_source": "core",
+      "status": "deviation",
+      "rationale": "Destructive local reset UX is intentionally outside Metiq's command surface."
+    },
+    {
+      "name": "uninstall",
+      "reference_source": "core",
+      "status": "deviation",
+      "rationale": "Packaging/service uninstall remains platform-owned rather than a Metiq CLI command."
+    },
+    {
+      "name": "message",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/message_cmd.go"
+    },
+    {
+      "name": "mcp",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "transcripts",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/transcripts_cmd.go"
+    },
+    {
+      "name": "agent",
+      "reference_source": "core",
+      "status": "missing",
+      "rationale": "Metiq currently exposes agent management through the plural agents group, not a singular local-turn command."
+    },
+    {
+      "name": "agents",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "status",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "health",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "audit",
+      "reference_source": "core",
+      "status": "missing",
+      "rationale": "Metiq has security and task audit surfaces but no equivalent top-level lifecycle audit browser."
+    },
+    {
+      "name": "sessions",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "commitments",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/commitments_cmd.go"
+    },
+    {
+      "name": "tasks",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "acp",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/acp_cmd.go"
+    },
+    {
+      "name": "gateway",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "metiq_command": "gw",
+      "metiq_entry": "cmd/metiq/registry.go",
+      "rationale": "Metiq names the generic gateway passthrough group gw; daemon lifecycle remains a separate daemon group."
+    },
+    {
+      "name": "daemon",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "logs",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "system",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/system_cmd.go"
+    },
+    {
+      "name": "models",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "promos",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "ClawHub promotional-offer discovery is OpenClaw marketplace infrastructure."
+    },
+    {
+      "name": "infer",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "Metiq has provider/model management but no stable top-level inference command group."
+    },
+    {
+      "name": "capability",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "OpenClaw infer alias; no corresponding Metiq command is present."
+    },
+    {
+      "name": "approvals",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "exec-approvals",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "metiq_command": "approvals",
+      "metiq_entry": "cmd/metiq/registry.go",
+      "rationale": "OpenClaw alias; Metiq exposes the same operator area as approvals."
+    },
+    {
+      "name": "exec-policy",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "nodes",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "devices",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "Metiq exposes device operations through gateway/node management rather than a dedicated top-level device-auth CLI."
+    },
+    {
+      "name": "users",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "OpenClaw durable local users/email aliases differ from Metiq's Nostr identity model."
+    },
+    {
+      "name": "node",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "OpenClaw node runs a headless node-host service; Metiq's node alias manages remote nodes and is not semantically equivalent."
+    },
+    {
+      "name": "worker",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "OpenClaw's restricted cloud-worker runtime is not a Metiq local CLI responsibility."
+    },
+    {
+      "name": "sandbox",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/sandbox_cmd.go"
+    },
+    {
+      "name": "fleet",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "OpenClaw tenant-cell fleet provisioning differs from Metiq's Nostr-native agent and Soul Factory lifecycle."
+    },
+    {
+      "name": "worktrees",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "Managed worktree lifecycle is deferred with the WS-A/A7 workspace surface."
+    },
+    {
+      "name": "attach",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "Claude Code session attachment is deferred until the protocol-v4 session surface is established."
+    },
+    {
+      "name": "tui",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "OpenClaw's terminal UI is a separate interactive client subsystem."
+    },
+    {
+      "name": "terminal",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "OpenClaw alias for its local TUI; Metiq does not expose that client."
+    },
+    {
+      "name": "chat",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "OpenClaw local terminal chat UI is not the Metiq Web UI or gateway chat API."
+    },
+    {
+      "name": "cron",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "dns",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "OpenClaw DNS discovery helpers are not present as a Metiq command group."
+    },
+    {
+      "name": "docs",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "Live OpenClaw documentation search is project-specific infrastructure."
+    },
+    {
+      "name": "qa",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "proxy",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "OpenClaw's debug proxy and capture browser have no Metiq equivalent."
+    },
+    {
+      "name": "hooks",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "webhooks",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "Webhook helper configuration is not exposed as a Metiq top-level group."
+    },
+    {
+      "name": "qr",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "clawbot",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "Legacy OpenClaw aliases do not apply to Metiq."
+    },
+    {
+      "name": "pairing",
+      "reference_source": "subcli",
+      "status": "deviation",
+      "rationale": "Secure DM pairing is handled by Metiq's Nostr-native trust/routing model rather than an OpenClaw pairing CLI."
+    },
+    {
+      "name": "plugins",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "channels",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "directory",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "OpenClaw channel contact/group lookup is not a Metiq top-level command."
+    },
+    {
+      "name": "security",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "secrets",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "skills",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "update",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "completion",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_entry": "cmd/metiq/registry.go"
+    }
   ]
 }

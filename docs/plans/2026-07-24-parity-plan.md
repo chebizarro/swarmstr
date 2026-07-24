@@ -33,9 +33,9 @@ Recommended sequencing: fix critical correctness/security first (cheap, high-ris
 
 ## Phase 1 — Rebaseline parity tracking (foundation for everything else)
 
-- [ ] **P1.1 (M)** Regenerate parity fixtures from openclaw HEAD descriptor catalogs (`src/gateway/methods/core-descriptors.ts`, `src/cli/program/*-descriptors.ts`); reconcile docs (95) vs verifier (96) disagreement; drop the 4 methods openclaw no longer advertises (`browser.request`, `node.canvas.capability.refresh`, `node.pair.request`, `node.pair.verify`); add CI drift detection.
-- [ ] **P1.2 (M)** Triage the 233 newly advertised gateway methods into: implement / accepted deviation / defer — record in `docs/parity/`. Add a UI-callsite parity check so stale UI method names are caught.
-- [ ] **P1.3 (S)** CLI descriptor refresh: record new top-level groups (`claws`, `audit`, `promos`, `exec-approvals`, `users`, `worker`, `fleet`, `worktrees`, `attach`); reclassify `gateway`/`gw` naming deviation.
+- [x] **P1.1 (M)** DONE (`swarmstr-aeyu`; OpenClaw `5ff1690`) Regenerated parity fixtures from the descriptor catalogs via `scripts/refresh-parity.sh`; docs are the gateway source of truth, verifier allowlists are derived, the 4 dropped methods are removed, and CI checks generated classification/triage consistency.
+- [x] **P1.2 (M)** DONE (`swarmstr-aeyu`) Triaged all 324 advertised gateway methods into implement / accepted deviation / defer groups in `docs/parity/gateway-triage.json`; generalized the Web UI callsite test to reject every unregistered literal gateway call.
+- [x] **P1.3 (S)** DONE (`swarmstr-aeyu`) Refreshed all 65 CLI descriptors, including `claws`, `audit`, `promos`, `exec-approvals`, `users`, `worker`, `fleet`, `worktrees`, and `attach`; classified `gateway` → `gw` as a naming deviation and OpenClaw `node` as a semantic deviation from Metiq node management.
 
 ## Phase 2 — Workstreams (parallelizable)
 

@@ -98,7 +98,7 @@ type resetContractsFixture struct {
 
 func TestCoreParityVerifier_MethodSurface(t *testing.T) {
 	var snap methodParitySnapshot
-	loadJSONFixture(t, filepath.Join("..", "..", "internal", "gateway", "methods", "testdata", "parity", "gateway-method-parity.json"), &snap)
+	loadJSONFixture(t, filepath.Join("..", "..", "docs", "parity", "gateway-method-parity.json"), &snap)
 	var dev coreMethodDeviationFixture
 	loadJSONFixture(t, filepath.Join("testdata", "parity", "core_method_surface_deviations.json"), &dev)
 
@@ -123,34 +123,30 @@ func TestCoreParityVerifier_MethodSurface(t *testing.T) {
 	allowedMissing := toSet(dev.AcceptedMissingMethods)
 	allowedAdditional := toSet(dev.AcceptedAdditionalMethods)
 
-	var missing []string
+	var actualMissing []string
 	for method := range expected {
 		if _, ok := supported[method]; ok {
 			continue
 		}
-		if _, ok := allowedMissing[method]; ok {
-			continue
-		}
-		missing = append(missing, method)
+		actualMissing = append(actualMissing, method)
 	}
-	sort.Strings(missing)
+	sort.Strings(actualMissing)
 
-	var additional []string
+	var actualAdditional []string
 	for method := range supported {
 		if _, ok := expected[method]; ok {
 			continue
 		}
-		if _, ok := allowedAdditional[method]; ok {
-			continue
-		}
-		additional = append(additional, method)
+		actualAdditional = append(actualAdditional, method)
 	}
-	sort.Strings(additional)
+	sort.Strings(actualAdditional)
 
-	if len(missing) > 0 || len(additional) > 0 {
+	unacceptedMissing, staleMissing := setDifferences(toSet(actualMissing), allowedMissing)
+	unacceptedAdditional, staleAdditional := setDifferences(toSet(actualAdditional), allowedAdditional)
+	if len(unacceptedMissing) > 0 || len(unacceptedAdditional) > 0 || len(staleMissing) > 0 || len(staleAdditional) > 0 {
 		t.Fatalf(
-			"core parity method surface drift detected.\nmissing=%v\nadditional=%v\nAction: update parity fixtures or file follow-up bead with discovered-from:metiq-wkb.10",
-			missing, additional,
+			"core parity method surface drift detected.\nunaccepted_missing=%v\nunaccepted_additional=%v\nstale_allowed_missing=%v\nstale_allowed_additional=%v\nAction: run scripts/refresh-parity.sh or file a child bead discovered-from:swarmstr-aeyu",
+			unacceptedMissing, unacceptedAdditional, staleMissing, staleAdditional,
 		)
 	}
 }
@@ -367,6 +363,22 @@ func toSet(items []string) map[string]struct{} {
 		out[item] = struct{}{}
 	}
 	return out
+}
+
+func setDifferences(actual, allowed map[string]struct{}) (unaccepted, stale []string) {
+	for item := range actual {
+		if _, ok := allowed[item]; !ok {
+			unaccepted = append(unaccepted, item)
+		}
+	}
+	for item := range allowed {
+		if _, ok := actual[item]; !ok {
+			stale = append(stale, item)
+		}
+	}
+	sort.Strings(unaccepted)
+	sort.Strings(stale)
+	return unaccepted, stale
 }
 
 func jsonTagSet(typ reflect.Type) map[string]struct{} {

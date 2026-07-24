@@ -1,582 +1,2719 @@
 {
-  "source": "openclaw/src/gateway/server-methods-list.ts",
-  "captured_at": "2026-03-04",
+  "schema_version": 2,
+  "source": {
+    "project": "openclaw",
+    "revision": "5ff16901ef4a8532844000505a6e6ad0cae74a2a",
+    "files": {
+      "src/gateway/methods/core-descriptors.ts": "9cab9c37974dc7b18533ace0205bb5179a460c70b35901dc404986dd5a03312d"
+    }
+  },
+  "captured_at": "2026-07-24",
   "summary": {
-    "openclaw_method_count": 95,
-    "implemented": 95,
+    "openclaw_defined_count": 344,
+    "openclaw_method_count": 324,
+    "hidden_method_count": 20,
+    "implemented": 101,
     "partial": 0,
-    "missing": 0
+    "missing": 223,
+    "triage_category_counts": {
+      "accepted-deviation": 16,
+      "defer": 53,
+      "implement": 255
+    }
   },
   "entries": [
     {
       "method": "health",
       "status": "implemented",
       "metiq_method": "health",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "diagnostics.stability",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "doctor.memory.status",
       "status": "implemented",
       "metiq_method": "doctor.memory.status",
-      "notes": "Expanded in the 2026-04-10 parity hardening pass to report backend health, fallback/degraded state, file/session-memory surfaces, and maintenance counters."
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "doctor.memory.dreamDiary",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "doctor.memory.backfillDreamDiary",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "doctor.memory.resetDreamDiary",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "doctor.memory.resetGroundedShortTerm",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "doctor.memory.repairDreamingArtifacts",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "doctor.memory.dedupeDreamDiary",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "doctor.memory.remHarness",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
     },
     {
       "method": "logs.tail",
       "status": "implemented",
       "metiq_method": "logs.tail",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "channels.status",
       "status": "implemented",
       "metiq_method": "channels.status",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "channels.start",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "channels.stop",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "channels.logout",
       "status": "implemented",
       "metiq_method": "channels.logout",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "status",
       "status": "implemented",
       "metiq_method": "status",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "usage.status",
       "status": "implemented",
       "metiq_method": "usage.status",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "usage.cost",
       "status": "implemented",
       "metiq_method": "usage.cost",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "tts.status",
       "status": "implemented",
       "metiq_method": "tts.status",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "tts.providers",
       "status": "implemented",
       "metiq_method": "tts.providers",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "tts.personas",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "tts.enable",
       "status": "implemented",
       "metiq_method": "tts.enable",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "tts.disable",
       "status": "implemented",
       "metiq_method": "tts.disable",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "tts.convert",
       "status": "implemented",
       "metiq_method": "tts.convert",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "tts.setProvider",
       "status": "implemented",
       "metiq_method": "tts.setProvider",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "tts.setPersona",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "config.get",
       "status": "implemented",
       "metiq_method": "config.get",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "config.set",
       "status": "implemented",
       "metiq_method": "config.set",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "config.apply",
       "status": "implemented",
       "metiq_method": "config.apply",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "config.patch",
       "status": "implemented",
       "metiq_method": "config.patch",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "config.schema",
       "status": "implemented",
       "metiq_method": "config.schema",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "config.schema.lookup",
       "status": "implemented",
       "metiq_method": "config.schema.lookup",
-      "notes": "Returns schema for a specific config path; full schema when path is empty"
+      "notes": "Returns schema for a specific config path; full schema when path is empty.",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "exec.approvals.get",
       "status": "implemented",
       "metiq_method": "exec.approvals.get",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "exec.approvals.set",
       "status": "implemented",
       "metiq_method": "exec.approvals.set",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "exec.approvals.node.get",
       "status": "implemented",
       "metiq_method": "exec.approvals.node.get",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "exec.approvals.node.set",
       "status": "implemented",
       "metiq_method": "exec.approvals.node.set",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "exec.approval.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "exec.approval.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "exec.approval.request",
       "status": "implemented",
       "metiq_method": "exec.approval.request",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "exec.approval.waitDecision",
       "status": "implemented",
       "metiq_method": "exec.approval.waitDecision",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "exec.approval.resolve",
       "status": "implemented",
       "metiq_method": "exec.approval.resolve",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "question.request",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "question.waitAnswer",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "question.resolve",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "question.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "question.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "plugin.approval.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugin.approval.request",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugin.approval.waitDecision",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugin.approval.resolve",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugins.uiDescriptors",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugins.sessionAction",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "openclaw.chat",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "openclaw.chat.history",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "openclaw.changes.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "openclaw.approval.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "openclaw.setup.detect",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "openclaw.setup.activate",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "openclaw.setup.auth.start",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "openclaw.setup.prepare.start",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
     },
     {
       "method": "wizard.start",
       "status": "implemented",
       "metiq_method": "wizard.start",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "wizard.next",
       "status": "implemented",
       "metiq_method": "wizard.next",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "wizard.cancel",
       "status": "implemented",
       "metiq_method": "wizard.cancel",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "wizard.status",
       "status": "implemented",
       "metiq_method": "wizard.status",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "talk.catalog",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.config",
       "status": "implemented",
       "metiq_method": "talk.config",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.client.create",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.client.transcript",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.client.close",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.client.toolCall",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.client.steer",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.create",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.join",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.appendAudio",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.startTurn",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.endTurn",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.cancelTurn",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.cancelOutput",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.acknowledgeMark",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.submitToolResult",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.steer",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.session.close",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "talk.speak",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.mode",
       "status": "implemented",
       "metiq_method": "talk.mode",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "commands.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "models.list",
       "status": "implemented",
       "metiq_method": "models.list",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "models.authStatus",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "models.authLogout",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "tools.catalog",
       "status": "implemented",
       "metiq_method": "tools.catalog",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tools.effective",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tools.invoke",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "mcp.app.view",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "mcp.app.listTools",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "mcp.app.listResources",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "mcp.app.listResourceTemplates",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "mcp.app.readResource",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "mcp.app.callTool",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "mcp.app.updateModelContext",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "board.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "board.update",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "board.widget.put",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "board.widget.grant",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "board.widget.appView",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "board.event",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "audit.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "audit.activity.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "users.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "nostr-user-identity",
+      "workstream": "Nostr identity"
+    },
+    {
+      "method": "users.self",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "nostr-user-identity",
+      "workstream": "Nostr identity"
+    },
+    {
+      "method": "users.linkEmail",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "nostr-user-identity",
+      "workstream": "Nostr identity"
+    },
+    {
+      "method": "users.setDisplayName",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "nostr-user-identity",
+      "workstream": "Nostr identity"
+    },
+    {
+      "method": "users.setAvatar",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "nostr-user-identity",
+      "workstream": "Nostr identity"
+    },
+    {
+      "method": "tasks.list",
+      "status": "implemented",
+      "metiq_method": "tasks.list",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tasks.get",
+      "status": "implemented",
+      "metiq_method": "tasks.get",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tasks.cancel",
+      "status": "implemented",
+      "metiq_method": "tasks.cancel",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "taskSuggestions.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "taskSuggestions.create",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "taskSuggestions.accept",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "taskSuggestions.dismiss",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "environments.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "environments.status",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "worktrees.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "worktrees.branches",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "fs.listDir",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "worktrees.create",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "worktrees.remove",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "worktrees.restore",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "worktrees.gc",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
     },
     {
       "method": "agents.list",
       "status": "implemented",
       "metiq_method": "agents.list",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agents.create",
       "status": "implemented",
       "metiq_method": "agents.create",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agents.update",
       "status": "implemented",
       "metiq_method": "agents.update",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agents.delete",
       "status": "implemented",
       "metiq_method": "agents.delete",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agents.files.list",
       "status": "implemented",
       "metiq_method": "agents.files.list",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agents.files.get",
       "status": "implemented",
       "metiq_method": "agents.files.get",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agents.files.set",
       "status": "implemented",
       "metiq_method": "agents.files.set",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "sessions.files.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.files.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.files.set",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.files.reveal",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "artifacts.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "artifacts.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "artifacts.download",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
     },
     {
       "method": "skills.status",
       "status": "implemented",
       "metiq_method": "skills.status",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.search",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.detail",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.securityVerdicts",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.skillCard",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
     },
     {
       "method": "skills.bins",
       "status": "implemented",
       "metiq_method": "skills.bins",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.upload.begin",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.upload.chunk",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.upload.commit",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
     },
     {
       "method": "skills.install",
       "status": "implemented",
       "metiq_method": "skills.install",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
     },
     {
       "method": "skills.update",
       "status": "implemented",
       "metiq_method": "skills.update",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.curator.status",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.curator.pin",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.curator.unpin",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.curator.restore",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.inspect",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.historyStatus",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.historyScan",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.create",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.update",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.revise",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.requestRevision",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.apply",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.reject",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.quarantine",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "update.status",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "update.run",
       "status": "implemented",
       "metiq_method": "update.run",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "voicewake.get",
       "status": "implemented",
       "metiq_method": "voicewake.get",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "voicewake.set",
       "status": "implemented",
       "metiq_method": "voicewake.set",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "secrets.reload",
       "status": "implemented",
       "metiq_method": "secrets.reload",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "secrets.resolve",
       "status": "implemented",
       "metiq_method": "secrets.resolve",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "voicewake.routing.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "voicewake.routing.set",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
     },
     {
       "method": "sessions.list",
       "status": "implemented",
       "metiq_method": "sessions.list",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.subscribe",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.unsubscribe",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.messages.subscribe",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.messages.unsubscribe",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     },
     {
       "method": "sessions.preview",
       "status": "implemented",
       "metiq_method": "sessions.preview",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.describe",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.compaction.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.compaction.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.compaction.branch",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.compaction.restore",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.branches.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.branches.switch",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.rewind",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.fork",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.create",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.send",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.abort",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     },
     {
       "method": "sessions.patch",
       "status": "implemented",
       "metiq_method": "sessions.patch",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.pluginPatch",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.cleanup",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     },
     {
       "method": "sessions.reset",
       "status": "implemented",
       "metiq_method": "sessions.reset",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     },
     {
       "method": "sessions.delete",
       "status": "implemented",
       "metiq_method": "sessions.delete",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     },
     {
       "method": "sessions.compact",
       "status": "implemented",
       "metiq_method": "sessions.compact",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.groups.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.groups.put",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.groups.rename",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.groups.delete",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     },
     {
       "method": "last-heartbeat",
       "status": "implemented",
       "metiq_method": "last-heartbeat",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "set-heartbeats",
       "status": "implemented",
       "metiq_method": "set-heartbeats",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "wake",
       "status": "implemented",
       "metiq_method": "wake",
-      "notes": ""
-    },
-    {
-      "method": "node.pair.request",
-      "status": "implemented",
-      "metiq_method": "node.pair.request",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "node.pair.list",
       "status": "implemented",
       "metiq_method": "node.pair.list",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "node.pair.approve",
       "status": "implemented",
       "metiq_method": "node.pair.approve",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "node.pair.reject",
       "status": "implemented",
       "metiq_method": "node.pair.reject",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
-      "method": "node.pair.verify",
-      "status": "implemented",
-      "metiq_method": "node.pair.verify",
-      "notes": ""
+      "method": "node.pair.remove",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "device.pair.list",
       "status": "implemented",
       "metiq_method": "device.pair.list",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "device.pair.approve",
       "status": "implemented",
       "metiq_method": "device.pair.approve",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "device.pair.reject",
       "status": "implemented",
       "metiq_method": "device.pair.reject",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "device.pair.remove",
       "status": "implemented",
       "metiq_method": "device.pair.remove",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "device.pair.rename",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "device.token.rotate",
       "status": "implemented",
       "metiq_method": "device.token.rotate",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "device.token.revoke",
       "status": "implemented",
       "metiq_method": "device.token.revoke",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "node.rename",
       "status": "implemented",
       "metiq_method": "node.rename",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "node.list",
       "status": "implemented",
       "metiq_method": "node.list",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "node.describe",
       "status": "implemented",
       "metiq_method": "node.describe",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "node.pluginSurface.refresh",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "node.pluginTools.update",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "node.skills.update",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "node.pending.drain",
+      "status": "implemented",
+      "metiq_method": "node.pending.drain",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "node.pending.enqueue",
+      "status": "implemented",
+      "metiq_method": "node.pending.enqueue",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "node.invoke",
       "status": "implemented",
       "metiq_method": "node.invoke",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "node.pending.pull",
+      "status": "implemented",
+      "metiq_method": "node.pending.pull",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "node.pending.ack",
+      "status": "implemented",
+      "metiq_method": "node.pending.ack",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "node.invoke.progress",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "node.invoke.result",
       "status": "implemented",
       "metiq_method": "node.invoke.result",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "node.event",
       "status": "implemented",
       "metiq_method": "node.event",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
-      "method": "node.canvas.capability.refresh",
-      "status": "implemented",
-      "metiq_method": "node.canvas.capability.refresh",
-      "notes": ""
+      "method": "cron.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "cron.list",
       "status": "implemented",
       "metiq_method": "cron.list",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "cron.status",
       "status": "implemented",
       "metiq_method": "cron.status",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "cron.scratch.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "cron.scratch.set",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "cron.add",
       "status": "implemented",
       "metiq_method": "cron.add",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "cron.update",
       "status": "implemented",
       "metiq_method": "cron.update",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "cron.remove",
       "status": "implemented",
       "metiq_method": "cron.remove",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "cron.run",
       "status": "implemented",
       "metiq_method": "cron.run",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
     },
     {
       "method": "cron.runs",
       "status": "implemented",
       "metiq_method": "cron.runs",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "gateway.identity.get",
+      "status": "implemented",
+      "metiq_method": "gateway.identity.get",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "gateway.restart.preflight",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "gateway.restart.request",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "system-presence",
       "status": "implemented",
       "metiq_method": "system-presence",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "system-event",
       "status": "implemented",
       "metiq_method": "system-event",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "message.action",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "conversations.send",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "conversations.turn",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "conversations.turn.cancel",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
     },
     {
       "method": "send",
       "status": "implemented",
       "metiq_method": "send",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agent",
       "status": "implemented",
       "metiq_method": "agent",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agent.identity.get",
       "status": "implemented",
       "metiq_method": "agent.identity.get",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "agent.wait",
       "status": "implemented",
       "metiq_method": "agent.wait",
-      "notes": ""
-    },
-    {
-      "method": "browser.request",
-      "status": "implemented",
-      "metiq_method": "browser.request",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
     },
     {
       "method": "chat.history",
       "status": "implemented",
       "metiq_method": "chat.history",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "chat.startup",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "chat.metadata",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "chat.message.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     },
     {
       "method": "chat.abort",
       "status": "implemented",
       "metiq_method": "chat.abort",
-      "notes": "Operator abort remains unconditional. Busy queue-mode interrupt is tool-aware: it aborts only when active tools are interruptible and otherwise defers newest input as urgent active-run steering."
+      "notes": "Operator abort remains unconditional. Busy queue-mode interrupt is tool-aware: it aborts only when active tools are interruptible and otherwise defers newest input as urgent active-run steering.",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     },
     {
       "method": "chat.send",
       "status": "implemented",
       "metiq_method": "chat.send",
-      "notes": ""
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "terminal.open",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "terminal.input",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "terminal.resize",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "terminal.close",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "channels.pairing.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "channels.pairing.approve",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "channels.pairing.dismiss",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "attach.grant",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "attach.revoke",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "terminal.attach",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "terminal.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "terminal.text",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "controlUi.githubPreview",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "system.info",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "agents.workspace.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "agents.workspace.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tts.speak",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "media-and-messaging",
+      "workstream": "WS-D/runtime"
+    },
+    {
+      "method": "plugins.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugins.search",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugins.install",
+      "status": "implemented",
+      "metiq_method": "plugins.install",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugins.setEnabled",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugins.uninstall",
+      "status": "implemented",
+      "metiq_method": "plugins.uninstall",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "plugins.refresh",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "controlUi.sessionPullRequests",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "gateway.suspend.prepare",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "gateway.suspend.status",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "gateway.suspend.resume",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "chat.toolTitles",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.diff",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "openclaw.setup.verify",
+      "status": "missing",
+      "notes": "",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "environments.create",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "environments.destroy",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "sessions.catalog.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.catalog.read",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "terminal.upload",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "sessions.catalog.continue",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.catalog.archive",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "approval.get",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "approval.resolve",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.search",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.dispatch",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.reclaim",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "models.probe",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "migrations.memory.plan",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "migrations.memory.apply",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "ui.command",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "approval.history",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "plugin.surface.refresh",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "conversations.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "session.discussion.info",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.discussion.open",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "board.prompt.authorize",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "board.data.read",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "board.action",
+      "status": "missing",
+      "notes": "",
+      "triage": "defer",
+      "triage_group": "workspace-interactive-surfaces",
+      "workstream": "WS-A/A7"
+    },
+    {
+      "method": "sessions.observer.ask",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.observer.visibility",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.visibility.set",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.members.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.members.add",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.members.remove",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.suggestions.add",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.suggestions.list",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.suggestions.resolve",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "session.typing",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
     }
   ]
 }

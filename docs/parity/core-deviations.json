@@ -1,6 +1,6 @@
 {
-  "source": "cmd/metiqd/testdata/parity/core_method_surface_deviations.json",
-  "notes": "Accepted core parity deviations for Metiq vs OpenClaw. Keep this aligned with the verifier fixtures.",
+  "source": "docs/parity/gateway-method-parity.json",
+  "notes": "Accepted architectural core deviations for Metiq vs OpenClaw. scripts/refresh-parity.sh derives the verifier's exact method allowlist from this file and the generated gateway catalog.",
   "accepted_deviations": [
     {
       "id": "nostr-first.session-scoping",
