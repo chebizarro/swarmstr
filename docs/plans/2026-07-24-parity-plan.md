@@ -4,8 +4,6 @@
 **Basis:** 7 parallel investigations comparing swarmstr `805045d` against openclaw HEAD, claude-code, nips repo `cd9f33e` (2026-07-03), and the current FIPS repo.
 **Effort key:** S ≤ a few days · M ≈ 1–2 weeks · L = multi-week / cross-cutting.
 
-- [x] **P1.3 (S)** DONE (commit 340d649; docs/parity/cli-classifications.json; swarmstr-aeyu closed) CLI descriptor refresh:
-
 ## Executive summary
 
 Swarmstr's foundations are healthier than expected — the agent loop, hybrid memory retrieval, active recall, and core Nostr crypto (NIP-44/59/17 subset, NIP-42, NIP-65, NIP-98) are solid. The drift is concentrated in five places:
