@@ -112,6 +112,9 @@ func commitRuntimeConfigMutationLocked(ctx context.Context, docsRepo *state.Docs
 	if err := policy.ValidateConfig(next); err != nil {
 		return configMutationCommitResult{}, err
 	}
+	if err := config.EnforceManagedSettings(current, next); err != nil {
+		return configMutationCommitResult{}, err
+	}
 	if req.SkipIfUnchanged && current.Hash() == next.Hash() {
 		return configMutationCommitResult{Current: current, Next: next}, nil
 	}

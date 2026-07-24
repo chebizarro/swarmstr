@@ -76,14 +76,13 @@ type Config struct {
 	NetworkDisabled bool
 	// AllowNetwork enables Docker container network access when true.
 	AllowNetwork bool
-	// AllowedDomains documents the domain-level egress allowlist expected by
-	// network-aware sandbox wrappers/proxies. When set, audit requires network
-	// access to be constrained to these domains instead of unrestricted egress.
+	// AllowedDomains is the domain-level egress allowlist enforced when
+	// EgressEnforced is true.
 	AllowedDomains []string
-	// AllowedCIDRs documents IP/CIDR egress allowlist entries for sandbox network policy.
+	// AllowedCIDRs is the IP/CIDR egress allowlist enforced when EgressEnforced is true.
 	AllowedCIDRs []string
-	// EgressEnforced activates best-effort backend enforcement for AllowedDomains
-	// and AllowedCIDRs instead of treating them as advisory metadata.
+	// EgressEnforced routes HTTP(S) through an authenticated allowlisting proxy
+	// while placing the container on an internal-only Docker network.
 	EgressEnforced bool
 	// ReadOnlyRootFS mounts the container root filesystem read-only. Docker only.
 	// Defaults to true.
@@ -212,26 +211,29 @@ func NewFromMap(m map[string]any) (SandboxRunner, error) {
 		return New(Config{})
 	}
 	cfg := Config{
-		Driver:           getString(m, "driver"),
-		AllowUnsafeNop:   getBool(m, "allow_unsafe_nop"),
-		MemoryLimit:      getString(m, "memory_limit"),
-		CPULimit:         getString(m, "cpu_limit"),
-		DockerImage:      getString(m, "docker_image"),
-		NetworkDisabled:  getBool(m, "network_disabled"),
-		AllowNetwork:     getBool(m, "allow_network"),
-		AllowedDomains:   firstStringSlice(m, "allowed_domains", "egress_allowed_domains"),
-		AllowedCIDRs:     firstStringSlice(m, "allowed_cidrs", "egress_allowed_cidrs"),
-		EgressEnforced:   getBool(m, "egress_enforced"),
-		ReadOnlyRootFS:   getBool(m, "read_only_rootfs"),
-		WritableRootFS:   getBool(m, "writable_rootfs"),
-		CapDrop:          getStringSlice(m, "cap_drop"),
-		SecurityOpt:      getStringSlice(m, "security_opt"),
-		User:             getString(m, "user"),
-		Tmpfs:            getStringSlice(m, "tmpfs"),
-		Ulimits:          getStringSlice(m, "ulimits"),
-		WorkspaceDir:     getString(m, "workspace_dir"),
-		ContainerWorkdir: getString(m, "container_workdir"),
-		WorkspaceAccess:  getString(m, "workspace_access"),
+		Driver:            getString(m, "driver"),
+		AllowUnsafeNop:    getBool(m, "allow_unsafe_nop"),
+		MemoryLimit:       getString(m, "memory_limit"),
+		CPULimit:          getString(m, "cpu_limit"),
+		DockerImage:       getString(m, "docker_image"),
+		NetworkDisabled:   getBool(m, "network_disabled"),
+		AllowNetwork:      getBool(m, "allow_network"),
+		AllowedDomains:    firstStringSlice(m, "allowed_domains", "egress_allowed_domains"),
+		AllowedCIDRs:      firstStringSlice(m, "allowed_cidrs", "egress_allowed_cidrs"),
+		EgressEnforced:    getBool(m, "egress_enforced"),
+		ReadOnlyRootFS:    getBool(m, "read_only_rootfs"),
+		WritableRootFS:    getBool(m, "writable_rootfs"),
+		CapDrop:           getStringSlice(m, "cap_drop"),
+		SecurityOpt:       getStringSlice(m, "security_opt"),
+		User:              getString(m, "user"),
+		Tmpfs:             getStringSlice(m, "tmpfs"),
+		Ulimits:           getStringSlice(m, "ulimits"),
+		WorkspaceDir:      getString(m, "workspace_dir"),
+		ContainerWorkdir:  getString(m, "container_workdir"),
+		WorkspaceAccess:   getString(m, "workspace_access"),
+		PersistentRuntime: getBool(m, "persistent_runtime"),
+		RuntimeScope:      getString(m, "runtime_scope"),
+		RuntimeKey:        getString(m, "runtime_key"),
 	}
 	if ts, ok := numberAsInt(m["timeout_s"]); ok {
 		cfg.TimeoutSeconds = ts
@@ -326,10 +328,21 @@ type DockerSandbox struct {
 
 func (s *DockerSandbox) Driver() string { return "docker" }
 
+type dockerEgressRuntime struct {
+	network  string
+	proxyURL string
+}
+
 func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, workdir string) []string {
+	return s.dockerRunArgsWithEgress(image, cmd, env, workdir, nil)
+}
+
+func (s *DockerSandbox) dockerRunArgsWithEgress(image string, cmd []string, env []string, workdir string, egress *dockerEgressRuntime) []string {
 	dockerArgs := []string{"run", "--rm", "--interactive=false"}
 
-	if s.cfg.dockerNetworkDisabled() {
+	if egress != nil {
+		dockerArgs = append(dockerArgs, "--network="+egress.network, "--add-host=host.docker.internal:host-gateway")
+	} else if s.cfg.dockerNetworkDisabled() {
 		dockerArgs = append(dockerArgs, "--network=none")
 	}
 	if s.cfg.dockerReadOnlyRootFS() {
@@ -348,11 +361,9 @@ func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, 
 	if pids := s.cfg.dockerPidsLimit(); pids > 0 {
 		dockerArgs = append(dockerArgs, fmt.Sprintf("--pids-limit=%d", pids))
 	}
-	// Egress enforcement previously dropped the container to in-container root
-	// (--user=0:0 --cap-add=NET_ADMIN) so it could run iptables. That weakened
-	// hardening and only provided brittle, bypassable enforcement. The container
-	// now always runs non-root; egress enforcement is rejected at validation time
-	// until a real external enforcement backend exists (see ValidateSandboxSecurity).
+	// Egress enforcement stays outside the untrusted container. The container
+	// remains non-root and joins an ephemeral Docker --internal network whose only
+	// routed HTTP(S) path is the authenticated policy proxy.
 	if user := s.cfg.dockerUser(); user != "" {
 		dockerArgs = append(dockerArgs, "--user="+user)
 	}
@@ -380,6 +391,21 @@ func (s *DockerSandbox) dockerRunArgs(image string, cmd []string, env []string, 
 	}
 	for _, e := range env {
 		dockerArgs = append(dockerArgs, "--env="+e)
+	}
+	if egress != nil {
+		// Append enforced proxy variables after caller env so a request cannot
+		// replace them. Raw external sockets have no route on the internal network.
+		dockerArgs = append(dockerArgs,
+			"--env=HTTP_PROXY="+egress.proxyURL,
+			"--env=HTTPS_PROXY="+egress.proxyURL,
+			"--env=http_proxy="+egress.proxyURL,
+			"--env=https_proxy="+egress.proxyURL,
+			"--env=ALL_PROXY=",
+			"--env=all_proxy=",
+			"--env=NO_PROXY=",
+			"--env=no_proxy=",
+			"--env=METIQ_SANDBOX_EGRESS_ENFORCED=true",
+		)
 	}
 	workspace, _ := s.cfg.workspaceMount()
 	if workspace.Enabled {
@@ -416,7 +442,22 @@ func (s *DockerSandbox) Run(ctx context.Context, cmd []string, env []string, wor
 	if err := ValidateSandboxSecurity(s.cfg); err != nil {
 		return Result{Driver: "docker"}, err
 	}
-	dockerArgs := s.dockerRunArgs(image, cmd, env, workdir)
+
+	var egressRuntime *dockerEgressRuntime
+	if s.cfg.EgressEnforced {
+		proxy, err := startSandboxEgressProxy(s.cfg)
+		if err != nil {
+			return Result{Driver: "docker"}, err
+		}
+		defer proxy.close()
+		network, cleanupNetwork, err := createInternalDockerNetwork(ctx)
+		if err != nil {
+			return Result{Driver: "docker"}, err
+		}
+		defer cleanupNetwork()
+		egressRuntime = &dockerEgressRuntime{network: network, proxyURL: proxy.endpoint()}
+	}
+	dockerArgs := s.dockerRunArgsWithEgress(image, cmd, env, workdir, egressRuntime)
 
 	c := exec.CommandContext(ctx, "docker", dockerArgs...)
 	c.Env = os.Environ() // docker CLI needs host env (PATH, etc.)

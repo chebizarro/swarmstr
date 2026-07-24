@@ -29,6 +29,18 @@ func TestOpenClawPackageContractValidation(t *testing.T) {
 	}
 }
 
+func TestOpenClawPackageContractRejectsUnsupportedAPIRange(t *testing.T) {
+	dir := t.TempDir()
+	pkg := `{"name":"future","version":"1.0.0","openclaw":{"compat":{"pluginApi":"^2.0.0"},"build":{"openclawVersion":"2.0.0"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ValidateOpenClawPackageContract(dir)
+	if err == nil || !strings.Contains(err.Error(), "does not include host API") {
+		t.Fatalf("expected API negotiation failure, got %v", err)
+	}
+}
+
 func TestOpenClawPackageContractValidationMissingAndInvalid(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"pkg","version":"1.0.0","openclaw":{"build":{}}}`), 0o644); err != nil {

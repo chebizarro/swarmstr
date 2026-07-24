@@ -152,7 +152,7 @@ func LoadPluginWithOptions(ctx context.Context, src []byte, host *sdk.Host, opts
 	// Sensitive namespaces remain unavailable until after exports.manifest is
 	// parsed and its permissions block has been evaluated. This prevents module
 	// top-level code from using host APIs before the runtime can enforce policy.
-	for _, namespace := range []string{"nostr", "config", "http", "storage", "agent", "session", "task", "memory", "webSearch"} {
+	for _, namespace := range []string{"nostr", "config", "http", "storage", "agent", "session", "task", "memory", "webSearch", "security", "execApproval", "doctor", "providerAuth"} {
 		if err := setUnavailableNamespace(vm, namespace, "plugin permissions not evaluated yet"); err != nil {
 			return nil, fmt.Errorf("wire %s placeholder: %w", namespace, err)
 		}
@@ -242,6 +242,10 @@ func permissionsForTrust(perms sdk.Permissions, level string) sdk.Permissions {
 	perms.Session = false
 	perms.Task = false
 	perms.Memory = false
+	perms.Security = false
+	perms.ExecApproval = false
+	perms.Doctor = false
+	perms.ProviderAuth = false
 	if perms.Nostr != nil {
 		perms.Nostr.Encrypt = false
 		perms.Nostr.Sign = false
@@ -271,6 +275,10 @@ func wirePermittedHostNamespaces(vm *goja.Runtime, host *sdk.Host, hostCtx *plug
 		{"task", func() error { return wireTask(vm, host.Task, hostCtx, log) }},
 		{"memory", func() error { return wireMemory(vm, host.Memory, hostCtx, log) }},
 		{"webSearch", func() error { return wireWebSearch(vm, host.WebSearch, hostCtx, log) }},
+		{"security", func() error { return wireSecurity(vm, host.Security, hostCtx, log) }},
+		{"execApproval", func() error { return wireExecApproval(vm, host.ExecApproval, hostCtx, log) }},
+		{"doctor", func() error { return wireDoctor(vm, host.Doctor, hostCtx, log) }},
+		{"providerAuth", func() error { return wireProviderAuth(vm, host.ProviderAuth, hostCtx, log) }},
 	}
 	for _, item := range wire {
 		if !perms.Allows(item.name) {
@@ -619,6 +627,117 @@ func wireWebSearch(vm *goja.Runtime, h sdk.WebSearchHost, hostCtx *pluginHostCon
 		return vm.ToValue(item)
 	})
 	return vm.Set("webSearch", obj)
+}
+
+func wireSecurity(vm *goja.Runtime, h sdk.SecurityHost, hostCtx *pluginHostContext, log *slog.Logger) error {
+	if h == nil {
+		return setUnavailableNamespace(vm, "security", "security host not available")
+	}
+	obj := vm.NewObject()
+	_ = obj.Set("analyzeCommand", func(call goja.FunctionCall) goja.Value {
+		ctx, cancel := hostCtx.withTimeout(10 * time.Second)
+		defer cancel()
+		result, err := h.AnalyzeCommand(ctx, exportMap(call.Argument(0)))
+		if err != nil {
+			log.Warn("security.analyzeCommand failed", "err", err)
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(result)
+	})
+	_ = obj.Set("checkPath", func(call goja.FunctionCall) goja.Value {
+		ctx, cancel := hostCtx.withTimeout(10 * time.Second)
+		defer cancel()
+		result, err := h.CheckPath(ctx, exportMap(call.Argument(0)))
+		if err != nil {
+			log.Warn("security.checkPath failed", "err", err)
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(result)
+	})
+	return vm.Set("security", obj)
+}
+
+func wireExecApproval(vm *goja.Runtime, h sdk.ExecApprovalHost, hostCtx *pluginHostContext, log *slog.Logger) error {
+	if h == nil {
+		return setUnavailableNamespace(vm, "execApproval", "exec approval host not available")
+	}
+	obj := vm.NewObject()
+	_ = obj.Set("evaluate", func(call goja.FunctionCall) goja.Value {
+		ctx, cancel := hostCtx.withTimeout(10 * time.Second)
+		defer cancel()
+		result, err := h.Evaluate(ctx, exportMap(call.Argument(0)))
+		if err != nil {
+			log.Warn("execApproval.evaluate failed", "err", err)
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(result)
+	})
+	_ = obj.Set("request", func(call goja.FunctionCall) goja.Value {
+		ctx, cancel := hostCtx.withTimeout(30 * time.Second)
+		defer cancel()
+		result, err := h.Request(ctx, exportMap(call.Argument(0)))
+		if err != nil {
+			log.Warn("execApproval.request failed", "err", err)
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(result)
+	})
+	return vm.Set("execApproval", obj)
+}
+
+func wireDoctor(vm *goja.Runtime, h sdk.DoctorHost, hostCtx *pluginHostContext, log *slog.Logger) error {
+	if h == nil {
+		return setUnavailableNamespace(vm, "doctor", "doctor host not available")
+	}
+	obj := vm.NewObject()
+	_ = obj.Set("run", func(call goja.FunctionCall) goja.Value {
+		ctx, cancel := hostCtx.withTimeout(30 * time.Second)
+		defer cancel()
+		result, err := h.Run(ctx, exportMap(call.Argument(0)))
+		if err != nil {
+			log.Warn("doctor.run failed", "err", err)
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(result)
+	})
+	return vm.Set("doctor", obj)
+}
+
+func wireProviderAuth(vm *goja.Runtime, h sdk.ProviderAuthHost, hostCtx *pluginHostContext, log *slog.Logger) error {
+	if h == nil {
+		return setUnavailableNamespace(vm, "providerAuth", "provider auth host not available")
+	}
+	obj := vm.NewObject()
+	_ = obj.Set("status", func(call goja.FunctionCall) goja.Value {
+		ctx, cancel := hostCtx.withTimeout(10 * time.Second)
+		defer cancel()
+		result, err := h.Status(ctx, call.Argument(0).String())
+		if err != nil {
+			log.Warn("providerAuth.status failed", "err", err)
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(result)
+	})
+	_ = obj.Set("start", func(call goja.FunctionCall) goja.Value {
+		ctx, cancel := hostCtx.withTimeout(30 * time.Second)
+		defer cancel()
+		result, err := h.Start(ctx, call.Argument(0).String(), exportMap(call.Argument(1)))
+		if err != nil {
+			log.Warn("providerAuth.start failed", "err", err)
+			panic(vm.NewGoError(err))
+		}
+		return vm.ToValue(result)
+	})
+	_ = obj.Set("clear", func(call goja.FunctionCall) goja.Value {
+		ctx, cancel := hostCtx.withTimeout(10 * time.Second)
+		defer cancel()
+		if err := h.Clear(ctx, call.Argument(0).String()); err != nil {
+			log.Warn("providerAuth.clear failed", "err", err)
+			panic(vm.NewGoError(err))
+		}
+		return goja.Undefined()
+	})
+	return vm.Set("providerAuth", obj)
 }
 
 // ─── Utility ──────────────────────────────────────────────────────────────────

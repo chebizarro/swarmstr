@@ -36,21 +36,22 @@ func ValidateSandboxSecurity(cfg Config) error {
 	}
 	hasAllowlist := len(cleanStrings(cfg.AllowedDomains)) > 0 || len(cleanStrings(cfg.AllowedCIDRs)) > 0
 	if cfg.EgressEnforced {
-		if _, err := netpolicy.NormalizePolicy(netpolicy.Policy{AllowedDomains: cfg.AllowedDomains, AllowedCIDRs: cfg.AllowedCIDRs}); err != nil {
+		policy, err := netpolicy.NormalizePolicy(netpolicy.Policy{AllowedDomains: cfg.AllowedDomains, AllowedCIDRs: cfg.AllowedCIDRs})
+		if err != nil {
 			return fmt.Errorf("sandbox egress allowlist: %w", err)
 		}
-		// Real egress enforcement (an external network namespace, host firewall,
-		// or an enforcing proxy sidecar that untrusted in-container code cannot
-		// bypass) is not yet implemented. The previous in-container root+NET_ADMIN
-		// +iptables approach and the nop proxy-env approach were brittle and
-		// bypassable. Rather than silently advertise enforcement we cannot deliver,
-		// fail closed.
-		return fmt.Errorf("sandbox egress_enforced=true is not supported: no real egress enforcement backend is available (deferred: external netns/firewall/proxy sidecar); refusing to advertise unenforced egress. Set egress_enforced=false and network_disabled=true, or provide an enforcing backend")
+		if len(policy.Domains) == 0 && len(policy.CIDRs) == 0 {
+			return fmt.Errorf("sandbox egress_enforced requires at least one allowed domain or CIDR")
+		}
+		if !cfg.AllowNetwork || cfg.NetworkDisabled {
+			return fmt.Errorf("sandbox egress_enforced requires allow_network=true and network_disabled=false")
+		}
+		return nil
 	}
 	if cfg.AllowNetwork && hasAllowlist {
 		// An allowlist without enforcement gives operators a false sense of
 		// containment while egress is actually unrestricted. Fail closed.
-		return fmt.Errorf("sandbox allow_network is enabled with an egress allowlist but egress cannot be enforced: the allowlist is advisory metadata only and egress would be unrestricted. Disable allow_network to fail closed, or remove the allowlist to explicitly accept unrestricted egress")
+		return fmt.Errorf("sandbox allow_network is enabled with an egress allowlist but egress_enforced is false; refusing advisory-only egress policy")
 	}
 	return nil
 }

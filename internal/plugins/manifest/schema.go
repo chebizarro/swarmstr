@@ -21,7 +21,7 @@ import (
 
 // SchemaVersion is the current manifest schema version.
 // Increment this when making breaking changes to the manifest structure.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // MinSupportedVersion is the minimum manifest version the runtime supports.
 const MinSupportedVersion = 1
@@ -29,7 +29,7 @@ const MinSupportedVersion = 1
 // ─── Manifest ────────────────────────────────────────────────────────────────
 
 // Manifest is the top-level plugin manifest structure.
-// Version 2 adds explicit capability declarations and runtime constraints.
+// Version 3 adds explicit plugin API and host build compatibility contracts.
 type Manifest struct {
 	// SchemaVersion is the manifest schema version (required, must be >= 1).
 	SchemaVersion int `json:"schema_version"`
@@ -71,9 +71,15 @@ type Manifest struct {
 	// Defaults to "index.js" for JS runtimes.
 	Main string `json:"main,omitempty"`
 
-	// MinMetiqVersion is the minimum metiq version required (optional).
-	// Semantic version constraint, e.g. ">=1.0.0".
+	// MinMetiqVersion is the legacy minimum host version requirement.
+	// Prefer Compat.MinHostVersion in schema v3 manifests.
 	MinMetiqVersion string `json:"min_metiq_version,omitempty"`
+
+	// Compat declares the plugin API range and minimum host version.
+	Compat Compatibility `json:"compat,omitempty"`
+
+	// Build records the host and SDK versions used to build the package.
+	Build BuildInfo `json:"build,omitempty"`
 
 	// ─── Distribution ────────────────────────────────────────────────────────
 
@@ -521,6 +527,31 @@ func Validate(m *Manifest) error {
 			AllowedValues: []string{fmt.Sprintf(">=%d", MinSupportedVersion)},
 			Hint:          "set schema_version to the current manifest schema version",
 		})
+	} else if m.SchemaVersion > SchemaVersion {
+		errs = append(errs, ValidationError{
+			Field:         "schema_version",
+			Message:       fmt.Sprintf("is newer than host schema %d (got %d)", SchemaVersion, m.SchemaVersion),
+			AllowedValues: []string{fmt.Sprintf("%d-%d", MinSupportedVersion, SchemaVersion)},
+			Hint:          "upgrade swarmstr before loading this plugin",
+		})
+	}
+
+	// Explicit compatibility metadata is optional for local/legacy plugins, but
+	// when present it must be a valid negotiable range. External executable
+	// packages require it at the installer boundary.
+	if apiRange := strings.TrimSpace(m.Compat.PluginAPI); apiRange != "" {
+		if _, err := CheckVersionRange(HostPluginAPIVersion, apiRange); err != nil {
+			errs = append(errs, ValidationError{Field: "compat.plugin_api", Message: err.Error()})
+		}
+	}
+	if minHost := strings.TrimSpace(m.Compat.MinHostVersion); minHost != "" {
+		constraint := minHost
+		if !strings.ContainsAny(constraint, "<>=~^*xX| ") {
+			constraint = ">=" + constraint
+		}
+		if _, err := CheckVersionRange("0.0.0", constraint); err != nil {
+			errs = append(errs, ValidationError{Field: "compat.min_host_version", Message: err.Error()})
+		}
 	}
 
 	// ID
@@ -697,13 +728,17 @@ func (m *Manifest) ToJSON() ([]byte, error) {
 
 // ─── Compatibility ───────────────────────────────────────────────────────────
 
-// IsCompatible checks if this manifest is compatible with the current runtime.
-// Returns true if metiqVersion >= m.MinMetiqVersion using semver comparison.
+// IsCompatible checks the legacy minimum host version requirement.
 func (m *Manifest) IsCompatible(metiqVersion string) bool {
-	if m.MinMetiqVersion == "" {
+	if strings.TrimSpace(m.MinMetiqVersion) == "" {
 		return true
 	}
-	return !semverLessThan(metiqVersion, m.MinMetiqVersion)
+	constraint := strings.TrimSpace(m.MinMetiqVersion)
+	if !strings.ContainsAny(constraint, "<>=~^*xX| ") {
+		constraint = ">=" + constraint
+	}
+	ok, err := CheckVersionRange(metiqVersion, constraint)
+	return err == nil && ok
 }
 
 // semverLessThan returns true if version a < b using semver comparison.

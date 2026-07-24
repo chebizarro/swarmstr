@@ -210,7 +210,14 @@ func NormalizeClaudePlugin(pluginPath string) (*pluginmanifest.Manifest, error) 
 		Author:        authorInfoFromClaude(plugin.Metadata.Author),
 		Homepage:      plugin.Metadata.Homepage,
 		Runtime:       pluginmanifest.RuntimeNative,
-		Trust:         "external",
+		Compat: pluginmanifest.Compatibility{
+			PluginAPI: "^" + pluginmanifest.HostPluginAPIVersion,
+		},
+		Build: pluginmanifest.BuildInfo{
+			HostVersion:      "0.0.0-dev",
+			PluginSDKVersion: pluginmanifest.HostPluginSDKVersion,
+		},
+		Trust: "external",
 	}
 	if plugin.Components.Commands {
 		m.Capabilities.Tools = append(m.Capabilities.Tools, pluginmanifest.ToolCapability{Name: "claude.commands", Description: "Claude Code slash commands"})

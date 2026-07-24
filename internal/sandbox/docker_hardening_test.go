@@ -58,29 +58,43 @@ func TestDockerRunArgs_ConfigurableHardening(t *testing.T) {
 }
 
 func TestDockerRunArgs_EnforcedEgressDoesNotDropToRoot(t *testing.T) {
-	// Egress enforcement must never weaken hardening by running the container as
-	// root with NET_ADMIN, and must not inject a bypassable in-container iptables
-	// wrapper. The container always runs non-root.
-	s := &DockerSandbox{cfg: Config{AllowNetwork: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}, AllowedCIDRs: []string{"203.0.113.0/24"}}}
-	args := s.dockerRunArgs("alpine:3", []string{"wget", "https://api.example.com"}, nil, "")
-	for _, forbidden := range []string{"--cap-add=NET_ADMIN", "--user=0:0", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true"} {
+	// Egress enforcement stays outside the container: no root/NET_ADMIN wrapper,
+	// and the caller cannot override the authenticated proxy environment.
+	s := &DockerSandbox{cfg: Config{AllowNetwork: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}}}
+	runtime := &dockerEgressRuntime{network: "isolated", proxyURL: "http://metiq:token@host.docker.internal:1234"}
+	args := s.dockerRunArgsWithEgress("alpine:3", []string{"wget", "https://api.example.com"}, []string{"HTTP_PROXY=http://attacker"}, "", runtime)
+	for _, forbidden := range []string{"--cap-add=NET_ADMIN", "--user=0:0", "--network=none"} {
 		if contains(args, forbidden) {
 			t.Fatalf("enforced egress must not add %s: %#v", forbidden, args)
 		}
 	}
-	if !contains(args, "--user=65532:65532") {
-		t.Fatalf("container must run as the non-root default user: %#v", args)
+	for _, required := range []string{"--network=isolated", "--add-host=host.docker.internal:host-gateway", "--user=65532:65532", "--env=METIQ_SANDBOX_EGRESS_ENFORCED=true"} {
+		if !contains(args, required) {
+			t.Fatalf("enforced egress missing %s: %#v", required, args)
+		}
 	}
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "iptables") {
 		t.Fatalf("in-container iptables egress wrapper must be removed: %#v", args)
 	}
+	if got := lastArgWithPrefix(args, "--env=HTTP_PROXY="); got != "--env=HTTP_PROXY="+runtime.proxyURL {
+		t.Fatalf("effective HTTP_PROXY = %q", got)
+	}
 }
 
-func TestValidateSandboxSecurity_EgressEnforcedFailsClosed(t *testing.T) {
-	cfg := Config{AllowNetwork: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}}
-	if err := ValidateSandboxSecurity(cfg); err == nil {
-		t.Fatal("egress_enforced must fail closed until a real enforcement backend exists")
+func TestValidateSandboxSecurity_EgressEnforcedRequiresUsablePolicy(t *testing.T) {
+	valid := Config{AllowNetwork: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}}
+	if err := ValidateSandboxSecurity(valid); err != nil {
+		t.Fatalf("valid enforced egress rejected: %v", err)
+	}
+	for _, cfg := range []Config{
+		{AllowNetwork: true, EgressEnforced: true},
+		{EgressEnforced: true, AllowedDomains: []string{"api.example.com"}},
+		{AllowNetwork: true, NetworkDisabled: true, EgressEnforced: true, AllowedDomains: []string{"api.example.com"}},
+	} {
+		if err := ValidateSandboxSecurity(cfg); err == nil {
+			t.Fatalf("invalid enforced egress accepted: %+v", cfg)
+		}
 	}
 }
 
@@ -147,6 +161,15 @@ func TestNewFromMap_DockerHardeningConfig(t *testing.T) {
 	if !reflect.DeepEqual(docker.cfg.SecurityOpt, []string{"seccomp=/tmp/seccomp.json"}) {
 		t.Fatalf("SecurityOpt = %#v", docker.cfg.SecurityOpt)
 	}
+}
+
+func lastArgWithPrefix(values []string, prefix string) string {
+	for i := len(values) - 1; i >= 0; i-- {
+		if strings.HasPrefix(values[i], prefix) {
+			return values[i]
+		}
+	}
+	return ""
 }
 
 func contains(values []string, want string) bool {

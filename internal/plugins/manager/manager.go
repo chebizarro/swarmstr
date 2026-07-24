@@ -102,6 +102,11 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			m.log.Warn("plugin integrity verification failed", "plugin", pluginID, "err", err)
 			continue
 		}
+		if _, err := installer.ValidateOpenClawPackageContract(installPath); err != nil {
+			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
+			m.log.Warn("plugin package compatibility check failed", "plugin", pluginID, "err", err)
+			continue
+		}
 		pluginTrust := resolvePluginTrust(rawExt, pluginID, entry)
 		sandboxDecision := NodeSandboxDecision(pluginTrust, sandboxEnabled, sandboxCfg)
 

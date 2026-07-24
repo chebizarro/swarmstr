@@ -46,6 +46,7 @@ func CheckPolicyConformance(cfg state.ConfigDoc) ConformanceReport {
 	var findings []ConformanceFinding
 	findings = append(findings, checkApprovalRules(cfg.Permissions))
 	findings = append(findings, checkDefaultAllow(cfg.Permissions))
+	findings = append(findings, checkExecApprovalConflicts(cfg.Permissions))
 	findings = append(findings, checkSandboxEgress(cfg))
 	findings = append(findings, checkSandboxDriver(cfg))
 	findings = append(findings, checkPluginPermissions(cfg))
@@ -65,6 +66,33 @@ func checkApprovalRules(perms state.PermissionsConfig) ConformanceFinding {
 		}
 	}
 	return ConformanceFinding{ID: "approval-rules", Status: ConformanceFail, Message: "missing or weak approval rules for high-risk tools", Remediation: "Add ask/deny rules for exec, filesystem, network, sandbox, plugin, and MCP tools."}
+}
+
+func checkExecApprovalConflicts(perms state.PermissionsConfig) ConformanceFinding {
+	seen := map[string]string{}
+	hasGuard := false
+	hasBroadAllow := false
+	for _, rule := range perms.Rules {
+		id := strings.TrimSpace(rule.ID)
+		behavior := strings.ToLower(strings.TrimSpace(rule.Behavior))
+		if id != "" {
+			if previous, ok := seen[id]; ok && previous != behavior {
+				return ConformanceFinding{ID: "exec-approval-conflicts", Status: ConformanceFail, Message: fmt.Sprintf("permission rule id %q has conflicting behaviors", id), Remediation: "Give each rule a unique stable ID and remove contradictory entries."}
+			}
+			seen[id] = behavior
+		}
+		tool := strings.TrimSpace(rule.Tool)
+		if behavior == "ask" || behavior == "deny" {
+			hasGuard = true
+		}
+		if behavior == "allow" && (tool == "" || tool == "*") && strings.TrimSpace(rule.Agent) == "" && strings.TrimSpace(rule.Category) == "" && strings.TrimSpace(rule.Origin) == "" && strings.TrimSpace(rule.Content) == "" {
+			hasBroadAllow = true
+		}
+	}
+	if hasGuard && hasBroadAllow {
+		return ConformanceFinding{ID: "exec-approval-conflicts", Status: ConformanceWarn, Message: "broad allow rule overlaps ask/deny execution guards", Remediation: "Scope allow rules to an agent/session/tool and verify canonical precedence with policy.test."}
+	}
+	return ConformanceFinding{ID: "exec-approval-conflicts", Status: ConformancePass, Message: "no contradictory execution approval rules detected"}
 }
 
 func checkDefaultAllow(perms state.PermissionsConfig) ConformanceFinding {

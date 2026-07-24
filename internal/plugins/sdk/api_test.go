@@ -280,12 +280,13 @@ func TestPermissions_ObjectAllowsExpectedNamespaces(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{
 		"id":"p",
 		"version":"1.0.0",
-		"permissions":{"network":{"hosts":["example.com"]},"storage":true,"web_search":true}
+		"permissions":{"network":{"hosts":["example.com"]},"storage":true,"web_search":true,"security":true,"exec_approval":true,"doctor":true,"provider_auth":true}
 	}`), &m); err != nil {
 		t.Fatalf("unmarshal manifest: %v", err)
 	}
-	if !m.Permissions.Allows("http") || !m.Permissions.Allows("storage") || !m.Permissions.Allows("webSearch") {
-		t.Fatalf("expected network/storage/web search permissions: %+v", m.Permissions)
+	if !m.Permissions.Allows("http") || !m.Permissions.Allows("storage") || !m.Permissions.Allows("webSearch") ||
+		!m.Permissions.Allows("security") || !m.Permissions.Allows("execApproval") || !m.Permissions.Allows("doctor") || !m.Permissions.Allows("providerAuth") {
+		t.Fatalf("expected expanded host permissions: %+v", m.Permissions)
 	}
 	if m.Permissions.Allows("agent") {
 		t.Fatal("agent should not be allowed")

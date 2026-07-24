@@ -3,9 +3,10 @@ package policy
 import (
 	"fmt"
 	"path"
-	"sort"
 	"strings"
 	"time"
+
+	"metiq/internal/permissions"
 )
 
 // ToolPolicyAction is the decision returned by the per-tool policy engine.
@@ -24,19 +25,6 @@ func (a ToolPolicyAction) Valid() bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func (a ToolPolicyAction) priority() int {
-	switch a {
-	case ToolPolicyDeny:
-		return 3
-	case ToolPolicyAsk:
-		return 2
-	case ToolPolicyAllow:
-		return 1
-	default:
-		return 0
 	}
 }
 
@@ -106,29 +94,48 @@ func (p ToolPolicy) Evaluate(req ToolPolicyRequest) ToolPolicyDecision {
 		}
 		matches = append(matches, rule)
 	}
-	if len(matches) == 0 {
-		def := p.DefaultAction
-		if !def.Valid() {
-			def = ToolPolicyAllow
+	def := p.DefaultAction
+	if !def.Valid() {
+		def = ToolPolicyAllow
+	}
+	candidates := make([]permissions.EvaluationRule, len(matches))
+	for i, rule := range matches {
+		specificity := 0
+		if rule.AgentID != "" {
+			specificity++
 		}
-		return ToolPolicyDecision{Action: def, Reason: "no matching per-tool policy rule; using default/profile behavior"}
+		if rule.Origin != "" {
+			specificity++
+		}
+		if rule.OriginName != "" {
+			specificity++
+		}
+		if rule.ToolName != "" && rule.ToolName != "*" {
+			specificity++
+		}
+		if rule.Group != "" {
+			specificity++
+		}
+		candidates[i] = permissions.EvaluationRule{
+			ID:          rule.ID,
+			Behavior:    permissions.Behavior(rule.Action),
+			Specificity: specificity,
+		}
+	}
+	resolved := permissions.ResolveEvaluation(permissions.Behavior(def), candidates)
+	if !resolved.Matched {
+		return ToolPolicyDecision{Action: ToolPolicyAction(resolved.Behavior), Reason: "no matching per-tool policy rule; using default/profile behavior"}
 	}
 
-	sort.SliceStable(matches, func(i, j int) bool {
-		if matches[i].Action.priority() != matches[j].Action.priority() {
-			return matches[i].Action.priority() > matches[j].Action.priority()
-		}
-		// Prefer agent-scoped over global when the behavior priority is equal.
-		if (matches[i].AgentID != "") != (matches[j].AgentID != "") {
-			return matches[i].AgentID != ""
-		}
-		return matches[i].ID < matches[j].ID
-	})
-	winner := matches[0]
+	ordered := make([]ToolPolicyRule, 0, len(resolved.Order))
+	for _, index := range resolved.Order {
+		ordered = append(ordered, matches[index])
+	}
+	winner := matches[resolved.Winner]
 	return ToolPolicyDecision{
-		Action:       winner.Action,
+		Action:       ToolPolicyAction(resolved.Behavior),
 		Reason:       fmt.Sprintf("matched per-tool policy rule %q", firstNonEmptyString(winner.ID, winner.ToolName, winner.Group)),
-		MatchedRules: matches,
+		MatchedRules: ordered,
 	}
 }
 

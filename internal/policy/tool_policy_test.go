@@ -3,6 +3,8 @@ package policy
 import (
 	"context"
 	"testing"
+
+	"metiq/internal/permissions"
 )
 
 func TestToolPolicyEvaluatePriorityAndGroups(t *testing.T) {
@@ -17,6 +19,42 @@ func TestToolPolicyEvaluatePriorityAndGroups(t *testing.T) {
 	}
 	if len(dec.MatchedRules) != 3 {
 		t.Fatalf("matched rules = %d, want 3", len(dec.MatchedRules))
+	}
+}
+
+func TestToolPolicyAndPermissionsEngineDecisionParity(t *testing.T) {
+	tests := []struct {
+		name    string
+		actions []ToolPolicyAction
+		want    ToolPolicyAction
+	}{
+		{name: "allow", actions: []ToolPolicyAction{ToolPolicyAllow}, want: ToolPolicyAllow},
+		{name: "ask beats allow", actions: []ToolPolicyAction{ToolPolicyAllow, ToolPolicyAsk}, want: ToolPolicyAsk},
+		{name: "deny beats ask and allow", actions: []ToolPolicyAction{ToolPolicyAllow, ToolPolicyAsk, ToolPolicyDeny}, want: ToolPolicyDeny},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toolRules := make([]ToolPolicyRule, 0, len(tt.actions))
+			cfg := permissions.DefaultEngineConfig()
+			cfg.AuditEnabled = false
+			cfg.AutoClassify = false
+			cfg.CacheEnabled = false
+			cfg.DefaultBehavior = permissions.BehaviorAllow
+			engine := permissions.NewEngine(t.TempDir(), cfg)
+			for i, action := range tt.actions {
+				id := string(rune('a' + i))
+				toolRules = append(toolRules, ToolPolicyRule{ID: id, ToolName: "bash", Action: action})
+				if err := engine.AddRule(permissions.NewRule(id, permissions.ScopeGlobal, permissions.Behavior(action), "bash")); err != nil {
+					t.Fatalf("AddRule: %v", err)
+				}
+			}
+
+			toolDecision := (ToolPolicy{Rules: toolRules}).Evaluate(ToolPolicyRequest{ToolName: "bash"})
+			permissionDecision := engine.Evaluate(context.Background(), permissions.NewToolRequest("bash", permissions.CategoryExec))
+			if toolDecision.Action != tt.want || ToolPolicyAction(permissionDecision.Behavior) != tt.want {
+				t.Fatalf("tool=%s permissions=%s, want %s", toolDecision.Action, permissionDecision.Behavior, tt.want)
+			}
+		})
 	}
 }
 

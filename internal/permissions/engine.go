@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"sync"
 	"time"
 )
@@ -290,92 +289,89 @@ func (e *Engine) Evaluate(ctx context.Context, req *ToolRequest) *Decision {
 	return cloneDecision(decision)
 }
 
-// makeDecision determines the final behavior based on matching rules.
+// makeDecision determines the final behavior using the shared evaluator that
+// also backs policy.ToolPolicy.
 func (e *Engine) makeDecision(req *ToolRequest, matches []*Rule) *Decision {
-	decision := &Decision{
-		Timestamp: time.Now(),
-	}
-
-	// Non-overridable safety layer: an immutable deny always wins, regardless of
-	// scope precedence. This is evaluated BEFORE scope ordering so that a
-	// higher-scope allow (e.g. an agent/session allow-all) can never neutralize a
-	// critical safety deny.
-	for _, r := range matches {
-		if r.Immutable && r.Behavior == BehaviorDeny {
-			decision.Behavior = BehaviorDeny
-			decision.Scope = r.Scope
-			decision.MatchedRules = matches
-			decision.Reason = fmt.Sprintf("immutable safety rule %q denies this operation (non-overridable)", r.ID)
-			return decision
+	decision := &Decision{Timestamp: time.Now()}
+	candidates := make([]EvaluationRule, len(matches))
+	for i, rule := range matches {
+		candidates[i] = EvaluationRule{
+			ID:              rule.ID,
+			Behavior:        rule.Behavior,
+			ScopePrecedence: rule.Scope.Precedence(),
+			Specificity:     permissionRuleSpecificity(rule),
+			Immutable:       rule.Immutable,
 		}
 	}
+	resolved := ResolveEvaluation(e.cfg.DefaultBehavior, candidates)
+	orderedMatches := orderPermissionRules(matches, resolved.Order)
 
-	// Restrictive per-agent allowlist gate: if the requesting agent has an
-	// allowlist configured and the tool is not admitted by it, deny before any
-	// allow rule can take effect. An allowlist is necessary-but-not-sufficient:
-	// admitted tools still flow through normal rule evaluation below.
-	if al := e.allowlists[req.AgentID]; al != nil && !al.permits(req) {
+	// Immutable denies are resolved before the restrictive allowlist so the
+	// decision retains the exact safety rule and scope that caused the denial.
+	if resolved.ImmutableDeny {
+		topRule := matches[resolved.Winner]
 		decision.Behavior = BehaviorDeny
-		decision.Reason = fmt.Sprintf("tool %q is not in the allowlist for agent %q", req.ToolName, req.AgentID)
-		if len(matches) > 0 {
-			decision.MatchedRules = matches
-		}
+		decision.Scope = topRule.Scope
+		decision.MatchedRules = orderedMatches
+		decision.Reason = fmt.Sprintf("immutable safety rule %q denies this operation (non-overridable)", topRule.ID)
 		return decision
 	}
 
-	if len(matches) == 0 {
-		// No rules match - use default behavior
-		decision.Behavior = e.cfg.DefaultBehavior
+	// A per-agent allowlist is a separate admission boundary: admitted tools still
+	// pass through the canonical rule evaluator, while omitted tools fail closed.
+	if al := e.allowlists[req.AgentID]; al != nil && !al.permits(req) {
+		decision.Behavior = BehaviorDeny
+		decision.Reason = fmt.Sprintf("tool %q is not in the allowlist for agent %q", req.ToolName, req.AgentID)
+		decision.MatchedRules = orderedMatches
+		return decision
+	}
+
+	if !resolved.Matched {
+		decision.Behavior = resolved.Behavior
 		decision.Reason = "no matching rules; using default behavior"
 		return decision
 	}
 
-	// Sort by scope precedence (higher first) then by behavior priority
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].Scope.Precedence() != matches[j].Scope.Precedence() {
-			return matches[i].Scope.Precedence() > matches[j].Scope.Precedence()
-		}
-		return matches[i].Behavior.Priority() > matches[j].Behavior.Priority()
-	})
-
-	// Take the highest precedence rule
-	topRule := matches[0]
-	decision.Behavior = topRule.Behavior
+	topRule := matches[resolved.Winner]
+	decision.Behavior = resolved.Behavior
 	decision.Scope = topRule.Scope
-	decision.MatchedRules = matches
-	decision.Reason = fmt.Sprintf("matched rule %q (scope: %s, pattern: %s)",
-		topRule.ID, topRule.Scope, topRule.ToolPattern)
-
-	// Check for conflicting rules at the same scope
-	conflicting := e.findConflicts(matches)
-	if len(conflicting) > 1 {
-		// When there are conflicts at the same scope, deny takes precedence
-		for _, r := range conflicting {
-			if r.Behavior == BehaviorDeny {
-				decision.Behavior = BehaviorDeny
-				decision.Reason = fmt.Sprintf("conflicting rules resolved to deny (rules: %v)", ruleIDs(conflicting))
-				break
-			}
-		}
-	}
-
+	decision.MatchedRules = orderedMatches
+	decision.Reason = fmt.Sprintf("matched rule %q (scope: %s, pattern: %s)", topRule.ID, topRule.Scope, topRule.ToolPattern)
 	return decision
 }
 
-// findConflicts returns rules at the highest precedence scope.
-func (e *Engine) findConflicts(matches []*Rule) []*Rule {
-	if len(matches) == 0 {
+func permissionRuleSpecificity(rule *Rule) int {
+	specificity := 0
+	if rule.AgentID != "" {
+		specificity++
+	}
+	if rule.Category != "" {
+		specificity++
+	}
+	if rule.Origin != "" {
+		specificity++
+	}
+	if rule.OriginName != "" {
+		specificity++
+	}
+	if rule.ContentPattern != "" {
+		specificity++
+	}
+	if rule.ToolPattern != "" && rule.ToolPattern != "*" {
+		specificity++
+	}
+	return specificity
+}
+
+func orderPermissionRules(rules []*Rule, order []int) []*Rule {
+	if len(order) == 0 {
 		return nil
 	}
-
-	topScope := matches[0].Scope
-	var conflicts []*Rule
-	for _, r := range matches {
-		if r.Scope == topScope {
-			conflicts = append(conflicts, r)
-		}
+	ordered := make([]*Rule, 0, len(order))
+	for _, index := range order {
+		ordered = append(ordered, rules[index])
 	}
-	return conflicts
+	return ordered
 }
 
 // ─── Batch Operations ────────────────────────────────────────────────────────

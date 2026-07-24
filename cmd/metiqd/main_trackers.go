@@ -11,6 +11,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	configpkg "metiq/internal/config"
 	"metiq/internal/gateway/controlreplay"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
@@ -65,11 +66,17 @@ func ensureControlCheckpoint(ctx context.Context, repo *state.DocsRepository) (s
 type runtimeConfigStore struct {
 	mu       sync.RWMutex
 	cfg      state.ConfigDoc
+	managed  configpkg.ManagedSettings
 	onChange func(state.ConfigDoc) // optional: called after each Set
 }
 
 func newRuntimeConfigStore(cfg state.ConfigDoc) *runtimeConfigStore {
-	return &runtimeConfigStore{cfg: policy.NormalizeConfig(cfg)}
+	return newRuntimeConfigStoreWithManaged(cfg, configpkg.ManagedSettings{})
+}
+
+func newRuntimeConfigStoreWithManaged(cfg state.ConfigDoc, managed configpkg.ManagedSettings) *runtimeConfigStore {
+	cfg = configpkg.ApplyManagedSettings(cfg, managed)
+	return &runtimeConfigStore{cfg: policy.NormalizeConfig(cfg), managed: managed}
 }
 
 func (s *runtimeConfigStore) Get() state.ConfigDoc {
@@ -79,6 +86,10 @@ func (s *runtimeConfigStore) Get() state.ConfigDoc {
 }
 
 func (s *runtimeConfigStore) Set(cfg state.ConfigDoc) {
+	s.mu.RLock()
+	managed := s.managed
+	s.mu.RUnlock()
+	cfg = configpkg.ApplyManagedSettings(cfg, managed)
 	cfg = policy.NormalizeConfig(cfg)
 	s.mu.Lock()
 	s.cfg = cfg

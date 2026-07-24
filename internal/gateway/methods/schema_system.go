@@ -17,8 +17,36 @@ type SandboxRunRequest struct {
 	Workdir string `json:"workdir,omitempty"`
 	// TimeoutSeconds overrides the daemon's configured sandbox timeout.
 	TimeoutSeconds int `json:"timeout_s,omitempty"`
-	// Driver overrides the daemon's configured sandbox driver.
+	// Driver overrides the daemon's configured sandbox driver. A request cannot
+	// opt into the unsafe nop driver unless the daemon already permits it.
 	Driver string `json:"driver,omitempty"`
+
+	// Remaining fields mirror sandbox.Config. Pointer booleans distinguish an
+	// omitted request override from an explicit false value.
+	AllowUnsafeNop    *bool    `json:"allow_unsafe_nop,omitempty"`
+	MemoryLimit       string   `json:"memory_limit,omitempty"`
+	CPULimit          string   `json:"cpu_limit,omitempty"`
+	DockerImage       string   `json:"docker_image,omitempty"`
+	NetworkDisabled   *bool    `json:"network_disabled,omitempty"`
+	AllowNetwork      *bool    `json:"allow_network,omitempty"`
+	AllowedDomains    []string `json:"allowed_domains,omitempty"`
+	AllowedCIDRs      []string `json:"allowed_cidrs,omitempty"`
+	EgressEnforced    *bool    `json:"egress_enforced,omitempty"`
+	ReadOnlyRootFS    *bool    `json:"read_only_rootfs,omitempty"`
+	WritableRootFS    *bool    `json:"writable_rootfs,omitempty"`
+	CapDrop           []string `json:"cap_drop,omitempty"`
+	SecurityOpt       []string `json:"security_opt,omitempty"`
+	PidsLimit         int      `json:"pids_limit,omitempty"`
+	User              string   `json:"user,omitempty"`
+	Tmpfs             []string `json:"tmpfs,omitempty"`
+	Ulimits           []string `json:"ulimits,omitempty"`
+	MaxOutputBytes    int64    `json:"max_output_bytes,omitempty"`
+	WorkspaceDir      string   `json:"workspace_dir,omitempty"`
+	ContainerWorkdir  string   `json:"container_workdir,omitempty"`
+	WorkspaceAccess   string   `json:"workspace_access,omitempty"`
+	PersistentRuntime *bool    `json:"persistent_runtime,omitempty"`
+	RuntimeScope      string   `json:"runtime_scope,omitempty"`
+	RuntimeKey        string   `json:"runtime_key,omitempty"`
 }
 
 type WizardStartRequest struct {

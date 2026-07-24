@@ -44,6 +44,22 @@ func TestEnforceManagedSettingsRejectsRuntimeOverride(t *testing.T) {
 	}
 }
 
+func TestEnforceManagedSettingsProtectsLayerAndHooks(t *testing.T) {
+	base := ApplyManagedSettings(state.ConfigDoc{
+		Hooks: state.HooksConfig{Enabled: true},
+	}, ManagedSettings{ManagedHooksOnly: true})
+	candidate := base
+	candidate.Extra = map[string]any{}
+	if err := EnforceManagedSettings(base, candidate); err == nil || !strings.Contains(err.Error(), "managed settings layer") {
+		t.Fatalf("expected managed layer lockdown error, got %v", err)
+	}
+	candidate = base
+	candidate.Hooks.Enabled = false
+	if err := EnforceManagedSettings(base, candidate); err == nil || !strings.Contains(err.Error(), "hooks") {
+		t.Fatalf("expected managed hook lockdown error, got %v", err)
+	}
+}
+
 func TestParseConfigPreservesManagedSettingsForAudit(t *testing.T) {
 	doc, err := ParseConfigBytes([]byte(`{"managed_settings":{"require_tool_approval":true}}`), ".json")
 	if err != nil {

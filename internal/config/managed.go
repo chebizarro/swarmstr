@@ -88,10 +88,18 @@ func EnforceManagedSettings(current, candidate state.ConfigDoc) error {
 	if !ok || !managed.active() {
 		return nil
 	}
+	currentManaged, _ := configPathValue(current, "extra.managed_settings")
+	candidateManaged, _ := configPathValue(candidate, "extra.managed_settings")
+	if !reflect.DeepEqual(currentManaged, candidateManaged) {
+		return fmt.Errorf("managed settings lockdown prevents changing the managed settings layer")
+	}
 	if managed.RequireToolApproval || managed.AllowManagedPermissionRulesOnly || managed.Permissions != nil {
 		if !reflect.DeepEqual(current.Permissions, candidate.Permissions) {
 			return fmt.Errorf("managed settings lockdown prevents overriding permissions")
 		}
+	}
+	if managed.ManagedHooksOnly && !reflect.DeepEqual(current.Hooks, candidate.Hooks) {
+		return fmt.Errorf("managed settings lockdown prevents overriding hooks")
 	}
 	for _, path := range managed.LockedPaths {
 		path = strings.TrimSpace(path)

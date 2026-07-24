@@ -15,17 +15,36 @@ func TestCheckPolicyConformanceWeakConfig(t *testing.T) {
 		},
 	})
 	want := map[string]ConformanceStatus{
-		"approval-rules":      ConformanceFail,
-		"default-tool-policy": ConformanceWarn,
-		"sandbox-egress":      ConformanceWarn,
-		"sandbox-driver":      ConformanceFail,
-		"plugin-permissions":  ConformanceWarn,
+		"approval-rules":          ConformanceFail,
+		"default-tool-policy":     ConformanceWarn,
+		"exec-approval-conflicts": ConformancePass,
+		"sandbox-egress":          ConformanceWarn,
+		"sandbox-driver":          ConformanceFail,
+		"plugin-permissions":      ConformanceWarn,
 	}
 	for _, f := range report.Findings {
 		if want[f.ID] != f.Status {
 			t.Fatalf("%s status=%s want %s", f.ID, f.Status, want[f.ID])
 		}
 	}
+}
+
+func TestCheckPolicyConformanceDetectsApprovalConflicts(t *testing.T) {
+	report := CheckPolicyConformance(state.ConfigDoc{Permissions: state.PermissionsConfig{
+		Rules: []state.PermissionRule{
+			{ID: "guard", Behavior: "ask", Tool: "bash"},
+			{ID: "allow-all", Behavior: "allow", Tool: "*"},
+		},
+	}})
+	for _, finding := range report.Findings {
+		if finding.ID == "exec-approval-conflicts" {
+			if finding.Status != ConformanceWarn {
+				t.Fatalf("conflict status=%s want warn", finding.Status)
+			}
+			return
+		}
+	}
+	t.Fatal("missing exec approval conflict finding")
 }
 
 func TestCheckPolicyConformanceHardenedConfig(t *testing.T) {

@@ -24,15 +24,17 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	pluginmanifest "metiq/internal/plugins/manifest"
 )
 
 type contextKey string
 
 const channelReplyTargetContextKey contextKey = "channel-reply-target"
 
-// HostAPIVersion identifies the stable plugin host API surface exposed by this
-// package. Bump this only when plugin-visible namespace contracts change.
-const HostAPIVersion = "metiq.plugin.host.v1"
+// HostAPIVersion is the negotiated semver for the plugin-visible host surface.
+// It is shared with package manifest compatibility checks.
+const HostAPIVersion = pluginmanifest.HostPluginAPIVersion
 
 // WithChannelReplyTarget stores a channel-specific recipient/session hint in ctx.
 // ChannelHandle implementations that need explicit recipient routing (for
@@ -142,6 +144,34 @@ type WebSearchHost interface {
 	Fetch(ctx context.Context, url string, opts map[string]any) (map[string]any, error)
 }
 
+// SecurityHost exposes host-owned security analysis without granting plugins
+// direct access to security configuration or enforcement internals.
+type SecurityHost interface {
+	AnalyzeCommand(ctx context.Context, request map[string]any) (map[string]any, error)
+	CheckPath(ctx context.Context, request map[string]any) (map[string]any, error)
+}
+
+// ExecApprovalHost evaluates or submits an execution approval request. The host
+// remains authoritative; plugins cannot resolve approvals through this surface.
+type ExecApprovalHost interface {
+	Evaluate(ctx context.Context, request map[string]any) (map[string]any, error)
+	Request(ctx context.Context, request map[string]any) (map[string]any, error)
+}
+
+// DoctorHost exposes read-only runtime diagnostics suitable for plugin setup
+// and support flows.
+type DoctorHost interface {
+	Run(ctx context.Context, request map[string]any) ([]map[string]any, error)
+}
+
+// ProviderAuthHost exposes scoped provider-auth lifecycle operations. Concrete
+// hosts must scope records to the invoking plugin and never return raw secrets.
+type ProviderAuthHost interface {
+	Status(ctx context.Context, providerID string) (map[string]any, error)
+	Start(ctx context.Context, providerID string, request map[string]any) (map[string]any, error)
+	Clear(ctx context.Context, providerID string) error
+}
+
 // ─── Supporting types ─────────────────────────────────────────────────────────
 
 // CompletionOpts controls how a plugin-initiated completion is run.
@@ -160,16 +190,20 @@ type CompletionOpts struct {
 
 // Host bundles all namespace APIs passed to a plugin VM on initialisation.
 type Host struct {
-	Nostr     NostrHost
-	Config    ConfigHost
-	HTTP      HTTPHost
-	Storage   StorageHost
-	Log       LogHost
-	Agent     AgentHost
-	Session   SessionHost
-	Task      TaskHost
-	Memory    MemoryHost
-	WebSearch WebSearchHost
+	Nostr        NostrHost
+	Config       ConfigHost
+	HTTP         HTTPHost
+	Storage      StorageHost
+	Log          LogHost
+	Agent        AgentHost
+	Session      SessionHost
+	Task         TaskHost
+	Memory       MemoryHost
+	WebSearch    WebSearchHost
+	Security     SecurityHost
+	ExecApproval ExecApprovalHost
+	Doctor       DoctorHost
+	ProviderAuth ProviderAuthHost
 }
 
 type HostAPIInfo struct {
@@ -201,17 +235,21 @@ type Manifest struct {
 // or a string array for development compatibility, e.g. ["*"] or
 // ["network", "storage"].
 type Permissions struct {
-	All       bool               `json:"all,omitempty"`
-	Network   *NetworkPermission `json:"network,omitempty"`
-	HTTP      bool               `json:"http,omitempty"`
-	Config    bool               `json:"config,omitempty"`
-	Storage   bool               `json:"storage,omitempty"`
-	Nostr     *NostrPermission   `json:"nostr,omitempty"`
-	Agent     bool               `json:"agent,omitempty"`
-	Session   bool               `json:"session,omitempty"`
-	Task      bool               `json:"task,omitempty"`
-	Memory    bool               `json:"memory,omitempty"`
-	WebSearch bool               `json:"web_search,omitempty"`
+	All          bool               `json:"all,omitempty"`
+	Network      *NetworkPermission `json:"network,omitempty"`
+	HTTP         bool               `json:"http,omitempty"`
+	Config       bool               `json:"config,omitempty"`
+	Storage      bool               `json:"storage,omitempty"`
+	Nostr        *NostrPermission   `json:"nostr,omitempty"`
+	Agent        bool               `json:"agent,omitempty"`
+	Session      bool               `json:"session,omitempty"`
+	Task         bool               `json:"task,omitempty"`
+	Memory       bool               `json:"memory,omitempty"`
+	WebSearch    bool               `json:"web_search,omitempty"`
+	Security     bool               `json:"security,omitempty"`
+	ExecApproval bool               `json:"exec_approval,omitempty"`
+	Doctor       bool               `json:"doctor,omitempty"`
+	ProviderAuth bool               `json:"provider_auth,omitempty"`
 }
 
 type NetworkPermission struct {
@@ -266,6 +304,14 @@ func (p *Permissions) allowName(name string) {
 		p.Memory = true
 	case "web_search", "websearch", "web-search":
 		p.WebSearch = true
+	case "security":
+		p.Security = true
+	case "exec_approval", "execapproval", "exec-approval":
+		p.ExecApproval = true
+	case "doctor", "runtime_doctor", "runtime-doctor":
+		p.Doctor = true
+	case "provider_auth", "providerauth", "provider-auth":
+		p.ProviderAuth = true
 	}
 }
 
@@ -294,13 +340,21 @@ func (p Permissions) Allows(namespace string) bool {
 		return p.Memory
 	case "webSearch":
 		return p.WebSearch || p.Network != nil
+	case "security":
+		return p.Security
+	case "execApproval":
+		return p.ExecApproval
+	case "doctor":
+		return p.Doctor
+	case "providerAuth":
+		return p.ProviderAuth
 	default:
 		return false
 	}
 }
 
 func (p Permissions) AllowedNamespaces() []string {
-	candidates := []string{"log", "config", "http", "storage", "nostr", "agent", "session", "task", "memory", "webSearch"}
+	candidates := []string{"log", "config", "http", "storage", "nostr", "agent", "session", "task", "memory", "webSearch", "security", "execApproval", "doctor", "providerAuth"}
 	out := make([]string, 0, len(candidates))
 	for _, namespace := range candidates {
 		if p.Allows(namespace) {

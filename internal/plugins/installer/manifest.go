@@ -121,7 +121,13 @@ func loadFromPackageJSON(pluginPath string) (*OpenClawPluginManifest, error) {
 	return mf, nil
 }
 
-func validateOpenClawPackageContract(pluginPath string) (OpenClawCompatibility, error) {
+// ValidateOpenClawPackageContract validates and negotiates an external package
+// against the plugin API implemented by this host.
+func ValidateOpenClawPackageContract(pluginPath string) (OpenClawCompatibility, error) {
+	pluginPath = strings.TrimSpace(pluginPath)
+	if info, err := os.Stat(pluginPath); err == nil && !info.IsDir() {
+		pluginPath = filepath.Dir(pluginPath)
+	}
 	pkgPath := filepath.Join(pluginPath, "package.json")
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
@@ -145,7 +151,44 @@ func validateOpenClawPackageContract(pluginPath string) (OpenClawCompatibility, 
 		}
 		return compat, fmt.Errorf("incompatible OpenClaw plugin package: %s", strings.Join(parts, "; "))
 	}
+	if err := compat.CheckCompatibility(""); err != nil {
+		return compat, fmt.Errorf("incompatible OpenClaw plugin package: %w", err)
+	}
 	return compat, nil
+}
+
+// CheckCompatibility negotiates package metadata against this host. hostVersion
+// may be empty when only the independently-versioned plugin API is known.
+func (c OpenClawCompatibility) CheckCompatibility(hostVersion string) error {
+	apiRange := strings.TrimSpace(c.PluginAPIRange)
+	if apiRange != "" {
+		ok, err := pluginmanifest.CheckVersionRange(pluginmanifest.HostPluginAPIVersion, apiRange)
+		if err != nil {
+			return fmt.Errorf("invalid openclaw.compat.pluginApi range %q: %w", apiRange, err)
+		}
+		if !ok {
+			return fmt.Errorf("openclaw.compat.pluginApi %q does not include host API %s", apiRange, pluginmanifest.HostPluginAPIVersion)
+		}
+	}
+	minHost := strings.TrimSpace(c.MinGatewayVersion)
+	if minHost != "" && strings.TrimSpace(hostVersion) != "" {
+		constraint := minHost
+		if !strings.ContainsAny(constraint, "<>=~^*xX| ") {
+			constraint = ">=" + constraint
+		}
+		ok, err := pluginmanifest.CheckVersionRange(hostVersion, constraint)
+		if err != nil {
+			return fmt.Errorf("invalid minimum host version %q: %w", minHost, err)
+		}
+		if !ok {
+			return fmt.Errorf("plugin requires host %q but host is %s", minHost, hostVersion)
+		}
+	}
+	return nil
+}
+
+func validateOpenClawPackageContract(pluginPath string) (OpenClawCompatibility, error) {
+	return ValidateOpenClawPackageContract(pluginPath)
 }
 
 func normalizeOpenClawCompatibility(pkg map[string]any) (OpenClawCompatibility, []OpenClawValidationIssue) {
