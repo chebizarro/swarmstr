@@ -65,21 +65,21 @@ type SendFunc func(ctx context.Context, peerPubKey, taskID string, payload TaskP
 
 // Pipeline orchestrates a sequence of ACP sub-tasks.
 type Pipeline struct {
-	Steps []Step
+	Steps []Step `json:"steps"`
 	// FlowRegistry, when set, records pipeline orchestration state with
 	// wait/resume/block-capable FlowRecord semantics.
-	FlowRegistry *FlowRegistry
+	FlowRegistry *FlowRegistry `json:"-"`
 	// FlowID optionally reuses an existing flow record; otherwise one is created.
-	FlowID string
+	FlowID string `json:"flow_id,omitempty"`
 	// OwnerSessionKey identifies the parent/supervisor session for flow queries.
-	OwnerSessionKey string
+	OwnerSessionKey string `json:"owner_session_key,omitempty"`
 	// Goal describes the pipeline objective in the flow record.
-	Goal string
+	Goal string `json:"goal,omitempty"`
 	// MaxConcurrency bounds simultaneously dispatched remote steps. Values <= 0
 	// use the safe default of four.
-	MaxConcurrency int
+	MaxConcurrency int `json:"max_concurrency,omitempty"`
 	// RemoteCancel publishes an authenticated cancellation event to a worker.
-	RemoteCancel RemoteCancelFunc
+	RemoteCancel RemoteCancelFunc `json:"-"`
 }
 
 // stepTimeout returns the effective per-step deadline.

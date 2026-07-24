@@ -9,10 +9,11 @@ import (
 
 // FIPSControlChannelOptions configures a FIPSControlChannel (stub).
 type FIPSControlChannelOptions struct {
-	PubkeyHex   string
-	ControlPort int
-	OnRequest   func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
-	OnError     func(error)
+	PubkeyHex        string
+	ControlPort      int
+	IdentityResolver func(remoteAddr string) string
+	OnRequest        func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
+	OnError          func(error)
 }
 
 // FIPSControlChannel is a stub when FIPS is not compiled in.

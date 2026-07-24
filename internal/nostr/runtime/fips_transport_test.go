@@ -211,19 +211,18 @@ func TestFIPSTransport_loopback(t *testing.T) {
 	}
 	ft.conns[targetPub] = &fipsConn{conn: conn, lastUsed: time.Now()}
 
-	// Build and send a DM frame directly.
-	env := fipsDMEnvelope{From: pubkey, Text: "hello mesh", TS: time.Now().Unix()}
-	payload, _ := json.Marshal(env)
-	frame := make([]byte, 4+1+len(payload))
-	binary.BigEndian.PutUint32(frame[0:4], uint32(len(payload)))
-	frame[4] = byte(fipsFrameDM)
-	copy(frame[5:], payload)
-	conn.Write(frame)
+	// Send through the production encoder so the emitted application version is covered.
+	if err := ft.SendDM(context.Background(), targetPub, "hello mesh"); err != nil {
+		t.Fatalf("SendDM: %v", err)
+	}
 
 	wg.Wait()
 
 	if receivedType != fipsFrameDM {
 		t.Fatalf("expected DM frame type, got 0x%02x", receivedType)
+	}
+	if received.Version != FIPSApplicationProtocolVersion {
+		t.Fatalf("application version = %d, want %d", received.Version, FIPSApplicationProtocolVersion)
 	}
 	if received.Text != "hello mesh" {
 		t.Fatalf("expected 'hello mesh', got %q", received.Text)
@@ -288,7 +287,7 @@ func TestFIPSTransport_identity_cache(t *testing.T) {
 	ft.cacheIdentity(pubkey)
 
 	ip, _ := FIPSIPv6FromPubkey(pubkey)
-	resolved := ft.resolveIdentity(fmt.Sprintf("[%s]:1337", ip))
+	resolved := ft.ResolveIdentity(fmt.Sprintf("[%s]:1337", ip))
 	if resolved != pubkey {
 		t.Fatalf("expected %s, got %s", pubkey, resolved)
 	}
@@ -437,7 +436,36 @@ func TestFIPSTransport_handleInbound_rejectsSenderClaimMismatch(t *testing.T) {
 	}
 }
 
-func TestFIPSTransport_handleInbound_acceptsMatchingAuthenticatedSender(t *testing.T) {
+func TestFIPSTransport_handleInbound_rejectsUnsupportedApplicationVersion(t *testing.T) {
+	payload, err := json.Marshal(fipsDMEnvelope{Version: FIPSApplicationProtocolVersion + 1, From: agentAPubkey, Text: "future", TS: 123})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var delivered int
+	var gotErr error
+	ft := &FIPSTransport{
+		idCache: make(map[string]string),
+		ctx:     context.Background(),
+		onMessage: func(_ context.Context, _ InboundDM) error {
+			delivered++
+			return nil
+		},
+		onError: func(err error) { gotErr = err },
+	}
+	ft.cacheIdentity(agentAPubkey)
+	remoteIP, _ := FIPSIPv6FromPubkey(agentAPubkey)
+
+	ft.handleInbound(fipsFrameDM, payload, ft.resolveIdentity(net.JoinHostPort(remoteIP.String(), "1337")))
+
+	if delivered != 0 {
+		t.Fatalf("delivered %d messages with unsupported version", delivered)
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "unsupported application protocol version") {
+		t.Fatalf("error = %v, want unsupported version rejection", gotErr)
+	}
+}
+
+func TestFIPSTransport_handleInbound_acceptsLegacyVersionZero(t *testing.T) {
 	payload, err := json.Marshal(fipsDMEnvelope{From: agentAPubkey, Text: "authentic", TS: 123})
 	if err != nil {
 		t.Fatalf("marshal envelope: %v", err)

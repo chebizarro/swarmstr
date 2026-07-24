@@ -231,8 +231,9 @@ func TestIntegration_Control_RPC_Over_FIPS(t *testing.T) {
 	}
 
 	cc, err := NewFIPSControlChannel(FIPSControlChannelOptions{
-		PubkeyHex: agentBPubkey,
-		OnRequest: handler,
+		PubkeyHex:        agentBPubkey,
+		IdentityResolver: func(string) string { return agentAPubkey },
+		OnRequest:        handler,
 	})
 	if err != nil {
 		t.Fatalf("new control channel: %v", err)
@@ -497,8 +498,9 @@ func TestIntegration_DualPort_DM_And_Control(t *testing.T) {
 		return ControlRPCResult{Result: "ack"}, nil
 	}
 	cc, _ := NewFIPSControlChannel(FIPSControlChannelOptions{
-		PubkeyHex: agentBPubkey,
-		OnRequest: handler,
+		PubkeyHex:        agentBPubkey,
+		IdentityResolver: func(string) string { return agentAPubkey },
+		OnRequest:        handler,
 	})
 	ccLn, _ := net.Listen("tcp6", "[::1]:0")
 	cc.listener = ccLn

@@ -43,10 +43,11 @@ func (ft *FIPSTransport) SetRelays(_ []string) error { return nil }
 
 func (ft *FIPSTransport) Close() {}
 
-func (ft *FIPSTransport) RegisterIdentity(_ string) {}
+func (ft *FIPSTransport) ResolveIdentity(_ string) string { return "" }
+func (ft *FIPSTransport) RegisterIdentity(_ string)       {}
 
-func (ft *FIPSTransport) ConnectionCount() int    { return 0 }
-func (ft *FIPSTransport) IdentityCacheSize() int   { return 0 }
-func (ft *FIPSTransport) ListenerAddr() string      { return "" }
+func (ft *FIPSTransport) ConnectionCount() int   { return 0 }
+func (ft *FIPSTransport) IdentityCacheSize() int { return 0 }
+func (ft *FIPSTransport) ListenerAddr() string   { return "" }
 
 var _ DMTransport = (*FIPSTransport)(nil)

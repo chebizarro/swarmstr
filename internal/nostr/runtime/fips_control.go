@@ -25,6 +25,7 @@ import (
 
 // fipsControlEnvelope is the JSON envelope for control RPC over FIPS.
 type fipsControlEnvelope struct {
+	Version   int             `json:"v"`
 	RequestID string          `json:"req_id"`
 	From      string          `json:"from"`
 	Method    string          `json:"method"`
@@ -33,6 +34,7 @@ type fipsControlEnvelope struct {
 
 // fipsControlResponse is the JSON envelope for control RPC responses.
 type fipsControlResponse struct {
+	Version   int    `json:"v"`
 	RequestID string `json:"req_id"`
 	Result    any    `json:"result,omitempty"`
 	Error     string `json:"error,omitempty"`
@@ -45,6 +47,9 @@ type FIPSControlChannelOptions struct {
 	PubkeyHex string
 	// ControlPort is the FSP port for control messages. Default: 1338.
 	ControlPort int
+	// IdentityResolver maps the authenticated remote FIPS IPv6 address to its
+	// expected hex pubkey. Requests with unknown or mismatched identities fail closed.
+	IdentityResolver func(remoteAddr string) string
 	// OnRequest is the shared handler for control RPC requests.
 	OnRequest func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
 	// OnError is called for transport-level errors.
@@ -54,10 +59,11 @@ type FIPSControlChannelOptions struct {
 // FIPSControlChannel listens for control RPC requests over FIPS and routes
 // them to the shared OnRequest handler.
 type FIPSControlChannel struct {
-	pubkeyHex   string
-	controlPort int
-	onRequest   func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
-	onError     func(error)
+	pubkeyHex       string
+	controlPort     int
+	onRequest       func(context.Context, ControlRPCInbound) (ControlRPCResult, error)
+	onError         func(error)
+	resolveIdentity func(string) string
 
 	listener net.Listener
 	ctx      context.Context
@@ -73,18 +79,22 @@ func NewFIPSControlChannel(opts FIPSControlChannelOptions) (*FIPSControlChannel,
 	if opts.OnRequest == nil {
 		return nil, fmt.Errorf("fips control: OnRequest handler is required")
 	}
+	if opts.IdentityResolver == nil {
+		return nil, fmt.Errorf("fips control: IdentityResolver is required")
+	}
 	port := opts.ControlPort
 	if port <= 0 {
 		port = 1338
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &FIPSControlChannel{
-		pubkeyHex:   opts.PubkeyHex,
-		controlPort: port,
-		onRequest:   opts.OnRequest,
-		onError:     opts.OnError,
-		ctx:         ctx,
-		cancel:      cancel,
+		pubkeyHex:       opts.PubkeyHex,
+		controlPort:     port,
+		onRequest:       opts.OnRequest,
+		onError:         opts.OnError,
+		resolveIdentity: opts.IdentityResolver,
+		ctx:             ctx,
+		cancel:          cancel,
 	}, nil
 }
 
@@ -176,7 +186,7 @@ func (cc *FIPSControlChannel) handleConn(conn net.Conn) {
 
 		switch frameType {
 		case fipsFrameControlReq:
-			cc.handleControlRequest(conn, payload)
+			cc.handleControlRequest(conn, payload, cc.resolveIdentity(conn.RemoteAddr().String()))
 		case fipsFramePing:
 			cc.sendPong(conn)
 		default:
@@ -185,12 +195,39 @@ func (cc *FIPSControlChannel) handleConn(conn net.Conn) {
 	}
 }
 
-func (cc *FIPSControlChannel) handleControlRequest(conn net.Conn, payload []byte) {
+func (cc *FIPSControlChannel) handleControlRequest(conn net.Conn, payload []byte, senderPubkey string) {
 	var env fipsControlEnvelope
 	if err := json.Unmarshal(payload, &env); err != nil {
 		cc.emitError(fmt.Errorf("fips control: unmarshal request: %w", err))
 		cc.sendControlResponse(conn, fipsControlResponse{
 			Error: "invalid request envelope",
+		})
+		return
+	}
+
+	if senderPubkey == "" {
+		cc.emitError(fmt.Errorf("fips control: reject sender with unknown authenticated identity"))
+		cc.sendControlResponse(conn, fipsControlResponse{RequestID: env.RequestID, Error: "unknown authenticated sender", ErrorCode: -32600})
+		return
+	}
+	authenticatedPK, err := ParsePubKey(senderPubkey)
+	if err != nil {
+		cc.emitError(fmt.Errorf("fips control: invalid authenticated sender identity: %w", err))
+		cc.sendControlResponse(conn, fipsControlResponse{RequestID: env.RequestID, Error: "invalid authenticated sender", ErrorCode: -32600})
+		return
+	}
+	claimedPK, err := ParsePubKey(env.From)
+	if err != nil || authenticatedPK.Hex() != claimedPK.Hex() {
+		cc.emitError(fmt.Errorf("fips control: sender claim does not match authenticated identity"))
+		cc.sendControlResponse(conn, fipsControlResponse{RequestID: env.RequestID, Error: "sender claim mismatch", ErrorCode: -32600})
+		return
+	}
+
+	if env.Version != 0 && env.Version != FIPSApplicationProtocolVersion {
+		cc.sendControlResponse(conn, fipsControlResponse{
+			RequestID: env.RequestID,
+			Error:     fmt.Sprintf("unsupported application protocol version %d", env.Version),
+			ErrorCode: -32600,
 		})
 		return
 	}
@@ -207,7 +244,7 @@ func (cc *FIPSControlChannel) handleControlRequest(conn net.Conn, payload []byte
 	inbound := ControlRPCInbound{
 		EventID:    fmt.Sprintf("fips-%s-%d", env.RequestID, time.Now().UnixNano()),
 		RequestID:  env.RequestID,
-		FromPubKey: env.From,
+		FromPubKey: authenticatedPK.Hex(),
 		RelayURL:   "", // FIPS — no relay
 		Method:     env.Method,
 		Params:     env.Params,
@@ -240,6 +277,7 @@ func (cc *FIPSControlChannel) handleControlRequest(conn net.Conn, payload []byte
 }
 
 func (cc *FIPSControlChannel) sendControlResponse(conn net.Conn, resp fipsControlResponse) {
+	resp.Version = FIPSApplicationProtocolVersion
 	payload, err := json.Marshal(resp)
 	if err != nil {
 		cc.emitError(fmt.Errorf("fips control: marshal response: %w", err))

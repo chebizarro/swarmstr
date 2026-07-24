@@ -2,9 +2,35 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestPipelineJSONSchemaUsesDocumentedFieldNames(t *testing.T) {
+	encoded, err := json.Marshal(Pipeline{
+		Steps:           []Step{{PeerPubKey: "peer", Instructions: "work"}},
+		FlowRegistry:    NewFlowRegistry(nil),
+		FlowID:          "flow-1",
+		OwnerSessionKey: "owner",
+		Goal:            "goal",
+		MaxConcurrency:  2,
+		RemoteCancel:    func(context.Context, string, string, string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	wire := string(encoded)
+	for _, field := range []string{`"steps"`, `"flow_id"`, `"owner_session_key"`, `"goal"`, `"max_concurrency"`} {
+		if !strings.Contains(wire, field) {
+			t.Fatalf("pipeline JSON %s missing %s", wire, field)
+		}
+	}
+	if strings.Contains(wire, "FlowRegistry") || strings.Contains(wire, "RemoteCancel") {
+		t.Fatalf("pipeline JSON leaked runtime-only fields: %s", wire)
+	}
+}
 
 func TestPipelinePersistsFlowStateAndFlowID(t *testing.T) {
 	ctx := context.Background()

@@ -62,8 +62,9 @@ func startLoopbackControlChannel(t *testing.T, handler func(context.Context, Con
 	t.Helper()
 
 	cc, err := NewFIPSControlChannel(FIPSControlChannelOptions{
-		PubkeyHex: "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233",
-		OnRequest: handler,
+		PubkeyHex:        agentBPubkey,
+		IdentityResolver: func(string) string { return agentAPubkey },
+		OnRequest:        handler,
 	})
 	if err != nil {
 		t.Fatalf("new control channel: %v", err)
@@ -94,8 +95,9 @@ func TestFIPSControlChannel_RoundTrip(t *testing.T) {
 	defer conn.Close()
 
 	env := fipsControlEnvelope{
+		Version:   FIPSApplicationProtocolVersion,
 		RequestID: "req-001",
-		From:      "sender-pubkey-hex",
+		From:      agentAPubkey,
 		Method:    "echo",
 		Params:    json.RawMessage(`"hello"`),
 	}
@@ -110,6 +112,9 @@ func TestFIPSControlChannel_RoundTrip(t *testing.T) {
 	var resp fipsControlResponse
 	if err := json.Unmarshal(respPayload, &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Version != FIPSApplicationProtocolVersion {
+		t.Errorf("response version = %d, want %d", resp.Version, FIPSApplicationProtocolVersion)
 	}
 	if resp.RequestID != "req-001" {
 		t.Errorf("request_id = %q, want %q", resp.RequestID, "req-001")
@@ -136,7 +141,7 @@ func TestFIPSControlChannel_HandlerError(t *testing.T) {
 
 	env := fipsControlEnvelope{
 		RequestID: "req-err",
-		From:      "sender",
+		From:      agentAPubkey,
 		Method:    "fail",
 	}
 	payload, _ := json.Marshal(env)
@@ -168,7 +173,7 @@ func TestFIPSControlChannel_MissingMethod(t *testing.T) {
 
 	env := fipsControlEnvelope{
 		RequestID: "req-no-method",
-		From:      "sender",
+		From:      agentAPubkey,
 		Method:    "", // empty
 	}
 	payload, _ := json.Marshal(env)
@@ -183,6 +188,64 @@ func TestFIPSControlChannel_MissingMethod(t *testing.T) {
 	json.Unmarshal(respPayload, &resp)
 	if resp.Error != "missing method" {
 		t.Errorf("error = %q, want %q", resp.Error, "missing method")
+	}
+}
+
+func TestFIPSControlChannel_RejectsUnsupportedApplicationVersion(t *testing.T) {
+	called := false
+	cc := startLoopbackControlChannel(t, func(_ context.Context, _ ControlRPCInbound) (ControlRPCResult, error) {
+		called = true
+		return ControlRPCResult{}, nil
+	})
+	conn := dialControl(t, cc)
+	defer conn.Close()
+
+	payload, _ := json.Marshal(fipsControlEnvelope{
+		Version:   FIPSApplicationProtocolVersion + 1,
+		RequestID: "future-version",
+		From:      agentAPubkey,
+		Method:    "status.get",
+	})
+	sendControlFrame(t, conn, fipsFrameControlReq, payload)
+	_, responsePayload := readControlFrame(t, conn)
+	var response fipsControlResponse
+	if err := json.Unmarshal(responsePayload, &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if called {
+		t.Fatal("handler called for unsupported application version")
+	}
+	if response.Version != FIPSApplicationProtocolVersion || response.ErrorCode != -32600 {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestFIPSControlChannel_RejectsSenderClaimMismatch(t *testing.T) {
+	called := false
+	cc := startLoopbackControlChannel(t, func(_ context.Context, _ ControlRPCInbound) (ControlRPCResult, error) {
+		called = true
+		return ControlRPCResult{}, nil
+	})
+	conn := dialControl(t, cc)
+	defer conn.Close()
+
+	payload, _ := json.Marshal(fipsControlEnvelope{
+		Version:   FIPSApplicationProtocolVersion,
+		RequestID: "spoofed-sender",
+		From:      agentBPubkey,
+		Method:    "status.get",
+	})
+	sendControlFrame(t, conn, fipsFrameControlReq, payload)
+	_, responsePayload := readControlFrame(t, conn)
+	var response fipsControlResponse
+	if err := json.Unmarshal(responsePayload, &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if called {
+		t.Fatal("handler called for mismatched sender claim")
+	}
+	if response.Error != "sender claim mismatch" || response.ErrorCode != -32600 {
+		t.Fatalf("response = %+v", response)
 	}
 }
 
@@ -248,7 +311,7 @@ func TestFIPSControlChannel_MultipleRequests(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		env := fipsControlEnvelope{
 			RequestID: fmt.Sprintf("req-%d", i),
-			From:      "sender",
+			From:      agentAPubkey,
 			Method:    fmt.Sprintf("method_%d", i),
 		}
 		payload, _ := json.Marshal(env)
@@ -284,7 +347,7 @@ func TestFIPSControlChannel_ResultWithError(t *testing.T) {
 	conn := dialControl(t, cc)
 	defer conn.Close()
 
-	env := fipsControlEnvelope{RequestID: "req-re", From: "s", Method: "check"}
+	env := fipsControlEnvelope{RequestID: "req-re", From: agentAPubkey, Method: "check"}
 	payload, _ := json.Marshal(env)
 	sendControlFrame(t, conn, fipsFrameControlReq, payload)
 
@@ -318,7 +381,7 @@ func TestFIPSControlChannel_InboundFields(t *testing.T) {
 
 	env := fipsControlEnvelope{
 		RequestID: "req-fields",
-		From:      "abcd1234",
+		From:      agentAPubkey,
 		Method:    "status.get",
 		Params:    json.RawMessage(`{"key":"val"}`),
 	}
@@ -329,8 +392,8 @@ func TestFIPSControlChannel_InboundFields(t *testing.T) {
 	if got.RequestID != "req-fields" {
 		t.Errorf("RequestID = %q, want %q", got.RequestID, "req-fields")
 	}
-	if got.FromPubKey != "abcd1234" {
-		t.Errorf("FromPubKey = %q, want %q", got.FromPubKey, "abcd1234")
+	if got.FromPubKey != agentAPubkey {
+		t.Errorf("FromPubKey = %q, want %q", got.FromPubKey, agentAPubkey)
 	}
 	if got.Method != "status.get" {
 		t.Errorf("Method = %q, want %q", got.Method, "status.get")
@@ -370,10 +433,20 @@ func TestNewFIPSControlChannel_Validation(t *testing.T) {
 		t.Error("expected error for missing OnRequest")
 	}
 
+	// Missing identity resolver.
+	_, err = NewFIPSControlChannel(FIPSControlChannelOptions{
+		PubkeyHex: agentBPubkey,
+		OnRequest: handler,
+	})
+	if err == nil {
+		t.Error("expected error for missing IdentityResolver")
+	}
+
 	// Default port.
 	cc, err := NewFIPSControlChannel(FIPSControlChannelOptions{
-		PubkeyHex: "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233",
-		OnRequest: handler,
+		PubkeyHex:        agentBPubkey,
+		IdentityResolver: func(string) string { return agentAPubkey },
+		OnRequest:        handler,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -385,9 +458,10 @@ func TestNewFIPSControlChannel_Validation(t *testing.T) {
 
 	// Custom port.
 	cc2, err := NewFIPSControlChannel(FIPSControlChannelOptions{
-		PubkeyHex:   "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233",
-		ControlPort: 9999,
-		OnRequest:   handler,
+		PubkeyHex:        agentBPubkey,
+		ControlPort:      9999,
+		IdentityResolver: func(string) string { return agentAPubkey },
+		OnRequest:        handler,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -28,6 +28,10 @@ import (
 // fipsFrameType discriminates agent message frame types.
 type fipsFrameType byte
 
+// FIPSApplicationProtocolVersion is the current swarmstr application framing
+// version carried inside JSON messages transported over FIPS IPv6.
+const FIPSApplicationProtocolVersion = 1
+
 const (
 	fipsFrameDM         fipsFrameType = 0x01
 	fipsFrameControlReq fipsFrameType = 0x02
@@ -46,9 +50,10 @@ const (
 
 // fipsDMEnvelope is the JSON envelope for DM payloads over FIPS.
 type fipsDMEnvelope struct {
-	From string `json:"from"` // sender hex pubkey
-	Text string `json:"text"` // plaintext message
-	TS   int64  `json:"ts"`   // unix timestamp
+	Version int    `json:"v"`    // swarmstr-over-FIPS application protocol version
+	From    string `json:"from"` // sender hex pubkey
+	Text    string `json:"text"` // plaintext message
+	TS      int64  `json:"ts"`   // unix timestamp
 }
 
 // FIPSTransportOptions configures a FIPSTransport.
@@ -168,9 +173,10 @@ func (ft *FIPSTransport) SendDM(ctx context.Context, toPubKey string, text strin
 
 	// Build the DM envelope.
 	env := fipsDMEnvelope{
-		From: ft.pubkeyHex,
-		Text: text,
-		TS:   time.Now().Unix(),
+		Version: FIPSApplicationProtocolVersion,
+		From:    ft.pubkeyHex,
+		Text:    text,
+		TS:      time.Now().Unix(),
 	}
 	payload, err := json.Marshal(env)
 	if err != nil {
@@ -407,6 +413,12 @@ func (ft *FIPSTransport) resolveIdentity(remoteAddr string) string {
 	return pubkey
 }
 
+// ResolveIdentity maps a remote FIPS IPv6 socket address to the authenticated
+// pubkey registered for it. It can be shared with FIPSControlChannel.
+func (ft *FIPSTransport) ResolveIdentity(remoteAddr string) string {
+	return ft.resolveIdentity(remoteAddr)
+}
+
 // RegisterIdentity adds a pubkey → IPv6 mapping to the identity cache.
 // Called by fleet discovery when FIPS-enabled peers are found.
 func (ft *FIPSTransport) RegisterIdentity(pubkeyHex string) {
@@ -423,6 +435,10 @@ func (ft *FIPSTransport) handleInbound(frameType fipsFrameType, payload []byte, 
 	var env fipsDMEnvelope
 	if err := json.Unmarshal(payload, &env); err != nil {
 		ft.emitError(fmt.Errorf("fips inbound: unmarshal DM envelope: %w", err))
+		return
+	}
+	if env.Version != 0 && env.Version != FIPSApplicationProtocolVersion {
+		ft.emitError(fmt.Errorf("fips inbound: unsupported application protocol version %d", env.Version))
 		return
 	}
 
