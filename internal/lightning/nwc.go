@@ -14,6 +14,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/keyer"
+	"fiatjaf.com/nostr/nip04"
 	"fiatjaf.com/nostr/nip44"
 
 	nostruntime "metiq/internal/nostr/runtime"
@@ -23,6 +24,10 @@ const (
 	KindNWCInfo     = 13194
 	KindNWCRequest  = 23194
 	KindNWCResponse = 23195
+	// KindNWCNotificationNIP04 is the legacy NIP-04 notification kind.
+	KindNWCNotificationNIP04 = 23196
+	// KindNWCNotification is the current NIP-44 notification kind.
+	KindNWCNotification = 23197
 
 	NWCMethodGetBalance       = "get_balance"
 	NWCMethodPayInvoice       = "pay_invoice"
@@ -37,6 +42,27 @@ type NWCConnection struct {
 	WalletPubKey string
 	Secret       string
 	Relays       []string
+}
+
+const (
+	NWCEncryptionNIP44 = "nip44_v2"
+	NWCEncryptionNIP04 = "nip04"
+)
+
+// NWCInfo is the verified capability advertisement from kind 13194.
+type NWCInfo struct {
+	Event         nostr.Event
+	Methods       []string
+	Encryptions   []string
+	Notifications []string
+}
+
+// NWCNotification is the decrypted payload of kind 23196 or 23197.
+type NWCNotification struct {
+	Type         string         `json:"notification_type"`
+	Notification map[string]any `json:"notification"`
+	Event        nostr.Event    `json:"-"`
+	Encryption   string         `json:"-"`
 }
 
 type NWCSubscription struct {
@@ -134,6 +160,7 @@ type NWCClient struct {
 
 	mu     sync.RWMutex
 	closed bool
+	info   *NWCInfo
 }
 
 type nwcKeyer struct {
@@ -155,6 +182,22 @@ func (k nwcKeyer) Decrypt(_ context.Context, ciphertext string, sender nostr.Pub
 		return "", err
 	}
 	return nip44.Decrypt(ciphertext, conversation)
+}
+
+func (k nwcKeyer) EncryptNIP04(_ context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	shared, err := nip04.ComputeSharedSecret(recipient, [32]byte(k.secret))
+	if err != nil {
+		return "", err
+	}
+	return nip04.Encrypt(plaintext, shared)
+}
+
+func (k nwcKeyer) DecryptNIP04(_ context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	shared, err := nip04.ComputeSharedSecret(sender, [32]byte(k.secret))
+	if err != nil {
+		return "", err
+	}
+	return nip04.Decrypt(ciphertext, shared)
 }
 
 func NewNWCKeyer(hexSecret string) (nostr.Keyer, error) {
@@ -241,6 +284,156 @@ func (c *NWCClient) Close() error {
 	c.closed = true
 	c.mu.Unlock()
 	return nil
+}
+
+// Info returns the latest verified wallet information event observed by this client.
+func (c *NWCClient) Info() (NWCInfo, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.info == nil {
+		return NWCInfo{}, false
+	}
+	return *c.info, true
+}
+
+// SubscribeInfo opens an event-driven kind-13194 discovery subscription. The
+// latest verified replaceable event is cached for request encryption negotiation.
+func (c *NWCClient) SubscribeInfo(ctx context.Context, onInfo func(NWCInfo)) (func(), error) {
+	walletKey, err := nostr.PubKeyFromHex(c.connection.WalletPubKey)
+	if err != nil {
+		return nil, errors.New("NWC wallet public key is invalid")
+	}
+	return c.transport.Subscribe(ctx, NWCSubscription{
+		Filter: nostr.Filter{
+			Kinds:   []nostr.Kind{nostr.Kind(KindNWCInfo)},
+			Authors: []nostr.PubKey{walletKey},
+		},
+		Relays: append([]string(nil), c.connection.Relays...),
+		OnEvent: func(event nostr.Event) {
+			info, parseErr := ParseNWCInfoEvent(event, walletKey)
+			if parseErr != nil {
+				return
+			}
+			c.mu.Lock()
+			if c.info != nil && c.info.Event.CreatedAt > info.Event.CreatedAt {
+				c.mu.Unlock()
+				return
+			}
+			c.info = &info
+			c.mu.Unlock()
+			if onInfo != nil {
+				onInfo(info)
+			}
+		},
+	})
+}
+
+// SubscribeNotifications opens a persistent, scoped notification subscription.
+// It selects the notification kind from verified info when available and listens
+// to both formats while capabilities are still unknown.
+func (c *NWCClient) SubscribeNotifications(ctx context.Context, onNotification func(NWCNotification)) (func(), error) {
+	walletKey, err := nostr.PubKeyFromHex(c.connection.WalletPubKey)
+	if err != nil {
+		return nil, errors.New("NWC wallet public key is invalid")
+	}
+	ourKey, err := c.keyer.GetPublicKey(ctx)
+	if err != nil {
+		return nil, errors.New("resolve NWC client public key failed")
+	}
+	kinds := []nostr.Kind{nostr.Kind(KindNWCNotification), nostr.Kind(KindNWCNotificationNIP04)}
+	if info, ok := c.Info(); ok {
+		scheme, negotiateErr := NegotiateNWCEncryption(info)
+		if negotiateErr != nil {
+			return nil, negotiateErr
+		}
+		if scheme == NWCEncryptionNIP44 {
+			kinds = []nostr.Kind{nostr.Kind(KindNWCNotification)}
+		} else {
+			kinds = []nostr.Kind{nostr.Kind(KindNWCNotificationNIP04)}
+		}
+	}
+	seen := make(map[string]struct{})
+	var seenMu sync.Mutex
+	return c.transport.Subscribe(ctx, NWCSubscription{
+		Filter: nostr.Filter{
+			Kinds:   kinds,
+			Authors: []nostr.PubKey{walletKey},
+			Tags:    nostr.TagMap{"p": []string{ourKey.Hex()}},
+		},
+		Relays: append([]string(nil), c.connection.Relays...),
+		OnEvent: func(event nostr.Event) {
+			if !validNWCNotificationEvent(event, walletKey, ourKey.Hex()) {
+				return
+			}
+			seenMu.Lock()
+			if _, duplicate := seen[event.ID.Hex()]; duplicate {
+				seenMu.Unlock()
+				return
+			}
+			seen[event.ID.Hex()] = struct{}{}
+			seenMu.Unlock()
+			scheme := NWCEncryptionNIP44
+			if event.Kind == nostr.Kind(KindNWCNotificationNIP04) {
+				scheme = NWCEncryptionNIP04
+			}
+			plaintext, decryptErr := c.decryptPayload(ctx, event.Content, walletKey, scheme)
+			if decryptErr != nil {
+				return
+			}
+			var notification NWCNotification
+			if json.Unmarshal([]byte(plaintext), &notification) != nil || notification.Type == "" {
+				return
+			}
+			notification.Event = event
+			notification.Encryption = scheme
+			if onNotification != nil {
+				onNotification(notification)
+			}
+		},
+	})
+}
+
+// ParseNWCInfoEvent validates and parses the current NIP-47 info wire format.
+func ParseNWCInfoEvent(event nostr.Event, wallet nostr.PubKey) (NWCInfo, error) {
+	if event.Kind != nostr.Kind(KindNWCInfo) || event.PubKey != wallet || !validSignedNWCEvent(event) {
+		return NWCInfo{}, errors.New("invalid NWC info event")
+	}
+	now := nostr.Now()
+	if event.CreatedAt > now+600 || event.CreatedAt < now-nostr.Timestamp((365*24*time.Hour)/time.Second) {
+		return NWCInfo{}, errors.New("NWC info event timestamp is unreasonable")
+	}
+	info := NWCInfo{Event: event, Methods: strings.Fields(event.Content)}
+	for _, tag := range event.Tags {
+		if len(tag) < 2 {
+			continue
+		}
+		switch tag[0] {
+		case "encryption":
+			info.Encryptions = append(info.Encryptions, strings.Fields(tag[1])...)
+		case "notifications":
+			info.Notifications = append(info.Notifications, strings.Fields(tag[1])...)
+		}
+	}
+	return info, nil
+}
+
+// NegotiateNWCEncryption prefers NIP-44. Per NIP-47, a missing encryption
+// advertisement means the wallet is legacy NIP-04-only.
+func NegotiateNWCEncryption(info NWCInfo) (string, error) {
+	if len(info.Encryptions) == 0 {
+		return NWCEncryptionNIP04, nil
+	}
+	for _, scheme := range info.Encryptions {
+		if scheme == NWCEncryptionNIP44 {
+			return NWCEncryptionNIP44, nil
+		}
+	}
+	for _, scheme := range info.Encryptions {
+		if scheme == NWCEncryptionNIP04 {
+			return NWCEncryptionNIP04, nil
+		}
+	}
+	return "", errors.New("NWC wallet advertises no supported encryption scheme")
 }
 
 func (c *NWCClient) Request(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
@@ -352,7 +545,14 @@ func (c *NWCClient) request(ctx context.Context, method string, params map[strin
 	if err != nil {
 		return nil, false, fmt.Errorf("encode NWC request: %w", err)
 	}
-	encrypted, err := c.keyer.Encrypt(ctx, string(payload), walletKey)
+	scheme := NWCEncryptionNIP44
+	if info, ok := c.Info(); ok {
+		scheme, err = NegotiateNWCEncryption(info)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	encrypted, err := c.encryptPayload(ctx, string(payload), walletKey, scheme)
 	if err != nil {
 		return nil, false, errors.New("encrypt NWC request failed")
 	}
@@ -362,7 +562,10 @@ func (c *NWCClient) request(ctx context.Context, method string, params map[strin
 	}
 	event := nostr.Event{
 		Kind: nostr.Kind(KindNWCRequest), Content: encrypted, CreatedAt: nostr.Now(),
-		Tags: nostr.Tags{{"p", c.connection.WalletPubKey}, {"encryption", "nip44_v2"}},
+		Tags: nostr.Tags{{"p", c.connection.WalletPubKey}},
+	}
+	if scheme == NWCEncryptionNIP44 {
+		event.Tags = append(event.Tags, nostr.Tag{"encryption", NWCEncryptionNIP44})
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		event.Tags = append(event.Tags, nostr.Tag{"expiration", fmt.Sprint(deadline.Unix())})
@@ -386,7 +589,7 @@ func (c *NWCClient) request(ctx context.Context, method string, params map[strin
 			if !validNWCResponseEvent(responseEvent, walletKey, ourKey.Hex(), event.ID.Hex()) {
 				return
 			}
-			plaintext, decryptErr := c.keyer.Decrypt(requestCtx, responseEvent.Content, walletKey)
+			plaintext, decryptErr := c.decryptPayload(requestCtx, responseEvent.Content, walletKey, scheme)
 			if decryptErr != nil {
 				return
 			}
@@ -432,6 +635,33 @@ func (c *NWCClient) request(ctx context.Context, method string, params map[strin
 	}
 }
 
+type nwcNIP04Cipher interface {
+	EncryptNIP04(context.Context, string, nostr.PubKey) (string, error)
+	DecryptNIP04(context.Context, string, nostr.PubKey) (string, error)
+}
+
+func (c *NWCClient) encryptPayload(ctx context.Context, plaintext string, recipient nostr.PubKey, scheme string) (string, error) {
+	if scheme == NWCEncryptionNIP44 {
+		return c.keyer.Encrypt(ctx, plaintext, recipient)
+	}
+	cipher, ok := c.keyer.(nwcNIP04Cipher)
+	if !ok {
+		return "", errors.New("NWC keyer does not support NIP-04")
+	}
+	return cipher.EncryptNIP04(ctx, plaintext, recipient)
+}
+
+func (c *NWCClient) decryptPayload(ctx context.Context, ciphertext string, sender nostr.PubKey, scheme string) (string, error) {
+	if scheme == NWCEncryptionNIP44 {
+		return c.keyer.Decrypt(ctx, ciphertext, sender)
+	}
+	cipher, ok := c.keyer.(nwcNIP04Cipher)
+	if !ok {
+		return "", errors.New("NWC keyer does not support NIP-04")
+	}
+	return cipher.DecryptNIP04(ctx, ciphertext, sender)
+}
+
 func validNWCResponseEvent(event nostr.Event, wallet nostr.PubKey, ourKey, requestID string) bool {
 	if event.Kind != nostr.Kind(KindNWCResponse) || event.PubKey != wallet {
 		return false
@@ -456,6 +686,19 @@ func validNWCResponseEvent(event nostr.Event, wallet nostr.PubKey, ourKey, reque
 		}
 	}
 	return hasP && hasE
+}
+
+func validNWCNotificationEvent(event nostr.Event, wallet nostr.PubKey, ourKey string) bool {
+	if (event.Kind != nostr.Kind(KindNWCNotification) &&
+		event.Kind != nostr.Kind(KindNWCNotificationNIP04)) ||
+		event.PubKey != wallet || !validSignedNWCEvent(event) {
+		return false
+	}
+	now := nostr.Now()
+	if event.CreatedAt > now+600 || event.CreatedAt < now-nostr.Timestamp((365*24*time.Hour)/time.Second) {
+		return false
+	}
+	return event.Tags.ContainsAny("p", []string{ourKey})
 }
 
 func (c *NWCClient) PayInvoice(ctx context.Context, request PaymentRequest) (PaymentResult, error) {

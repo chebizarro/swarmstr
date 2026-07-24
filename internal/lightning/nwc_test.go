@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,7 +40,17 @@ func (t *protocolNWCTransport) Publish(ctx context.Context, _ []string, event no
 	if !validSignedNWCEvent(event) {
 		t.t.Fatal("published NWC request is not a valid signed event")
 	}
-	plaintext, err := t.walletKeyer.Decrypt(ctx, event.Content, event.PubKey)
+	scheme := NWCEncryptionNIP04
+	if hasNostrTag(event.Tags, "encryption", NWCEncryptionNIP44) {
+		scheme = NWCEncryptionNIP44
+	}
+	var plaintext string
+	var err error
+	if scheme == NWCEncryptionNIP44 {
+		plaintext, err = t.walletKeyer.Decrypt(ctx, event.Content, event.PubKey)
+	} else {
+		plaintext, err = t.walletKeyer.(nwcNIP04Cipher).DecryptNIP04(ctx, event.Content, event.PubKey)
+	}
 	if err != nil {
 		t.t.Fatalf("wallet decrypt request: %v", err)
 	}
@@ -53,7 +64,12 @@ func (t *protocolNWCTransport) Publish(ctx context.Context, _ []string, event no
 	if err != nil {
 		t.t.Fatalf("marshal response: %v", err)
 	}
-	encrypted, err := t.walletKeyer.Encrypt(ctx, string(responsePayload), event.PubKey)
+	var encrypted string
+	if scheme == NWCEncryptionNIP44 {
+		encrypted, err = t.walletKeyer.Encrypt(ctx, string(responsePayload), event.PubKey)
+	} else {
+		encrypted, err = t.walletKeyer.(nwcNIP04Cipher).EncryptNIP04(ctx, string(responsePayload), event.PubKey)
+	}
 	if err != nil {
 		t.t.Fatalf("encrypt response: %v", err)
 	}
@@ -135,6 +151,182 @@ func TestNWCEncryptedPayRequestAndVerifiedResponse(t *testing.T) {
 	}
 	if !hasNostrTag(transport.publishedEvent.Tags, "encryption", "nip44_v2") {
 		t.Fatalf("request tags = %#v", transport.publishedEvent.Tags)
+	}
+}
+
+func TestNWCInfoDiscoveryParsesCurrentWireFormat(t *testing.T) {
+	walletKeyer, err := NewNWCKeyer("2222222222222222222222222222222222222222222222222222222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &protocolNWCTransport{t: t, walletKeyer: walletKeyer}
+	client := newProtocolNWCClient(t, transport, time.Second)
+
+	var discovered NWCInfo
+	stop, err := client.SubscribeInfo(context.Background(), func(info NWCInfo) { discovered = info })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	walletPubKey, _ := walletKeyer.GetPublicKey(context.Background())
+	infoEvent := nostr.Event{
+		Kind:      KindNWCInfo,
+		CreatedAt: nostr.Now(),
+		Content:   "pay_invoice get_balance notifications",
+		Tags: nostr.Tags{
+			{"encryption", "nip44_v2 nip04"},
+			{"notifications", "payment_received payment_sent"},
+		},
+		PubKey: walletPubKey,
+	}
+	if err := walletKeyer.SignEvent(context.Background(), &infoEvent); err != nil {
+		t.Fatal(err)
+	}
+	transport.subscription.OnEvent(infoEvent)
+
+	if strings.Join(discovered.Methods, " ") != infoEvent.Content {
+		t.Fatalf("methods = %v", discovered.Methods)
+	}
+	if strings.Join(discovered.Encryptions, " ") != "nip44_v2 nip04" {
+		t.Fatalf("encryptions = %v", discovered.Encryptions)
+	}
+	if strings.Join(discovered.Notifications, " ") != "payment_received payment_sent" {
+		t.Fatalf("notifications = %v", discovered.Notifications)
+	}
+	if scheme, err := NegotiateNWCEncryption(discovered); err != nil || scheme != NWCEncryptionNIP44 {
+		t.Fatalf("negotiated scheme=%q err=%v", scheme, err)
+	}
+}
+
+func TestNWCInfoWithoutEncryptionNegotiatesLegacyNIP04(t *testing.T) {
+	scheme, err := NegotiateNWCEncryption(NWCInfo{Methods: []string{"pay_invoice"}})
+	if err != nil || scheme != NWCEncryptionNIP04 {
+		t.Fatalf("scheme=%q err=%v", scheme, err)
+	}
+}
+
+func TestNWCRequestUsesNegotiatedLegacyNIP04WireFormat(t *testing.T) {
+	walletKeyer, err := NewNWCKeyer("2222222222222222222222222222222222222222222222222222222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &protocolNWCTransport{t: t, walletKeyer: walletKeyer}
+	transport.response = func(request nwcRequest) nwcResponse {
+		return nwcResponse{ResultType: request.Method, Result: map[string]any{"balance": float64(42)}}
+	}
+	client := newProtocolNWCClient(t, transport, time.Second)
+	client.mu.Lock()
+	client.info = &NWCInfo{} // Verified info with no encryption tag means NIP-04.
+	client.mu.Unlock()
+
+	result, err := client.GetBalance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["balance"] != float64(42) || transport.request.Method != NWCMethodGetBalance {
+		t.Fatalf("legacy request/response mismatch: request=%#v result=%#v", transport.request, result)
+	}
+	for _, tag := range transport.publishedEvent.Tags {
+		if len(tag) > 0 && tag[0] == "encryption" {
+			t.Fatalf("legacy NIP-04 request must omit encryption tag: %v", transport.publishedEvent.Tags)
+		}
+	}
+}
+
+func TestNWCNotificationSubscriptionUsesNegotiatedKindAndDecrypts(t *testing.T) {
+	walletKeyer, err := NewNWCKeyer("2222222222222222222222222222222222222222222222222222222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &protocolNWCTransport{t: t, walletKeyer: walletKeyer}
+	client := newProtocolNWCClient(t, transport, time.Second)
+	walletPubKey, _ := walletKeyer.GetPublicKey(context.Background())
+	client.mu.Lock()
+	client.info = &NWCInfo{Encryptions: []string{NWCEncryptionNIP44}}
+	client.mu.Unlock()
+
+	var received NWCNotification
+	stop, err := client.SubscribeNotifications(context.Background(), func(notification NWCNotification) {
+		received = notification
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	if len(transport.subscription.Filter.Kinds) != 1 ||
+		transport.subscription.Filter.Kinds[0] != nostr.Kind(KindNWCNotification) {
+		t.Fatalf("notification filter kinds = %v", transport.subscription.Filter.Kinds)
+	}
+	clientPubKey, _ := client.keyer.GetPublicKey(context.Background())
+	payload := `{"notification_type":"payment_received","notification":{"payment_hash":"abc","amount":21}}`
+	encrypted, err := walletKeyer.Encrypt(context.Background(), payload, clientPubKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := nostr.Event{
+		Kind:      KindNWCNotification,
+		CreatedAt: nostr.Now(),
+		Content:   encrypted,
+		Tags:      nostr.Tags{{"p", clientPubKey.Hex()}},
+		PubKey:    walletPubKey,
+	}
+	if err := walletKeyer.SignEvent(context.Background(), &event); err != nil {
+		t.Fatal(err)
+	}
+	transport.subscription.OnEvent(event)
+	if received.Type != "payment_received" || received.Encryption != NWCEncryptionNIP44 ||
+		received.Notification["payment_hash"] != "abc" {
+		t.Fatalf("notification = %#v", received)
+	}
+}
+
+func TestNWCLegacyNotificationUsesKind23196AndNIP04(t *testing.T) {
+	walletKeyer, err := NewNWCKeyer("2222222222222222222222222222222222222222222222222222222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &protocolNWCTransport{t: t, walletKeyer: walletKeyer}
+	client := newProtocolNWCClient(t, transport, time.Second)
+	walletPubKey, _ := walletKeyer.GetPublicKey(context.Background())
+	client.mu.Lock()
+	client.info = &NWCInfo{} // Missing encryption tag means NIP-04.
+	client.mu.Unlock()
+
+	var received NWCNotification
+	stop, err := client.SubscribeNotifications(context.Background(), func(notification NWCNotification) {
+		received = notification
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	if len(transport.subscription.Filter.Kinds) != 1 ||
+		transport.subscription.Filter.Kinds[0] != nostr.Kind(KindNWCNotificationNIP04) {
+		t.Fatalf("legacy notification filter kinds = %v", transport.subscription.Filter.Kinds)
+	}
+	clientPubKey, _ := client.keyer.GetPublicKey(context.Background())
+	walletCipher := walletKeyer.(nwcNIP04Cipher)
+	encrypted, err := walletCipher.EncryptNIP04(
+		context.Background(),
+		`{"notification_type":"payment_sent","notification":{"payment_hash":"def"}}`,
+		clientPubKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := nostr.Event{
+		Kind:      KindNWCNotificationNIP04,
+		CreatedAt: nostr.Now(),
+		Content:   encrypted,
+		Tags:      nostr.Tags{{"p", clientPubKey.Hex()}},
+		PubKey:    walletPubKey,
+	}
+	if err := walletKeyer.SignEvent(context.Background(), &event); err != nil {
+		t.Fatal(err)
+	}
+	transport.subscription.OnEvent(event)
+	if received.Type != "payment_sent" || received.Encryption != NWCEncryptionNIP04 {
+		t.Fatalf("legacy notification = %#v", received)
 	}
 }
 
