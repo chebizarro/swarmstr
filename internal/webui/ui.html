@@ -1389,7 +1389,6 @@ const TOKEN   = '{{.Token}}';
     addKV(detail, [['ID', c.id || c.name], ['Type', c.type || c.kind], ['Status', c.status || statusRes.status], ['Relay URLs', c.relays || c.relay_urls || c.relayURLs], ['Nostr pubkey', c.pubkey || c.nostr_pubkey], ['Profile', c.profile || c.nostr_profile], ['Raw status', statusRes], ['Error', listRes.error || statusRes.error]]);
     const actions = document.createElement('div'); actions.className = 'action-row'; detail.appendChild(actions);
     addActionButton(actions, 'Refresh status', 'channels.status', () => ({ channel_id: c.id || c.name }), () => showChannelsView(c, ++viewSeq));
-    addActionButton(actions, 'Reconnect', 'channels.reconnect', () => ({ channel_id: c.id || c.name }), () => showChannelsView(c, ++viewSeq));
   }
 
   async function showSessionsView(token) {
@@ -1431,22 +1430,19 @@ const TOKEN   = '{{.Token}}';
   }
 
   async function showNodesView(token) {
-    const { grid } = beginManagementView('Nodes', 'Pairing, pending approvals, status, invoke, rename, and device exec approvals.');
-    const [listRes, pendingRes, statusRes] = await Promise.all([callSafe('nodes.list', {}), callSafe('nodes.pending', {}), callSafe('nodes.status', {})]);
+    const { grid } = beginManagementView('Nodes', 'Node status, invoke, and rename operations.');
+    const listRes = await callSafe('node.list', {});
     if (!isViewCurrent('nodes', token)) return;
     const nodes = resultItems(listRes, 'nodes');
+    const firstNodeID = nodeIDOf(nodes[0]);
+    const statusRes = firstNodeID ? await callSafe('node.describe', { node_id: firstNodeID }) : {};
+    if (!isViewCurrent('nodes', token)) return;
     addRows(addMgmtCard(grid, 'Nodes'), nodes, (row, n) => {
       const id=nodeIDOf(n); row.innerHTML = `<strong>${escapeHTML(id || 'node')}</strong><div class="sub">${escapeHTML(n.status || n.kind || '')}</div>`;
       const a=document.createElement('div'); a.className='action-row'; row.appendChild(a);
-      addActionButton(a, 'Status', 'nodes.status', () => ({ node_id: id }));
-      addActionButton(a, 'Invoke status', 'nodes.invoke', () => ({ node_id: id, method: 'status.get', params: {} }));
-      addActionButton(a, 'Rename', 'nodes.rename', () => ({ node_id: id, name: prompt('New node name', n.name || id) || n.name || id }), () => showNodesView(++viewSeq));
-    });
-    addRows(addMgmtCard(grid, 'Pending approvals'), resultItems(pendingRes, 'approvals'), (row, a) => {
-      row.innerHTML = `<strong>${escapeHTML(a.id || a.node_id || 'approval')}</strong><div class="sub">${escapeHTML(a.summary || a.command || a.status || '')}</div>`;
-      const ar=document.createElement('div'); ar.className='action-row'; row.appendChild(ar);
-      addActionButton(ar, 'Approve exec', 'nodes.approval.resolve', () => ({ id: a.id, decision: 'approve' }), () => showNodesView(++viewSeq));
-      addActionButton(ar, 'Deny', 'nodes.approval.resolve', () => ({ id: a.id, decision: 'deny' }), () => showNodesView(++viewSeq));
+      addActionButton(a, 'Status', 'node.describe', () => ({ node_id: id }));
+      addActionButton(a, 'Invoke status', 'node.invoke', () => ({ node_id: id, command: 'status.get', args: {} }));
+      addActionButton(a, 'Rename', 'node.rename', () => ({ node_id: id, name: prompt('New node name', n.name || id) || n.name || id }), () => showNodesView(++viewSeq));
     });
     addKV(addMgmtCard(grid, 'Status'), Object.keys(statusRes).sort().map(k => [k, statusRes[k]]));
   }

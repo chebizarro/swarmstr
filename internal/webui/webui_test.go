@@ -240,7 +240,7 @@ func TestHandler_IncludesExpandedWebUIViewsAndCatalog(t *testing.T) {
 	body := w.Body.String()
 	for _, want := range []string{
 		"data-view=\"cron\"", "showCronView", "cron.add", "cron.run", "cron.remove",
-		"data-view=\"nodes\"", "showNodesView", "nodes.invoke", "nodes.rename",
+		"data-view=\"nodes\"", "showNodesView", "node.describe", "node.invoke", "node.rename",
 		"data-view=\"mcp\"", "showMCPView", "mcp.test", "mcp.auth.start", "mcp.reconnect",
 		"data-view=\"skills\"", "showSkillsView", "skills.install", "skills.enable", "skills.disable",
 		"sessions.export", "sessions.prune", "command.catalog", "/command-catalog.json", "loadCommandCatalog",
@@ -248,6 +248,13 @@ func TestHandler_IncludesExpandedWebUIViewsAndCatalog(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response body should contain %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"nodes.list", "nodes.pending", "nodes.status", "nodes.invoke", "nodes.rename", "nodes.approval.resolve", "channels.reconnect",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("response body should not contain unregistered method %q", unwanted)
 		}
 	}
 }
