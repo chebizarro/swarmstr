@@ -103,6 +103,13 @@ const (
 	// EventCanvasUpdate is emitted when an agent writes to a named canvas.
 	EventCanvasUpdate = "canvas.update"
 
+	// EventTerminalData streams one raw PTY output chunk to the connection
+	// that owns the terminal session. Never broadcast.
+	EventTerminalData = "terminal.data"
+	// EventTerminalExit reports terminal session end-of-life to the owning
+	// connection. Never broadcast.
+	EventTerminalExit = "terminal.exit"
+
 	// EventToolStart is emitted when the shared loop begins executing a tool call.
 	EventToolStart = "tool.start"
 	// EventToolProgress is emitted for in-flight tool progress updates.
@@ -165,6 +172,8 @@ var AllPushEvents = []string{
 	"connect.challenge",
 	EventThinkingDelta,
 	EventCanvasUpdate,
+	EventTerminalData,
+	EventTerminalExit,
 	EventToolStart,
 	EventToolProgress,
 	EventToolResult,

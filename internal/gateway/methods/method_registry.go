@@ -25,6 +25,7 @@ const (
 	AdminDispatchSystem      AdminDispatchGroup = "system"
 	AdminDispatchACP         AdminDispatchGroup = "acp"
 	AdminDispatchSoulFactory AdminDispatchGroup = "soulfactory"
+	AdminDispatchWorkspace   AdminDispatchGroup = "workspace"
 )
 
 var adminDispatchRegistry = []struct {
@@ -290,6 +291,19 @@ var adminDispatchRegistry = []struct {
 		MethodACPManagerStatus,
 	}},
 	{AdminDispatchSoulFactory, SoulFactoryMethods()},
+	{AdminDispatchWorkspace, []string{
+		MethodTerminalOpen,
+		MethodTerminalInput,
+		MethodTerminalResize,
+		MethodTerminalClose,
+		MethodFSListDir,
+		MethodWorktreesList,
+		MethodWorktreesBranches,
+		MethodWorktreesCreate,
+		MethodWorktreesRemove,
+		MethodWorktreesRestore,
+		MethodWorktreesGc,
+	}},
 }
 
 type ControlReplayPolicy = controlreplay.Policy

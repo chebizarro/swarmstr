@@ -32,6 +32,8 @@
     "tool.start",
     "turn.result",
     "voice.wake",
-    "canvas.update"
+    "canvas.update",
+    "terminal.data",
+    "terminal.exit"
   ]
 }

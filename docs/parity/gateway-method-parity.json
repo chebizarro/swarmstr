@@ -12,13 +12,13 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 159,
+    "implemented": 170,
     "partial": 0,
-    "missing": 165,
+    "missing": 154,
     "triage_category_counts": {
       "accepted-deviation": 16,
-      "defer": 53,
-      "implement": 255
+      "defer": 38,
+      "implement": 270
     }
   },
   "entries": [
@@ -1026,58 +1026,65 @@
     },
     {
       "method": "worktrees.list",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "worktrees.list",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "worktrees.branches",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "worktrees.branches",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "fs.listDir",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "fs.listDir",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "worktrees.create",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "worktrees.create",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "worktrees.remove",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "worktrees.remove",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "worktrees.restore",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "worktrees.restore",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "worktrees.gc",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "worktrees.gc",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -2231,34 +2238,38 @@
     },
     {
       "method": "terminal.open",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "terminal.open",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "terminal.input",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "terminal.input",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "terminal.resize",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "terminal.resize",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "terminal.close",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "terminal.close",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -2308,24 +2319,24 @@
       "method": "terminal.attach",
       "status": "missing",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "terminal.list",
       "status": "missing",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "terminal.text",
       "status": "missing",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -2512,8 +2523,8 @@
       "method": "terminal.upload",
       "status": "missing",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -2638,20 +2649,20 @@
     {
       "method": "session.discussion.info",
       "status": "implemented",
+      "metiq_method": "session.discussion.info",
       "notes": "Provider-contract discussion surface; absent provider reports state none, provider failures stay transient errors.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.discussion.info"
+      "workstream": "WS-A"
     },
     {
       "method": "session.discussion.open",
       "status": "implemented",
+      "metiq_method": "session.discussion.open",
       "notes": "Provider-contract discussion open behind the collaboration mutation matrix with sessions.changed projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.discussion.open"
+      "workstream": "WS-A"
     },
     {
       "method": "board.prompt.authorize",
@@ -2680,92 +2691,92 @@
     {
       "method": "sessions.observer.ask",
       "status": "implemented",
+      "metiq_method": "sessions.observer.ask",
       "notes": "Bounded transcript-digest observer ask over the per-session runtime with busy/global/per-connection admission limits.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "sessions.observer.ask"
+      "workstream": "WS-A"
     },
     {
       "method": "sessions.observer.visibility",
       "status": "implemented",
+      "metiq_method": "sessions.observer.visibility",
       "notes": "Connection-scoped observer visibility declaration tracked by the session coordinator.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "sessions.observer.visibility"
+      "workstream": "WS-A"
     },
     {
       "method": "session.visibility.set",
       "status": "implemented",
+      "metiq_method": "session.visibility.set",
       "notes": "Persisted sharing-doc visibility with owner/admin authorization and session.sharing event projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.visibility.set"
+      "workstream": "WS-A"
     },
     {
       "method": "session.members.list",
       "status": "implemented",
+      "metiq_method": "session.members.list",
       "notes": "Owner/admin-scoped membership aggregate with identity catalog and allowed visibilities.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.members.list"
+      "workstream": "WS-A"
     },
     {
       "method": "session.members.add",
       "status": "implemented",
+      "metiq_method": "session.members.add",
       "notes": "Idempotent persisted membership grant with session.sharing member-added projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.members.add"
+      "workstream": "WS-A"
     },
     {
       "method": "session.members.remove",
       "status": "implemented",
+      "metiq_method": "session.members.remove",
       "notes": "Idempotent persisted membership revocation with session.sharing member-removed projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.members.remove"
+      "workstream": "WS-A"
     },
     {
       "method": "session.suggestions.add",
       "status": "implemented",
+      "metiq_method": "session.suggestions.add",
       "notes": "Persisted pending suggestion on suggest-visibility sessions with identified author and session.suggestion projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.suggestions.add"
+      "workstream": "WS-A"
     },
     {
       "method": "session.suggestions.list",
       "status": "implemented",
+      "metiq_method": "session.suggestions.list",
       "notes": "Role-filtered persisted suggestion listing (viewers see own rows; managers see pending plus own history).",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.suggestions.list"
+      "workstream": "WS-A"
     },
     {
       "method": "session.suggestions.resolve",
       "status": "implemented",
+      "metiq_method": "session.suggestions.resolve",
       "notes": "Owner/admin send/queue/edit/dismiss resolution with claimed dispatch through sessions.send and resolved-event projection.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.suggestions.resolve"
+      "workstream": "WS-A"
     },
     {
       "method": "session.typing",
       "status": "implemented",
+      "metiq_method": "session.typing",
       "notes": "Connection-scoped typing with multi-connection identity accounting, throttle, TTL expiry, and visibility-filtered session.typing events.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "session.typing"
+      "workstream": "WS-A"
     }
   ]
 }

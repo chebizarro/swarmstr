@@ -32,7 +32,9 @@ import (
 	"metiq/internal/gateway/nodepending"
 	gatewayprotocol "metiq/internal/gateway/protocol"
 	"metiq/internal/gateway/sessioncoord"
+	terminalpkg "metiq/internal/gateway/terminal"
 	gatewayws "metiq/internal/gateway/ws"
+	worktreespkg "metiq/internal/gateway/worktrees"
 	"metiq/internal/grasp"
 	hookspkg "metiq/internal/hooks"
 	"metiq/internal/imagegen"
@@ -130,6 +132,11 @@ var (
 	controlExecApprovals        *execApprovalsRegistry
 	controlChannelAccounts      *channels.AccountRuntime
 	controlChannelPairing       *channels.PairingStore
+	// controlTerminalManager owns live PTY terminal sessions (WS-A/A7). Set once
+	// the WS gateway starts; nil disables the terminal surface.
+	controlTerminalManager *terminalpkg.Manager
+	// controlWorktrees backs the worktrees.* git worktree lifecycle (WS-A/A7).
+	controlWorktrees *worktreespkg.Service
 	controlWizards              *wizardRegistry
 	controlOps                  *operationsRegistry
 	controlAgentRegistry        *agent.AgentRuntimeRegistry
@@ -6188,6 +6195,9 @@ func main() {
 			AllowInsecureControlUI:  gatewayWSAllowInsecureControlUI,
 			ValidateDeviceToken:     gatewayDeviceTokenValidator(configState),
 			OnDisconnect: func(disconnectCtx context.Context, info gatewayws.ConnectionInfo) {
+				if controlTerminalManager != nil {
+					controlTerminalManager.DropConnection(info.ID)
+				}
 				if sessionCoordinator != nil {
 					sessionCoordinator.DropConnection(info.ID)
 				}
@@ -6220,6 +6230,13 @@ func main() {
 		sessionCoordinator.SetBroadcaster(wsRuntime.Broadcast)
 		wsEmitter = newObservedEventEmitter(gatewayws.NewRuntimeEmitter(wsRuntime), eventBuffer)
 		setControlWSEmitter(wsEmitter)
+		// WS-A/A7: PTY terminal sessions stream output to the owning connection.
+		controlTerminalManager = terminalpkg.NewManager(terminalpkg.Options{
+			Emitter: gatewayTerminalEmitter{rt: wsRuntime},
+		})
+		defer controlTerminalManager.Shutdown()
+		// WS-A/A7: git worktree lifecycle, rooted under the workspace container.
+		controlWorktrees = worktreespkg.NewService(filepath.Join(workspace.ResolveWorkspaceDir(configState.Get(), ""), ".metiq", "worktrees"))
 	}
 
 	controlConfigFilePath = configFilePath
@@ -7582,8 +7599,10 @@ func handleControlRPCRequest(
 		approvePairing: func(approvalCtx context.Context, req channels.PairingRequest) error {
 			return applyChannelPairingAllow(approvalCtx, docsRepo, configState, req)
 		},
-		nostrHub: svc.relay.hub,
-		keyer:    svc.relay.keyer,
+		nostrHub:        svc.relay.hub,
+		keyer:           svc.relay.keyer,
+		terminalManager: controlTerminalManager,
+		worktrees:       controlWorktrees,
 	}
 	if svc.handlers.hooksMgr != nil {
 		deps.hooksMgr = svc.handlers.hooksMgr

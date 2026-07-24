@@ -60,11 +60,18 @@
       "rationale": "These methods are OpenClaw-branded editor/setup or Control UI integrations; Metiq exposes its own Web UI and migration surfaces instead."
     },
     {
+      "id": "workspace-interactive-surfaces-a7",
+      "prefixes": ["fs", "terminal", "worktrees"],
+      "category": "implement",
+      "workstream": "WS-A/A7",
+      "rationale": "Terminal PTY sessions, workspace-rooted fs.listDir, and the git worktree lifecycle are implemented as WS-native gateway surfaces in the A7 pass."
+    },
+    {
       "id": "workspace-interactive-surfaces",
-      "prefixes": ["artifacts", "attach", "board", "conversations", "environments", "fs", "mcp", "question", "taskSuggestions", "terminal", "worktrees"],
+      "prefixes": ["artifacts", "attach", "board", "conversations", "environments", "mcp", "question", "taskSuggestions"],
       "category": "defer",
       "workstream": "WS-A/A7",
-      "rationale": "Terminal, worktree, filesystem, board/conversation, attachment, artifact, MCP-app, and interactive-question surfaces are explicitly deferred until the core protocol-v4/session work lands."
+      "rationale": "Board/conversation, attachment, artifact, MCP-app, environment, task-suggestion, and interactive-question surfaces remain deferred until their vertical slices land (WS-A/A7 follow-ups)."
     }
   ],
   "method_notes": {

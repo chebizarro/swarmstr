@@ -300,6 +300,42 @@ func (r *Runtime) Broadcast(event string, payload any) {
 	r.broadcastImmediate(event, payload)
 }
 
+// EmitToConnection delivers one event to exactly one connection, bypassing
+// event subscriptions: targeted streams (terminal output) are requested by
+// the owning connection via their opening method rather than events.subscribe.
+// It reports false when the connection is gone or its queue overflowed.
+func (r *Runtime) EmitToConnection(connID, event string, payload any) bool {
+	r.mu.RLock()
+	c := r.clients[connID]
+	r.mu.RUnlock()
+	if c == nil {
+		return false
+	}
+	if r.opts.EventAuthorizer != nil && !r.opts.EventAuthorizer(c.principal, event, payload) {
+		return false
+	}
+	seq := atomic.AddInt64(&c.seq, 1)
+	frame := map[string]any{
+		"type":    protocol.FrameTypeEvent,
+		"event":   event,
+		"seq":     seq,
+		"payload": payload,
+	}
+	if err := c.enqueueEvent(frame); err != nil {
+		r.dropClient(c, err.Error())
+		return false
+	}
+	return true
+}
+
+// IsConnectionActive reports whether connID is still registered.
+func (r *Runtime) IsConnectionActive(connID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.clients[connID]
+	return ok
+}
+
 func (r *Runtime) broadcastImmediate(event string, payload any) {
 	r.mu.RLock()
 	clients := make([]*client, 0, len(r.clients))

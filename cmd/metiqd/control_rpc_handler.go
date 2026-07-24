@@ -20,6 +20,8 @@ import (
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	"metiq/internal/gateway/sessioncoord"
+	terminalpkg "metiq/internal/gateway/terminal"
+	worktreespkg "metiq/internal/gateway/worktrees"
 	hookspkg "metiq/internal/hooks"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
@@ -88,6 +90,8 @@ type controlRPCDeps struct {
 	approvePairing  func(context.Context, channels.PairingRequest) error
 	nostrHub        *nostruntime.NostrHub
 	keyer           nostr.Keyer
+	terminalManager *terminalpkg.Manager
+	worktrees       *worktreespkg.Service
 }
 
 type hooksEventFirer interface {
@@ -157,6 +161,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return result, err
 	}
 	if result, handled, err := h.handleChannelRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleWorkspaceSurfaceRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
 	if result, handled, err := h.handleToolingRPC(ctx, in, method, cfg); handled {
