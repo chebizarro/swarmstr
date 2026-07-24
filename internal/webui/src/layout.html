@@ -1,0 +1,78 @@
+</style>
+</head>
+<body>
+<header>
+  <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Open navigation" aria-expanded="false">☰</button>
+  <div class="status-dot" id="dot"></div>
+  <h1>Metiq</h1>
+  <div class="header-actions">
+    <input class="search-box" id="search-box" type="search" placeholder="Search chat…" aria-label="Search chat">
+    <button class="icon-btn" id="search-toggle" title="Search chat">⌕</button>
+    <button class="icon-btn" id="export-chat" title="Export chat as Markdown">Export</button>
+    <button class="icon-btn" id="theme-toggle" title="Toggle theme">Theme</button>
+    <select class="locale-select" id="locale-select" aria-label="Language"><option value="en">EN</option><option value="es">ES</option><option value="fr">FR</option><option value="de">DE</option><option value="ja">JA</option><option value="zh-CN">ZH-CN</option><option value="pt-BR">PT-BR</option><option value="ko">KO</option></select>
+  </div>
+  <div class="header-info">
+    <span class="badge" id="agent-badge">agent: main</span>
+    <span class="badge warn" id="approvals-badge" style="display:none">⚠ approval pending</span>
+    <span id="conn-label">connecting…</span>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- Sidebar component -->
+  {{component "session_sidebar"}}
+
+  <!-- Main conversation -->
+  <div class="main">
+    <div id="messages"></div>
+    <footer>
+      <div class="run-controls" aria-label="Run controls">
+        <button class="control-btn stop" id="abort-run" disabled>Stop run</button>
+        <span class="spacer"></span>
+        <button class="control-btn" id="compact-session" disabled>Compact</button>
+        <button class="control-btn" id="clear-session" disabled>Clear</button>
+      </div>
+      <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Slash commands"></div>
+      <div class="attachment-tray" id="attachment-tray"></div>
+      <div class="input-row">
+        <button class="control-btn" id="attach-btn" type="button" title="Attach files">＋</button>
+        <input id="attach-input" type="file" multiple hidden>
+        <textarea id="input" rows="1" placeholder="Send a message… (Shift+Enter for newline)" disabled></textarea>
+        <button id="send" disabled>Send</button>
+      </div>
+      <p class="hint">Tip: /help for slash commands</p>
+    </footer>
+  </div>
+</div>
+<div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
+
+<!-- Extracted component templates -->
+{{component "chat_message"}}
+{{component "tool_card"}}
+
+<!-- Approval modal -->
+<div class="modal-overlay" id="approval-modal">
+  <div class="modal">
+    <h2 id="approval-title">⚠ Approval Required</h2>
+    <p id="approval-subtitle" style="font-size:0.82rem;color:var(--text-muted)">Review the request metadata before deciding:</p>
+    <div class="approval-summary">
+      <span class="approval-pill warn" id="approval-queue-count">queue: 1</span>
+      <span class="approval-pill warn" id="approval-countdown">expires: —</span>
+      <span class="approval-pill" id="approval-id">id: —</span>
+    </div>
+    <dl class="approval-meta" id="approval-meta"></dl>
+    <div class="cmd-box" id="approval-cmd"></div>
+    <p class="modal-error" id="approval-error"></p>
+    <div class="modal-actions">
+      <button class="btn btn-deny" id="approval-deny">Deny</button>
+      <button class="btn btn-approve-once" id="approval-approve-once">Allow once</button>
+      <button class="btn btn-approve" id="approval-approve-always">Always allow</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
