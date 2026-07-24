@@ -28,6 +28,8 @@ type Result struct {
 	Stderr string `json:"stderr,omitempty"`
 	// OpenClawCompatibility stores normalized external package compatibility metadata.
 	OpenClawCompatibility *OpenClawCompatibility `json:"openclawCompatibility,omitempty"`
+	// Provenance records the origin and artifact digest for URL-based installs.
+	Provenance *InstallProvenance `json:"provenance,omitempty"`
 }
 
 // Installer is the interface for plugin installation backends.

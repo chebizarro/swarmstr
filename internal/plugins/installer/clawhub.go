@@ -146,15 +146,16 @@ func installClawHubPlugin(ctx context.Context, p *ClawHubPlugin, installPath str
 		return err
 	}
 	if distURL := strings.TrimSpace(p.DistURL); distURL != "" {
-		tmp, err := DownloadURL(ctx, distURL)
+		download, err := DownloadURLWithOptions(ctx, distURL, DownloadOptions{})
 		if err != nil {
 			return err
 		}
-		defer removeFile(tmp)
-		res, err := extractArchive(ctx, tmp, installPath)
+		defer removeFile(download.Path)
+		res, err := extractArchive(ctx, download.Path, installPath)
 		if err != nil {
 			return err
 		}
+		res.Provenance = &download.Provenance
 		_, err = recordIntegrityForResult(res, installPath)
 		return err
 	}

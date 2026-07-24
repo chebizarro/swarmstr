@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"metiq/internal/plugins/sdk"
+	"metiq/internal/sandbox"
 )
 
 // skipIfNoNode marks the test as skipped when Node.js is not in PATH.
@@ -64,6 +65,32 @@ module.exports = {
 	_, err := LoadNodePlugin(context.Background(), dir)
 	if err == nil {
 		t.Error("expected error when node is not in PATH")
+	}
+}
+
+type neverInteractiveRunner struct{ started bool }
+
+func (r *neverInteractiveRunner) Driver() string { return "docker" }
+func (r *neverInteractiveRunner) Run(context.Context, []string, []string, string) (sandbox.Result, error) {
+	return sandbox.Result{}, nil
+}
+func (r *neverInteractiveRunner) StartInteractive(context.Context, []string, []string, string) (*sandbox.InteractiveProcess, error) {
+	r.started = true
+	return nil, nil
+}
+
+func TestLoadNodePluginSandboxedRejectsEntryEscapeBeforeStart(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "plugin.js")
+	if err := os.WriteFile(outside, []byte("module.exports = {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &neverInteractiveRunner{}
+	if _, err := LoadNodePluginSandboxed(context.Background(), root, outside, "/plugin", runner); err == nil {
+		t.Fatal("expected entry escape to be rejected")
+	}
+	if runner.started {
+		t.Fatal("sandbox process started for escaping entry")
 	}
 }
 

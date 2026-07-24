@@ -103,7 +103,7 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			continue
 		}
 		pluginTrust := resolvePluginTrust(rawExt, pluginID, entry)
-		sandboxDecision := NodeSandboxDecision(pluginTrust, sandboxEnabled, sandboxCfg != nil)
+		sandboxDecision := NodeSandboxDecision(pluginTrust, sandboxEnabled, sandboxCfg)
 
 		// Node.js compat bridge: activated when plugin_type is "node"/"nodejs"
 		// OR when the trusted install path contains a node_modules directory.
@@ -114,21 +114,41 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 				m.log.Warn("node plugin entry resolution failed", "plugin", pluginID, "err", err)
 			} else {
 				m.log.Info("loading node.js plugin", "plugin", pluginID, "trust", pluginTrust, "sandbox", sandboxDecision.Action, "reason", sandboxDecision.Reason)
-				if sandboxDecision.Action == SandboxActionFailOpen {
-					m.log.Warn("untrusted node plugin running without sandbox; falling back to current subprocess behavior", "plugin", pluginID, "trust", pluginTrust, "reason", sandboxDecision.Reason)
+				if sandboxDecision.Action == SandboxActionRefuse {
+					err := fmt.Errorf("node plugin refused: %s", sandboxDecision.Reason)
+					issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
+					m.log.Warn("node plugin refused", "plugin", pluginID, "trust", pluginTrust, "err", err)
+					continue
 				}
+				var np *runtime.NodePlugin
 				if sandboxDecision.Action == SandboxActionUse {
-					if _, err := sandbox.New(*sandboxCfg); err != nil {
-						issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
-						m.log.Warn("node plugin sandbox configuration invalid", "plugin", pluginID, "trust", pluginTrust, "err", err)
-						continue
+					pluginCfg := *sandboxCfg
+					mountRoot := installPath
+					if info, statErr := os.Stat(mountRoot); statErr == nil && !info.IsDir() {
+						mountRoot = filepath.Dir(mountRoot)
 					}
+					pluginCfg.WorkspaceDir = mountRoot
+					pluginCfg.ContainerWorkdir = "/plugin"
+					pluginCfg.WorkspaceAccess = "read_only"
+					pluginCfg.ReadOnlyRootFS = true
+					pluginCfg.WritableRootFS = false
+					pluginCfg.PersistentRuntime = false
+					runner, sandboxErr := sandbox.New(pluginCfg)
+					if sandboxErr != nil {
+						err = fmt.Errorf("required node plugin sandbox unavailable: %w", sandboxErr)
+					} else if interactive, ok := runner.(sandbox.InteractiveSandboxRunner); !ok || runner.Driver() != "docker" {
+						err = fmt.Errorf("required node plugin sandbox is not interactive docker")
+					} else {
+						np, err = runtime.LoadNodePluginSandboxed(ctx, mountRoot, entryPath, "/plugin", interactive)
+					}
+				} else {
+					np, err = runtime.LoadNodePlugin(ctx, entryPath)
 				}
-				np, err := runtime.LoadNodePlugin(ctx, entryPath)
 				if err != nil {
 					issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 					m.log.Warn("node plugin load failed (node.js may not be installed)", "plugin", pluginID, "err", err)
 				} else if err := checkManifestMismatch(pluginID, np.Manifest()); err != nil {
+					np.Close()
 					issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 					m.log.Warn("node plugin manifest mismatch", "plugin", pluginID, "err", err)
 				} else {
@@ -390,9 +410,9 @@ func pluginInstallRecord(rawExt map[string]any, pluginID string) map[string]any 
 type SandboxAction string
 
 const (
-	SandboxActionSkip     SandboxAction = "skip"
-	SandboxActionUse      SandboxAction = "use"
-	SandboxActionFailOpen SandboxAction = "fail-open"
+	SandboxActionSkip   SandboxAction = "skip"
+	SandboxActionUse    SandboxAction = "use"
+	SandboxActionRefuse SandboxAction = "refuse"
 )
 
 type SandboxDecision struct {
@@ -400,17 +420,24 @@ type SandboxDecision struct {
 	Reason string
 }
 
-func NodeSandboxDecision(level trust.Level, enabled bool, configured bool) SandboxDecision {
+func NodeSandboxDecision(level trust.Level, enabled bool, cfg *sandbox.Config) SandboxDecision {
 	if level.IsTrusted() {
 		return SandboxDecision{Action: SandboxActionSkip, Reason: "trusted plugin"}
 	}
 	if !enabled {
-		return SandboxDecision{Action: SandboxActionSkip, Reason: "sandbox disabled"}
+		return SandboxDecision{Action: SandboxActionRefuse, Reason: "untrusted node plugin requires sandbox.enabled=true"}
 	}
-	if !configured {
-		return SandboxDecision{Action: SandboxActionFailOpen, Reason: "sandbox enabled without configuration"}
+	if cfg == nil {
+		return SandboxDecision{Action: SandboxActionRefuse, Reason: "untrusted node plugin requires sandbox configuration"}
 	}
-	return SandboxDecision{Action: SandboxActionUse, Reason: "untrusted plugin with sandbox configured"}
+	driver := strings.ToLower(strings.TrimSpace(cfg.Driver))
+	if driver != "" && driver != "docker" {
+		return SandboxDecision{Action: SandboxActionRefuse, Reason: "untrusted node plugin requires docker sandbox"}
+	}
+	if strings.TrimSpace(cfg.DockerImage) == "" {
+		return SandboxDecision{Action: SandboxActionRefuse, Reason: "untrusted node plugin requires sandbox docker_image containing node"}
+	}
+	return SandboxDecision{Action: SandboxActionUse, Reason: "untrusted plugin with docker sandbox configured"}
 }
 
 func resolvePluginTrust(rawExt map[string]any, pluginID string, entry map[string]any) trust.Level {

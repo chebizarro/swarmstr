@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,15 +22,29 @@ func useInstallerHTTPClient(t *testing.T, client *http.Client) {
 	t.Helper()
 	installerHTTPClientMu.Lock()
 	old := newInstallerHTTPClient
+	oldLookup := installerLookupIP
+	oldDial := installerDialContext
 	newInstallerHTTPClient = func(timeout time.Duration) *http.Client {
 		cp := *client
 		cp.Timeout = timeout
 		return &cp
 	}
+	installerLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	}
+	installerDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		_, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+	}
 	installerHTTPClientMu.Unlock()
 	t.Cleanup(func() {
 		installerHTTPClientMu.Lock()
 		newInstallerHTTPClient = old
+		installerLookupIP = oldLookup
+		installerDialContext = oldDial
 		installerHTTPClientMu.Unlock()
 	})
 }

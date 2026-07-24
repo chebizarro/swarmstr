@@ -15,26 +15,63 @@ import (
 
 const PluginIntegrityFile = ".metiq-integrity.json"
 
+type ArtifactDigest struct {
+	Algorithm string `json:"algorithm"`
+	Hash      string `json:"hash"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+type ResolvedHost struct {
+	Host string   `json:"host"`
+	IPs  []string `json:"ips"`
+}
+
+type ArtifactVerification struct {
+	Verifier string            `json:"verifier"`
+	Identity string            `json:"identity,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type InstallProvenance struct {
+	SourceURL     string                `json:"source_url"`
+	FinalURL      string                `json:"final_url"`
+	ResolvedHosts []ResolvedHost        `json:"resolved_hosts"`
+	Artifact      ArtifactDigest        `json:"artifact"`
+	Verification  *ArtifactVerification `json:"verification,omitempty"`
+}
+
 type PluginIntegrityRecord struct {
-	Algorithm  string    `json:"algorithm"`
-	Hash       string    `json:"hash"`
-	RecordedAt time.Time `json:"recorded_at"`
-	FileCount  int       `json:"file_count"`
+	Algorithm  string             `json:"algorithm"`
+	Hash       string             `json:"hash"`
+	RecordedAt time.Time          `json:"recorded_at"`
+	FileCount  int                `json:"file_count"`
+	Provenance *InstallProvenance `json:"provenance,omitempty"`
 }
 
 // RecordPluginIntegrity computes and persists the current install-tree hash.
 func RecordPluginIntegrity(pluginPath string) (PluginIntegrityRecord, error) {
+	return RecordPluginIntegrityWithProvenance(pluginPath, nil)
+}
+
+// RecordPluginIntegrityWithProvenance extends the existing integrity sidecar
+// with the observed download origin and artifact digest.
+func RecordPluginIntegrityWithProvenance(pluginPath string, provenance *InstallProvenance) (PluginIntegrityRecord, error) {
 	record, err := ComputePluginIntegrity(pluginPath)
 	if err != nil {
 		return PluginIntegrityRecord{}, err
 	}
 	record.RecordedAt = time.Now().UTC()
+	record.Provenance = provenance
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return PluginIntegrityRecord{}, fmt.Errorf("marshal plugin integrity: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(pluginPath, PluginIntegrityFile), append(data, '\n'), 0o644); err != nil {
+	sidecar := filepath.Join(pluginPath, PluginIntegrityFile)
+	if err := os.WriteFile(sidecar, append(data, '\n'), 0o600); err != nil {
 		return PluginIntegrityRecord{}, fmt.Errorf("write plugin integrity: %w", err)
+	}
+	if err := os.Chmod(sidecar, 0o600); err != nil {
+		return PluginIntegrityRecord{}, fmt.Errorf("secure plugin integrity: %w", err)
 	}
 	return record, nil
 }
@@ -64,6 +101,12 @@ func VerifyPluginIntegrity(pluginPath string) error {
 	}
 	if expected.Algorithm != "sha256" || strings.TrimSpace(expected.Hash) == "" {
 		return fmt.Errorf("plugin integrity record is invalid")
+	}
+	if expected.Provenance != nil {
+		p := expected.Provenance
+		if strings.TrimSpace(p.SourceURL) == "" || strings.TrimSpace(p.FinalURL) == "" || len(p.ResolvedHosts) == 0 || p.Artifact.Algorithm != "sha256" || strings.TrimSpace(p.Artifact.Hash) == "" || p.Artifact.SizeBytes < 0 {
+			return fmt.Errorf("plugin integrity provenance is invalid")
+		}
 	}
 	actual, err := ComputePluginIntegrity(root)
 	if err != nil {
@@ -156,7 +199,7 @@ func recordIntegrityForResult(res Result, fallbackPath string) (Result, error) {
 		return res, err
 	}
 	res.OpenClawCompatibility = &compat
-	record, err := RecordPluginIntegrity(installPath)
+	record, err := RecordPluginIntegrityWithProvenance(installPath, res.Provenance)
 	if err != nil {
 		return res, err
 	}

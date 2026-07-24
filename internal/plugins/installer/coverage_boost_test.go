@@ -158,7 +158,7 @@ func TestFetchRegistry_Non200(t *testing.T) {
 	}
 	// Should fail on HTTPS validation since httptest uses self-signed certs,
 	// OR should fail on non-200 status. Either is acceptable.
-	if !strings.Contains(err.Error(), "HTTP") && !strings.Contains(err.Error(), "https") && !strings.Contains(err.Error(), "certificate") {
+	if !strings.Contains(err.Error(), "HTTP") && !strings.Contains(err.Error(), "https") && !strings.Contains(err.Error(), "certificate") && !strings.Contains(err.Error(), "blocked address") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

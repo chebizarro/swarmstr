@@ -28,8 +28,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"metiq/internal/plugins/sdk"
+	"metiq/internal/sandbox"
 )
 
 //go:embed node_shim.js
@@ -40,6 +42,7 @@ type NodePlugin struct {
 	manifest     sdk.Manifest
 	capabilities []NodeCapability
 	proc         *exec.Cmd
+	sandboxProc  *sandbox.InteractiveProcess
 	stdin        io.WriteCloser
 	mu           sync.Mutex
 	pending      map[int64]chan nodeResponse
@@ -139,24 +142,52 @@ func LoadNodePlugin(ctx context.Context, installPath string) (*NodePlugin, error
 		pending: map[int64]chan nodeResponse{},
 	}
 
-	// Start the response reader goroutine.
-	go p.readLoop(stdout, shimPath)
-
-	// Initialise the plugin.
 	absPath, err := filepath.Abs(filepath.Clean(installPath))
 	if err != nil {
 		p.Close()
 		return nil, fmt.Errorf("resolve install path: %w", err)
 	}
-	initCtx, cancel := context.WithTimeout(ctx, 15*1_000_000_000) // 15s
+	return initializeNodePlugin(ctx, p, stdout, shimPath, absPath)
+}
+
+// LoadNodePluginSandboxed starts a Node plugin through an interactive Docker
+// sandbox. installRoot is mounted read-only by the manager and entryPath is
+// translated to the corresponding in-container path.
+func LoadNodePluginSandboxed(ctx context.Context, installRoot, entryPath, containerRoot string, runner sandbox.InteractiveSandboxRunner) (*NodePlugin, error) {
+	if runner == nil || runner.Driver() != "docker" {
+		return nil, fmt.Errorf("node plugin requires an interactive docker sandbox")
+	}
+	root, err := filepath.EvalSymlinks(installRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve plugin root: %w", err)
+	}
+	entry, err := filepath.EvalSymlinks(entryPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve plugin entry: %w", err)
+	}
+	rel, err := filepath.Rel(root, entry)
+	if err != nil || rel == ".." || strings.HasPrefix(filepath.ToSlash(rel), "../") {
+		return nil, fmt.Errorf("node plugin entry escapes install root")
+	}
+	containerEntry := filepath.ToSlash(filepath.Join(containerRoot, rel))
+	proc, err := runner.StartInteractive(ctx, []string{"node", "-e", string(nodeShimJS)}, nil, containerRoot)
+	if err != nil {
+		return nil, fmt.Errorf("start sandboxed node process: %w", err)
+	}
+	p := &NodePlugin{sandboxProc: proc, stdin: proc.Stdin, pending: map[int64]chan nodeResponse{}}
+	go func() { _, _ = io.Copy(os.Stderr, proc.Stderr) }()
+	return initializeNodePlugin(ctx, p, proc.Stdout, "", containerEntry)
+}
+
+func initializeNodePlugin(ctx context.Context, p *NodePlugin, stdout io.Reader, shimPath, pluginPath string) (*NodePlugin, error) {
+	go p.readLoop(stdout, shimPath)
+	initCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	resp, err := p.call(initCtx, "init", map[string]any{"plugin_path": absPath})
+	resp, err := p.call(initCtx, "init", map[string]any{"plugin_path": pluginPath})
 	if err != nil {
 		p.Close()
 		return nil, fmt.Errorf("node plugin init: %w", err)
 	}
-
-	// Parse the manifest from the init response.
 	if resultMap, ok := resp.(map[string]any); ok {
 		if mRaw, ok := resultMap["manifest"]; ok {
 			b, err := json.Marshal(mRaw)
@@ -172,7 +203,7 @@ func LoadNodePlugin(ctx context.Context, installPath string) (*NodePlugin, error
 		p.capabilities = parseNodeCapabilities(resultMap["capabilities"])
 	}
 	if strings.TrimSpace(p.manifest.ID) == "" {
-		base := filepath.Base(absPath)
+		base := filepath.Base(pluginPath)
 		if base == "." || base == string(filepath.Separator) {
 			base = "node-plugin"
 		}
@@ -186,7 +217,6 @@ func LoadNodePlugin(ctx context.Context, installPath string) (*NodePlugin, error
 		p.Close()
 		return nil, fmt.Errorf("node plugin permission setup: %w", err)
 	}
-
 	return p, nil
 }
 
@@ -269,11 +299,28 @@ func (p *NodePlugin) Close() {
 	p.mu.Unlock()
 
 	// Send shutdown and close stdin; process will self-exit.
-	ctx, cancel := context.WithTimeout(context.Background(), 3_000_000_000)
-	defer cancel()
-	_, _ = p.call(ctx, "shutdown", nil)
-	p.stdin.Close()
-	_ = p.proc.Wait()
+	// The closed flag intentionally prevents new calls. The shim also exits when
+	// stdin closes, so shutdown remains bounded even if the RPC cannot be sent.
+	_ = p.stdin.Close()
+	if p.sandboxProc != nil {
+		done := make(chan struct{})
+		go func() { _ = p.sandboxProc.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			_ = p.sandboxProc.Kill()
+			<-done
+		}
+	} else if p.proc != nil {
+		done := make(chan struct{})
+		go func() { _ = p.proc.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			_ = p.proc.Process.Kill()
+			<-done
+		}
+	}
 }
 
 // call sends a JSON-RPC request and waits for the matching response.
