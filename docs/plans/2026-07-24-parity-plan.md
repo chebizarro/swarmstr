@@ -1,0 +1,148 @@
+# Swarmstr (Metiq) Parity Plan — OpenClaw / Claude Code / NIPs / FIPS
+
+**Date:** 2026-07-24
+**Basis:** 7 parallel investigations comparing swarmstr `805045d` against openclaw HEAD, claude-code, nips repo `cd9f33e` (2026-07-03), and the current FIPS repo.
+**Effort key:** S ≤ a few days · M ≈ 1–2 weeks · L = multi-week / cross-cutting.
+
+---
+
+## Executive summary
+
+Swarmstr's foundations are healthier than expected — the agent loop, hybrid memory retrieval, active recall, and core Nostr crypto (NIP-44/59/17 subset, NIP-42, NIP-65, NIP-98) are solid. The drift is concentrated in five places:
+
+1. **Gateway/protocol surface is severely stale.** OpenClaw moved from ~95 tracked methods to **344 defined / 324 advertised**, and redesigned chat streaming (protocol v4 `chat` state-union replaces `chat.chunk`). The parity fixtures date to 2026-03-04 and internally disagree (95 vs 96).
+2. **Streaming is only real for OpenAI + Anthropic.** Registry flags overstate support; there is no provider-neutral structured stream pipeline nor incremental tool-call repair.
+3. **FIPS integration has correctness/security bugs** — the FIPS daemon's identity cache is never primed (direct dials can fail), and inbound sender identity trusts plaintext `env.From`.
+4. **Nostr payment/zap paths are unsafe as implemented** — NIP-57 receipt validation, NIP-60 state transitions, and NIP-61 P2PK/mint validation are missing; several NIPs (17, 38, 51, 58, 86, 90) have interop-breaking drift.
+5. **Security boundaries are advisory** — Node plugin sandbox decisions fail open; registry installs lack SSRF/provenance controls; permissions vs tool-policy are duplicated engines.
+
+Recommended sequencing: fix critical correctness/security first (cheap, high-risk-reduction), then rebuild the parity baseline (fixtures + protocol v4), then the large feature workstreams in parallel.
+
+---
+
+## Phase 0 — Critical correctness & safety (do first)
+
+- [ ] **P0.1 (L, Critical)** FIPS daemon identity-cache priming: peers derived to `fd00::/8` addrs are unroutable because only swarmstr's Go-side `idCache` is updated (`internal/nostr/runtime/fips_transport.go:260-367`; requirement in `fips/docs/design/fips-ipv6-adapter.md:23-133`). Resolve via FIPS DNS, a daemon identity-insert API, or native FSP service registration.
+- [ ] **P0.2 (M, Critical)** Authenticate inbound FIPS senders; remove the plaintext `env.From` trust fallback (`fips_transport.go:371-394`). Reject unknown senders or bind to the FIPS session identity.
+- [ ] **P0.3 (L, Critical)** NIP-57 receiver: implement all mandatory receipt checks (event sig, provider `nostrPubkey`, embedded request sig, BOLT-11 description hash, amount, recipient, dedup) — `internal/nostr/zap/zap.go` currently passes every event through.
+- [ ] **P0.4 (L)** NIP-61 nutzap safety: P2PK lock validation, mint allowlist from kind-10019, `"02"` prefix, DLEQ, redemption workflow (`internal/nostr/nip61/nutzap.go`).
+- [ ] **P0.5 (L)** NIP-60 wallet: derive live state from `del` transitions + deletions, validate fetched events before decrypting, mandatory history `e` refs, kind-7374 quotes (`internal/nostr/nip60/wallet.go`).
+- [ ] **P0.6 (L)** Node plugin sandbox must fail closed: manager computes a sandbox decision but loads via plain `exec.CommandContext` (`internal/plugins/manager/manager.go:105-137`, `internal/plugins/runtime/node_host.go:98-124`).
+- [ ] **P0.7 (M–L)** SSRF-safe plugin registry/install: private-IP/DNS-rebinding checks, redirect policy, signed metadata/provenance (`internal/plugins/installer/url.go:53-176`).
+- [ ] **P0.8 (S)** Fix Web UI calling nonexistent methods: `nodes.*` plural vs registered `node.*` singular, and `channels.reconnect` (unregistered) — `internal/webui/ui.html:1391-1449` vs `internal/gateway/methods/schema_methods.go:122-138`.
+
+## Phase 1 — Rebaseline parity tracking (foundation for everything else)
+
+- [ ] **P1.1 (M)** Regenerate parity fixtures from openclaw HEAD descriptor catalogs (`src/gateway/methods/core-descriptors.ts`, `src/cli/program/*-descriptors.ts`); reconcile docs (95) vs verifier (96) disagreement; drop the 4 methods openclaw no longer advertises (`browser.request`, `node.canvas.capability.refresh`, `node.pair.request`, `node.pair.verify`); add CI drift detection.
+- [ ] **P1.2 (M)** Triage the 233 newly advertised gateway methods into: implement / accepted deviation / defer — record in `docs/parity/`. Add a UI-callsite parity check so stale UI method names are caught.
+- [ ] **P1.3 (S)** CLI descriptor refresh: record new top-level groups (`claws`, `audit`, `promos`, `exec-approvals`, `users`, `worker`, `fleet`, `worktrees`, `attach`); reclassify `gateway`/`gw` naming deviation.
+
+## Phase 2 — Workstreams (parallelizable)
+
+### WS-A: Gateway protocol v4, sessions, and Web UI (owner: gateway)
+
+- [ ] **A1 (L)** Protocol v4 chat streaming: replace `chat.chunk`/`turn.*` with the `chat` state-union (`status|delta|final|aborted|error`, `runId`/`seq`/`replace` semantics per `packages/gateway-protocol/src/schema/logs-chat.ts:143-223`); admission/version rejection behavior.
+- [ ] **A2 (L)** Sessions live surface: `sessions.subscribe/unsubscribe`, `sessions.messages.*`, describe/create/send/abort, files, compaction history, branches/rewind/fork, search/diff, dispatch/reclaim.
+- [ ] **A3 (M)** Approval surface: `exec.approval.get/list`, unified `approval.*`; UI reconnect reconciliation (restore pending queue after disconnect, expiry handling).
+- [ ] **A4 (L)** Method descriptor metadata: operator scopes, node scope, startup availability, control-plane write classification; broader WS admission (device proof/token, flood guard) per `src/gateway/server/ws-connection/`.
+- [ ] **A5 (M)** Cron parity: `cron.get`, `cron.scratch.get/set`, richer edit/trigger semantics in CLI+UI.
+- [ ] **A6 (M/L)** Nodes parity: `node.pair.remove`, `device.pair.rename`, `node.pending.*`, `node.invoke.progress`; align UI.
+- [ ] **A7 (L, defer-able)** Terminal WS surface (`terminal.open/input/resize/close`, data/exit events); worktrees/fs/board/conversation method groups — triage in P1.2.
+- [ ] **A8 (S/M)** Channels lifecycle methods `channels.start/stop`, `channels.pairing.*`.
+
+### WS-B: Agent runtime & streaming (owner: runtime)
+
+- [ ] **B1 (L)** Provider-neutral structured streaming events (text/thinking/tool-call deltas, lifecycle events à la `agent-core/src/agent-loop.ts`); implement `Stream` for Gemini, Mistral, Moonshot, Groq, MiniMax, Vertex, Ollama/local (today only OpenAI `provider.go:460` and Anthropic `chat_anthropic.go:541` stream; registry flags overstate support).
+- [ ] **B2 (L)** Port openclaw's incremental tool-call stream normalizer (`packages/tool-call-repair/src/stream-normalizer.ts`): multi-chunk repair, partial JSON/XML suppression, scrubbing. Current repair is terminal-only (`internal/agent/toolrepair/promote.go`).
+- [ ] **B3 (L)** Real subagent orchestration on top of the existing registry (`internal/agent/subagent/registry.go`): spawning, nesting/concurrency caps, typed agent definitions, parent/child streaming, cancellation, budgets (see claude-code changelog features).
+- [ ] **B4 (M)** Wire declared lifecycle hooks (session start/end, before-agent, agent-end, subagent spawn) into runtime — only before/after tool-call are emitted today (`internal/agent/agentic_loop.go:1078-1237`).
+- [ ] **B5 (M/L)** Bedrock + Anthropic-on-Vertex provider runtimes.
+- [ ] **B6 (M)** Provider-specific adapters (headers, model discovery, usage/thinking normalization) where OpenAI-compat wrappers are lossy; integrate skills catalog with subagent types.
+
+### WS-C: Memory & context (owner: memory)
+
+- [ ] **C1 (M–L)** Enforce token budgets in context assembly: `WindowedEngine.Assemble` ignores its budget arg (`internal/context/engine.go:307`); unify with `internal/agent/context_budget.go` paths.
+- [ ] **C2 (M)** Index lifecycle/self-healing: FTS health state, targeted reindex, file watching, session transcript indexing (ref `extensions/memory-core/src/memory/manager-fts-state.ts` etc.).
+- [ ] **C3 (L)** Model-assisted extraction/promotion pipeline (short-term promotion, transcript corpus, dreaming) — current extraction is heuristic sentence/keyword only (`internal/memory/extract.go:23-104`).
+- [ ] **C4 (L, defer-able)** Wiki/knowledge-base parity (ingestion, compilation, claim health) — `internal/memory/wiki/wiki.go` is minimal vs `extensions/memory-wiki`.
+- [ ] **C5 (L, defer-able)** Memory-host SDK abstraction parity for backend portability.
+
+### WS-D: Channels (owner: channels)
+
+- [ ] **D1 (L)** Account-scoped configuration/routing across channels: gateway methods still require raw credentials per call (`telegram/extension.go:111-121`, `slack/extension.go:104-124`); adopt openclaw-style named/default account resolution.
+- [ ] **D2 (L)** Thread + edit-lifecycle parity: Telegram forum topics (`messageThreadId`, not `reply_to_message_id`), Slack thread routing/auto-recovery, Matrix thread bindings, draft/final streaming edits across Telegram/Slack/Matrix.
+- [ ] **D3 (M)** Slack typing via Assistant thread status (`channel.ts:212-248`).
+- [ ] **D4 (M each)** Remove/gate protocol-invalid polling fallbacks (email SEARCH poll, BlueBubbles 5s REST, Mattermost 3s, Nextcloud, Signal).
+- [ ] **D5 (M)** New channels: SMS, zalouser; **(L, decision)** WhatsApp linked-device (Baileys-style) alongside Cloud API; **(L, defer-able)** Tlon/Urbit.
+- [ ] **D6 (M–L)** Discord advanced actions (archived-thread pagination, rename, permission-aware reopen, reaction cleanup); Signal reaction workflows; iMessage/BlueBubbles capability surface.
+
+### WS-E: ACP & FIPS (owner: protocol) — after P0.1/P0.2
+
+- [ ] **E1 (M)** Align discovery with current FIPS kind-37195 advert schema (`d=fips-overlay-v1`, structured endpoints) — swarmstr currently emits `fips=true`/`fips_transport=udp:2121` tags (`capability.go:324-395`).
+- [ ] **E2 (M/L)** Remote worker cancellation on dispatcher/pipeline timeout — timeouts only remove local pending state (`internal/acp/dispatcher.go:245-273`); fan-out cancel on parallel failure; concurrency limits in `pipeline.go`.
+- [ ] **E3 (M)** OpenClaw-style backend failover plan (ordered primary+fallback, `sawOutput` safety — `manager.backend-failover.ts`).
+- [ ] **E4 (M/L)** Detached child-task ↔ requester task-registry reconciliation (ref `manager.background-task.ts`).
+- [ ] **E5 (M)** Harden timeout/cancel races: typed `TURN_TIMEOUT`, dedup concurrent cancels, bounded disconnected-turn cancel (`manager.go:724-959`).
+- [ ] **E6 (M)** Spec hygiene: document/version the swarmstr TCP DM/control framing as an application protocol over FIPS IPv6 (not FIPS wire format); rename or bridge `acp_dispatch` vs openclaw's `reply_dispatch` semantics; publish a pipeline schema/cancellation contract.
+- [ ] **E7 (L)** Real-daemon FIPS interop test suite — current "full stack" tests are loopback TCP mocks (`testing/fips/README.md:15-24`).
+
+### WS-F: Nostr NIP compliance (owner: nostr) — after P0.3–P0.5
+
+Interop fixes:
+- [ ] **F1 (M)** NIP-17: drop the ~50h historic-age rejection (spec allows backdating); accept kind-15 file messages, wrapped kind-7 reactions, wrapped kind-5 deletions; add group rooms, subject/reply APIs (`internal/nostr/runtime/nip17_bus.go:51,610-655`).
+- [ ] **F2 (S)** NIP-38: put status text in `content`, `d` = status type (currently custom `["status", …]` tag, `nip38/status.go:299-305`).
+- [ ] **F3 (S–M)** NIP-51: relay sets `["relay",…]` not `["r",…]` (with legacy read); NIP-44 private items; missing standard list kinds.
+- [ ] **F4 (S)** NIP-58: enforce mandatory `name`/`description`/`image`; multi-recipient awards.
+- [ ] **F5 (M)** NIP-86: add `unbanpubkey`, `unallowpubkey`, role methods, `listeventsneedingmoderation`; drop `listdisallowedkinds`; enforce admin authorization policy on the verified pubkey.
+- [ ] **F6 (M)** NIP-90: `request` tag must be the stringified request event (not job ID, `dvm/handler.go:359-365`); all `i` inputs; response relay routing; encrypted params; cancellation; payment flow. Note: NIP-90 is marked `unrecommended` upstream — treat as compat, not the strategic A2A path.
+- [ ] **F7 (M)** NIP-47: kind-13194 info discovery + method/encryption negotiation; notification kinds 23196/23197.
+- [ ] **F8 (S)** NIP-B7 Blossom server-list discovery (kind 10063).
+
+New capabilities (prioritize by product need):
+- [ ] **F9 (L)** NIP-46 remote signer (separate agent from user key) — strategic.
+- [ ] **F10 (S–M each)** NIP-05 verification flow, NIP-13 PoW, NIP-62 vanish, NIP-70 protected events, NIP-87 mint discovery, NIP-96 HTTP file storage.
+- [ ] **F11 (L each, defer-able)** NIP-66 relay discovery/monitoring, NIP-77 negentropy sync, NIP-34 git collaboration.
+
+### WS-G: Plugins, sandbox, security (owner: platform) — after P0.6/P0.7
+
+- [ ] **G1 (L)** Unify permissions engine + tool-policy evaluator (two rule models today: `internal/permissions/engine.go`, `internal/policy/tool_policy.go`).
+- [ ] **G2 (M–L)** Expose full `sandbox.Config` through `sandbox.run` (resource caps, rootfs, capabilities, network/egress) — schema exposes 5 fields (`schema_system.go:10-24`); make domain/CIDR policy enforceable (proxy/firewall boundary).
+- [ ] **G3 (M–L)** Immutable managed settings layer (MDM/admin precedence, no runtime weakening) + sandboxed hook execution (hooks run unsandboxed `sh -c` today, `hooks/invoker.go:86-157`).
+- [ ] **G4 (M)** Plugin package contract parity: `pluginApi` range, host/SDK version negotiation (`packages/plugin-package-contract`).
+- [ ] **G5 (L, incremental)** Plugin SDK surface: security/exec-approval/runtime-doctor/provider-auth runtimes.
+- [ ] **G6 (M)** Vault secrets backend; lockfile-quality install provenance; plugin trusted-policy contracts.
+- [ ] **G7 (M)** Exec-approval maturity (policy doctor), skills validation/linting tooling.
+
+## Explicitly fine / not gaps
+
+- Email (IMAP+SMTP) channel: swarmstr **exceeds** openclaw (no equivalent there).
+- Core agent loop (batching, loop detection, checkpoints, compaction): mature; deficits are integration, not the loop.
+- Hybrid retrieval/active recall: near-parity (S–M polish only).
+- Provider breadth (xAI, Together, OpenRouter, Fireworks, DeepInfra, Perplexity, Azure, Vertex): already beyond the headline list.
+- ACP pipelines (sequential/parallel): swarmstr extension with no openclaw equivalent — needs a spec, not a port.
+
+## Dependency notes
+
+- P1 (fixtures) gates the scope of WS-A; do P1 before committing to A-item counts.
+- A1 (protocol v4 chat) gates Web UI chat work and any operator-client compat.
+- B1 (structured streaming) should land before/with A1 so gateway events have a real runtime source.
+- E1–E7 depend on P0.1/P0.2; F-workstream payment items depend on P0.3–P0.5.
+
+## Beads issue mapping
+
+Epics: P1 rebaseline `swarmstr-aeyu` · WS-A `swarmstr-vog0` · WS-B `swarmstr-213m` · WS-C `swarmstr-frp2` · WS-D `swarmstr-33hd` · WS-E `swarmstr-hqgv` · WS-F `swarmstr-hcff` · WS-G `swarmstr-7oop`.
+P0 items (children of their epics): P0.1 `swarmstr-n6h6` · P0.2 `swarmstr-gxm1` · P0.3 `swarmstr-fhbt` · P0.4 `swarmstr-em6f` · P0.5 `swarmstr-zoh5` · P0.6 `swarmstr-gg8x` · P0.7 `swarmstr-m0zc` · P0.8 `swarmstr-6oyt`. WS-A additionally depends on Epic P1.
+
+## Sizing rollup (rough)
+
+| Workstream | Scale |
+|---|---|
+| Phase 0 | ~2 engineer-months, mostly L items but independent |
+| P1 rebaseline | 2–3 weeks |
+| WS-A gateway/UI | Largest: multi-month if full parity; triage via P1.2 |
+| WS-B runtime/streaming | ~2 months |
+| WS-C memory | ~1–1.5 months (C1–C3), C4/C5 defer-able |
+| WS-D channels | ~2 months across many M items |
+| WS-E ACP/FIPS | ~1–1.5 months after P0 |
+| WS-F NIPs | ~2 months (interop fixes ~3 weeks; strategic items long tail) |
+| WS-G security/plugins | ~2 months after P0 |
