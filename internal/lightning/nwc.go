@@ -315,9 +315,14 @@ func (c *NWCClient) SubscribeInfo(ctx context.Context, onInfo func(NWCInfo)) (fu
 				return
 			}
 			c.mu.Lock()
-			if c.info != nil && c.info.Event.CreatedAt > info.Event.CreatedAt {
-				c.mu.Unlock()
-				return
+			if c.info != nil {
+				older := c.info.Event.CreatedAt > info.Event.CreatedAt
+				sameTimeHigherID := c.info.Event.CreatedAt == info.Event.CreatedAt &&
+					info.Event.ID.Hex() > c.info.Event.ID.Hex()
+				if older || sameTimeHigherID {
+					c.mu.Unlock()
+					return
+				}
 			}
 			c.info = &info
 			c.mu.Unlock()

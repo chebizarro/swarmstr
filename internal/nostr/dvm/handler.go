@@ -363,7 +363,7 @@ func (h *Handler) handleJobFromRelay(ctx context.Context, ev nostr.Event, source
 	}
 
 	// Dispatch to the job handler.
-	jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if h.pool != nil && jobCtx.Err() == nil {
 		go h.watchCancellation(jobCtx, request, mergeRelays(request.ResponseRelays, h.currentRelays()), cancel)

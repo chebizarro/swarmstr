@@ -126,6 +126,7 @@ func DiscoverServerList(
 	}
 	var mu sync.Mutex
 	var latest nostr.Timestamp
+	var latestID string
 	return transport.SubscribeServerList(ctx, ServerListSubscription{
 		Filter: nostr.Filter{
 			Kinds:   []nostr.Kind{KindServerList},
@@ -138,11 +139,13 @@ func DiscoverServerList(
 				return
 			}
 			mu.Lock()
-			if list.Event.CreatedAt < latest {
+			if list.Event.CreatedAt < latest ||
+				(list.Event.CreatedAt == latest && latestID != "" && list.Event.ID.Hex() > latestID) {
 				mu.Unlock()
 				return
 			}
 			latest = list.Event.CreatedAt
+			latestID = list.Event.ID.Hex()
 			mu.Unlock()
 			if onList != nil {
 				onList(list)
