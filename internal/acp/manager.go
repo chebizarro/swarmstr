@@ -459,9 +459,11 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 	}
 	var attempts []BackendAttempt
 	var turnStarted bool
+	backgroundTask := m.beginBackgroundTask(ctx, key, input)
 
 	for candidateIndex, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
+			backgroundTask.finish(nil, err, true)
 			return nil, err
 		}
 		state, err := m.ensureRuntimeState(ctx, key, candidate, input.Agent)
@@ -473,6 +475,7 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 			}
 			failErr := BackendFailoverError{Attempts: attempts}
 			m.recordError(errorCode(failErr))
+			backgroundTask.finish(nil, failErr, true)
 			return nil, failErr
 		}
 		if err := m.applyRuntimeControls(ctx, state.Runtime, state.Handle, input.Controls); err != nil {
@@ -480,6 +483,7 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 			attempts = append(attempts, attempt)
 			failErr := BackendFailoverError{Attempts: attempts}
 			m.recordError(errorCode(failErr))
+			backgroundTask.finish(nil, failErr, true)
 			return nil, failErr
 		}
 
@@ -495,6 +499,7 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 		if err := m.saveMetaWithPending(ctx, key, state.Agent, state.Mode, state.Handle, "running", "", pending, false); err != nil {
 			cancelTurn(nil)
 			m.clearActive(key, active)
+			backgroundTask.finish(nil, err, true)
 			return nil, err
 		}
 
@@ -527,6 +532,7 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 			} else {
 				_ = m.saveMetaWithPending(context.Background(), key, state.Agent, state.Mode, state.Handle, "idle", "", nil, true)
 			}
+			backgroundTask.finish(events, nil, false)
 			return events, nil
 		}
 
@@ -551,11 +557,13 @@ func (m *Manager) RunTurn(ctx context.Context, input RunSessionTurnInput) ([]Run
 			}
 			_ = m.saveMetaWithPending(context.Background(), key, state.Agent, state.Mode, state.Handle, "error", failErr.Error(), nil, clearPending)
 		}
+		backgroundTask.finish(events, failErr, active.Canceled.Load())
 		return events, failErr
 	}
 
 	failErr := BackendFailoverError{Attempts: attempts}
 	m.recordError(errorCode(failErr))
+	backgroundTask.finish(nil, failErr, false)
 	return nil, failErr
 }
 
