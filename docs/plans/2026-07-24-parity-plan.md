@@ -4,7 +4,7 @@
 **Basis:** 7 parallel investigations comparing swarmstr `805045d` against openclaw HEAD, claude-code, nips repo `cd9f33e` (2026-07-03), and the current FIPS repo.
 **Effort key:** S ≤ a few days · M ≈ 1–2 weeks · L = multi-week / cross-cutting.
 
----
+- [x] **P1.3 (S)** DONE (commit 340d649; docs/parity/cli-classifications.json; swarmstr-aeyu closed) CLI descriptor refresh:
 
 ## Executive summary
 
