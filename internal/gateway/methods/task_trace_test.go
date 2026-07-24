@@ -152,10 +152,10 @@ func TestAssembleTaskTrace_VerificationEvents(t *testing.T) {
 				CreatedAt: 11,
 			},
 			{
-				Type:       planner.VerifEventCompleted,
-				TaskID:     "t1",
-				RunID:      "r1",
-				CreatedAt:  12,
+				Type:      planner.VerifEventCompleted,
+				TaskID:    "t1",
+				RunID:     "r1",
+				CreatedAt: 12,
 			},
 		},
 	}
@@ -188,12 +188,12 @@ func TestAssembleTaskTrace_DelegationEvents(t *testing.T) {
 				CreatedAt: 5,
 			},
 			{
-				EventID:  "e2",
-				TaskID:   "t1",
-				RunID:    "r1",
-				WorkerID: "w1",
-				State:    planner.WorkerStateRunning,
-				Progress: &planner.ProgressInfo{PercentComplete: 0.5, Message: "halfway"},
+				EventID:   "e2",
+				TaskID:    "t1",
+				RunID:     "r1",
+				WorkerID:  "w1",
+				State:     planner.WorkerStateRunning,
+				Progress:  &planner.ProgressInfo{PercentComplete: 0.5, Message: "halfway"},
 				CreatedAt: 8,
 			},
 			{
