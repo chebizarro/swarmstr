@@ -8,7 +8,7 @@ Automated integration tests for FIPS mesh transport in clawstr agents.
 # Run Go integration tests (no Docker needed)
 ./scripts/run-tests.sh
 
-# Run with Docker E2E (requires FIPS daemon image)
+# Run opt-in real-daemon E2E (skips unless a local FIPS image exists)
 ./scripts/run-tests.sh --docker
 ```
 
@@ -45,32 +45,17 @@ Run directly:
 go test -tags experimental_fips -run 'TestIntegration_' -v ./internal/nostr/runtime/
 ```
 
-### Layer 2: Docker E2E Tests
+### Layer 2: Real-daemon Docker interoperability (opt-in)
 
-Uses `docker-compose.yml` to stand up a 3-node mesh:
+`real-daemon/` starts two privileged FIPS daemons with real `fips0` TUN
+interfaces and a local event-driven Nostr relay. It validates signed kind-37195
+publish/consume discovery, bidirectional production DM/control framing, `.fips`
+identity priming, and forged-sender rejection.
 
-```
-┌──────────┐     ┌──────────────┐     ┌──────────┐
-│ Agent-A   │◄───►│  FIPS Relay  │◄───►│ Agent-B   │
-│ metiqd    │     │ (pure mesh)  │     │ metiqd    │
-│ + fips    │     │              │     │ + fips    │
-└──────────┘     └──────────────┘     └──────────┘
-  172.28.0.11      172.28.0.10         172.28.0.12
-```
-
-**Requires:**
-- FIPS daemon image (`ghcr.io/jmcorgan/fips:latest`)
-- Docker with IPv6 support
-- metiqd built with `-tags experimental_fips`
-
-**Test scenarios** (run via `scripts/run-tests.sh --docker`):
-1. DM over FIPS mesh (A → B)
-2. ACP task dispatch over FIPS
-3. Transport fallback (kill FIPS daemon → relay)
-4. Fleet discovery shows FIPS peers
-5. Control RPC round-trip
-6. Latency comparison (FIPS vs relay)
-7. Mesh healing after relay node failure
+The runner uses `FIPS_TEST_IMAGE` (default `fips-test:latest`) and skips cleanly
+when that image is absent. Set `FIPS_REAL_DAEMON_REQUIRED=1` to make absence a
+failure. Exact image build steps and the known local Docker Desktop blocker are
+documented in [`real-daemon/README.md`](real-daemon/README.md).
 
 ## Fixtures
 

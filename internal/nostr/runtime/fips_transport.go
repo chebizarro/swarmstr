@@ -357,6 +357,18 @@ func (ft *FIPSTransport) evictOldestLocked() {
 
 // ── Identity cache ────────────────────────────────────────────────────────────
 
+// PrimeIdentity resolves a peer through the local daemon's .fips DNS zone,
+// verifies the returned address against deterministic pubkey derivation, and
+// registers the mapping for fail-closed inbound sender authentication. Callers
+// that accept inbound traffic before sending to a configured peer should prime
+// that peer during startup.
+func (ft *FIPSTransport) PrimeIdentity(ctx context.Context, pubkey string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return ft.primeDaemonIdentity(ctx, pubkey)
+}
+
 func (ft *FIPSTransport) primeDaemonIdentity(ctx context.Context, pubkeyHex string) error {
 	pk, err := ParsePubKey(pubkeyHex)
 	if err != nil {

@@ -1,0 +1,100 @@
+services:
+  relay:
+    image: ${FIPS_RELAY_BASE_IMAGE:-alpine:3.22.5}
+    platform: ${FIPS_TEST_PLATFORM:-linux/amd64}
+    container_name: swarmstr-fips-e7-relay
+    restart: "no"
+    command: ["/usr/local/bin/swarmstr-fips-probe", "relay", "--listen", ":7777"]
+    volumes:
+      - "${PROBE_BIN}:/usr/local/bin/swarmstr-fips-probe:ro"
+    networks:
+      interop:
+        ipv4_address: 198.18.77.10
+
+  fips-a:
+    image: ${FIPS_TEST_IMAGE:-fips-test:latest}
+    platform: ${FIPS_TEST_PLATFORM:-linux/amd64}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        cat >/etc/dnsmasq.d/fips.conf <<'EOF'
+        port=53
+        listen-address=127.0.0.1
+        bind-interfaces
+        server=/fips/::1#5354
+        server=127.0.0.11
+        no-resolv
+        EOF
+        printf 'nameserver 127.0.0.1\noptions ndots:0\n' >/etc/resolv.conf
+        dnsmasq
+        exec fips --config /etc/fips/fips.yaml
+    container_name: swarmstr-fips-e7-a
+    restart: "no"
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+    environment:
+      RUST_LOG: "info,fips::nostr=debug"
+    depends_on: [relay]
+    volumes:
+      - "./configs/node-a.yaml:/etc/fips/fips.yaml:ro"
+      - "${PROBE_BIN}:/usr/local/bin/swarmstr-fips-probe:ro"
+    healthcheck:
+      test: ["CMD", "fipsctl", "show", "status"]
+      interval: 2s
+      timeout: 2s
+      start_period: 5s
+      retries: 30
+    networks:
+      interop:
+        ipv4_address: 198.18.77.20
+
+  fips-b:
+    image: ${FIPS_TEST_IMAGE:-fips-test:latest}
+    platform: ${FIPS_TEST_PLATFORM:-linux/amd64}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        cat >/etc/dnsmasq.d/fips.conf <<'EOF'
+        port=53
+        listen-address=127.0.0.1
+        bind-interfaces
+        server=/fips/::1#5354
+        server=127.0.0.11
+        no-resolv
+        EOF
+        printf 'nameserver 127.0.0.1\noptions ndots:0\n' >/etc/resolv.conf
+        dnsmasq
+        exec fips --config /etc/fips/fips.yaml
+    container_name: swarmstr-fips-e7-b
+    restart: "no"
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+    environment:
+      RUST_LOG: "info,fips::nostr=debug"
+    depends_on: [relay]
+    volumes:
+      - "./configs/node-b.yaml:/etc/fips/fips.yaml:ro"
+      - "${PROBE_BIN}:/usr/local/bin/swarmstr-fips-probe:ro"
+    healthcheck:
+      test: ["CMD", "fipsctl", "show", "status"]
+      interval: 2s
+      timeout: 2s
+      start_period: 5s
+      retries: 30
+    networks:
+      interop:
+        ipv4_address: 198.18.77.21
+
+networks:
+  interop:
+    name: swarmstr-fips-e7
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 198.18.77.0/24

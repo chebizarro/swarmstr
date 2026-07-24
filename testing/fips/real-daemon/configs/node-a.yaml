@@ -1,0 +1,37 @@
+node:
+  identity:
+    nsec: "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+  rendezvous:
+    nostr:
+      enabled: true
+      advertise: true
+      advert_relays:
+        - "ws://198.18.77.10:7777"
+      dm_relays:
+        - "ws://198.18.77.10:7777"
+      stun_servers: []
+      app: "fips-overlay-v1"
+      policy: open
+      startup_sweep_delay_secs: 1
+      advert_ttl_secs: 120
+      advert_refresh_secs: 60
+
+tun:
+  enabled: true
+  name: fips0
+  mtu: 1280
+
+dns:
+  enabled: true
+  bind_addr: "::1"
+  port: 5354
+
+transports:
+  udp:
+    bind_addr: "0.0.0.0:2121"
+    mtu: 1472
+    advertise_on_nostr: true
+    public: true
+    external_addr: "198.18.77.20:2121"
+
+peers: []

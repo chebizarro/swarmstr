@@ -298,6 +298,28 @@ func TestFIPSTransport_identity_cache(t *testing.T) {
 	}
 }
 
+func TestFIPSTransport_PrimeIdentity_verifiesDNSAndRegistersPeer(t *testing.T) {
+	peer := "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+	expectedIP, err := FIPSIPv6FromPubkey(peer)
+	if err != nil {
+		t.Fatalf("derive expected IP: %v", err)
+	}
+	ft := &FIPSTransport{idCache: make(map[string]string)}
+	ft.lookupIP = func(_ context.Context, network, host string) ([]net.IP, error) {
+		if network != "ip6" || !strings.HasSuffix(host, ".fips") {
+			t.Fatalf("lookup = %s %s", network, host)
+		}
+		return []net.IP{expectedIP}, nil
+	}
+
+	if err := ft.PrimeIdentity(context.Background(), peer); err != nil {
+		t.Fatalf("PrimeIdentity: %v", err)
+	}
+	if got := ft.ResolveIdentity(net.JoinHostPort(expectedIP.String(), "1337")); got != peer {
+		t.Fatalf("resolved identity = %q, want %q", got, peer)
+	}
+}
+
 func TestFIPSTransport_getOrDial_primesDaemonIdentityBeforeDial(t *testing.T) {
 	targetPubkey := "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 	expectedIP, err := FIPSIPv6FromPubkey(targetPubkey)

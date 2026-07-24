@@ -58,63 +58,8 @@ run_go_tests() {
 # ── Docker E2E tests ──────────────────────────────────────────────────────
 
 run_docker_tests() {
-    info "Running Docker E2E tests..."
-
-    # Check prerequisites.
-    command -v docker >/dev/null 2>&1 || fail "docker not found"
-    command -v docker compose >/dev/null 2>&1 && COMPOSE="docker compose" || {
-        command -v docker-compose >/dev/null 2>&1 && COMPOSE="docker-compose" || {
-            fail "docker compose not found"
-        }
-    }
-
-    cd "$COMPOSE_DIR"
-
-    # Build images.
-    info "Building test images..."
-    $COMPOSE build --quiet 2>/dev/null || warn "Image build failed (FIPS daemon image may not be available)"
-
-    # Start the mesh.
-    info "Starting 3-node mesh..."
-    $COMPOSE up -d
-
-    # Wait for health checks.
-    info "Waiting for agents to become healthy..."
-    local max_wait=60
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        local healthy
-        healthy=$($COMPOSE ps --format json 2>/dev/null | grep -c '"healthy"' || true)
-        if [[ $healthy -ge 3 ]]; then
-            info "All nodes healthy ($healthy/3)"
-            break
-        fi
-        sleep 2
-        waited=$((waited + 2))
-    done
-    if [[ $waited -ge $max_wait ]]; then
-        warn "Timeout waiting for healthy nodes — running tests anyway"
-    fi
-
-    # Test 1: DM over FIPS
-    info "Test: DM over FIPS (Agent-A → Agent-B)..."
-    # This would use the metiqd control API to trigger a DM send.
-    # Placeholder — requires running agents with API access.
-    warn "Docker DM test: requires FIPS daemon — skipping (run manually)"
-
-    # Test 2: Control RPC over FIPS
-    info "Test: Control RPC (Agent-A → Agent-B status.get)..."
-    warn "Docker control test: requires FIPS daemon — skipping (run manually)"
-
-    # Test 3: FIPS health status
-    info "Test: fips_status tool output..."
-    warn "Docker health test: requires FIPS daemon — skipping (run manually)"
-
-    # Cleanup.
-    info "Tearing down mesh..."
-    $COMPOSE down -v --remove-orphans 2>/dev/null
-
-    info "Docker E2E tests complete (manual verification steps noted above)"
+    info "Running opt-in real-daemon Docker interoperability suite..."
+    "$COMPOSE_DIR/real-daemon/run.sh"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────
