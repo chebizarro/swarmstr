@@ -44,6 +44,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -90,12 +91,14 @@ func (d *DiscordPlugin) ConfigSchema() map[string]any {
 // Capabilities declares the features supported by the Discord Bot channel.
 func (d *DiscordPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Typing:       true,
-		Reactions:    true,
-		Threads:      true,
-		Audio:        false,
-		Edit:         true,
-		MultiAccount: true,
+		Typing:          true,
+		Reactions:       true,
+		Threads:         true,
+		Audio:           false,
+		Edit:            true,
+		MultiAccount:    true,
+		Media:           true,
+		DirectTextMedia: true,
 	}
 }
 
@@ -380,6 +383,44 @@ func (b *discordBot) SendWithReceipt(ctx context.Context, text string) (channels
 	receipt.Status = channels.DeliveryDelivered
 	receipt.DeliveredAt = time.Now()
 	return receipt, nil
+}
+
+// SendMedia delivers the shared direct text/media outbound contract as one
+// Discord message: image media become image embeds (mirroring the
+// discord.send_media gateway method) and other media are linked in the
+// message content. Media are validated against the central gateway limits.
+func (b *discordBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("discord %s: %w", b.channelID, err)
+	}
+	if len(payload.Media) == 0 {
+		return b.Send(ctx, payload.Text)
+	}
+	channelID := strings.TrimSpace(payload.To)
+	if channelID == "" {
+		channelID = b.discordChannelID
+	}
+	content := payload.Text
+	embeds := make([]map[string]any, 0, len(payload.Media))
+	for _, item := range payload.Media {
+		if channelmedia.Kind(item) == channelmedia.KindImage && channelmedia.IsHTTPURL(item.Path) {
+			embeds = append(embeds, map[string]any{"url": item.Path, "image": map[string]any{"url": item.Path}})
+			continue
+		}
+		if strings.TrimSpace(content) != "" {
+			content += "\n"
+		}
+		content += item.Path
+	}
+	body := map[string]any{"content": content}
+	if len(embeds) > 0 {
+		body["embeds"] = embeds
+	}
+	_, err := sendDiscordPayloadWithClient(ctx, b.client(15*time.Second), b.restScheduler, b.token, channelID, body)
+	if err != nil {
+		return fmt.Errorf("discord %s: media send: %w", b.channelID, err)
+	}
+	return nil
 }
 
 func (b *discordBot) DeleteMessage(ctx context.Context, eventID string) error {

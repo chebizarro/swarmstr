@@ -46,6 +46,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -92,12 +93,14 @@ func (s *SlackPlugin) ConfigSchema() map[string]any {
 // Capabilities declares the features supported by the Slack Bot channel.
 func (s *SlackPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Typing:       true, // Assistant threads expose status-based typing lifecycle.
-		Reactions:    true,
-		Threads:      true,
-		Audio:        false,
-		Edit:         true,
-		MultiAccount: true,
+		Typing:          true, // Assistant threads expose status-based typing lifecycle.
+		Reactions:       true,
+		Threads:         true,
+		Audio:           false,
+		Edit:            true,
+		MultiAccount:    true,
+		Media:           true,
+		DirectTextMedia: true,
 	}
 }
 
@@ -276,6 +279,58 @@ func (b *slackBot) SendWithReceipt(ctx context.Context, text string) (channels.D
 	receipt.Status = channels.DeliveryDelivered
 	receipt.DeliveredAt = time.Now()
 	return receipt, nil
+}
+
+// SendMedia delivers the shared direct text/media outbound contract as one
+// Slack chat.postMessage call: image URLs become image blocks and other media
+// are linked in the message text. Media are validated against the central
+// gateway limits.
+func (b *slackBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("slack %s: %w", b.channelID, err)
+	}
+	if len(payload.Media) == 0 {
+		return b.Send(ctx, payload.Text)
+	}
+	channelID := strings.TrimSpace(payload.To)
+	if channelID == "" {
+		channelID = b.slackChannelID
+	}
+	text := payload.Text
+	var blocks []map[string]any
+	if strings.TrimSpace(text) != "" {
+		blocks = append(blocks, map[string]any{
+			"type": "section",
+			"text": map[string]any{"type": "mrkdwn", "text": text},
+		})
+	}
+	for _, item := range payload.Media {
+		if channelmedia.Kind(item) == channelmedia.KindImage && channelmedia.IsHTTPURL(item.Path) {
+			altText := strings.TrimSpace(item.ContentType)
+			if altText == "" {
+				altText = "image"
+			}
+			blocks = append(blocks, map[string]any{
+				"type":      "image",
+				"image_url": item.Path,
+				"alt_text":  altText,
+			})
+			continue
+		}
+		if strings.TrimSpace(text) != "" {
+			text += "\n"
+		}
+		text += item.Path
+		blocks = append(blocks, map[string]any{
+			"type": "section",
+			"text": map[string]any{"type": "mrkdwn", "text": item.Path},
+		})
+	}
+	_, err := postSlackMessageWithClient(ctx, b.client(15*time.Second), b.restScheduler, b.token, channelID, text, blocks)
+	if err != nil {
+		return fmt.Errorf("slack %s: media send: %w", b.channelID, err)
+	}
+	return nil
 }
 
 func (b *slackBot) DeleteMessage(ctx context.Context, eventID string) error {

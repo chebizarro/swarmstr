@@ -55,6 +55,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -116,9 +117,11 @@ func (w *WhatsAppPlugin) Capabilities() sdk.ChannelCapabilities {
 		// supported (SendAudio returns an explicit error). Audio is still
 		// deliverable via the whatsapp.send_media gateway method with an uploaded
 		// media_id or URL.
-		Audio:        false,
-		Edit:         false,
-		MultiAccount: true,
+		Audio:           false,
+		Edit:            false,
+		MultiAccount:    true,
+		Media:           true,
+		DirectTextMedia: true,
 	}
 }
 
@@ -470,6 +473,66 @@ func (b *whatsappBot) SendWithReceipt(ctx context.Context, text string) (channel
 	receipt.Status = channels.DeliveryDelivered
 	receipt.DeliveredAt = time.Now()
 	return receipt, nil
+}
+
+// SendMedia delivers the shared direct text/media outbound contract via the
+// Meta Cloud API. Media are validated against the central gateway limits;
+// http(s) paths are sent as links and any other path is treated as an
+// uploaded Cloud API media ID. The payload text rides as the first item's
+// caption (except audio, where the Cloud API rejects captions).
+func (b *whatsappBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("whatsapp %s: %w", b.channelID, err)
+	}
+	accountID, replyTo := splitReplyTarget(sdk.ChannelReplyTarget(ctx))
+	if strings.TrimSpace(payload.AccountID) != "" {
+		accountID = strings.TrimSpace(payload.AccountID)
+	}
+	account := b.accountForID(accountID)
+	to := strings.TrimSpace(payload.To)
+	if to == "" {
+		to = replyTo
+	}
+	if to == "" {
+		to = account.DefaultRecipient
+	}
+	if to == "" {
+		return fmt.Errorf("whatsapp %s: no media recipient; set payload.To or configure default_recipient", b.channelID)
+	}
+	if len(payload.Media) == 0 {
+		_, err := b.sendMessageWithAccount(ctx, account, to, payload.Text)
+		return err
+	}
+	for i, item := range payload.Media {
+		mediaURL, mediaID := "", ""
+		if channelmedia.IsHTTPURL(item.Path) {
+			mediaURL = item.Path
+		} else {
+			mediaID = strings.TrimPrefix(strings.TrimSpace(item.Path), "whatsapp://media/")
+		}
+		caption := ""
+		if i == 0 {
+			caption = payload.Text
+		}
+		if _, err := sendWhatsAppMedia(ctx, b.httpClient, account.Token, account.PhoneNumberID, to, whatsappMediaKind(item), mediaURL, mediaID, caption); err != nil {
+			return fmt.Errorf("whatsapp %s: media[%d]: %w", b.channelID, i, err)
+		}
+	}
+	return nil
+}
+
+// whatsappMediaKind maps a shared media kind onto Cloud API media types.
+func whatsappMediaKind(item sdk.MediaPayloadInput) string {
+	switch channelmedia.Kind(item) {
+	case channelmedia.KindImage:
+		return "image"
+	case channelmedia.KindVideo:
+		return "video"
+	case channelmedia.KindAudio:
+		return "audio"
+	default:
+		return "document"
+	}
 }
 
 func (b *whatsappBot) SendTyping(ctx context.Context, _ int) error {

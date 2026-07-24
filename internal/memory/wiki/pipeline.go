@@ -74,6 +74,7 @@ type CompiledClaim struct {
 	SourceIDs  []string `json:"source_ids,omitempty"`
 	Status     string   `json:"status,omitempty"`
 	Confidence float64  `json:"confidence,omitempty"`
+	UpdatedAt  string   `json:"updated_at,omitempty"`
 }
 
 // CompiledPage is the cache representation of an ingested vault page.
@@ -85,6 +86,7 @@ type CompiledPage struct {
 	Tags      []string `json:"tags,omitempty"`
 	SourceIDs []string `json:"source_ids,omitempty"`
 	ClaimIDs  []string `json:"claim_ids,omitempty"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
 }
 
 // CompiledCache is the durable, backend-neutral knowledge snapshot.
@@ -369,7 +371,7 @@ func (p *Pipeline) compileUnlocked(ctx context.Context) (CompileResult, error) {
 	cache := CompiledCache{Version: compiledCacheVersion}
 	hasher := sha256.New()
 	for _, note := range notes {
-		page := CompiledPage{ID: note.ID, Path: note.Path, Title: note.Title, Kind: pageKind(note), Tags: append([]string(nil), note.Tags...), SourceIDs: metadataStrings(note.Metadata, "source_ids", "sourceIds")}
+		page := CompiledPage{ID: note.ID, Path: note.Path, Title: note.Title, Kind: pageKind(note), Tags: append([]string(nil), note.Tags...), SourceIDs: metadataStrings(note.Metadata, "source_ids", "sourceIds"), UpdatedAt: firstNonBlank(stringFromMeta(note.Metadata, "updated_at"), stringFromMeta(note.Metadata, "updatedAt"))}
 		claims := extractClaims(note, page.SourceIDs)
 		for _, claim := range claims {
 			page.ClaimIDs = append(page.ClaimIDs, claim.ID)
@@ -428,10 +430,11 @@ func extractClaims(note VaultMemory, sourceIDs []string) []CompiledClaim {
 	}
 	status := stringFromMeta(note.Metadata, "status")
 	confidence := metadataFloat(note.Metadata, "confidence")
+	updatedAt := firstNonBlank(stringFromMeta(note.Metadata, "updated_at"), stringFromMeta(note.Metadata, "updatedAt"))
 	claims := make([]CompiledClaim, 0, len(texts))
 	for _, text := range texts {
 		sum := sha256.Sum256([]byte(note.ID + "\x00" + text))
-		claims = append(claims, CompiledClaim{ID: "claim:" + hex.EncodeToString(sum[:8]), Text: text, PageID: note.ID, PagePath: note.Path, SourceIDs: append([]string(nil), sourceIDs...), Status: status, Confidence: confidence})
+		claims = append(claims, CompiledClaim{ID: "claim:" + hex.EncodeToString(sum[:8]), Text: text, PageID: note.ID, PagePath: note.Path, SourceIDs: append([]string(nil), sourceIDs...), Status: status, Confidence: confidence, UpdatedAt: updatedAt})
 	}
 	return claims
 }

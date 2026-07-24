@@ -47,6 +47,7 @@ import (
 	"sync"
 	"time"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -98,12 +99,14 @@ func (t *TelegramPlugin) ConfigSchema() map[string]any {
 // Capabilities declares the features supported by the Telegram Bot channel.
 func (t *TelegramPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Typing:       true,
-		Reactions:    true,
-		Threads:      true,
-		Audio:        true,
-		Edit:         true,
-		MultiAccount: true,
+		Typing:          true,
+		Reactions:       true,
+		Threads:         true,
+		Audio:           true,
+		Edit:            true,
+		MultiAccount:    true,
+		Media:           true,
+		DirectTextMedia: true,
 	}
 }
 
@@ -365,6 +368,56 @@ func (b *telegramBot) SendWithReceipt(ctx context.Context, text string) (channel
 	receipt.Status = channels.DeliveryDelivered
 	receipt.DeliveredAt = time.Now()
 	return receipt, nil
+}
+
+// SendMedia delivers the shared direct text/media outbound contract: each
+// media reference is validated against the central gateway limits and sent
+// with the Telegram method matching its media kind. The payload text rides as
+// the first item's caption; with no media it degrades to a plain send.
+func (b *telegramBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("telegram %s: %w", b.channelID, err)
+	}
+	if len(payload.Media) == 0 {
+		return b.Send(ctx, payload.Text)
+	}
+	chatID := strings.TrimSpace(payload.To)
+	if chatID == "" {
+		b.mu.Lock()
+		chatID = b.lastChatID
+		b.mu.Unlock()
+	}
+	if chatID == "" {
+		return fmt.Errorf("telegram %s: no chat ID for media send; set payload.To or wait for an inbound message", b.channelID)
+	}
+	client := b.client(30 * time.Second)
+	for i, item := range payload.Media {
+		caption := ""
+		if i == 0 {
+			caption = payload.Text
+		}
+		if err := sendTelegramMedia(ctx, client, b.token, chatID, telegramMediaKind(item), item.Path, caption); err != nil {
+			return fmt.Errorf("telegram %s: media[%d]: %w", b.channelID, i, err)
+		}
+	}
+	return nil
+}
+
+// telegramMediaKind maps a shared media kind onto Telegram's send methods.
+func telegramMediaKind(item sdk.MediaPayloadInput) string {
+	if strings.EqualFold(strings.TrimSpace(item.ContentType), "image/gif") {
+		return "animation"
+	}
+	switch channelmedia.Kind(item) {
+	case channelmedia.KindImage:
+		return "photo"
+	case channelmedia.KindVideo:
+		return "video"
+	case channelmedia.KindAudio:
+		return "audio"
+	default:
+		return "document"
+	}
 }
 
 func (b *telegramBot) Close() {
