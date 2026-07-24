@@ -110,6 +110,10 @@ const (
 	// connection. Never broadcast.
 	EventTerminalExit = "terminal.exit"
 
+	// EventBoardChanged is broadcast when a session board's tabs or widgets
+	// change so clients can refetch the snapshot via board.get.
+	EventBoardChanged = "board.changed"
+
 	// EventToolStart is emitted when the shared loop begins executing a tool call.
 	EventToolStart = "tool.start"
 	// EventToolProgress is emitted for in-flight tool progress updates.
@@ -174,6 +178,7 @@ var AllPushEvents = []string{
 	EventCanvasUpdate,
 	EventTerminalData,
 	EventTerminalExit,
+	EventBoardChanged,
 	EventToolStart,
 	EventToolProgress,
 	EventToolResult,
@@ -808,6 +813,13 @@ type TurnResultPayload struct {
 	StepID       string `json:"step_id,omitempty"`
 	ParentTaskID string `json:"parent_task_id,omitempty"`
 	ParentRunID  string `json:"parent_run_id,omitempty"`
+}
+
+// BoardChangedPayload is the payload for EventBoardChanged events.
+type BoardChangedPayload struct {
+	SessionKey string `json:"sessionKey"`
+	Revision   int    `json:"revision"`
+	Widget     string `json:"widget,omitempty"`
 }
 
 // TalkModePayload is the payload for EventTalkMode events.

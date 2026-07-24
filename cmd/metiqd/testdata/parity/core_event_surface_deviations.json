@@ -34,6 +34,7 @@
     "voice.wake",
     "canvas.update",
     "terminal.data",
-    "terminal.exit"
+    "terminal.exit",
+    "board.changed"
   ]
 }

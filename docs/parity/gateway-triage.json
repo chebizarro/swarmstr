@@ -61,17 +61,17 @@
     },
     {
       "id": "workspace-interactive-surfaces-a7",
-      "prefixes": ["fs", "terminal", "worktrees"],
+      "prefixes": ["board", "conversations", "fs", "terminal", "worktrees"],
       "category": "implement",
       "workstream": "WS-A/A7",
-      "rationale": "Terminal PTY sessions, workspace-rooted fs.listDir, and the git worktree lifecycle are implemented as WS-native gateway surfaces in the A7 pass."
+      "rationale": "Terminal PTY sessions, workspace-rooted fs.listDir, the git worktree lifecycle, the per-session board store, and gateway conversations are implemented as WS-native gateway surfaces in the A7 pass. Board view-ticket methods and remaining terminal helpers stay missing within this implement group until their follow-up slices land."
     },
     {
       "id": "workspace-interactive-surfaces",
-      "prefixes": ["artifacts", "attach", "board", "conversations", "environments", "mcp", "question", "taskSuggestions"],
+      "prefixes": ["artifacts", "attach", "environments", "mcp", "question", "taskSuggestions"],
       "category": "defer",
       "workstream": "WS-A/A7",
-      "rationale": "Board/conversation, attachment, artifact, MCP-app, environment, task-suggestion, and interactive-question surfaces remain deferred until their vertical slices land (WS-A/A7 follow-ups)."
+      "rationale": "Attachment, artifact, MCP-app, environment, task-suggestion, and interactive-question surfaces remain deferred until their vertical slices land (WS-A/A7 follow-ups)."
     }
   ],
   "method_notes": {

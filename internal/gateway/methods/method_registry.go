@@ -303,6 +303,15 @@ var adminDispatchRegistry = []struct {
 		MethodWorktreesRemove,
 		MethodWorktreesRestore,
 		MethodWorktreesGc,
+		MethodBoardGet,
+		MethodBoardUpdate,
+		MethodBoardWidgetPut,
+		MethodBoardWidgetGrant,
+		MethodBoardEvent,
+		MethodConversationsList,
+		MethodConversationsSend,
+		MethodConversationsTurn,
+		MethodConversationsTurnCancel,
 	}},
 }
 

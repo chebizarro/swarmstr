@@ -27,7 +27,9 @@ import (
 	"metiq/internal/canvas"
 	"metiq/internal/config"
 	"metiq/internal/cron"
+	boardpkg "metiq/internal/gateway/board"
 	"metiq/internal/gateway/channels"
+	conversationspkg "metiq/internal/gateway/conversations"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	gatewayprotocol "metiq/internal/gateway/protocol"
@@ -137,6 +139,13 @@ var (
 	controlTerminalManager *terminalpkg.Manager
 	// controlWorktrees backs the worktrees.* git worktree lifecycle (WS-A/A7).
 	controlWorktrees *worktreespkg.Service
+	// controlBoardStore holds per-session board tabs/widgets (WS-A/A7.4).
+	controlBoardStore = boardpkg.NewStore()
+	// controlBoardNotices dedupes board.event notices per widget (WS-A/A7.4).
+	controlBoardNotices = boardpkg.NewNoticeDeduper()
+	// controlConversations tracks external conversation addresses and pending
+	// conversation turns (WS-A/A7.5).
+	controlConversations = conversationspkg.NewRegistry()
 	controlWizards              *wizardRegistry
 	controlOps                  *operationsRegistry
 	controlAgentRegistry        *agent.AgentRuntimeRegistry
@@ -6107,6 +6116,36 @@ func main() {
 			text = channels.NormalizeInbound(platform, text, "")
 			msg.Text = text
 		}
+
+		// Conversation surface (WS-A/A7.5): record the sender's durable
+		// conversation address, then offer the message to any pending
+		// conversations.turn waiter. A consumed reply is correlated output
+		// of an operator turn and must not start an ordinary inbound turn.
+		if platform, ok := channelPlatforms[msg.ChannelID]; ok && platform != "" {
+			nowMS := time.Now().UnixMilli()
+			convo := controlConversations.Observe(conversationspkg.Conversation{
+				Channel:   platform,
+				AccountID: msg.ChannelID,
+				Kind:      conversationspkg.KindDirect,
+				Target:    msg.SenderID,
+			}, nowMS)
+			if convo.ConversationRef != "" {
+				replyMessageID := msg.EventID
+				if replyMessageID == "" {
+					replyMessageID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
+				}
+				if controlConversations.NotifyInbound(convo.ConversationRef, conversationspkg.Reply{
+					MessageID: replyMessageID,
+					ReplyToID: msg.ReplyToEventID,
+					ThreadID:  msg.ThreadID,
+					Text:      msg.Text,
+					Timestamp: nowMS,
+				}) {
+					return
+				}
+			}
+		}
+
 		key := channels.DebounceKeyWithThread(msg.ChannelID, msg.SenderID, msg.ThreadID)
 		if msg.EventID != "" {
 			channelEventIDsMu.Lock()
@@ -7603,6 +7642,9 @@ func handleControlRPCRequest(
 		keyer:           svc.relay.keyer,
 		terminalManager: controlTerminalManager,
 		worktrees:       controlWorktrees,
+		boardStore:      controlBoardStore,
+		boardNotices:    controlBoardNotices,
+		conversations:   controlConversations,
 	}
 	if svc.handlers.hooksMgr != nil {
 		deps.hooksMgr = svc.handlers.hooksMgr

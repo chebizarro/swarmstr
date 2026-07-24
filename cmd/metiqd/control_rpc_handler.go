@@ -16,7 +16,9 @@ import (
 	"metiq/internal/autoreply"
 	"metiq/internal/canvas"
 	ctxengine "metiq/internal/context"
+	boardpkg "metiq/internal/gateway/board"
 	"metiq/internal/gateway/channels"
+	conversationspkg "metiq/internal/gateway/conversations"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	"metiq/internal/gateway/sessioncoord"
@@ -92,6 +94,9 @@ type controlRPCDeps struct {
 	keyer           nostr.Keyer
 	terminalManager *terminalpkg.Manager
 	worktrees       *worktreespkg.Service
+	boardStore      *boardpkg.Store
+	boardNotices    *boardpkg.NoticeDeduper
+	conversations   *conversationspkg.Registry
 }
 
 type hooksEventFirer interface {

@@ -12,13 +12,13 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 170,
+    "implemented": 179,
     "partial": 0,
-    "missing": 154,
+    "missing": 145,
     "triage_category_counts": {
       "accepted-deviation": 16,
-      "defer": 38,
-      "implement": 270
+      "defer": 25,
+      "implement": 283
     }
   },
   "entries": [
@@ -847,50 +847,50 @@
     },
     {
       "method": "board.get",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "Per-sessionKey tabs/widgets store in internal/gateway/board; no view tickets/sandbox URLs yet (deferred with board ticket methods).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.update",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "Layout ops (tab_create/update/delete, tabs_reorder, widget_move/resize/remove) with revision counter and board.changed broadcast.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.widget.put",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "html and plugin content sources; mcp-app and canvas-doc sources rejected until their surfaces land. HTML grants frozen to approved bytes.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.widget.grant",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "Revision- and instance-checked grant flow over pending capability declarations.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.widget.appView",
       "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "notes": "Deferred: board view-ticket / MCP-App surface (see defer bucket issue).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.event",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "Legacy sessionKey+widget variant with 8KB payload cap and 5s dedupe; notices delivered as active-run steering (ticket variant deferred).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -2127,26 +2127,26 @@
     },
     {
       "method": "conversations.send",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "Reuses channel send internals; media output markers dispatch via the shared outbound media helper. Operation-id dedupe is process-local.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "conversations.turn",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "Send plus in-process reply correlation on the extension inbound path; correlationPersisted=false (no durable delivery store yet).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "conversations.turn.cancel",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "Cancels the process-local pending turn waiter.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -2640,10 +2640,10 @@
     },
     {
       "method": "conversations.list",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "notes": "Process-local conversation registry: observed extension-channel senders plus joined NIP-29 group channels.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -2667,25 +2667,25 @@
     {
       "method": "board.prompt.authorize",
       "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "notes": "Deferred: board view-ticket / MCP-App surface (see defer bucket issue).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.data.read",
       "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "notes": "Deferred: board view-ticket / MCP-App surface (see defer bucket issue).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.action",
       "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "notes": "Deferred: board view-ticket / MCP-App surface (see defer bucket issue).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {

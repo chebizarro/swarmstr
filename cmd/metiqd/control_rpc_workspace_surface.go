@@ -57,6 +57,24 @@ func (h controlRPCHandler) handleWorkspaceSurfaceRPC(ctx context.Context, in nos
 		return h.handleWorktreesRestore(ctx, in)
 	case methods.MethodWorktreesGc:
 		return h.handleWorktreesGc(ctx, in)
+	case methods.MethodBoardGet:
+		return h.handleBoardGet(ctx, in)
+	case methods.MethodBoardUpdate:
+		return h.handleBoardUpdate(ctx, in)
+	case methods.MethodBoardWidgetPut:
+		return h.handleBoardWidgetPut(ctx, in)
+	case methods.MethodBoardWidgetGrant:
+		return h.handleBoardWidgetGrant(ctx, in)
+	case methods.MethodBoardEvent:
+		return h.handleBoardEvent(ctx, in)
+	case methods.MethodConversationsList:
+		return h.handleConversationsList(ctx, in)
+	case methods.MethodConversationsSend:
+		return h.handleConversationsSend(ctx, in)
+	case methods.MethodConversationsTurn:
+		return h.handleConversationsTurn(ctx, in)
+	case methods.MethodConversationsTurnCancel:
+		return h.handleConversationsTurnCancel(ctx, in)
 	default:
 		return nostruntime.ControlRPCResult{}, false, nil
 	}

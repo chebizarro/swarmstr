@@ -219,6 +219,15 @@ var exactMethodScopes = map[string]string{
 	MethodWorktreesRemove:             protocol.MethodScopeOperatorAdmin,
 	MethodWorktreesRestore:            protocol.MethodScopeOperatorAdmin,
 	MethodWorktreesGc:                 protocol.MethodScopeOperatorAdmin,
+	MethodBoardGet:                    protocol.MethodScopeOperatorRead,
+	MethodBoardUpdate:                 protocol.MethodScopeOperatorWrite,
+	MethodBoardWidgetPut:              protocol.MethodScopeOperatorWrite,
+	MethodBoardWidgetGrant:            protocol.MethodScopeOperatorApprovals,
+	MethodBoardEvent:                  protocol.MethodScopeOperatorWrite,
+	MethodConversationsList:           protocol.MethodScopeOperatorAdmin,
+	MethodConversationsSend:           protocol.MethodScopeOperatorAdmin,
+	MethodConversationsTurn:           protocol.MethodScopeOperatorAdmin,
+	MethodConversationsTurnCancel:     protocol.MethodScopeOperatorAdmin,
 }
 
 func inferredMethodScope(name string) string {
