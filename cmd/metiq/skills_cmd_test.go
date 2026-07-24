@@ -5,9 +5,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRunSkillsLintEmitsVersionedMachineReadableOutput(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "verify")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "---\nname: Verify\ndescription: Verify changes\n---\nCheck the result.\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := captureStdout(t, func() error { return runSkills([]string{"lint", "--json", dir}) })
+	if err != nil {
+		t.Fatalf("runSkills lint: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode lint JSON: %v\n%s", err, out)
+	}
+	if result["schema_version"] != "metiq.skills.lint.v1" || result["valid"] != true {
+		t.Fatalf("unexpected lint output: %#v", result)
+	}
+}
 
 func TestRunSkillsInfoUsesStatusAndAgentFilter(t *testing.T) {
 	var gotMethod string

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"time"
 )
@@ -37,6 +38,8 @@ type VaultBackend struct {
 	kvVersion int
 	client    *http.Client
 }
+
+var _ ListableSecretBackend = (*VaultBackend)(nil)
 
 // NewVaultBackend validates cfg and returns a fail-closed Vault backend.
 func NewVaultBackend(cfg VaultConfig) (*VaultBackend, error) {
@@ -176,6 +179,47 @@ func (b *VaultBackend) Set(key, value string) error {
 	return nil
 }
 
+// List returns secret keys beneath prefix without resolving any secret values.
+// Vault folder markers retain their trailing slash so callers can recurse.
+func (b *VaultBackend) List(prefix string) ([]string, error) {
+	endpoint, err := b.listEndpoint(prefix)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := b.request("LIST", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return []string{}, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, vaultStatusError(resp)
+	}
+	var envelope struct {
+		Data struct {
+			Keys []string `json:"keys"`
+		} `json:"data"`
+	}
+	if err := decodeVaultJSON(resp.Body, &envelope); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(envelope.Data.Keys))
+	seen := map[string]bool{}
+	for _, key := range envelope.Data.Keys {
+		key = strings.TrimSpace(key)
+		plain := strings.TrimSuffix(key, "/")
+		if key == "" || validateVaultPath(plain) != nil || seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
 func (b *VaultBackend) Delete(key string) error {
 	kind := "data"
 	if b.kvVersion == 2 {
@@ -212,6 +256,28 @@ func (b *VaultBackend) endpoint(key, kind string) (*url.URL, error) {
 		segments = append(segments, b.prefix)
 	}
 	segments = append(segments, key)
+	u := *b.base
+	u.Path = path.Join(b.base.Path, "v1", path.Join(segments...))
+	return &u, nil
+}
+
+func (b *VaultBackend) listEndpoint(prefix string) (*url.URL, error) {
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	if prefix != "" {
+		if err := validateVaultPath(prefix); err != nil {
+			return nil, fmt.Errorf("vault list prefix: %w", err)
+		}
+	}
+	segments := []string{b.mount}
+	if b.kvVersion == 2 {
+		segments = append(segments, "metadata")
+	}
+	if b.prefix != "" {
+		segments = append(segments, b.prefix)
+	}
+	if prefix != "" {
+		segments = append(segments, prefix)
+	}
 	u := *b.base
 	u.Path = path.Join(b.base.Path, "v1", path.Join(segments...))
 	return &u, nil

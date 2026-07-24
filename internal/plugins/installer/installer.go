@@ -58,6 +58,7 @@ func (d *defaultInstaller) InstallNPM(ctx context.Context, spec, installPath str
 	if err != nil {
 		return res, err
 	}
+	res.Provenance = &InstallProvenance{SourceType: "npm", SourceRef: spec, ResolvedRef: firstNonEmptyProvenanceRef(res.ResolvedSpec, res.ResolvedVersion)}
 	return recordIntegrityForResult(res, installPath)
 }
 
@@ -66,6 +67,7 @@ func (d *defaultInstaller) UpdateNPM(ctx context.Context, spec, installPath stri
 	if err != nil {
 		return res, err
 	}
+	res.Provenance = &InstallProvenance{SourceType: "npm", SourceRef: spec, ResolvedRef: firstNonEmptyProvenanceRef(res.ResolvedSpec, res.ResolvedVersion)}
 	return recordIntegrityForResult(res, installPath)
 }
 
@@ -74,6 +76,7 @@ func (d *defaultInstaller) ExtractArchive(ctx context.Context, sourcePath, insta
 	if err != nil {
 		return res, err
 	}
+	res.Provenance = &InstallProvenance{SourceType: "archive", SourceRef: sourcePath, ResolvedRef: "extracted-tree"}
 	return recordIntegrityForResult(res, installPath)
 }
 
@@ -82,6 +85,7 @@ func (d *defaultInstaller) InstallGit(ctx context.Context, repo, ref, installPat
 	if err != nil {
 		return res, err
 	}
+	res.Provenance = &InstallProvenance{SourceType: "git", SourceRef: repo + "#" + strings.TrimSpace(ref), ResolvedRef: firstNonEmptyProvenanceRef(res.ResolvedVersion, ref)}
 	return recordIntegrityForResult(res, installPath)
 }
 
@@ -90,6 +94,7 @@ func (d *defaultInstaller) UpdateGit(ctx context.Context, repo, ref, installPath
 	if err != nil {
 		return res, err
 	}
+	res.Provenance = &InstallProvenance{SourceType: "git", SourceRef: repo + "#" + strings.TrimSpace(ref), ResolvedRef: firstNonEmptyProvenanceRef(res.ResolvedVersion, ref)}
 	return recordIntegrityForResult(res, installPath)
 }
 

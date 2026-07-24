@@ -46,6 +46,13 @@ type SecretBackend interface {
 	Delete(key string) error
 }
 
+// ListableSecretBackend is implemented by backends that can enumerate key
+// names without resolving or returning secret values.
+type ListableSecretBackend interface {
+	SecretBackend
+	List(prefix string) ([]string, error)
+}
+
 const mcpAuthBackendKey = "mcp-auth"
 
 var errSecretNotFound = errors.New("secret not found")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -31,6 +32,93 @@ type LintFinding struct {
 type LintReport struct {
 	Path     string        `json:"path,omitempty"`
 	Findings []LintFinding `json:"findings,omitempty"`
+}
+
+// LintResult aggregates deterministic reports for CLI and CI consumers.
+const LintSchemaVersion = "metiq.skills.lint.v1"
+
+type LintResult struct {
+	SchemaVersion string       `json:"schema_version"`
+	Valid         bool         `json:"valid"`
+	ErrorCount    int          `json:"error_count"`
+	WarningCount  int          `json:"warning_count"`
+	Reports       []LintReport `json:"reports"`
+}
+
+// LintPaths lints explicit skill files or recursively discovers supported
+// manifests beneath directories. Parse/read failures are represented as stable
+// findings so JSON consumers always receive a complete result set.
+func LintPaths(paths []string) LintResult {
+	files := make([]string, 0)
+	for _, candidate := range paths {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		info, err := os.Stat(candidate)
+		if err != nil {
+			files = append(files, candidate)
+			continue
+		}
+		if !info.IsDir() {
+			files = append(files, candidate)
+			continue
+		}
+		_ = filepath.WalkDir(candidate, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				files = append(files, path)
+				return nil
+			}
+			if entry.IsDir() {
+				if path != candidate && strings.HasPrefix(entry.Name(), ".") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if isLintableSkillFile(entry.Name()) {
+				files = append(files, path)
+			}
+			return nil
+		})
+	}
+	sort.Strings(files)
+	files = uniqueLintPaths(files)
+	result := LintResult{SchemaVersion: LintSchemaVersion, Valid: true, Reports: make([]LintReport, 0, len(files))}
+	for _, file := range files {
+		report, err := LintSkillFile(file)
+		if err != nil {
+			report = LintReport{Path: file, Findings: []LintFinding{{Severity: LintError, Code: "parse-error", Message: err.Error()}}}
+		}
+		for _, finding := range report.Findings {
+			switch finding.Severity {
+			case LintError:
+				result.ErrorCount++
+			case LintWarning:
+				result.WarningCount++
+			}
+		}
+		result.Reports = append(result.Reports, report)
+	}
+	result.Valid = result.ErrorCount == 0
+	return result
+}
+
+func isLintableSkillFile(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return lower == "skill.md" || lower == "skill.yaml" || lower == "skill.yml"
+}
+
+func uniqueLintPaths(paths []string) []string {
+	out := paths[:0]
+	last := ""
+	for _, path := range paths {
+		if path == last {
+			continue
+		}
+		out = append(out, path)
+		last = path
+	}
+	return out
 }
 
 func (r LintReport) Valid() bool {

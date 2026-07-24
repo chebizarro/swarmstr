@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+
+	"metiq/internal/permissions"
 )
 
 func runExecPolicy(args []string) error {
@@ -22,9 +24,56 @@ func runExecPolicy(args []string) error {
 		return runExecPolicyMutateTools(args[1:], true)
 	case "remove", "rm", "allow":
 		return runExecPolicyMutateTools(args[1:], false)
+	case "doctor", "lint":
+		return runExecPolicyDoctor(args[1:])
 	default:
-		return fmt.Errorf("exec-policy subcommands: get, set, add, remove")
+		return fmt.Errorf("exec-policy subcommands: get, set, add, remove, doctor")
 	}
+}
+
+func runExecPolicyDoctor(args []string) error {
+	fs := flag.NewFlagSet("exec-policy doctor", flag.ContinueOnError)
+	var adminAddr, adminToken, bootstrapPath, nodeID string
+	var jsonOut bool
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
+	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address")
+	fs.StringVar(&adminToken, "admin-token", "", "admin API token")
+	fs.StringVar(&nodeID, "node", "", "node ID for node-specific approvals")
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cl, err := resolveAdminClient(adminAddr, adminToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	method := "exec.approvals.get"
+	params := map[string]any{}
+	if strings.TrimSpace(nodeID) != "" {
+		method = "exec.approvals.node.get"
+		params["node_id"] = strings.TrimSpace(nodeID)
+	}
+	result, err := cl.call(method, params)
+	if err != nil {
+		return err
+	}
+	policy, _ := result["approvals"].(map[string]any)
+	report := permissions.DoctorExecApprovalPolicy(policy)
+	if jsonOut {
+		if err := printJSON(map[string]any{"valid": report.Valid(), "findings": report.Findings}); err != nil {
+			return err
+		}
+	} else if len(report.Findings) == 0 {
+		printSuccess("exec approval policy passed all doctor checks")
+	} else {
+		for _, finding := range report.Findings {
+			fmt.Printf("%s\t%s\t%s\t%s\n", finding.Severity, finding.Code, finding.Field, finding.Message)
+		}
+	}
+	if !report.Valid() {
+		return fmt.Errorf("exec approval doctor found invalid policy")
+	}
+	return nil
 }
 
 func runExecPolicyGet(args []string) error {

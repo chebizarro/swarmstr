@@ -62,6 +62,7 @@ func newCommandRegistry(bootstrapPath string) *commandRegistry {
 		"skills install     install a skill option",
 		"skills enable <id> enable a skill",
 		"skills disable <id> disable a skill",
+		"skills lint <path>  lint skill manifests for CI/editor use",
 	}}, runSkills)
 	addLazy(cliCommand{Name: "hooks", Summary: "list installed hooks", Group: "Channels & Skills"}, runHooks)
 
@@ -120,7 +121,10 @@ func newCommandRegistry(bootstrapPath string) *commandRegistry {
 	addLazy(cliCommand{Name: "sessions", Aliases: []string{"session"}, Summary: "session management", Group: "Other"}, runSessions)
 	addLazy(cliCommand{Name: "cron", Summary: "scheduled task management", Group: "Other"}, runCron)
 	addLazy(cliCommand{Name: "approvals", Aliases: []string{"approval"}, Summary: "exec approval management", Group: "Other"}, runApprovals)
-	addLazy(cliCommand{Name: "exec-policy", Aliases: []string{"execpolicy"}, Summary: "exec approval policy management", Group: "Other"}, runExecPolicy)
+	addLazy(cliCommand{Name: "exec-policy", Aliases: []string{"execpolicy"}, Summary: "exec approval policy management", Group: "Other", Details: []string{
+		"exec-policy get              show live policy",
+		"exec-policy doctor           diagnose invalid/conflicting/unreachable rules",
+	}}, runExecPolicy)
 	addLazy(cliCommand{Name: "backup", Summary: "create or restore local metiq backups", Group: "Other"}, runBackup)
 	addLazy(cliCommand{Name: "diagnostics", Aliases: []string{"diag"}, Summary: "export support diagnostic bundle", Group: "Other"}, runDiagnostics)
 	addLazy(cliCommand{Name: "doctor", Summary: "system health diagnostics", Group: "Other"}, runDoctor)

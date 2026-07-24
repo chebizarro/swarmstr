@@ -82,6 +82,39 @@ metadata:
 	}
 }
 
+func TestLintPathsRecursesAndReturnsParseErrorsAsFindings(t *testing.T) {
+	root := t.TempDir()
+	validDir := filepath.Join(root, "valid")
+	invalidDir := filepath.Join(root, "invalid")
+	for _, dir := range []string{validDir, invalidDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(validDir, "SKILL.md"), []byte("---\nname: Valid\ndescription: valid skill\n---\nDo one thing.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(invalidDir, "SKILL.md"), []byte("---\nname: [broken\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := LintPaths([]string{root})
+	if result.SchemaVersion != LintSchemaVersion {
+		t.Fatalf("schema version = %q", result.SchemaVersion)
+	}
+	if result.Valid || result.ErrorCount != 1 || len(result.Reports) != 2 {
+		t.Fatalf("unexpected lint result: %+v", result)
+	}
+	foundParseError := false
+	for _, report := range result.Reports {
+		for _, finding := range report.Findings {
+			foundParseError = foundParseError || finding.Code == "parse-error"
+		}
+	}
+	if !foundParseError {
+		t.Fatalf("expected parse-error finding: %+v", result.Reports)
+	}
+}
+
 func TestLintSkillFileStrictUnknownFields(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "strict")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

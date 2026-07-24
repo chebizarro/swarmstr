@@ -470,6 +470,25 @@ func main() {
 	// web or payment tool construction so no subsystem creates an independent
 	// resolver or captures stale credential values.
 	secretsStore := secretspkg.NewStore(nil) // uses ~/.metiq/.env by default
+	if backendCfg := cfg.SecretBackend; backendCfg != nil {
+		backend, err := secretspkg.NewConfiguredBackend(secretspkg.BackendConfig{
+			Type: backendCfg.Type,
+			Vault: secretspkg.VaultBackendConfig{
+				Address:           backendCfg.Vault.Address,
+				TokenEnv:          backendCfg.Vault.TokenEnv,
+				Namespace:         backendCfg.Vault.Namespace,
+				Mount:             backendCfg.Vault.Mount,
+				Prefix:            backendCfg.Vault.Prefix,
+				KVVersion:         backendCfg.Vault.KVVersion,
+				Timeout:           time.Duration(backendCfg.Vault.TimeoutSeconds) * time.Second,
+				AllowInsecureHTTP: backendCfg.Vault.AllowInsecureHTTP,
+			},
+		})
+		if err != nil {
+			log.Fatalf("configure secret backend: %v", err)
+		}
+		secretsStore.SetBackend(backend)
+	}
 	if _, warns := secretsStore.Reload(); len(warns) > 0 {
 		for _, warning := range warns {
 			log.Printf("secrets: %s", warning)
@@ -1298,7 +1317,7 @@ func main() {
 	}
 
 	// Load Goja (JS) plugins from config and register their tools.
-	pluginHost := pluginmanager.BuildHost(configState, agentRuntime)
+	pluginHost := pluginmanager.BuildHostWithRuntime(configState, agentRuntime, pluginRuntimeServices(secretsStore))
 	pluginMgr := pluginmanager.New(pluginHost)
 	controlHookInvoker = pluginhooks.NewHookInvoker(nil, nil)
 	if loadErr := pluginMgr.Load(ctx, configState.Get()); loadErr != nil {

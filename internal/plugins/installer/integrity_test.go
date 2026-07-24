@@ -57,6 +57,29 @@ func TestRecordPluginIntegrityWithProvenance(t *testing.T) {
 	}
 }
 
+func TestVerifyPluginIntegrityPolicyRequiresProvenance(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.js"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := IntegrityPolicy{RequireRecord: true, RequireProvenance: true}
+	if err := VerifyPluginIntegrityWithPolicy(dir, policy); err == nil || !strings.Contains(err.Error(), "record is required") {
+		t.Fatalf("missing record accepted: %v", err)
+	}
+	if _, err := RecordPluginIntegrity(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPluginIntegrityWithPolicy(dir, policy); err == nil || !strings.Contains(err.Error(), "provenance is required") {
+		t.Fatalf("missing provenance accepted: %v", err)
+	}
+	if _, err := RecordPluginIntegrityWithProvenance(dir, &InstallProvenance{SourceType: "npm", SourceRef: "demo@1", ResolvedRef: "demo@1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPluginIntegrityWithPolicy(dir, policy); err != nil {
+		t.Fatalf("valid provenance rejected: %v", err)
+	}
+}
+
 func TestVerifyPluginIntegrityDetectsTampering(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "index.js")

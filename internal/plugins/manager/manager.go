@@ -106,7 +106,9 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 				continue
 			}
 		}
-		if err := installer.VerifyPluginIntegrity(installPath); err != nil {
+		pluginTrust := resolvePluginTrust(rawExt, pluginID, entry)
+		requireProvenance := !pluginTrust.IsTrusted()
+		if err := installer.VerifyPluginIntegrityWithPolicy(installPath, installer.IntegrityPolicy{RequireRecord: requireProvenance, RequireProvenance: requireProvenance}); err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 			m.log.Warn("plugin integrity verification failed", "plugin", pluginID, "err", err)
 			continue
@@ -120,7 +122,6 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			m.log.Warn("plugin package compatibility check failed", "plugin", pluginID, "err", err)
 			continue
 		}
-		pluginTrust := resolvePluginTrust(rawExt, pluginID, entry)
 		sandboxDecision := NodeSandboxDecision(pluginTrust, sandboxEnabled, sandboxCfg)
 
 		// Node.js compat bridge: activated when plugin_type is "node"/"nodejs"

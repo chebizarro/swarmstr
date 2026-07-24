@@ -46,6 +46,29 @@ type BootstrapConfig struct {
 	// ManagedSettings are trusted local lockdown controls merged into runtime
 	// config with precedence over operator-editable settings.
 	ManagedSettings *ManagedSettings `json:"managed_settings,omitempty"`
+
+	// SecretBackend selects durable credential storage during daemon bootstrap.
+	// Vault tokens are referenced by environment variable name and are never
+	// stored in this file.
+	SecretBackend *SecretBackendConfig `json:"secret_backend,omitempty"`
+}
+
+// SecretBackendConfig configures bootstrap-time secret persistence.
+type SecretBackendConfig struct {
+	Type  string               `json:"type"`
+	Vault VaultBootstrapConfig `json:"vault,omitempty"`
+}
+
+// VaultBootstrapConfig contains non-secret Vault connection settings.
+type VaultBootstrapConfig struct {
+	Address           string `json:"address"`
+	TokenEnv          string `json:"token_env,omitempty"`
+	Namespace         string `json:"namespace,omitempty"`
+	Mount             string `json:"mount,omitempty"`
+	Prefix            string `json:"prefix,omitempty"`
+	KVVersion         int    `json:"kv_version,omitempty"`
+	TimeoutSeconds    int    `json:"timeout_seconds,omitempty"`
+	AllowInsecureHTTP bool   `json:"allow_insecure_http,omitempty"`
 }
 
 func (c BootstrapConfig) EffectiveStateKind() events.Kind {

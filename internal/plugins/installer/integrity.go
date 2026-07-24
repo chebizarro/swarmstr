@@ -33,9 +33,12 @@ type ArtifactVerification struct {
 }
 
 type InstallProvenance struct {
-	SourceURL     string                `json:"source_url"`
-	FinalURL      string                `json:"final_url"`
-	ResolvedHosts []ResolvedHost        `json:"resolved_hosts"`
+	SourceType    string                `json:"source_type,omitempty"`
+	SourceRef     string                `json:"source_ref,omitempty"`
+	ResolvedRef   string                `json:"resolved_ref,omitempty"`
+	SourceURL     string                `json:"source_url,omitempty"`
+	FinalURL      string                `json:"final_url,omitempty"`
+	ResolvedHosts []ResolvedHost        `json:"resolved_hosts,omitempty"`
 	Artifact      ArtifactDigest        `json:"artifact"`
 	Verification  *ArtifactVerification `json:"verification,omitempty"`
 }
@@ -61,7 +64,13 @@ func RecordPluginIntegrityWithProvenance(pluginPath string, provenance *InstallP
 		return PluginIntegrityRecord{}, err
 	}
 	record.RecordedAt = time.Now().UTC()
-	record.Provenance = provenance
+	if provenance != nil {
+		copyProvenance := *provenance
+		if strings.TrimSpace(copyProvenance.Artifact.Hash) == "" {
+			copyProvenance.Artifact = ArtifactDigest{Algorithm: "sha256", Hash: record.Hash, SizeBytes: int64(record.FileCount)}
+		}
+		record.Provenance = &copyProvenance
+	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return PluginIntegrityRecord{}, fmt.Errorf("marshal plugin integrity: %w", err)
@@ -76,10 +85,22 @@ func RecordPluginIntegrityWithProvenance(pluginPath string, provenance *InstallP
 	return record, nil
 }
 
+// IntegrityPolicy controls fail-closed verification for managed/untrusted code.
+type IntegrityPolicy struct {
+	RequireRecord     bool
+	RequireProvenance bool
+}
+
 // VerifyPluginIntegrity verifies a recorded install-tree hash when present.
 // Missing records are tolerated so local path/development plugins continue to
 // load; managed installer paths record this file after successful install.
 func VerifyPluginIntegrity(pluginPath string) error {
+	return VerifyPluginIntegrityWithPolicy(pluginPath, IntegrityPolicy{})
+}
+
+// VerifyPluginIntegrityWithPolicy verifies integrity and optionally requires an
+// immutable provenance record for untrusted or remotely installed plugins.
+func VerifyPluginIntegrityWithPolicy(pluginPath string, policy IntegrityPolicy) error {
 	pluginPath = strings.TrimSpace(pluginPath)
 	if pluginPath == "" {
 		return fmt.Errorf("pluginPath is required")
@@ -91,6 +112,9 @@ func VerifyPluginIntegrity(pluginPath string) error {
 	data, err := os.ReadFile(filepath.Join(root, PluginIntegrityFile))
 	if err != nil {
 		if os.IsNotExist(err) {
+			if policy.RequireRecord {
+				return fmt.Errorf("plugin integrity record is required")
+			}
 			return nil
 		}
 		return fmt.Errorf("read plugin integrity: %w", err)
@@ -104,7 +128,9 @@ func VerifyPluginIntegrity(pluginPath string) error {
 	}
 	if expected.Provenance != nil {
 		p := expected.Provenance
-		if strings.TrimSpace(p.SourceURL) == "" || strings.TrimSpace(p.FinalURL) == "" || len(p.ResolvedHosts) == 0 || p.Artifact.Algorithm != "sha256" || strings.TrimSpace(p.Artifact.Hash) == "" || p.Artifact.SizeBytes < 0 {
+		urlSource := strings.TrimSpace(p.SourceURL) != "" && strings.TrimSpace(p.FinalURL) != "" && len(p.ResolvedHosts) > 0
+		typedSource := strings.TrimSpace(p.SourceType) != "" && strings.TrimSpace(p.SourceRef) != "" && strings.TrimSpace(p.ResolvedRef) != ""
+		if (!urlSource && !typedSource) || p.Artifact.Algorithm != "sha256" || strings.TrimSpace(p.Artifact.Hash) == "" || p.Artifact.SizeBytes < 0 {
 			return fmt.Errorf("plugin integrity provenance is invalid")
 		}
 	}
@@ -114,6 +140,9 @@ func VerifyPluginIntegrity(pluginPath string) error {
 	}
 	if !strings.EqualFold(expected.Hash, actual.Hash) {
 		return fmt.Errorf("plugin integrity mismatch: expected %s, got %s", expected.Hash, actual.Hash)
+	}
+	if policy.RequireProvenance && expected.Provenance == nil {
+		return fmt.Errorf("plugin integrity provenance is required")
 	}
 	return nil
 }
@@ -199,6 +228,9 @@ func recordIntegrityForResult(res Result, fallbackPath string) (Result, error) {
 		return res, err
 	}
 	res.OpenClawCompatibility = &compat
+	if res.Provenance == nil {
+		res.Provenance = &InstallProvenance{SourceType: "managed", SourceRef: firstNonEmptyProvenanceRef(res.ResolvedSpec, fallbackPath), ResolvedRef: firstNonEmptyProvenanceRef(res.ResolvedVersion, res.ResolvedSpec)}
+	}
 	record, err := RecordPluginIntegrityWithProvenance(installPath, res.Provenance)
 	if err != nil {
 		return res, err
@@ -207,4 +239,13 @@ func recordIntegrityForResult(res Result, fallbackPath string) (Result, error) {
 		res.Integrity = "sha256-" + record.Hash
 	}
 	return res, nil
+}
+
+func firstNonEmptyProvenanceRef(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return "installed-tree"
 }

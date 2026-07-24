@@ -327,6 +327,14 @@ func cloneHostForPlugin(base *sdk.Host, pluginID string) (*sdk.Host, error) {
 		derived.Log = &logHostImpl{log: logger.log, pluginID: pluginID}
 	}
 	derived.Storage = storage
+	if providerAuth, ok := base.ProviderAuth.(providerAuthHostImpl); ok {
+		providerAuth.pluginID = pluginID
+		derived.ProviderAuth = providerAuth
+	} else if providerAuth, ok := base.ProviderAuth.(*providerAuthHostImpl); ok && providerAuth != nil {
+		copyAuth := *providerAuth
+		copyAuth.pluginID = pluginID
+		derived.ProviderAuth = &copyAuth
+	}
 	return &derived, nil
 }
 
@@ -337,8 +345,17 @@ func cloneHostForPlugin(base *sdk.Host, pluginID string) (*sdk.Host, error) {
 // installed as unavailable sentinels so guarded plugin code can fall back and
 // unchecked namespace calls fail with an explicit host-unavailable error.
 func BuildHost(cfg configStateReader, rt agentRuntimeReader) *sdk.Host {
+	return BuildHostWithRuntime(cfg, rt, RuntimeServices{})
+}
+
+// BuildHostWithRuntime assembles the plugin host and connects sensitive SDK
+// namespaces to live daemon services. Missing optional services remain explicit
+// unavailable sentinels at the Goja boundary.
+func BuildHostWithRuntime(cfg configStateReader, rt agentRuntimeReader, services RuntimeServices) *sdk.Host {
 	h := &sdk.Host{
-		Config: &configHostImpl{cfg: cfg},
+		Config:   &configHostImpl{cfg: cfg},
+		Security: securityHostImpl{},
+		Doctor:   doctorHostImpl{cfg: cfg, approvalSnapshot: services.ExecApprovalSnapshot},
 		Log: &logHostImpl{
 			log:      slog.Default().With("component", "plugin-sdk"),
 			pluginID: "?",
@@ -346,6 +363,12 @@ func BuildHost(cfg configStateReader, rt agentRuntimeReader) *sdk.Host {
 	}
 	if rt != nil {
 		h.Agent = &agentHostImpl{rt: rt}
+	}
+	if services.ExecApprovalEvaluate != nil || services.ExecApprovalRequest != nil {
+		h.ExecApproval = execApprovalHostImpl{evaluate: services.ExecApprovalEvaluate, request: services.ExecApprovalRequest}
+	}
+	if services.ProviderCredentials != nil {
+		h.ProviderAuth = providerAuthHostImpl{store: services.ProviderCredentials}
 	}
 	// NostrHost and HTTPHost are left unavailable unless the caller explicitly
 	// wires policy-aware implementations after the relevant services are started.

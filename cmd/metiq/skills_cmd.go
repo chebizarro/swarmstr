@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+
+	skillspkg "metiq/internal/skills"
 )
 
 // ─── skills ───────────────────────────────────────────────────────────────────
@@ -29,10 +31,46 @@ func runSkills(args []string) error {
 		return runSkillsEnable(args[1:])
 	case "disable":
 		return runSkillsDisable(args[1:])
+	case "lint", "validate":
+		return runSkillsLint(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "skills subcommands: list, status, check, info, install, enable, disable\n")
+		fmt.Fprintf(os.Stderr, "skills subcommands: list, status, check, info, install, enable, disable, lint\n")
 		return fmt.Errorf("unknown subcommand: %s", args[0])
 	}
+}
+
+func runSkillsLint(args []string) error {
+	fs := flag.NewFlagSet("skills lint", flag.ContinueOnError)
+	var jsonOut bool
+	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: metiq skills lint [--json] <skill-file-or-directory> [...]")
+	}
+	result := skillspkg.LintPaths(fs.Args())
+	if jsonOut {
+		if err := printJSON(result); err != nil {
+			return err
+		}
+	} else if len(result.Reports) == 0 {
+		fmt.Println("no supported skill manifests found")
+	} else {
+		for _, report := range result.Reports {
+			if len(report.Findings) == 0 {
+				fmt.Printf("ok\t%s\n", report.Path)
+				continue
+			}
+			for _, finding := range report.Findings {
+				fmt.Printf("%s\t%s\t%s\t%s\t%s\n", finding.Severity, finding.Code, report.Path, finding.Field, finding.Message)
+			}
+		}
+	}
+	if !result.Valid {
+		return fmt.Errorf("skills lint found %d error(s)", result.ErrorCount)
+	}
+	return nil
 }
 
 func fetchSkillsStatus(adminAddr, adminToken, bootstrapPath, agentID string) (map[string]any, []map[string]any, error) {
