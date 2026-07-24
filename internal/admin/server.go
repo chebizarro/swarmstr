@@ -24,6 +24,7 @@ import (
 	"metiq/internal/extensions/whatsapp"
 	"metiq/internal/extensions/zalo"
 	"metiq/internal/gateway/methods"
+	"metiq/internal/gateway/sessioncoord"
 	mcppkg "metiq/internal/mcp"
 	"metiq/internal/memory"
 	"metiq/internal/policy"
@@ -71,6 +72,7 @@ type ServerOptions struct {
 	PutSession                  func(context.Context, string, state.SessionDoc) error
 	ListSessions                func(context.Context, int) ([]state.SessionDoc, error)
 	SessionStore                *state.SessionStore
+	SessionCoordinator          *sessioncoord.Service
 	ListTranscript              func(context.Context, string, int) ([]state.TranscriptEntryDoc, error)
 	SessionsPrune               func(context.Context, methods.SessionsPruneRequest) (map[string]any, error)
 	TailLogs                    func(context.Context, int64, int, int) (map[string]any, error)

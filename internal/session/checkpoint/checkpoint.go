@@ -95,6 +95,7 @@ type Checkpoint struct {
 	KeptEntries    int            `json:"kept_entries,omitempty"`
 	PreCompaction  TranscriptRef  `json:"pre_compaction"`
 	PostCompaction TranscriptRef  `json:"post_compaction"`
+	SnapshotID     string         `json:"snapshot_id,omitempty"`
 	FileOps        FileOperations `json:"file_ops,omitempty"`
 }
 
@@ -130,6 +131,8 @@ func CaptureSnapshot(sessionKey, sessionID string, entryIDs []string) *Snapshot 
 // PersistParams contains all the data needed to record a checkpoint after
 // compaction completes.
 type PersistParams struct {
+	CheckpointID   string
+	SnapshotID     string
 	SessionKey     string
 	SessionID      string
 	Reason         Reason
@@ -182,8 +185,12 @@ func (s *Store) Persist(p PersistParams) Checkpoint {
 		}
 	}
 
+	checkpointID := strings.TrimSpace(p.CheckpointID)
+	if checkpointID == "" {
+		checkpointID = uuid.New().String()
+	}
 	cp := Checkpoint{
-		CheckpointID:   uuid.New().String(),
+		CheckpointID:   checkpointID,
 		SessionKey:     p.SessionKey,
 		SessionID:      p.SessionID,
 		CreatedAt:      createdAt,
@@ -195,6 +202,7 @@ func (s *Store) Persist(p PersistParams) Checkpoint {
 		DroppedEntries: p.DroppedEntries,
 		KeptEntries:    p.KeptEntries,
 		PreCompaction:  pre,
+		SnapshotID:     strings.TrimSpace(p.SnapshotID),
 		PostCompaction: TranscriptRef{
 			SessionID:  p.SessionID,
 			EntryCount: p.PostEntryCount,
@@ -371,6 +379,9 @@ func (c Checkpoint) ToMap() map[string]any {
 		post["last_entry_id"] = c.PostCompaction.LastEntry
 	}
 	m["post_compaction"] = post
+	if c.SnapshotID != "" {
+		m["snapshot_id"] = c.SnapshotID
+	}
 	if len(c.FileOps.ReadFiles) > 0 || len(c.FileOps.WrittenFiles) > 0 || len(c.FileOps.EditedFiles) > 0 {
 		m["file_ops"] = c.FileOps
 	}

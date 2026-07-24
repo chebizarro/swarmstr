@@ -97,6 +97,17 @@ func TestCaptureSnapshot_SingleEntry(t *testing.T) {
 
 // ─── Store: Persist & List ──────────────────────────────────────────────────
 
+func TestStore_PersistAcceptsDurableSnapshotIdentity(t *testing.T) {
+	store := NewStore()
+	checkpoint := store.Persist(PersistParams{CheckpointID: "cp-fixed", SnapshotID: "snap-fixed", SessionKey: "k", SessionID: "s"})
+	if checkpoint.CheckpointID != "cp-fixed" || checkpoint.SnapshotID != "snap-fixed" {
+		t.Fatalf("checkpoint=%+v", checkpoint)
+	}
+	if got := checkpoint.ToMap()["snapshot_id"]; got != "snap-fixed" {
+		t.Fatalf("snapshot_id=%v", got)
+	}
+}
+
 func TestStore_PersistAndList(t *testing.T) {
 	s := NewStore()
 	snap := CaptureSnapshot("k1", "s1", []string{"e1", "e2", "e3"})

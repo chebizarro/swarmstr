@@ -46,6 +46,11 @@ var ErrDisabled = errors.New("gateway ws: disabled (no listen address configured
 
 type RequestHandler func(context.Context, protocol.RequestFrame) (any, *protocol.ErrorShape)
 
+type ConnectionInfo struct {
+	ID        string
+	Principal ControlPrincipal
+}
+
 // DeviceTokenDecision is returned by the daemon's persisted-pairing validator.
 // A successful decision binds the presented token to one device, role, and
 // approved scope set before the signed connect proof is accepted.
@@ -85,6 +90,7 @@ type RuntimeOptions struct {
 	DeltaCoalesceInterval time.Duration
 	HandleRequest         RequestHandler
 	ValidateDeviceToken   DeviceTokenValidator
+	OnDisconnect          func(context.Context, ConnectionInfo)
 	// StartupReady reports whether sidecar-backed methods may be dispatched.
 	// Nil means ready, which matches runtimes started after daemon initialization.
 	StartupReady func() bool
@@ -129,9 +135,11 @@ type client struct {
 
 	writeMu sync.Mutex
 
-	eventQueue chan any
-	eventDone  chan struct{}
-	closeOnce  sync.Once
+	eventQueue     chan any
+	eventDone      chan struct{}
+	closeOnce      sync.Once
+	disconnectOnce sync.Once
+	principal      ControlPrincipal
 
 	authMu       sync.Mutex
 	unauthorized int
@@ -540,6 +548,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		watchedSessions: map[string]struct{}{},
 		eventQueue:      make(chan any, r.eventBufferSize()),
 		eventDone:       make(chan struct{}),
+		principal:       principal,
 	}
 	go c.runEventWriter(r)
 	r.mu.Lock()
@@ -550,6 +559,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		delete(r.clients, c.id)
 		r.mu.Unlock()
+		r.notifyDisconnect(c)
 		r.broadcastPresence()
 	}()
 
@@ -641,7 +651,7 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 			})
 			continue
 		}
-		reqCtx := contextWithControlPrincipal(req.Context(), principal)
+		reqCtx := contextWithControlConnection(contextWithControlPrincipal(req.Context(), principal), c.id)
 		payload, shape := r.opts.HandleRequest(reqCtx, reqFrame)
 		if shape != nil {
 			c.bumpUnauthorized(shape)
@@ -775,6 +785,7 @@ type ControlPrincipal struct {
 }
 
 type controlPrincipalContextKey struct{}
+type controlConnectionContextKey struct{}
 
 func PrincipalFromContext(ctx context.Context) (ControlPrincipal, bool) {
 	if ctx == nil {
@@ -786,6 +797,18 @@ func PrincipalFromContext(ctx context.Context) (ControlPrincipal, bool) {
 
 func contextWithControlPrincipal(ctx context.Context, principal ControlPrincipal) context.Context {
 	return context.WithValue(ctx, controlPrincipalContextKey{}, principal)
+}
+
+func ConnectionIDFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	id, ok := ctx.Value(controlConnectionContextKey{}).(string)
+	return id, ok && strings.TrimSpace(id) != ""
+}
+
+func contextWithControlConnection(ctx context.Context, connectionID string) context.Context {
+	return context.WithValue(ctx, controlConnectionContextKey{}, strings.TrimSpace(connectionID))
 }
 
 func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams) authDecision {
@@ -1101,6 +1124,13 @@ func (c *client) closeEventQueue() {
 	})
 }
 
+func (r *Runtime) notifyDisconnect(c *client) {
+	if c == nil || r.opts.OnDisconnect == nil {
+		return
+	}
+	c.disconnectOnce.Do(func() { r.opts.OnDisconnect(context.Background(), ConnectionInfo{ID: c.id, Principal: c.principal}) })
+}
+
 func (r *Runtime) dropClient(c *client, reason string) {
 	if c == nil {
 		return
@@ -1112,6 +1142,7 @@ func (r *Runtime) dropClient(c *client, reason string) {
 	r.mu.Lock()
 	delete(r.clients, c.id)
 	r.mu.Unlock()
+	r.notifyDisconnect(c)
 }
 
 func writeFrame(ctx context.Context, conn *websocket.Conn, frame any) error {

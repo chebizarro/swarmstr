@@ -19,6 +19,7 @@ import (
 	"metiq/internal/gateway/channels"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
+	"metiq/internal/gateway/sessioncoord"
 	hookspkg "metiq/internal/hooks"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
@@ -47,15 +48,16 @@ type controlRPCDeps struct {
 	startedAt         time.Time
 	bootstrapPath     string
 
-	sessionStore     *state.SessionStore
-	hooksMgr         hooksEventFirer
-	hooksMgrFull     *hookspkg.Manager
-	mediaTranscriber mediapkg.Transcriber
-	toolRegistry     *agent.ToolRegistry
-	agentJobs        *agentJobRegistry
-	sessionRouter    *agent.AgentSessionRouter
-	agentRegistry    *agent.AgentRuntimeRegistry
-	agentRuntime     agent.Runtime
+	sessionStore       *state.SessionStore
+	sessionCoordinator *sessioncoord.Service
+	hooksMgr           hooksEventFirer
+	hooksMgrFull       *hookspkg.Manager
+	mediaTranscriber   mediapkg.Transcriber
+	toolRegistry       *agent.ToolRegistry
+	agentJobs          *agentJobRegistry
+	sessionRouter      *agent.AgentSessionRouter
+	agentRegistry      *agent.AgentRuntimeRegistry
+	agentRuntime       agent.Runtime
 
 	// Fields below replace direct global access inside Handle().
 	sessionMemoryRuntime *sessionMemoryRuntime

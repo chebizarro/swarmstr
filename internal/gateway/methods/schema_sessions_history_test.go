@@ -22,6 +22,36 @@ func TestDecodeSessionsCompactionQueryParams(t *testing.T) {
 	}
 }
 
+func TestDecodeSessionsHistoryMutationParams(t *testing.T) {
+	if req, err := DecodeSessionsCompactionBranchParams(json.RawMessage(`{"key":" source ","checkpointId":" cp-1 ","agentId":"main"}`)); err != nil || req.Key != "source" || req.CheckpointID != "cp-1" {
+		t.Fatalf("branch=%+v err=%v", req, err)
+	}
+	if _, err := DecodeSessionsCompactionRestoreParams(json.RawMessage(`{"key":"source","checkpointId":"cp-1","extra":true}`)); err == nil {
+		t.Fatal("expected closed compaction restore params")
+	}
+	if req, err := DecodeSessionsBranchesListParams(json.RawMessage(`{"sessionKey":" source ","agentId":"main"}`)); err != nil || req.SessionKey != "source" {
+		t.Fatalf("branches.list=%+v err=%v", req, err)
+	}
+	if req, err := DecodeSessionsBranchesSwitchParams(json.RawMessage(`{"sessionKey":"source","leafEntryId":" leaf "}`)); err != nil || req.LeafEntryID != "leaf" {
+		t.Fatalf("branches.switch=%+v err=%v", req, err)
+	}
+	if req, err := DecodeSessionsRewindParams(json.RawMessage(`{"sessionKey":"source","entryId":" user-1 "}`)); err != nil || req.EntryID != "user-1" {
+		t.Fatalf("rewind=%+v err=%v", req, err)
+	}
+	if req, err := DecodeSessionsForkParams(json.RawMessage(`{"sessionKey":"source","entryId":"user-1"}`)); err != nil || req.EntryID != "user-1" {
+		t.Fatalf("fork=%+v err=%v", req, err)
+	}
+	for _, raw := range []string{
+		`{"key":"source"}`,
+		`{"sessionKey":"source","entryId":"wrong"}`,
+		`{"sessionKey":"source","entryId":"user-1","extra":true}`,
+	} {
+		if _, err := DecodeSessionsBranchesSwitchParams(json.RawMessage(raw)); err == nil {
+			t.Fatalf("expected switch validation error for %s", raw)
+		}
+	}
+}
+
 func TestDecodeSessionsSearchParamsBounds(t *testing.T) {
 	req, err := DecodeSessionsSearchParams(json.RawMessage(`{"agentId":"main","sessionKeys":["s2","s1","s2"],"query":" needle ","limit":25}`))
 	if err != nil {

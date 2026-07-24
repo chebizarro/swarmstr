@@ -20,6 +20,8 @@
     "plugin.loaded",
     "presence.updated",
     "relay.health",
+    "session.placement",
+    "sessions.changed",
     "thinking.delta",
     "tool.error",
     "tool.progress",

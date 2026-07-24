@@ -145,6 +145,9 @@ func BuildSessionsListResponse(ctx context.Context, req methods.SessionsListRequ
 		if label != "" {
 			row["label"] = label
 		}
+		if group := sessionMetaString(doc.Meta, "group"); group != "" {
+			row["group"] = group
+		}
 		if agentID != "" && key != "global" && key != "unknown" {
 			row["agentId"] = agentID
 		}

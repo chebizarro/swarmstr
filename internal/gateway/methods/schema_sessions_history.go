@@ -36,6 +36,14 @@ func DecodeSessionsCompactionGetParams(params json.RawMessage) (SessionsCompacti
 	return decodeSessionsCompactionQuery(params, true)
 }
 
+func DecodeSessionsCompactionBranchParams(params json.RawMessage) (SessionsCompactionQueryRequest, error) {
+	return decodeSessionsCompactionQuery(params, true)
+}
+
+func DecodeSessionsCompactionRestoreParams(params json.RawMessage) (SessionsCompactionQueryRequest, error) {
+	return decodeSessionsCompactionQuery(params, true)
+}
+
 func decodeSessionsCompactionQuery(params json.RawMessage, requireCheckpoint bool) (SessionsCompactionQueryRequest, error) {
 	if len(bytes.TrimSpace(params)) == 0 {
 		params = json.RawMessage(`{}`)
@@ -47,6 +55,61 @@ func decodeSessionsCompactionQuery(params json.RawMessage, requireCheckpoint boo
 		return SessionsCompactionQueryRequest{}, fmt.Errorf("invalid params")
 	}
 	return req.Normalize(requireCheckpoint)
+}
+
+type SessionsHistoryMutationRequest struct {
+	SessionKey  string `json:"sessionKey"`
+	AgentID     string `json:"agentId,omitempty"`
+	EntryID     string `json:"entryId,omitempty"`
+	LeafEntryID string `json:"leafEntryId,omitempty"`
+}
+
+func decodeSessionsHistoryMutation(params json.RawMessage, requireEntry, requireLeaf bool) (SessionsHistoryMutationRequest, error) {
+	if len(bytes.TrimSpace(params)) == 0 {
+		params = json.RawMessage(`{}`)
+	}
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	var req SessionsHistoryMutationRequest
+	if err := dec.Decode(&req); err != nil {
+		return SessionsHistoryMutationRequest{}, fmt.Errorf("invalid params")
+	}
+	req.SessionKey = strings.TrimSpace(req.SessionKey)
+	req.AgentID = strings.TrimSpace(req.AgentID)
+	req.EntryID = strings.TrimSpace(req.EntryID)
+	req.LeafEntryID = strings.TrimSpace(req.LeafEntryID)
+	if req.SessionKey == "" {
+		return SessionsHistoryMutationRequest{}, fmt.Errorf("sessionKey is required")
+	}
+	if requireEntry && req.EntryID == "" {
+		return SessionsHistoryMutationRequest{}, fmt.Errorf("entryId is required")
+	}
+	if requireLeaf && req.LeafEntryID == "" {
+		return SessionsHistoryMutationRequest{}, fmt.Errorf("leafEntryId is required")
+	}
+	if !requireEntry && req.EntryID != "" {
+		return SessionsHistoryMutationRequest{}, fmt.Errorf("invalid params")
+	}
+	if !requireLeaf && req.LeafEntryID != "" {
+		return SessionsHistoryMutationRequest{}, fmt.Errorf("invalid params")
+	}
+	return req, nil
+}
+
+func DecodeSessionsBranchesListParams(params json.RawMessage) (SessionsHistoryMutationRequest, error) {
+	return decodeSessionsHistoryMutation(params, false, false)
+}
+
+func DecodeSessionsBranchesSwitchParams(params json.RawMessage) (SessionsHistoryMutationRequest, error) {
+	return decodeSessionsHistoryMutation(params, false, true)
+}
+
+func DecodeSessionsRewindParams(params json.RawMessage) (SessionsHistoryMutationRequest, error) {
+	return decodeSessionsHistoryMutation(params, true, false)
+}
+
+func DecodeSessionsForkParams(params json.RawMessage) (SessionsHistoryMutationRequest, error) {
+	return decodeSessionsHistoryMutation(params, true, false)
 }
 
 // SessionsSearchRequest is a bounded transcript full-text query compatible

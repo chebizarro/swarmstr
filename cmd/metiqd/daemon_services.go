@@ -22,6 +22,7 @@ import (
 	ctxengine "metiq/internal/context"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/gateway/nodepending"
+	"metiq/internal/gateway/sessioncoord"
 	gatewayws "metiq/internal/gateway/ws"
 	hookspkg "metiq/internal/hooks"
 	mediapkg "metiq/internal/media"
@@ -138,8 +139,9 @@ type sessionServices struct {
 	memoryStore       memory.Store
 	contextEngine     ctxengine.Engine
 	contextEngineName string
-	sessionStore      *state.SessionStore
-	agentJobs         *agentJobRegistry
+	sessionStore       *state.SessionStore
+	sessionCoordinator *sessioncoord.Service
+	agentJobs          *agentJobRegistry
 	subagents         *SubagentRegistry
 
 	// Operation registries

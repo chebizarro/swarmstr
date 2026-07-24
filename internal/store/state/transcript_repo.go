@@ -13,9 +13,10 @@ import (
 )
 
 type TranscriptRepository struct {
-	store  NostrStateStore
-	author string
-	codec  secure.EnvelopeCodec
+	store        NostrStateStore
+	author       string
+	codec        secure.EnvelopeCodec
+	sessionStore *SessionStore
 }
 
 const transcriptSessionPageLimit = 1024
@@ -35,7 +36,43 @@ func NewTranscriptRepositoryWithCodec(store NostrStateStore, authorPubKey string
 	return &TranscriptRepository{store: store, author: authorPubKey, codec: ensureCodec(codec)}
 }
 
+// BindSessionStore enables durable active-path semantics. It is called once
+// during daemon construction after the file-backed SessionStore is opened.
+func (r *TranscriptRepository) BindSessionStore(store *SessionStore) *TranscriptRepository {
+	if r != nil {
+		r.sessionStore = store
+	}
+	return r
+}
+
 func (r *TranscriptRepository) PutEntry(ctx context.Context, entry TranscriptEntryDoc) (Event, error) {
+	if r.sessionStore == nil {
+		return r.putEntryRaw(ctx, entry)
+	}
+	key, _, ok, err := r.sessionStore.ResolveSessionKey(entry.SessionID)
+	if err != nil {
+		return Event{}, err
+	}
+	if !ok {
+		return r.putEntryRaw(ctx, entry)
+	}
+	graph, err := r.EnsureGraph(ctx, key, entry.SessionID)
+	if err != nil {
+		return Event{}, err
+	}
+	entry.ParentEntryID = graph.ActiveLeafID
+	evt, err := r.PutDetachedEntry(ctx, entry)
+	if err != nil {
+		return Event{}, err
+	}
+	heads := ReplaceTranscriptHead(graph.BranchHeads, graph.ActiveLeafID, entry.EntryID, false)
+	if _, err := r.sessionStore.CommitTranscriptGraph(key, graph.Revision, TranscriptGraphMutation{ActiveLeafID: entry.EntryID, BranchHeads: heads}); err != nil {
+		return Event{}, err
+	}
+	return evt, nil
+}
+
+func (r *TranscriptRepository) putEntryRaw(ctx context.Context, entry TranscriptEntryDoc) (Event, error) {
 	if entry.Version == 0 {
 		entry.Version = 1
 	}
@@ -105,7 +142,7 @@ func (r *TranscriptRepository) ListSession(ctx context.Context, sessionID string
 	if limit <= 0 {
 		limit = 100
 	}
-	out, err := r.listSessionOrdered(ctx, sessionID, limit)
+	out, err := r.ListSessionAll(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +153,18 @@ func (r *TranscriptRepository) ListSession(ctx context.Context, sessionID string
 }
 
 func (r *TranscriptRepository) ListSessionAll(ctx context.Context, sessionID string) ([]TranscriptEntryDoc, error) {
+	if r.sessionStore != nil {
+		_, entry, ok, err := r.sessionStore.ResolveSessionKey(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if ok && entry.TranscriptGraphVersion > 0 {
+			if entry.ActiveTranscriptLeafID == "" {
+				return nil, nil
+			}
+			return r.ListSessionPath(ctx, sessionID, entry.ActiveTranscriptLeafID)
+		}
+	}
 	return r.listSessionOrderedAll(ctx, sessionID)
 }
 

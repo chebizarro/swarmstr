@@ -681,3 +681,36 @@ func assertSessionEntryNestedOriginal(t *testing.T, got SessionEntry) {
 		t.Fatalf("expected original total_tokens_fresh pointer, got %+v", got.TotalTokensFresh)
 	}
 }
+
+func TestSessionStoreSetArchivedPersistsAndRejectsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	store, err := NewSessionStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put("session-a", SessionEntry{SessionID: "session-a", Label: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := store.SetArchived("session-a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Archived || archived.Label != "A" {
+		t.Fatalf("entry=%+v", archived)
+	}
+	if _, err := store.SetArchived("missing", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err=%v", err)
+	}
+	reloaded, err := NewSessionStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reloaded.Get("session-a")
+	if !ok || !got.Archived {
+		t.Fatalf("entry=%+v ok=%v", got, ok)
+	}
+	carried := got.CarryOverFlags("session-b")
+	if carried.Archived {
+		t.Fatal("archive state must not carry over")
+	}
+}

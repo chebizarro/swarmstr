@@ -33,6 +33,10 @@ const (
 	EventChat = "chat"
 	// EventChatMessage is retained for non-streaming inbound/outbound audit events.
 	EventChatMessage = "chat.message"
+	// EventSessionPlacement reports durable dispatch/reclaim ownership transitions.
+	EventSessionPlacement = "session.placement"
+	// EventSessionsChanged invalidates session catalogs, including group changes.
+	EventSessionsChanged = "sessions.changed"
 
 	// EventCronTick is emitted when a cron job fires.
 	EventCronTick = "cron.tick"
@@ -126,6 +130,8 @@ var AllPushEvents = []string{
 	EventAgentThinking,
 	EventChat,
 	EventChatMessage,
+	EventSessionPlacement,
+	EventSessionsChanged,
 	EventCronTick,
 	EventCronResult,
 	EventConfigUpdated,

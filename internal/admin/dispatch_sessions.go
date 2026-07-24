@@ -10,8 +10,21 @@ import (
 	"time"
 
 	"metiq/internal/gateway/methods"
+	"metiq/internal/gateway/sessioncoord"
 	"metiq/internal/store/state"
 )
+
+func groupRows(names []string) []map[string]any {
+	rows := make([]map[string]any, 0, len(names))
+	for position, name := range names {
+		rows = append(rows, map[string]any{"name": name, "position": position})
+	}
+	return rows
+}
+
+func groupListResult(names []string) map[string]any {
+	return map[string]any{"groups": groupRows(names)}
+}
 
 func dispatchSessions(ctx context.Context, opts ServerOptions, method string, call methods.CallRequest, cfg state.ConfigDoc) (any, int, error) {
 	switch method {
@@ -293,6 +306,97 @@ func dispatchSessions(ctx context.Context, opts ServerOptions, method string, ca
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "key": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped}), http.StatusOK, nil
+	case methods.MethodSessionsDispatch:
+		if opts.SessionCoordinator == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("session placement provider not configured")
+		}
+		req, err := methods.DecodeSessionsDispatchParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		placement, err := opts.SessionCoordinator.Dispatch(ctx, sessioncoord.DispatchRequest{Key: req.Key, AgentID: req.AgentID, Backend: req.Backend})
+		if err != nil {
+			if errors.Is(err, sessioncoord.ErrPlacementConflict) {
+				return nil, http.StatusConflict, err
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return map[string]any{"ok": true, "key": req.Key, "sessionId": req.Key, "placement": placement}, http.StatusOK, nil
+	case methods.MethodSessionsReclaim:
+		if opts.SessionCoordinator == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("session placement provider not configured")
+		}
+		req, err := methods.DecodeSessionsReclaimParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		placement, err := opts.SessionCoordinator.Reclaim(ctx, sessioncoord.ReclaimRequest{Key: req.Key, Reason: "operator reclaim", Force: true})
+		if err != nil {
+			if errors.Is(err, sessioncoord.ErrPlacementConflict) {
+				return nil, http.StatusConflict, err
+			}
+			return nil, http.StatusInternalServerError, err
+		}
+		return map[string]any{"ok": true, "key": req.Key, "sessionId": req.Key, "placement": placement}, http.StatusOK, nil
+	case methods.MethodSessionsGroupsList:
+		if opts.SessionCoordinator == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("session group provider not configured")
+		}
+		if _, err := methods.DecodeSessionsGroupsListParams(call.Params); err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		groups, err := opts.SessionCoordinator.ListGroups(ctx)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return groupListResult(groups), http.StatusOK, nil
+	case methods.MethodSessionsGroupsPut:
+		if opts.SessionCoordinator == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("session group provider not configured")
+		}
+		req, err := methods.DecodeSessionsGroupsPutParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		groups, err := opts.SessionCoordinator.PutGroups(ctx, req.Names)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return map[string]any{"ok": true, "groups": groupRows(groups)}, http.StatusOK, nil
+	case methods.MethodSessionsGroupsRename:
+		if opts.SessionCoordinator == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("session group provider not configured")
+		}
+		req, err := methods.DecodeSessionsGroupsRenameParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		updated, err := opts.SessionCoordinator.RenameGroup(ctx, req.Name, req.To)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return map[string]any{"ok": true, "updatedSessions": updated}, http.StatusOK, nil
+	case methods.MethodSessionsGroupsDelete:
+		if opts.SessionCoordinator == nil {
+			return nil, http.StatusNotImplemented, fmt.Errorf("session group provider not configured")
+		}
+		req, err := methods.DecodeSessionsGroupsDeleteParams(call.Params)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		updated, err := opts.SessionCoordinator.DeleteGroup(ctx, req.Name)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return map[string]any{"ok": true, "updatedSessions": updated}, http.StatusOK, nil
 	case methods.MethodSessionsPrune:
 		if opts.SessionsPrune == nil {
 			return nil, http.StatusNotImplemented, fmt.Errorf("sessions prune provider not configured")
@@ -311,7 +415,11 @@ func dispatchSessions(ctx context.Context, opts ServerOptions, method string, ca
 			return nil, http.StatusInternalServerError, err
 		}
 		return methods.ApplyCompatResponseAliases(out), http.StatusOK, nil
-	case methods.MethodSessionsExport, methods.MethodSessionsSpawn:
+	case methods.MethodSessionsExport, methods.MethodSessionsSpawn,
+		methods.MethodSessionsFilesList, methods.MethodSessionsFilesGet,
+		methods.MethodSessionsFilesSet, methods.MethodSessionsFilesReveal,
+		methods.MethodSessionsCatalogList, methods.MethodSessionsCatalogRead,
+		methods.MethodSessionsCatalogContinue, methods.MethodSessionsCatalogArchive:
 		return delegateControlCall(ctx, opts, method, call.Params, "session provider not configured")
 	default:
 		return internalRoutingError("sessions", method)

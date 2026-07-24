@@ -1396,6 +1396,50 @@ const TOKEN   = '{{.Token}}';
     addActionButton(actions, 'Refresh status', 'channels.status', () => ({ channel_id: c.id || c.name }), () => showChannelsView(c, ++viewSeq));
   }
 
+  async function showSessionFilesPanel(grid, sid) {
+    const previous = document.getElementById('session-files-panel');
+    if (previous) previous.remove();
+    const card = addMgmtCard(grid, 'Workspace files');
+    card.id = 'session-files-panel';
+    card.innerHTML += `<div class="sub">${escapeHTML(sid)}</div>`;
+    const status = document.createElement('div'); status.className = 'sub'; status.textContent = 'Loading files…'; card.appendChild(status);
+    const res = await callSafe('sessions.files.list', { sessionKey: sid });
+    status.textContent = res.error ? `Files unavailable: ${res.error}` : (res.root || 'Session workspace');
+    if (res.error) return;
+    const browser = res.browser || {};
+    const files = Array.isArray(browser.entries) ? browser.entries : (res.files || []);
+    addRows(card, files, (row, file) => {
+      const filePath = file.workspacePath || file.path;
+      row.innerHTML = `<strong>${escapeHTML(file.name || filePath || 'file')}</strong><div class="sub">${escapeHTML(file.kind || '')}${file.sessionKind ? ` · ${escapeHTML(file.sessionKind)}` : ''}</div>`;
+      if ((file.kind || '') === 'directory' || file.missing) return;
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', async () => {
+        const loaded = await callSafe('sessions.files.get', { sessionKey: sid, path: filePath });
+        if (loaded.error || !loaded.file) { status.textContent = loaded.error || 'Could not read file'; return; }
+        let editor = card.querySelector('.session-file-editor');
+        if (editor) editor.remove();
+        editor = document.createElement('div'); editor.className = 'session-file-editor';
+        const textarea = document.createElement('textarea'); textarea.className = 'config-editor'; textarea.value = loaded.file.content || '';
+        const actions = document.createElement('div'); actions.className = 'action-row';
+        const save = document.createElement('button'); save.className = 'mini-btn'; save.textContent = 'Save'; save.disabled = !loaded.file.hash;
+        save.addEventListener('click', async () => {
+          save.disabled = true;
+          try {
+            const updated = await callMethod('sessions.files.set', { sessionKey: sid, path: filePath, content: textarea.value, expectedHash: loaded.file.hash });
+            loaded.file.hash = updated.file && updated.file.hash;
+            status.textContent = `Saved ${filePath}`;
+          } catch (err) { status.textContent = `Save failed: ${err && err.message ? err.message : 'file changed; reload it'}`; }
+          finally { save.disabled = !loaded.file.hash; }
+        });
+        actions.appendChild(save); editor.append(textarea, actions); card.appendChild(editor);
+      });
+    });
+    const controls = document.createElement('div'); controls.className = 'action-row'; card.appendChild(controls);
+    const reveal = document.createElement('button'); reveal.className = 'mini-btn'; reveal.textContent = 'Reveal workspace';
+    reveal.addEventListener('click', async () => { const result = await callSafe('sessions.files.reveal', { key: sid }); if (result.error || result.ok === false) status.textContent = result.error || 'Could not reveal workspace'; });
+    controls.appendChild(reveal);
+  }
+
   async function showSessionsView(token) {
     const { grid } = beginManagementView('Sessions', 'List, detail, delete, export, reset, compact, and prune sessions.');
     const res = await callSafe('sessions.list', { limit: 100 });
@@ -1407,6 +1451,7 @@ const TOKEN   = '{{.Token}}';
       row.innerHTML = `<strong>${escapeHTML(truncate(sid, 42))}</strong><div class="sub">${escapeHTML(sess.preview || sess.title || sess.updated_at || '')}</div>`;
       const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
       addActionButton(actions, 'Open', 'sessions.preview', () => ({ session_id: sid }), async () => { sessionID = sid; localStorage.setItem('metiq_session', sid); mainView='chat'; loadSessionHistory(sid); });
+      const filesButton = document.createElement('button'); filesButton.className = 'mini-btn'; filesButton.textContent = 'Files'; filesButton.addEventListener('click', () => showSessionFilesPanel(grid, sid)); actions.appendChild(filesButton);
       addActionButton(actions, 'Export', 'sessions.export', () => ({ session_id: sid }));
       addActionButton(actions, 'Reset', 'sessions.reset', () => ({ session_id: sid }), () => showSessionsView(++viewSeq));
       addActionButton(actions, 'Delete', 'sessions.delete', () => ({ session_id: sid }), () => { loadSessions(); showSessionsView(++viewSeq); });
@@ -1695,23 +1740,44 @@ const TOKEN   = '{{.Token}}';
 
   async function loadSessions() {
     try {
-      const res = await callMethod('sessions.list', { limit: 40 });
+      const [res, groupsRes] = await Promise.all([
+        callMethod('sessions.list', { limit: 40 }),
+        callSafe('sessions.groups.list', {})
+      ]);
       const sessions = res && (res.sessions || res.items || []);
       if (!sessions || !sessions.length) {
         sessionsList.innerHTML = `<div class="sidebar-empty">${escapeHTML(t('noSessions'))}</div>`;
         return;
       }
-      sessionsList.innerHTML = '';
+      const catalog = resultItems(groupsRes, 'groups').map(g => typeof g === 'string' ? g : g.name).filter(Boolean);
+      const buckets = new Map(catalog.map(name => [name, []]));
+      buckets.set('', []);
       sessions.forEach(s => {
-        const el = document.createElement('div');
-        el.className = 'sidebar-item' + (s.session_id === sessionID ? ' active' : '');
-        el.dataset.sid = s.session_id;
-        el.innerHTML = `<div>${truncate(s.session_id, 22)}</div><div class="sub">${s.preview || ''}</div>`;
-        el.addEventListener('click', () => {
-          switchSession(s.session_id);
-          closeSidebarOnMobile();
+        const group = s.group || '';
+        if (!buckets.has(group)) buckets.set(group, []);
+        buckets.get(group).push(s);
+      });
+      sessionsList.innerHTML = '';
+      buckets.forEach((items, group) => {
+        if (!items.length) return;
+        if (group) {
+          const heading = document.createElement('div');
+          heading.className = 'sidebar-section';
+          heading.textContent = group;
+          sessionsList.appendChild(heading);
+        }
+        items.forEach(s => {
+          const sid = s.session_id || s.sessionId || s.key;
+          const el = document.createElement('div');
+          el.className = 'sidebar-item' + (sid === sessionID ? ' active' : '');
+          el.dataset.sid = sid;
+          el.innerHTML = `<div>${truncate(sid, 22)}</div><div class="sub">${s.preview || ''}</div>`;
+          el.addEventListener('click', () => {
+            switchSession(sid);
+            closeSidebarOnMobile();
+          });
+          sessionsList.appendChild(el);
         });
-        sessionsList.appendChild(el);
       });
     } catch { sessionsList.innerHTML = '<div class="sidebar-empty">—</div>'; }
   }

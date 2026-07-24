@@ -42,6 +42,9 @@ func TestMethodDescriptorPolicyClassification(t *testing.T) {
 		{MethodDevicePairRename, protocol.MethodScopeOperatorPairing, "", false},
 		{MethodNodeInvokeProgress, protocol.MethodScopeNode, "", false},
 		{MethodSessionsCreate, protocol.MethodScopeOperatorAdmin, protocol.MethodStartupUnavailableUntilSidecars, false},
+		{MethodSessionsFilesList, protocol.MethodScopeOperatorRead, protocol.MethodStartupUnavailableUntilSidecars, false},
+		{MethodSessionsFilesSet, protocol.MethodScopeOperatorAdmin, protocol.MethodStartupUnavailableUntilSidecars, false},
+		{MethodSessionsCatalogContinue, protocol.MethodScopeOperatorWrite, protocol.MethodStartupUnavailableUntilSidecars, false},
 		{MethodConfigApply, protocol.MethodScopeOperatorAdmin, "", true},
 		{"extension.custom", protocol.MethodScopeOperatorAdmin, "", false},
 	}

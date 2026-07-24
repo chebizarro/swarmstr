@@ -10,12 +10,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"metiq/internal/admin"
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
+	"metiq/internal/gateway/sessioncoord"
+	gatewayws "metiq/internal/gateway/ws"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
 )
+
+func sessionGroupRows(names []string) []map[string]any {
+	rows := make([]map[string]any, 0, len(names))
+	for position, name := range names {
+		rows = append(rows, map[string]any{"name": name, "position": position})
+	}
+	return rows
+}
 
 func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string, cfg state.ConfigDoc) (nostruntime.ControlRPCResult, bool, error) {
 	dmBus := h.deps.dmBus
@@ -27,9 +39,13 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 	memoryIndex := h.deps.memoryIndex
 	configState := h.deps.configState
 	sessionStore := h.deps.sessionStore
+	sessionCoordinator := h.deps.sessionCoordinator
 	hooksMgr := h.deps.hooksMgr
 	mediaTranscriber := h.deps.mediaTranscriber
 	toolRegistry := h.deps.toolRegistry
+	if transcriptRepo != nil && sessionStore != nil {
+		transcriptRepo.BindSessionStore(sessionStore)
+	}
 
 	switch method {
 	case methods.MethodChatSend, methods.MethodSessionsSend:
@@ -276,6 +292,11 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			if err != nil {
 				return fmt.Errorf("sessions.compact session memory flush: %w", err)
 			}
+			_ = flushOutcome
+			graph, err := transcriptRepo.EnsureGraph(ctx, req.SessionID, req.SessionID)
+			if err != nil {
+				return err
+			}
 			entries, err := transcriptRepo.ListSessionAll(ctx, req.SessionID)
 			if err != nil {
 				return err
@@ -284,7 +305,13 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			if dropped < 0 {
 				dropped = 0
 			}
+			checkpointID := uuid.NewString()
+			snapshotID := "snapshot-" + checkpointID
+			if err := transcriptRepo.WriteSnapshot(ctx, snapshotID, req.SessionID, entries); err != nil {
+				return fmt.Errorf("sessions.compact snapshot: %w", err)
+			}
 			summaryGenerated := false
+			summaryText := ""
 			activeAgentID, summaryRuntime := resolveInboundChannelRuntime("", req.SessionID)
 			if dropped > 0 && summaryRuntime != nil {
 				compactedEntries := entries[:dropped]
@@ -332,39 +359,140 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 						result, summaryErr = runSummary(summaryRuntime)
 					}
 					if summaryErr == nil && strings.TrimSpace(result.Text) != "" {
-						summaryEntryID := fmt.Sprintf("compact-summary-%d", time.Now().UnixMilli())
-						summaryEntry := state.TranscriptEntryDoc{Version: 1, SessionID: req.SessionID, EntryID: summaryEntryID, Role: "system", Text: "[Compact summary of " + strconv.Itoa(dropped) + " earlier messages]\n\n" + strings.TrimSpace(result.Text), Unix: time.Now().Unix(), Meta: map[string]any{"compact": true, "compact_from": dropped}}
-						if _, putErr := transcriptRepo.PutEntry(ctx, summaryEntry); putErr != nil {
-							log.Printf("sessions.compact: insert summary entry: %v", putErr)
-						} else {
-							summaryGenerated = true
-						}
+						summaryText = "[Compact summary of " + strconv.Itoa(dropped) + " earlier messages]\n\n" + strings.TrimSpace(result.Text)
+						summaryGenerated = true
 					} else if summaryErr != nil {
 						log.Printf("sessions.compact: LLM summary skipped: %v", summaryErr)
 					}
 				}
 			}
-			deleteErrors := 0
-			for i := 0; i < dropped; i++ {
-				if delErr := transcriptRepo.DeleteEntry(ctx, req.SessionID, entries[i].EntryID); delErr != nil {
-					log.Printf("sessions.compact: delete entry %s: %v", entries[i].EntryID, delErr)
-					deleteErrors++
+			newLeaf := graph.ActiveLeafID
+			firstKept := ""
+			if dropped > 0 {
+				if summaryText == "" {
+					summaryText = "[Compaction boundary for " + strconv.Itoa(dropped) + " earlier messages]"
 				}
+				parent := ""
+				summaryEntry := state.TranscriptEntryDoc{Version: 1, SessionID: req.SessionID, EntryID: "compact-summary-" + checkpointID, ParentEntryID: parent, Role: "system", Text: summaryText, Unix: time.Now().Unix(), Meta: map[string]any{"compact": true, "compact_from": dropped, "checkpoint_id": checkpointID}}
+				if _, err := transcriptRepo.PutDetachedEntry(ctx, summaryEntry); err != nil {
+					return err
+				}
+				parent = summaryEntry.EntryID
+				for i := dropped; i < len(entries); i++ {
+					copy := entries[i]
+					copy.EntryID = fmt.Sprintf("compact-%s-%04d", checkpointID, i-dropped)
+					copy.ParentEntryID = parent
+					if firstKept == "" {
+						firstKept = copy.EntryID
+					}
+					if _, err := transcriptRepo.PutDetachedEntry(ctx, copy); err != nil {
+						return err
+					}
+					parent = copy.EntryID
+				}
+				newLeaf = parent
 			}
-			if _, err := updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
-				session.Meta = mergeSessionMeta(session.Meta, map[string]any{"compacted_at": time.Now().Unix(), "compacted_keep": req.Keep, "compacted_from_entries": len(entries), "compacted_dropped_entries": dropped - deleteErrors, "compacted_summary": summaryGenerated})
-				return nil
-			}); err != nil {
+			nowMS := time.Now().UnixMilli()
+			checkpoint := state.CompactionCheckpointRef{
+				CheckpointID: checkpointID, SessionKey: req.SessionID, SessionID: req.SessionID,
+				CreatedAt: nowMS, Reason: "manual", Summary: summaryText, FirstKeptEntry: firstKept,
+				DroppedEntries: dropped, KeptEntries: len(entries) - dropped, SnapshotID: snapshotID,
+				PreCompaction:  map[string]any{"session_id": req.SessionID, "leaf_id": graph.ActiveLeafID},
+				PostCompaction: map[string]any{"session_id": req.SessionID, "leaf_id": newLeaf},
+			}
+			heads := state.ReplaceTranscriptHead(graph.BranchHeads, graph.ActiveLeafID, newLeaf, dropped > 0)
+			if _, err := sessionStore.CommitTranscriptGraph(req.SessionID, graph.Revision, state.TranscriptGraphMutation{ActiveLeafID: newLeaf, BranchHeads: heads, Checkpoint: &checkpoint, CompactionDelta: 1}); err != nil {
 				return err
 			}
-			compactResult = methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped - deleteErrors, "summary_generated": summaryGenerated})
-			recordSessionCompaction(sessionStore, req.SessionID, strings.TrimSpace(flushOutcome.Path) != "", time.Now())
+			if _, err := updateExistingSessionDoc(ctx, docsRepo, req.SessionID, "", func(session *state.SessionDoc) error {
+				session.Meta = mergeSessionMeta(session.Meta, map[string]any{"compacted_at": time.Now().Unix(), "compacted_keep": req.Keep, "compacted_from_entries": len(entries), "compacted_dropped_entries": dropped, "compacted_summary": summaryGenerated, "compaction_checkpoint_id": checkpointID})
+				return nil
+			}); err != nil {
+				log.Printf("sessions.compact: session metadata projection failed: %v", err)
+			}
+			compactResult = methods.ApplyCompatResponseAliases(map[string]any{"ok": true, "session_id": req.SessionID, "kept": req.Keep, "from_entries": len(entries), "dropped": dropped, "summary_generated": summaryGenerated})
 			return nil
 		})
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: compactResult}, true, nil
+	case methods.MethodSessionsFilesList:
+		req, err := methods.DecodeSessionsFilesListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := handleSessionsFilesList(ctx, cfg, docsRepo, transcriptRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsFilesGet:
+		req, err := methods.DecodeSessionsFilesGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := handleSessionsFilesGet(ctx, cfg, docsRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsFilesSet:
+		req, err := methods.DecodeSessionsFilesSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := handleSessionsFilesSet(ctx, cfg, docsRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsFilesReveal:
+		req, err := methods.DecodeSessionsFilesRevealParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: handleSessionsFilesReveal(ctx, cfg, docsRepo, sessionStore, req)}, true, nil
+	case methods.MethodSessionsCatalogList:
+		req, err := methods.DecodeSessionsCatalogListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := handleSessionsCatalogList(ctx, cfg, docsRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsCatalogRead:
+		req, err := methods.DecodeSessionsCatalogReadParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := handleSessionsCatalogRead(ctx, docsRepo, transcriptRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsCatalogContinue:
+		req, err := methods.DecodeSessionsCatalogContinueParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := handleSessionsCatalogContinue(ctx, docsRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsCatalogArchive:
+		req, err := methods.DecodeSessionsCatalogArchiveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := handleSessionsCatalogArchive(ctx, docsRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodSessionsCompactionList:
 		req, err := methods.DecodeSessionsCompactionListParams(in.Params)
 		if err != nil {
@@ -385,6 +513,95 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsCompactionBranch:
+		req, err := methods.DecodeSessionsCompactionBranchParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		var result map[string]any
+		err = withExclusiveSessionTurn(ctx, req.Key, 15*time.Second, func() error {
+			var innerErr error
+			result, innerErr = branchSessionAtCheckpoint(ctx, docsRepo, transcriptRepo, sessionStore, req.Key, req.AgentID, req.CheckpointID)
+			return innerErr
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsCompactionRestore:
+		req, err := methods.DecodeSessionsCompactionRestoreParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if chatCancels != nil {
+			chatCancels.Abort(req.Key)
+		}
+		clearTransientSessionSteering(steeringMailboxes, req.Key)
+		var result map[string]any
+		err = withExclusiveSessionTurn(ctx, req.Key, 15*time.Second, func() error {
+			var innerErr error
+			result, innerErr = restoreSessionCheckpoint(ctx, transcriptRepo, sessionStore, req.Key, req.AgentID, req.CheckpointID)
+			return innerErr
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsBranchesList:
+		req, err := methods.DecodeSessionsBranchesListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := listSessionBranches(ctx, transcriptRepo, sessionStore, req.SessionKey, req.AgentID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsBranchesSwitch:
+		req, err := methods.DecodeSessionsBranchesSwitchParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		var result map[string]any
+		err = withExclusiveSessionTurn(ctx, req.SessionKey, 15*time.Second, func() error {
+			var innerErr error
+			result, innerErr = switchSessionBranch(ctx, transcriptRepo, sessionStore, req.SessionKey, req.AgentID, req.LeafEntryID)
+			return innerErr
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsRewind:
+		req, err := methods.DecodeSessionsRewindParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		var result map[string]any
+		err = withExclusiveSessionTurn(ctx, req.SessionKey, 15*time.Second, func() error {
+			var innerErr error
+			result, innerErr = rewindSessionAtEntry(ctx, transcriptRepo, sessionStore, req.SessionKey, req.AgentID, req.EntryID)
+			return innerErr
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsFork:
+		req, err := methods.DecodeSessionsForkParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		var result map[string]any
+		err = withExclusiveSessionTurn(ctx, req.SessionKey, 15*time.Second, func() error {
+			var innerErr error
+			result, innerErr = forkSessionAtEntry(ctx, docsRepo, transcriptRepo, sessionStore, req.SessionKey, req.AgentID, req.EntryID)
+			return innerErr
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodSessionsSearch:
 		req, err := methods.DecodeSessionsSearchParams(in.Params)
 		if err != nil {
@@ -395,6 +612,94 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsDispatch:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session placement service unavailable")
+		}
+		req, err := methods.DecodeSessionsDispatchParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		principal, _ := gatewayws.PrincipalFromContext(ctx)
+		connectionID, _ := gatewayws.ConnectionIDFromContext(ctx)
+		placement, err := sessionCoordinator.Dispatch(ctx, sessioncoord.DispatchRequest{Key: req.Key, AgentID: req.AgentID, Backend: req.Backend, ConnectionID: connectionID, Subject: principal.Subject})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "key": req.Key, "sessionId": req.Key, "placement": placement}}, true, nil
+	case methods.MethodSessionsReclaim:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session placement service unavailable")
+		}
+		req, err := methods.DecodeSessionsReclaimParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		connectionID, _ := gatewayws.ConnectionIDFromContext(ctx)
+		placement, err := sessionCoordinator.Reclaim(ctx, sessioncoord.ReclaimRequest{Key: req.Key, ConnectionID: connectionID, Reason: "operator reclaim", Force: true})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "key": req.Key, "sessionId": req.Key, "placement": placement}}, true, nil
+	case methods.MethodSessionsGroupsList:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session group service unavailable")
+		}
+		if _, err := methods.DecodeSessionsGroupsListParams(in.Params); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		groups, err := sessionCoordinator.ListGroups(ctx)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"groups": sessionGroupRows(groups)}}, true, nil
+	case methods.MethodSessionsGroupsPut:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session group service unavailable")
+		}
+		req, err := methods.DecodeSessionsGroupsPutParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		groups, err := sessionCoordinator.PutGroups(ctx, req.Names)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "groups": sessionGroupRows(groups)}}, true, nil
+	case methods.MethodSessionsGroupsRename:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session group service unavailable")
+		}
+		req, err := methods.DecodeSessionsGroupsRenameParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		updated, err := sessionCoordinator.RenameGroup(ctx, req.Name, req.To)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "updatedSessions": updated}}, true, nil
+	case methods.MethodSessionsGroupsDelete:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session group service unavailable")
+		}
+		req, err := methods.DecodeSessionsGroupsDeleteParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		updated, err := sessionCoordinator.DeleteGroup(ctx, req.Name)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "updatedSessions": updated}}, true, nil
 	case methods.MethodSessionsExport:
 		exportReq, err := methods.DecodeSessionsExportParams(in.Params)
 		if err != nil {

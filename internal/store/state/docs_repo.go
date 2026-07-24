@@ -63,6 +63,19 @@ func (r *DocsRepository) GetSession(ctx context.Context, sessionID string) (Sess
 	return out, nil
 }
 
+func (r *DocsRepository) PutSessionPlacement(ctx context.Context, sessionID string, doc SessionPlacementDoc) (Event, error) {
+	tags := [][]string{{"t", "session_placement"}, {"session", protectedTagValue(sessionID)}}
+	return r.putStateDocWithTags(ctx, fmt.Sprintf("metiq:session:%s:placement", sessionID), "session_placement_doc", doc, tags)
+}
+
+func (r *DocsRepository) GetSessionPlacement(ctx context.Context, sessionID string) (SessionPlacementDoc, error) {
+	var out SessionPlacementDoc
+	if err := r.getStateDoc(ctx, fmt.Sprintf("metiq:session:%s:placement", sessionID), &out); err != nil {
+		return SessionPlacementDoc{}, err
+	}
+	return out, nil
+}
+
 func (r *DocsRepository) ListSessions(ctx context.Context, limit int) ([]SessionDoc, error) {
 	if limit < 0 {
 		return nil, fmt.Errorf("limit must be non-negative")

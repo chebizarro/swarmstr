@@ -38,6 +38,10 @@ type SessionEntry struct {
 	ForkedFromParent              bool                         `json:"forked_from_parent,omitempty"`
 	CompactionCount               int64                        `json:"compaction_count,omitempty"`
 	CompactionCheckpoints         []CompactionCheckpointRef    `json:"compaction_checkpoints,omitempty"`
+	TranscriptGraphVersion        int                          `json:"transcript_graph_version,omitempty"`
+	TranscriptRevision            int64                        `json:"transcript_revision,omitempty"`
+	ActiveTranscriptLeafID        string                       `json:"active_transcript_leaf_id,omitempty"`
+	TranscriptBranchHeads         []string                     `json:"transcript_branch_heads,omitempty"`
 	MemoryFlushAt                 int64                        `json:"memory_flush_at,omitempty"`
 	MemoryFlushCount              int64                        `json:"memory_flush_compaction_count,omitempty"`
 	SessionMemoryFile             string                       `json:"session_memory_file,omitempty"`
@@ -114,6 +118,9 @@ type SessionEntry struct {
 	FallbackReason   string         `json:"fallback_reason,omitempty"`
 	FallbackAt       int64          `json:"fallback_at,omitempty"`
 	LastTurn         *TurnTelemetry `json:"last_turn,omitempty"`
+
+	// Catalog organization. Archived sessions retain their transcript and workspace.
+	Archived bool `json:"archived,omitempty"`
 
 	// Housekeeping.
 	CreatedAt time.Time `json:"created_at"`
@@ -281,6 +288,7 @@ type CompactionCheckpointRef struct {
 	KeptEntries    int            `json:"kept_entries,omitempty"`
 	PreCompaction  map[string]any `json:"pre_compaction,omitempty"`
 	PostCompaction map[string]any `json:"post_compaction,omitempty"`
+	SnapshotID     string         `json:"snapshot_id,omitempty"`
 }
 
 // CarryOverFlags returns a new SessionEntry that inherits the flag-based
@@ -406,6 +414,19 @@ func (s *SessionStore) GetOrNew(key string) SessionEntry {
 func (s *SessionStore) Put(key string, entry SessionEntry) error {
 	return s.mutateEntryAndJournal(key, func(e *SessionEntry) error {
 		now := time.Now().UTC()
+		// History state has a dedicated CAS mutation path. Preserve it when a
+		// legacy whole-entry writer updates the same logical session.
+		if e.SessionID != "" && (entry.SessionID == "" || entry.SessionID == e.SessionID) {
+			if entry.TranscriptGraphVersion == 0 && e.TranscriptGraphVersion > 0 {
+				entry.TranscriptGraphVersion = e.TranscriptGraphVersion
+				entry.TranscriptRevision = e.TranscriptRevision
+				entry.ActiveTranscriptLeafID = e.ActiveTranscriptLeafID
+				entry.TranscriptBranchHeads = append([]string(nil), e.TranscriptBranchHeads...)
+			}
+			if entry.CompactionCheckpoints == nil && e.CompactionCheckpoints != nil {
+				entry.CompactionCheckpoints = append([]CompactionCheckpointRef(nil), e.CompactionCheckpoints...)
+			}
+		}
 		if entry.SessionID == "" {
 			entry.SessionID = key
 		}
@@ -416,6 +437,32 @@ func (s *SessionStore) Put(key string, entry SessionEntry) error {
 		*e = cloneSessionEntry(entry)
 		return nil
 	})
+}
+
+// SetArchived atomically updates durable catalog archive state without
+// overwriting concurrent session telemetry.
+func (s *SessionStore) SetArchived(key string, archived bool) (SessionEntry, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return SessionEntry{}, fmt.Errorf("session key is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.entries[key]
+	if !ok {
+		return SessionEntry{}, ErrNotFound
+	}
+	before := cloneSessionEntries(s.entries)
+	current = cloneSessionEntry(current)
+	current.Archived = archived
+	current.UpdatedAt = time.Now().UTC()
+	s.entries[key] = cloneSessionEntry(current)
+	journalEntry := cloneSessionEntry(current)
+	if err := s.appendJournalLocked(sessionStoreJournalRecord{Op: "put", Key: key, Entry: &journalEntry}); err != nil {
+		s.entries = before
+		return SessionEntry{}, err
+	}
+	return cloneSessionEntry(current), nil
 }
 
 // Delete removes the entry for key and persists a delete marker to the journal.
@@ -1131,6 +1178,9 @@ func cloneSessionEntries(in map[string]SessionEntry) map[string]SessionEntry {
 
 func cloneSessionEntry(in SessionEntry) SessionEntry {
 	out := in
+	if in.TranscriptBranchHeads != nil {
+		out.TranscriptBranchHeads = append([]string(nil), in.TranscriptBranchHeads...)
+	}
 	if in.CompactionCheckpoints != nil {
 		out.CompactionCheckpoints = make([]CompactionCheckpointRef, len(in.CompactionCheckpoints))
 		for i, checkpoint := range in.CompactionCheckpoints {

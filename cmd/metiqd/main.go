@@ -31,6 +31,7 @@ import (
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	gatewayprotocol "metiq/internal/gateway/protocol"
+	"metiq/internal/gateway/sessioncoord"
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/grasp"
 	hookspkg "metiq/internal/hooks"
@@ -96,6 +97,7 @@ import (
 	_ "metiq/internal/extensions/telegram"
 	_ "metiq/internal/extensions/twitch"
 	_ "metiq/internal/extensions/whatsapp"
+	_ "metiq/internal/extensions/whatsappweb"
 	_ "metiq/internal/extensions/zalo"
 	_ "metiq/internal/extensions/zalouser"
 )
@@ -123,6 +125,7 @@ var (
 	controlNodeInvocations      *nodeInvocationRegistry
 	controlCronJobs             *cronRegistry
 	controlSessionStore         *state.SessionStore
+	controlSessionCoordinator   *sessioncoord.Service
 	controlSessionMemoryRuntime *sessionMemoryRuntime
 	controlExecApprovals        *execApprovalsRegistry
 	controlChannelAccounts      *channels.AccountRuntime
@@ -558,6 +561,9 @@ func main() {
 		sessionStore = nil
 	}
 	controlSessionStore = sessionStore
+	transcriptRepo.BindSessionStore(sessionStore)
+	sessionCoordinator := sessioncoord.New(docsRepo, sessionStore)
+	controlSessionCoordinator = sessionCoordinator
 	sessionMemoryRuntime := newSessionMemoryRuntime(sessionStore, transcriptRepo)
 	controlSessionMemoryRuntime = sessionMemoryRuntime
 	baseMemoryIndex, err := memory.OpenIndex("")
@@ -4936,27 +4942,28 @@ func main() {
 		emitter:   controlWsEmitter,
 		emitterMu: &controlWsEmitterMu,
 		session: sessionServices{
-			sessionTurns:      controlSessionTurns,
-			chatCancels:       chatCancels,
-			dmQueues:          dmQueues,
-			steeringMailboxes: steeringMailboxes,
-			agentRuntime:      controlAgentRuntime,
-			agentRegistry:     controlAgentRegistry,
-			sessionMemRuntime: controlSessionMemoryRuntime,
-			sessionRouter:     controlSessionRouter,
-			toolRegistry:      controlToolRegistry,
-			memoryStore:       memoryIndex,
-			contextEngine:     controlContextEngine,
-			contextEngineName: contextEngineName,
-			sessionStore:      controlSessionStore,
-			agentJobs:         controlAgentJobs,
-			subagents:         controlSubagents,
-			ops:               controlOps,
-			cronJobs:          controlCronJobs,
-			execApprovals:     controlExecApprovals,
-			wizards:           controlWizards,
-			nodeInvocations:   controlNodeInvocations,
-			nodePending:       nodePending,
+			sessionTurns:       controlSessionTurns,
+			chatCancels:        chatCancels,
+			dmQueues:           dmQueues,
+			steeringMailboxes:  steeringMailboxes,
+			agentRuntime:       controlAgentRuntime,
+			agentRegistry:      controlAgentRegistry,
+			sessionMemRuntime:  controlSessionMemoryRuntime,
+			sessionRouter:      controlSessionRouter,
+			toolRegistry:       controlToolRegistry,
+			memoryStore:        memoryIndex,
+			contextEngine:      controlContextEngine,
+			contextEngineName:  contextEngineName,
+			sessionStore:       controlSessionStore,
+			sessionCoordinator: sessionCoordinator,
+			agentJobs:          controlAgentJobs,
+			subagents:          controlSubagents,
+			ops:                controlOps,
+			cronJobs:           controlCronJobs,
+			execApprovals:      controlExecApprovals,
+			wizards:            controlWizards,
+			nodeInvocations:    controlNodeInvocations,
+			nodePending:        nodePending,
 		},
 		handlers: handlerServices{
 			ttsManager:         ttsMgr,
@@ -6189,7 +6196,12 @@ func main() {
 			TrustedProxies:          trustedProxies,
 			AllowInsecureControlUI:  gatewayWSAllowInsecureControlUI,
 			ValidateDeviceToken:     gatewayDeviceTokenValidator(configState),
-			StaticHandler:           webui.Handler(wsPath, gatewayWSToken),
+			OnDisconnect: func(disconnectCtx context.Context, info gatewayws.ConnectionInfo) {
+				for _, reclaimErr := range reclaimDisconnectedSessionPlacements(disconnectCtx, sessionCoordinator, info.ID) {
+					log.Printf("session placement disconnect reclaim: %v", reclaimErr)
+				}
+			},
+			StaticHandler: webui.Handler(wsPath, gatewayWSToken),
 			HandleRequest: func(ctx context.Context, req gatewayprotocol.RequestFrame) (any, *gatewayprotocol.ErrorShape) {
 				principal, _ := gatewayws.PrincipalFromContext(ctx)
 				res, err := handleControlRPCRequest(ctx, gatewayControlRPCInbound(principal, req), bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
@@ -6205,6 +6217,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("start gateway ws runtime: %v", err)
 		}
+		sessionCoordinator.SetBroadcaster(wsRuntime.Broadcast)
 		wsEmitter = newObservedEventEmitter(gatewayws.NewRuntimeEmitter(wsRuntime), eventBuffer)
 		setControlWSEmitter(wsEmitter)
 	}
@@ -6473,7 +6486,8 @@ func main() {
 				ListSessions: func(ctx context.Context, limit int) ([]state.SessionDoc, error) {
 					return docsRepo.ListSessions(ctx, limit)
 				},
-				SessionStore: sessionStore,
+				SessionStore:       sessionStore,
+				SessionCoordinator: sessionCoordinator,
 				ListTranscript: func(ctx context.Context, sessionID string, limit int) ([]state.TranscriptEntryDoc, error) {
 					return transcriptRepo.ListSession(ctx, sessionID, limit)
 				},
@@ -7487,20 +7501,21 @@ func handleControlRPCRequest(
 			emitter:   controlWsEmitter,
 			emitterMu: &controlWsEmitterMu,
 			session: sessionServices{
-				sessionStore:      controlSessionStore,
-				toolRegistry:      controlToolRegistry,
-				agentJobs:         controlAgentJobs,
-				sessionRouter:     controlSessionRouter,
-				agentRegistry:     controlAgentRegistry,
-				agentRuntime:      controlAgentRuntime,
-				subagents:         controlSubagents,
-				sessionTurns:      controlSessionTurns,
-				ops:               controlOps,
-				cronJobs:          controlCronJobs,
-				execApprovals:     controlExecApprovals,
-				wizards:           controlWizards,
-				nodeInvocations:   controlNodeInvocations,
-				sessionMemRuntime: controlSessionMemoryRuntime,
+				sessionStore:       controlSessionStore,
+				sessionCoordinator: controlSessionCoordinator,
+				toolRegistry:       controlToolRegistry,
+				agentJobs:          controlAgentJobs,
+				sessionRouter:      controlSessionRouter,
+				agentRegistry:      controlAgentRegistry,
+				agentRuntime:       controlAgentRuntime,
+				subagents:          controlSubagents,
+				sessionTurns:       controlSessionTurns,
+				ops:                controlOps,
+				cronJobs:           controlCronJobs,
+				execApprovals:      controlExecApprovals,
+				wizards:            controlWizards,
+				nodeInvocations:    controlNodeInvocations,
+				sessionMemRuntime:  controlSessionMemoryRuntime,
 			},
 			relay: relayPolicyServices{
 				acpPeers:      controlACPPeers,
@@ -7532,13 +7547,14 @@ func handleControlRPCRequest(
 		startedAt:         startedAt,
 		bootstrapPath:     svc.handlers.bootstrapPath,
 
-		sessionStore:     svc.session.sessionStore,
-		mediaTranscriber: svc.handlers.mediaTranscriber,
-		toolRegistry:     svc.session.toolRegistry,
-		agentJobs:        svc.session.agentJobs,
-		sessionRouter:    svc.session.sessionRouter,
-		agentRegistry:    svc.session.agentRegistry,
-		agentRuntime:     svc.session.agentRuntime,
+		sessionStore:       svc.session.sessionStore,
+		sessionCoordinator: svc.session.sessionCoordinator,
+		mediaTranscriber:   svc.handlers.mediaTranscriber,
+		toolRegistry:       svc.session.toolRegistry,
+		agentJobs:          svc.session.agentJobs,
+		sessionRouter:      svc.session.sessionRouter,
+		agentRegistry:      svc.session.agentRegistry,
+		agentRuntime:       svc.session.agentRuntime,
 
 		sessionMemoryRuntime: svc.session.sessionMemRuntime,
 		acpPeers:             svc.relay.acpPeers,

@@ -1604,6 +1604,9 @@ func TestHandleControlRPCRequest_ChatHistoryAndSessionViews(t *testing.T) {
 }
 
 func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
+	previousSessionStore := controlSessionStore
+	controlSessionStore = newTestSessionStore(t)
+	t.Cleanup(func() { controlSessionStore = previousSessionStore })
 	store := newTestStore()
 	docs := state.NewDocsRepository(store, "author")
 	transcript := state.NewTranscriptRepository(store, "author")
@@ -1675,6 +1678,9 @@ func TestHandleControlRPCRequest_ConfigSetAndSessionMutations(t *testing.T) {
 }
 
 func TestHandleControlRPCRequest_SessionsCompactHandlesLargeTranscripts(t *testing.T) {
+	previousSessionStore := controlSessionStore
+	controlSessionStore = newTestSessionStore(t)
+	t.Cleanup(func() { controlSessionStore = previousSessionStore })
 	oldRuntime := controlAgentRuntime
 	controlAgentRuntime = nil
 	t.Cleanup(func() { controlAgentRuntime = oldRuntime })
@@ -1719,15 +1725,18 @@ func TestHandleControlRPCRequest_SessionsCompactHandlesLargeTranscripts(t *testi
 	if err != nil {
 		t.Fatalf("list session: %v", err)
 	}
-	if len(entries) != 5 {
-		t.Fatalf("expected 5 remaining entries, got %d", len(entries))
+	if len(entries) != 6 {
+		t.Fatalf("expected compaction boundary plus 5 retained entries, got %d", len(entries))
 	}
-	if entries[0].EntryID != "e2500" || entries[4].EntryID != "e2504" {
-		t.Fatalf("unexpected remaining entries: first=%s last=%s", entries[0].EntryID, entries[4].EntryID)
+	if !strings.HasPrefix(entries[0].EntryID, "compact-summary-") || !strings.HasPrefix(entries[5].EntryID, "compact-") {
+		t.Fatalf("unexpected compacted path: first=%s last=%s", entries[0].EntryID, entries[5].EntryID)
 	}
 }
 
 func TestHandleControlRPCRequest_SessionsCompactPrefersLightModelSummary(t *testing.T) {
+	previousSessionStore := controlSessionStore
+	controlSessionStore = newTestSessionStore(t)
+	t.Cleanup(func() { controlSessionStore = previousSessionStore })
 	prevRuntime := controlAgentRuntime
 	prevRegistry := controlAgentRegistry
 	prevRouter := controlSessionRouter

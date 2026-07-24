@@ -697,6 +697,22 @@ func TestUnauthorizedBurstClosesConnection(t *testing.T) {
 	}
 }
 
+func TestDisconnectCallbackRunsOnce(t *testing.T) {
+	calls := 0
+	r := &Runtime{opts: RuntimeOptions{OnDisconnect: func(_ context.Context, info ConnectionInfo) {
+		calls++
+		if info.ID != "c1" || info.Principal.Subject != "alice" {
+			t.Fatalf("unexpected info: %+v", info)
+		}
+	}}, clients: map[string]*client{}}
+	c := &client{id: "c1", principal: ControlPrincipal{Subject: "alice"}}
+	r.notifyDisconnect(c)
+	r.notifyDisconnect(c)
+	if calls != 1 {
+		t.Fatalf("expected one disconnect callback, got %d", calls)
+	}
+}
+
 func TestUnknownMethodRejected(t *testing.T) {
 	r := &Runtime{
 		opts: RuntimeOptions{

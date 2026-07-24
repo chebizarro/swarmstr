@@ -43,13 +43,14 @@ type ControlResponseCacheDoc struct {
 }
 
 type TranscriptEntryDoc struct {
-	Version   int            `json:"version"`
-	SessionID string         `json:"session_id"`
-	EntryID   string         `json:"entry_id"`
-	Role      string         `json:"role"` // user|assistant|system|deleted
-	Text      string         `json:"text"`
-	Unix      int64          `json:"unix"`
-	Meta      map[string]any `json:"meta,omitempty"`
+	Version       int            `json:"version"`
+	SessionID     string         `json:"session_id"`
+	EntryID       string         `json:"entry_id"`
+	ParentEntryID string         `json:"parent_entry_id,omitempty"`
+	Role          string         `json:"role"` // user|assistant|system|deleted
+	Text          string         `json:"text"`
+	Unix          int64          `json:"unix"`
+	Meta          map[string]any `json:"meta,omitempty"`
 	// Deleted is true for tombstoned entries that have been compacted away.
 	// ListSession filters these out automatically.
 	Deleted bool `json:"deleted,omitempty"`

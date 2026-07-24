@@ -153,6 +153,25 @@ func TestHandler_IncludesMobileResumeRunwayUI(t *testing.T) {
 	}
 }
 
+func TestSessionSwitchLoadsGatewayHistory(t *testing.T) {
+	raw, err := os.ReadFile("ui.html")
+	if err != nil {
+		t.Fatalf("read ui.html: %v", err)
+	}
+	html := string(raw)
+	for _, want := range []string{
+		"const sid = s.session_id || s.sessionId || s.key",
+		"switchSession(sid)",
+		"loadSessionHistory(sid)",
+		"callMethod('chat.history', { session_id: sid, limit: 200 })",
+		"if (sid !== sessionID) return",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("session history switching missing %q", want)
+		}
+	}
+}
+
 func TestHandler_IncludesManagementViews(t *testing.T) {
 	h := Handler("/ws", "")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

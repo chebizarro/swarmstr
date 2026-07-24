@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 127,
+    "implemented": 147,
     "partial": 0,
-    "missing": 197,
+    "missing": 177,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "defer": 53,
@@ -1145,32 +1145,36 @@
     },
     {
       "method": "sessions.files.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.files.list",
+      "notes": "Lists transcript-touched files and a bounded browser rooted at the persisted session workspace.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.files.get",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.files.get",
+      "notes": "Reads bounded UTF-8 files through an os.Root-contained session workspace and returns a SHA-256 CAS token.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.files.set",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.files.set",
+      "notes": "Atomically replaces an existing regular workspace file only when its SHA-256 expected hash matches.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.files.reveal",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.files.reveal",
+      "notes": "Reveals only the persisted session workspace root using argument-vector host launching.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -1560,48 +1564,54 @@
     },
     {
       "method": "sessions.compaction.branch",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.compaction.branch",
+      "notes": "Creates a new session from a verified durable pre-compaction snapshot.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.compaction.restore",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.compaction.restore",
+      "notes": "CAS-restores a verified durable checkpoint snapshot while preserving the prior branch.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.branches.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.branches.list",
+      "notes": "Lists persisted transcript DAG heads with active-path metadata.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.branches.switch",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.branches.switch",
+      "notes": "Atomically switches the active transcript DAG head.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.rewind",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.rewind",
+      "notes": "Repoints the active path before a user entry while retaining the prior branch.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.fork",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.fork",
+      "notes": "Creates an independent session from the active-path prefix before a user entry.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -1684,7 +1694,8 @@
     },
     {
       "method": "sessions.groups.list",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "sessions.groups.list",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1692,7 +1703,8 @@
     },
     {
       "method": "sessions.groups.put",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "sessions.groups.put",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1700,7 +1712,8 @@
     },
     {
       "method": "sessions.groups.rename",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "sessions.groups.rename",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1708,7 +1721,8 @@
     },
     {
       "method": "sessions.groups.delete",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "sessions.groups.delete",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -2478,16 +2492,18 @@
     },
     {
       "method": "sessions.catalog.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.catalog.list",
+      "notes": "Projects the durable local SessionStore into the OpenClaw catalog host shape with bounded cursor pagination.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.catalog.read",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.catalog.read",
+      "notes": "Reads the authoritative persisted transcript for a local catalog session with bounded cursor pagination.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -2502,16 +2518,18 @@
     },
     {
       "method": "sessions.catalog.continue",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.catalog.continue",
+      "notes": "Idempotently restores a durable archived local session and returns its existing session key.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.catalog.archive",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.catalog.archive",
+      "notes": "Persists archive state without deleting transcript or workspace data and rejects active runs.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -2545,7 +2563,8 @@
     },
     {
       "method": "sessions.dispatch",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "sessions.dispatch",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -2553,7 +2572,8 @@
     },
     {
       "method": "sessions.reclaim",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "sessions.reclaim",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
