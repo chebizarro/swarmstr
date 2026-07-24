@@ -22,14 +22,14 @@ Recommended sequencing: fix critical correctness/security first (cheap, high-ris
 
 ## Phase 0 — Critical correctness & safety (do first)
 
-- [ ] **P0.1 (L, Critical)** FIPS daemon identity-cache priming: peers derived to `fd00::/8` addrs are unroutable because only swarmstr's Go-side `idCache` is updated (`internal/nostr/runtime/fips_transport.go:260-367`; requirement in `fips/docs/design/fips-ipv6-adapter.md:23-133`). Resolve via FIPS DNS, a daemon identity-insert API, or native FSP service registration.
-- [ ] **P0.2 (M, Critical)** Authenticate inbound FIPS senders; remove the plaintext `env.From` trust fallback (`fips_transport.go:371-394`). Reject unknown senders or bind to the FIPS session identity.
-- [ ] **P0.3 (L, Critical)** NIP-57 receiver: implement all mandatory receipt checks (event sig, provider `nostrPubkey`, embedded request sig, BOLT-11 description hash, amount, recipient, dedup) — `internal/nostr/zap/zap.go` currently passes every event through.
-- [ ] **P0.4 (L)** NIP-61 nutzap safety: P2PK lock validation, mint allowlist from kind-10019, `"02"` prefix, DLEQ, redemption workflow (`internal/nostr/nip61/nutzap.go`).
-- [ ] **P0.5 (L)** NIP-60 wallet: derive live state from `del` transitions + deletions, validate fetched events before decrypting, mandatory history `e` refs, kind-7374 quotes (`internal/nostr/nip60/wallet.go`).
-- [ ] **P0.6 (L)** Node plugin sandbox must fail closed: manager computes a sandbox decision but loads via plain `exec.CommandContext` (`internal/plugins/manager/manager.go:105-137`, `internal/plugins/runtime/node_host.go:98-124`).
-- [ ] **P0.7 (M–L)** SSRF-safe plugin registry/install: private-IP/DNS-rebinding checks, redirect policy, signed metadata/provenance (`internal/plugins/installer/url.go:53-176`).
-- [ ] **P0.8 (S)** Fix Web UI calling nonexistent methods: `nodes.*` plural vs registered `node.*` singular, and `channels.reconnect` (unregistered) — `internal/webui/ui.html:1391-1449` vs `internal/gateway/methods/schema_methods.go:122-138`.
+- [x] **P0.1 (L, Critical)** DONE (commit 6b50945, swarmstr-n6h6 closed; .fips DNS priming) FIPS daemon identity-cache priming: peers derived to `fd00::/8` addrs are unroutable because only swarmstr's Go-side `idCache` is updated (`internal/nostr/runtime/fips_transport.go:260-367`; requirement in `fips/docs/design/fips-ipv6-adapter.md:23-133`). Resolve via FIPS DNS, a daemon identity-insert API, or native FSP service registration.
+- [x] **P0.2 (M, Critical)** DONE (commit 6b50945, swarmstr-gxm1 closed) Authenticate inbound FIPS senders; remove the plaintext `env.From` trust fallback (`fips_transport.go:371-394`). Reject unknown senders or bind to the FIPS session identity.
+- [x] **P0.3 (L, Critical)** DONE (commit 875a691, swarmstr-fhbt closed) NIP-57 receiver: implement all mandatory receipt checks (event sig, provider `nostrPubkey`, embedded request sig, BOLT-11 description hash, amount, recipient, dedup) — `internal/nostr/zap/zap.go` currently passes every event through.
+- [x] **P0.4 (L)** DONE (commit 5b7bea7, swarmstr-em6f closed) NIP-61 nutzap safety: P2PK lock validation, mint allowlist from kind-10019, `"02"` prefix, DLEQ, redemption workflow (`internal/nostr/nip61/nutzap.go`).
+- [x] **P0.5 (L)** DONE (commit 5b7bea7, swarmstr-zoh5 closed) NIP-60 wallet: derive live state from `del` transitions + deletions, validate fetched events before decrypting, mandatory history `e` refs, kind-7374 quotes (`internal/nostr/nip60/wallet.go`).
+- [x] **P0.6 (L)** DONE (commit 1c6387a, swarmstr-gg8x closed) Node plugin sandbox must fail closed: manager computes a sandbox decision but loads via plain `exec.CommandContext` (`internal/plugins/manager/manager.go:105-137`, `internal/plugins/runtime/node_host.go:98-124`).
+- [x] **P0.7 (M–L)** DONE (commit 1c6387a, swarmstr-m0zc closed) SSRF-safe plugin registry/install: private-IP/DNS-rebinding checks, redirect policy, signed metadata/provenance (`internal/plugins/installer/url.go:53-176`).
+- [x] **P0.8 (S)** DONE (commit 4d4489d, swarmstr-6oyt closed) Fix Web UI calling nonexistent methods: `nodes.*` plural vs registered `node.*` singular, and `channels.reconnect` (unregistered) — `internal/webui/ui.html:1391-1449` vs `internal/gateway/methods/schema_methods.go:122-138`.
 
 ## Phase 1 — Rebaseline parity tracking (foundation for everything else)
 
