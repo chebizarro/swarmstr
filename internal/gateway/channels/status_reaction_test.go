@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 )
 
 // mockReactionHandle records AddReaction/RemoveReaction calls.
@@ -14,9 +13,9 @@ type mockReactionHandle struct {
 	removed []string
 }
 
-func (m *mockReactionHandle) ID() string                          { return "mock" }
+func (m *mockReactionHandle) ID() string                             { return "mock" }
 func (m *mockReactionHandle) Send(_ context.Context, _ string) error { return nil }
-func (m *mockReactionHandle) Close()                               {}
+func (m *mockReactionHandle) Close()                                 {}
 
 func (m *mockReactionHandle) AddReaction(_ context.Context, _, emoji string) error {
 	m.mu.Lock()
@@ -56,9 +55,6 @@ func TestStatusReactionController_SetDone(t *testing.T) {
 	ctrl.SetDone()
 	ctrl.Close()
 
-	// Give a moment for async ops to settle.
-	time.Sleep(50 * time.Millisecond)
-
 	if rh.lastAdded() != EmojiDone {
 		t.Fatalf("last added emoji: got %q want %q", rh.lastAdded(), EmojiDone)
 	}
@@ -71,8 +67,6 @@ func TestStatusReactionController_SetError(t *testing.T) {
 	ctrl.SetQueued()
 	ctrl.SetError()
 	ctrl.Close()
-
-	time.Sleep(50 * time.Millisecond)
 
 	if rh.lastAdded() != EmojiError {
 		t.Fatalf("got %q want %q", rh.lastAdded(), EmojiError)
@@ -93,7 +87,6 @@ func TestStatusReactionController_SetTool_Classification(t *testing.T) {
 		ctrl := NewStatusReactionController(context.Background(), rh, "e")
 		ctrl.SetTool(tc.tool)
 		ctrl.Close()
-		time.Sleep(50 * time.Millisecond)
 		if got := rh.lastAdded(); got != tc.emoji {
 			t.Errorf("tool=%q: got %q want %q", tc.tool, got, tc.emoji)
 		}
@@ -108,7 +101,6 @@ func TestStatusReactionController_ThinkingDebounce(t *testing.T) {
 	// SetDone before debounce fires should cancel thinking emoji.
 	ctrl.SetDone()
 	ctrl.Close()
-	time.Sleep(200 * time.Millisecond)
 
 	for _, e := range rh.added {
 		if e == EmojiThinking {
@@ -124,7 +116,6 @@ func TestStatusReactionController_Clear(t *testing.T) {
 	ctrl.SetQueued()
 	ctrl.Clear()
 	ctrl.Close()
-	time.Sleep(50 * time.Millisecond)
 
 	added, removed := rh.counts()
 	if added == 0 {
@@ -134,4 +125,46 @@ func TestStatusReactionController_Clear(t *testing.T) {
 		t.Fatal("expected remove after clear")
 	}
 	_ = added
+}
+
+type policyReactionHandle struct {
+	*mockReactionHandle
+	level string
+}
+
+func (m *policyReactionHandle) ReactionLevel() string { return m.level }
+
+func TestStatusReactionController_ReactionLevelPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		level     string
+		wantAdded []string
+	}{
+		{name: "off", level: "off", wantAdded: nil},
+		{name: "ack", level: "ack", wantAdded: []string{EmojiQueued, EmojiDone}},
+		{name: "minimal", level: "minimal", wantAdded: []string{EmojiQueued, EmojiDone}},
+		{name: "extensive", level: "extensive", wantAdded: []string{EmojiQueued, EmojiToolCode, EmojiDone}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base := &mockReactionHandle{}
+			ctrl := NewStatusReactionController(context.Background(), &policyReactionHandle{mockReactionHandle: base, level: tc.level}, "evt")
+			ctrl.SetQueued()
+			ctrl.SetTool("bash")
+			ctrl.SetDone()
+			ctrl.Close()
+
+			base.mu.Lock()
+			got := append([]string(nil), base.added...)
+			base.mu.Unlock()
+			if len(got) != len(tc.wantAdded) {
+				t.Fatalf("added reactions: got %#v, want %#v", got, tc.wantAdded)
+			}
+			for i := range tc.wantAdded {
+				if got[i] != tc.wantAdded[i] {
+					t.Fatalf("added reactions: got %#v, want %#v", got, tc.wantAdded)
+				}
+			}
+		})
+	}
 }

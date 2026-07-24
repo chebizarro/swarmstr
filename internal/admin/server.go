@@ -18,6 +18,7 @@ import (
 	"metiq/internal/extensions/line"
 	"metiq/internal/extensions/msteams"
 	"metiq/internal/extensions/nextcloud"
+	"metiq/internal/extensions/sms"
 	"metiq/internal/extensions/synology"
 	"metiq/internal/extensions/telegram"
 	"metiq/internal/extensions/whatsapp"
@@ -233,6 +234,14 @@ func Start(ctx context.Context, opts ServerOptions) error {
 			return
 		}
 		line.HandleWebhook(channelID, w, r)
+	})
+	mux.HandleFunc("/webhooks/sms/", func(w http.ResponseWriter, r *http.Request) {
+		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/sms/"))
+		if channelID == "" {
+			http.Error(w, "missing channel id", http.StatusBadRequest)
+			return
+		}
+		sms.HandleWebhook(channelID, w, r)
 	})
 	mux.HandleFunc("/webhooks/nextcloud/", func(w http.ResponseWriter, r *http.Request) {
 		channelID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/webhooks/nextcloud/"))

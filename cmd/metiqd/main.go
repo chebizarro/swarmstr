@@ -82,6 +82,7 @@ import (
 	_ "metiq/internal/extensions/email"
 	_ "metiq/internal/extensions/feishu"
 	_ "metiq/internal/extensions/googlechat"
+	_ "metiq/internal/extensions/imessage"
 	_ "metiq/internal/extensions/irc"
 	_ "metiq/internal/extensions/line"
 	_ "metiq/internal/extensions/matrix"
@@ -90,11 +91,13 @@ import (
 	_ "metiq/internal/extensions/nextcloud"
 	_ "metiq/internal/extensions/signal"
 	_ "metiq/internal/extensions/slack"
+	_ "metiq/internal/extensions/sms"
 	_ "metiq/internal/extensions/synology"
 	_ "metiq/internal/extensions/telegram"
 	_ "metiq/internal/extensions/twitch"
 	_ "metiq/internal/extensions/whatsapp"
 	_ "metiq/internal/extensions/zalo"
+	_ "metiq/internal/extensions/zalouser"
 )
 
 // version and commit are set at build time via -ldflags:

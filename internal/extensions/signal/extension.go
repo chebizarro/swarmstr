@@ -72,6 +72,16 @@ func (p *SignalPlugin) ConfigSchema() map[string]any {
 				"type":        "string",
 				"description": "E.164 phone number registered in the sidecar (e.g. +15551234567).",
 			},
+			"default_to": map[string]any{
+				"type":        "string",
+				"description": "Optional default Signal recipient used when no reply target is present.",
+			},
+			"reaction_level": map[string]any{
+				"type":        "string",
+				"enum":        []string{"off", "ack", "minimal", "extensive"},
+				"default":     "minimal",
+				"description": "Automatic agent status-reaction policy. Explicit question and approval reactions remain enabled.",
+			},
 			"allowed_senders": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
@@ -98,6 +108,180 @@ func (p *SignalPlugin) Capabilities() sdk.ChannelCapabilities {
 	}
 }
 
+func (p *SignalPlugin) GatewayMethods() []sdk.GatewayMethod {
+	return channels.AccountScopedGatewayMethods(p.ID(), []sdk.GatewayMethod{
+		signalSendGatewayMethod("signal.send", "Send a Signal message", ""),
+		signalSendGatewayMethod("signal.send_question", "Send a Signal question and route configured emoji choices", "question"),
+		signalSendGatewayMethod("signal.send_approval", "Send a Signal approval prompt and route approve/deny reactions", "approval"),
+		{
+			Method:      "signal.remove_reaction_route",
+			Description: "Remove a pending Signal question or approval reaction route",
+			Handle: func(_ context.Context, params map[string]any) (map[string]any, error) {
+				accountID, _ := params["account_id"].(string)
+				routeID, _ := params["route_id"].(string)
+				if accountID == "" || strings.TrimSpace(routeID) == "" {
+					return nil, fmt.Errorf("signal.remove_reaction_route: account_id and route_id are required")
+				}
+				bot := registeredSignalBot(accountID)
+				if bot == nil {
+					return nil, fmt.Errorf("signal.remove_reaction_route: account %q is not connected", accountID)
+				}
+				bot.removeReactionRoute(routeID)
+				return map[string]any{"ok": true, "route_id": routeID}, nil
+			},
+		},
+	})
+}
+
+func signalSendGatewayMethod(name, description, routeKind string) sdk.GatewayMethod {
+	return sdk.GatewayMethod{
+		Method: name, Description: description,
+		Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			apiURL := strings.TrimRight(signalString(params, "api_url"), "/")
+			account := strings.TrimSpace(signalString(params, "account"))
+			to := strings.TrimSpace(firstSignalString(params, "to", "default_to"))
+			text := signalString(params, "text")
+			if apiURL == "" || account == "" || to == "" || strings.TrimSpace(text) == "" {
+				return nil, fmt.Errorf("%s: api_url, account, to/default_to, and text are required", name)
+			}
+			var accountID, routeID string
+			var bot *signalBot
+			var choices map[string]string
+			if routeKind != "" {
+				accountID = strings.TrimSpace(signalString(params, "account_id"))
+				routeID = strings.TrimSpace(signalString(params, "route_id"))
+				if accountID == "" || routeID == "" {
+					return nil, fmt.Errorf("%s: connected account_id and route_id are required", name)
+				}
+				bot = registeredSignalBot(accountID)
+				if bot == nil {
+					return nil, fmt.Errorf("%s: account %q is not connected for reaction routing", name, accountID)
+				}
+				var err error
+				choices, err = signalRouteChoices(routeKind, params)
+				if err != nil {
+					return nil, fmt.Errorf("%s: invalid reaction route: %w", name, err)
+				}
+			}
+			result, err := sendSignalText(ctx, &http.Client{Timeout: 15 * time.Second}, apiURL, account, to, text)
+			if err != nil {
+				return nil, err
+			}
+			messageID := result.ID
+			if result.Timestamp > 0 {
+				messageID = signalEventID(account, result.Timestamp)
+			}
+			out := map[string]any{"ok": true, "message_id": messageID}
+			if routeKind == "" {
+				return out, nil
+			}
+			if result.Timestamp <= 0 {
+				return nil, fmt.Errorf("%s: message %q sent but sidecar response omitted the timestamp required for reaction routing", name, messageID)
+			}
+			bot.registerReactionRoute(signalReactionRoute{ID: routeID, Kind: routeKind, TargetID: signalEventID(account, result.Timestamp), Choices: choices})
+			out["route_id"] = routeID
+			return out, nil
+		},
+	}
+}
+
+func signalRouteChoices(kind string, params map[string]any) (map[string]string, error) {
+	if kind == "approval" {
+		approve := strings.TrimSpace(firstSignalString(params, "approve_emoji"))
+		deny := strings.TrimSpace(firstSignalString(params, "deny_emoji"))
+		if approve == "" {
+			approve = "✅"
+		}
+		if deny == "" {
+			deny = "❌"
+		}
+		if approve == deny {
+			return nil, fmt.Errorf("approval emoji choices must be distinct")
+		}
+		return map[string]string{approve: "approve", deny: "deny"}, nil
+	}
+	choices := map[string]string{}
+	values, _ := params["choices"].([]any)
+	for _, raw := range values {
+		choice, _ := raw.(map[string]any)
+		emoji := strings.TrimSpace(signalString(choice, "emoji"))
+		value := strings.TrimSpace(signalString(choice, "value"))
+		if emoji == "" || value == "" {
+			return nil, fmt.Errorf("each question choice requires emoji and value")
+		}
+		if _, exists := choices[emoji]; exists {
+			return nil, fmt.Errorf("duplicate choice emoji %q", emoji)
+		}
+		choices[emoji] = value
+	}
+	if len(choices) == 0 {
+		return nil, fmt.Errorf("question choices are required")
+	}
+	return choices, nil
+}
+
+func (b *signalBot) registerReactionRoute(route signalReactionRoute) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.routesByID == nil {
+		b.routesByID = map[string]signalReactionRoute{}
+	}
+	if b.routesByTarget == nil {
+		b.routesByTarget = map[string]string{}
+	}
+	if old, exists := b.routesByID[route.ID]; exists {
+		delete(b.routesByTarget, old.TargetID)
+	}
+	if oldID, exists := b.routesByTarget[route.TargetID]; exists {
+		delete(b.routesByID, oldID)
+	}
+	b.routesByID[route.ID] = route
+	b.routesByTarget[route.TargetID] = route.ID
+}
+
+func (b *signalBot) removeReactionRoute(routeID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if route, exists := b.routesByID[routeID]; exists {
+		delete(b.routesByTarget, route.TargetID)
+		delete(b.routesByID, routeID)
+	}
+}
+
+func (b *signalBot) routeReaction(sender string, timestamp int64, reaction signalReaction) string {
+	if reaction.Remove || strings.TrimSpace(reaction.Emoji) == "" || reaction.TargetSentTimestamp <= 0 || strings.TrimSpace(reaction.TargetAuthor) == "" {
+		return ""
+	}
+	targetID := signalEventID(reaction.TargetAuthor, reaction.TargetSentTimestamp)
+	b.mu.Lock()
+	routeID := b.routesByTarget[targetID]
+	route, exists := b.routesByID[routeID]
+	value := route.Choices[reaction.Emoji]
+	if exists && value != "" {
+		delete(b.routesByID, routeID)
+		delete(b.routesByTarget, targetID)
+	}
+	b.mu.Unlock()
+	if !exists || value == "" {
+		return ""
+	}
+	return fmt.Sprintf("[Signal %s reaction] route_id=%s value=%s target=%s reactor=%s at=%d", route.Kind, route.ID, value, targetID, sender, timestamp)
+}
+
+func signalString(params map[string]any, key string) string {
+	value, _ := params[key].(string)
+	return value
+}
+
+func firstSignalString(params map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(signalString(params, key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (p *SignalPlugin) Connect(
 	ctx context.Context,
 	channelID string,
@@ -110,6 +294,13 @@ func (p *SignalPlugin) Connect(
 		return nil, fmt.Errorf("signal channel %q: api_url and account are required", channelID)
 	}
 	apiURL = strings.TrimRight(apiURL, "/")
+	reactionLevel := strings.ToLower(strings.TrimSpace(signalString(cfg, "reaction_level")))
+	if reactionLevel == "" {
+		reactionLevel = "minimal"
+	}
+	if reactionLevel != "off" && reactionLevel != "ack" && reactionLevel != "minimal" && reactionLevel != "extensive" {
+		return nil, fmt.Errorf("signal channel %q: reaction_level must be off, ack, minimal, or extensive", channelID)
+	}
 
 	allowedSenders := map[string]bool{}
 	switch v := cfg["allowed_senders"].(type) {
@@ -137,29 +328,61 @@ func (p *SignalPlugin) Connect(
 		channelID:      channelID,
 		apiURL:         apiURL,
 		account:        account,
+		defaultTo:      strings.TrimSpace(signalString(cfg, "default_to")),
+		reactionLevel:  reactionLevel,
 		allowedSenders: allowedSenders,
 		allowPolling:   channels.PollingFallbackEnabled(cfg),
 		pollInterval:   pollInterval,
 		onMessage:      onMessage,
 		done:           make(chan struct{}),
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
+		routesByID:     map[string]signalReactionRoute{},
+		routesByTarget: map[string]string{},
+		activeTyping:   map[string]bool{},
 	}
 
 	// Prefer the event-driven signal-cli JSON-RPC WebSocket receive stream. REST
 	// /v1/receive polling requires explicit allow_polling opt-in.
 	runCtx, cancel := context.WithCancel(ctx)
 	bot.cancel = cancel
+	registerSignalBot(channelID, bot)
 	go bot.run(runCtx)
 	return bot, nil
 }
 
 // ─── Bot implementation ───────────────────────────────────────────────────────
 
+type signalReactionRoute struct {
+	ID       string
+	Kind     string
+	TargetID string
+	Choices  map[string]string
+}
+
+var signalBotRegistry = struct {
+	sync.RWMutex
+	bots map[string]*signalBot
+}{bots: map[string]*signalBot{}}
+
+func registerSignalBot(accountID string, bot *signalBot) {
+	signalBotRegistry.Lock()
+	signalBotRegistry.bots[accountID] = bot
+	signalBotRegistry.Unlock()
+}
+
+func registeredSignalBot(accountID string) *signalBot {
+	signalBotRegistry.RLock()
+	defer signalBotRegistry.RUnlock()
+	return signalBotRegistry.bots[accountID]
+}
+
 type signalBot struct {
 	mu             sync.Mutex
 	channelID      string
 	apiURL         string
 	account        string
+	defaultTo      string
+	reactionLevel  string
 	allowedSenders map[string]bool
 	allowPolling   bool
 	pollInterval   time.Duration
@@ -167,11 +390,23 @@ type signalBot struct {
 	done           chan struct{}
 	cancel         context.CancelFunc
 	httpClient     *http.Client
+	routesByID     map[string]signalReactionRoute
+	routesByTarget map[string]string
+	activeTyping   map[string]bool
 }
 
 func (b *signalBot) ID() string { return b.channelID }
 
+// ReactionLevel is an additive optional policy surface consumed by the shared
+// status-reaction controller without widening the plugin SDK.
+func (b *signalBot) ReactionLevel() string { return b.reactionLevel }
+
 func (b *signalBot) Close() {
+	signalBotRegistry.Lock()
+	if signalBotRegistry.bots[b.channelID] == b {
+		delete(signalBotRegistry.bots, b.channelID)
+	}
+	signalBotRegistry.Unlock()
 	if b.cancel != nil {
 		b.cancel()
 	}
@@ -225,8 +460,16 @@ type signalEnvelope struct {
 			Message     string             `json:"message"`
 			Timestamp   int64              `json:"timestamp"`
 			Attachments []signalAttachment `json:"attachments"`
+			Reaction    *signalReaction    `json:"reaction"`
 		} `json:"dataMessage"`
 	} `json:"envelope"`
+}
+
+type signalReaction struct {
+	Emoji               string `json:"emoji"`
+	TargetAuthor        string `json:"targetAuthor"`
+	TargetSentTimestamp int64  `json:"targetSentTimestamp"`
+	Remove              bool   `json:"isRemove"`
 }
 
 type signalAttachment struct {
@@ -293,6 +536,17 @@ func (b *signalBot) deliverEnvelope(env signalEnvelope) {
 		return
 	}
 	text := strings.TrimSpace(dm.Message)
+	if dm.Reaction != nil {
+		if routed := b.routeReaction(sender, env.Envelope.Timestamp, *dm.Reaction); routed != "" {
+			b.onMessage(sdk.InboundChannelMessage{
+				ChannelID: b.channelID,
+				SenderID:  sender,
+				Text:      routed,
+				EventID:   signalEventID(sender, env.Envelope.Timestamp),
+			})
+		}
+		return
+	}
 	mediaURL, mediaMIME := firstSignalAttachment(dm.Attachments)
 	if text == "" && mediaURL == "" {
 		return
@@ -301,7 +555,7 @@ func (b *signalBot) deliverEnvelope(env signalEnvelope) {
 		ChannelID: b.channelID,
 		SenderID:  sender,
 		Text:      text,
-		EventID:   fmt.Sprintf("signal-%s-%d", sender, env.Envelope.Timestamp),
+		EventID:   signalEventID(sender, env.Envelope.Timestamp),
 		MediaURL:  mediaURL,
 		MediaMIME: mediaMIME,
 	})
@@ -433,53 +687,76 @@ type signalSendRequest struct {
 	Message    string   `json:"message"`
 }
 
+type signalSendResult struct {
+	Timestamp int64  `json:"timestamp"`
+	ID        string `json:"id"`
+}
+
+func signalEventID(author string, timestamp int64) string {
+	return fmt.Sprintf("signal-%s-%d", author, timestamp)
+}
+
 func (b *signalBot) Send(ctx context.Context, text string) error {
 	_, err := b.SendWithReceipt(ctx, text)
 	return err
 }
 
 func (b *signalBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
-	recipient := b.channelID
-	if recipient == "" {
-		recipient = b.account
-	}
 	receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "signal", Attempts: 1, CreatedAt: time.Now()}
-	body, _ := json.Marshal(signalSendRequest{Number: b.account, Recipients: []string{recipient}, Message: text})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL+"/v2/send", bytes.NewReader(body))
+	recipient, err := b.target(ctx)
 	if err != nil {
-		receipt.Status = channels.DeliveryFailed
-		receipt.Error = err.Error()
+		receipt.Status, receipt.Error = channels.DeliveryFailed, err.Error()
 		return receipt, err
+	}
+	defer b.clearTypingIfActive(ctx, recipient)
+	result, err := sendSignalText(ctx, b.httpClient, b.apiURL, b.account, recipient, text)
+	if err != nil {
+		receipt.Status, receipt.Error = channels.DeliveryFailed, err.Error()
+		return receipt, err
+	}
+	if result.ID != "" {
+		receipt.MessageID = result.ID
+	} else if result.Timestamp > 0 {
+		receipt.MessageID = signalEventID(b.account, result.Timestamp)
+	}
+	receipt.Status, receipt.DeliveredAt = channels.DeliveryDelivered, time.Now()
+	return receipt, nil
+}
+
+func (b *signalBot) target(ctx context.Context) (string, error) {
+	recipient := strings.TrimSpace(sdk.ChannelReplyTarget(ctx))
+	if recipient == "" {
+		recipient = b.defaultTo
+	}
+	if recipient == "" {
+		return "", fmt.Errorf("signal %s: target is required; configure default_to or use a reply target", b.channelID)
+	}
+	return recipient, nil
+}
+
+func sendSignalText(ctx context.Context, client *http.Client, apiURL, account, recipient, text string) (signalSendResult, error) {
+	var result signalSendResult
+	body, _ := json.Marshal(signalSendRequest{Number: account, Recipients: []string{recipient}, Message: text})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(apiURL, "/")+"/v2/send", bytes.NewReader(body))
+	if err != nil {
+		return result, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := b.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		err = fmt.Errorf("signal send: %w", err)
-		receipt.Status = channels.DeliveryFailed
-		receipt.Error = err.Error()
-		return receipt, err
+		return result, fmt.Errorf("signal send: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := fmt.Errorf("signal send: status %d: %s", resp.StatusCode, string(raw))
-		receipt.Status = channels.DeliveryFailed
-		receipt.Error = err.Error()
-		return receipt, err
+		return result, fmt.Errorf("signal send: status %d: %s", resp.StatusCode, string(raw))
 	}
-	var result struct {
-		Timestamp int64  `json:"timestamp"`
-		ID        string `json:"id"`
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return result, fmt.Errorf("signal send: invalid response: %w", err)
+		}
 	}
-	_ = json.Unmarshal(raw, &result)
-	if result.ID != "" {
-		receipt.MessageID = result.ID
-	} else if result.Timestamp > 0 {
-		receipt.MessageID = fmt.Sprintf("signal-%s-%d", recipient, result.Timestamp)
-	}
-	receipt.Status = channels.DeliveryDelivered
-	receipt.DeliveredAt = time.Now()
-	return receipt, nil
+	return result, nil
 }
 
 func firstSignalAttachment(attachments []signalAttachment) (string, string) {
@@ -538,12 +815,35 @@ func urlPathEscapeSignal(s string) string {
 }
 
 func (b *signalBot) SendTyping(ctx context.Context, _ int) error {
-	recipient := b.channelID
-	if recipient == "" {
-		recipient = b.account
+	recipient, err := b.target(ctx)
+	if err != nil {
+		return err
 	}
+	if err := b.sendTypingState(ctx, recipient, false); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.activeTyping[recipient] = true
+	b.mu.Unlock()
+	return nil
+}
+
+// ClearTyping explicitly ends Signal's typing lifecycle via the sidecar DELETE contract.
+func (b *signalBot) ClearTyping(ctx context.Context) error {
+	recipient, err := b.target(ctx)
+	if err != nil {
+		return err
+	}
+	return b.clearTyping(ctx, recipient)
+}
+
+func (b *signalBot) sendTypingState(ctx context.Context, recipient string, stop bool) error {
 	body, _ := json.Marshal(map[string]any{"recipient": recipient})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL+"/v1/typing-indicator/"+b.account, bytes.NewReader(body))
+	method := http.MethodPut
+	if stop {
+		method = http.MethodDelete
+	}
+	req, err := http.NewRequestWithContext(ctx, method, b.apiURL+"/v1/typing-indicator/"+b.account, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -557,6 +857,25 @@ func (b *signalBot) SendTyping(ctx context.Context, _ int) error {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("signal typing: status %d: %s", resp.StatusCode, string(raw))
 	}
+	return nil
+}
+
+func (b *signalBot) clearTypingIfActive(ctx context.Context, recipient string) {
+	b.mu.Lock()
+	active := b.activeTyping[recipient]
+	b.mu.Unlock()
+	if active {
+		_ = b.clearTyping(ctx, recipient)
+	}
+}
+
+func (b *signalBot) clearTyping(ctx context.Context, recipient string) error {
+	if err := b.sendTypingState(ctx, recipient, true); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	delete(b.activeTyping, recipient)
+	b.mu.Unlock()
 	return nil
 }
 
@@ -574,9 +893,13 @@ func (b *signalBot) AddReaction(ctx context.Context, eventID, emoji string) erro
 		return fmt.Errorf("signal: invalid eventID format %q", eventID)
 	}
 	sender, timestamp := parts[0], parts[1]
+	recipient, err := b.target(ctx)
+	if err != nil {
+		return err
+	}
 
 	body, _ := json.Marshal(map[string]any{
-		"recipient":             b.channelID,
+		"recipient":             recipient,
 		"reaction":              emoji,
 		"target_author":         sender,
 		"target_sent_timestamp": timestamp,
@@ -609,9 +932,13 @@ func (b *signalBot) RemoveReaction(ctx context.Context, eventID, emoji string) e
 		return fmt.Errorf("signal: invalid eventID format %q", eventID)
 	}
 	sender, timestamp := parts[0], parts[1]
+	recipient, err := b.target(ctx)
+	if err != nil {
+		return err
+	}
 
 	body, _ := json.Marshal(map[string]any{
-		"recipient":             b.channelID,
+		"recipient":             recipient,
 		"reaction":              emoji,
 		"target_author":         sender,
 		"target_sent_timestamp": timestamp,

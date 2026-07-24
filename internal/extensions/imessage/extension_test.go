@@ -14,8 +14,19 @@ func TestIMessagePluginAlias(t *testing.T) {
 	if p.Type() != "iMessage (BlueBubbles)" {
 		t.Fatalf("unexpected type: %s", p.Type())
 	}
-	if !p.Capabilities().Reactions {
-		t.Fatalf("expected reactions capability")
+	caps := p.Capabilities()
+	if !caps.Reactions || !caps.MultiAccount {
+		t.Fatalf("expected reactions and multi-account capabilities: %+v", caps)
+	}
+	methods := p.GatewayMethods()
+	wantMethods := []string{"imessage.send", "imessage.add_reaction", "imessage.remove_reaction"}
+	if len(methods) != len(wantMethods) {
+		t.Fatalf("expected %d methods, got %d", len(wantMethods), len(methods))
+	}
+	for i, want := range wantMethods {
+		if methods[i].Method != want {
+			t.Fatalf("method %d: want %q, got %q", i, want, methods[i].Method)
+		}
 	}
 	var _ sdk.ChannelPlugin = p
 }

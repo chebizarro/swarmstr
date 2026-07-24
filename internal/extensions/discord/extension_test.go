@@ -520,3 +520,83 @@ func TestDiscordGatewayMessage_PopulatesReplyAndThreadMetadata(t *testing.T) {
 		t.Fatalf("unexpected sender id: %+v", delivered[0])
 	}
 }
+
+func TestAdvancedGatewayMethodsAdvertised(t *testing.T) {
+	got := map[string]bool{}
+	for _, method := range (&DiscordPlugin{}).GatewayMethods() {
+		got[method.Method] = true
+	}
+	for _, name := range []string{
+		"discord.list_archived_threads", "discord.rename_thread", "discord.reopen_thread",
+		"discord.add_reaction", "discord.remove_reaction", "discord.list_reactions", "discord.clear_own_reactions",
+	} {
+		if !got[name] {
+			t.Errorf("missing advanced method %q", name)
+		}
+	}
+}
+
+func TestArchivedThreadsRoutePagination(t *testing.T) {
+	apiURL, _, err := discordArchivedThreadsRoute(map[string]any{
+		"channel_id": "c1", "kind": "private", "before": "2026-07-24T12:00:00.000000+00:00", "limit": float64(42),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(apiURL, "/channels/c1/threads/archived/private") || !strings.Contains(apiURL, "limit=42") || !strings.Contains(apiURL, "before=") {
+		t.Fatalf("pagination query not preserved: %s", apiURL)
+	}
+	if _, _, err := discordArchivedThreadsRoute(map[string]any{"channel_id": "c1", "kind": "bogus"}); err == nil {
+		t.Fatal("expected invalid archive kind error")
+	}
+	if _, _, err := discordArchivedThreadsRoute(map[string]any{"channel_id": "c1", "limit": 101}); err == nil {
+		t.Fatal("expected invalid limit error")
+	}
+}
+
+func TestArchivedThreadsNormalization(t *testing.T) {
+	threads := []any{
+		map[string]any{"id": "t1", "thread_metadata": map[string]any{"archive_timestamp": "first"}},
+		map[string]any{"id": "t2", "thread_metadata": map[string]any{"archive_timestamp": "next-cursor"}},
+	}
+	out := normalizeDiscordArchivedThreads(map[string]any{"result": map[string]any{"threads": threads, "has_more": true}}, map[string]any{"channel_id": "c1", "limit": 2})
+	if out["complete"] != false || out["has_more"] != true || out["returned_count"] != 2 || out["next_before"] != "next-cursor" {
+		t.Fatalf("unexpected normalization: %+v", out)
+	}
+	query := out["query"].(map[string]any)
+	if query["kind"] != "public" || query["include_archived"] != true {
+		t.Fatalf("unexpected normalized query: %+v", query)
+	}
+}
+
+func TestThreadRenameAndPermissionAwareReopenPayloads(t *testing.T) {
+	apiURL, payload, err := discordRenameThreadRoute(map[string]any{"thread_id": "t1", "name": "  renamed  "})
+	if err != nil || !strings.HasSuffix(apiURL, "/channels/t1") || !reflect.DeepEqual(payload, map[string]any{"name": "renamed"}) {
+		t.Fatalf("rename route: url=%s payload=%+v err=%v", apiURL, payload, err)
+	}
+	_, payload, unlock, err := discordReopenThreadRoute(map[string]any{"thread_id": "t1"})
+	if err != nil || unlock || payload["archived"] != false {
+		t.Fatalf("reopen route: payload=%+v unlock=%v err=%v", payload, unlock, err)
+	}
+	if _, exists := payload["locked"]; exists {
+		t.Fatalf("ordinary reopen must not require unlock permission: %+v", payload)
+	}
+	_, payload, unlock, err = discordReopenThreadRoute(map[string]any{"thread_id": "t1", "unlock": true})
+	if err != nil || !unlock || payload["locked"] != false {
+		t.Fatalf("explicit unlock route: payload=%+v unlock=%v err=%v", payload, unlock, err)
+	}
+}
+
+func TestAdvancedReactionRoutes(t *testing.T) {
+	apiURL, _, err := discordReactionUsersRoute("discord.list_reactions")(map[string]any{"channel_id": "c", "message_id": "m", "emoji": "👍", "limit": 25})
+	if err != nil || !strings.Contains(apiURL, "/messages/m/reactions/") || !strings.Contains(apiURL, "limit=25") {
+		t.Fatalf("reaction list route: %s err=%v", apiURL, err)
+	}
+	ownURL, _, err := discordOwnReactionRoute("discord.remove_reaction")(map[string]any{"channel_id": "c", "message_id": "m", "emoji": "party:123"})
+	if err != nil || !strings.HasSuffix(ownURL, "/@me") {
+		t.Fatalf("own reaction route: %s err=%v", ownURL, err)
+	}
+	if got := discordEmojiFromSummary(map[string]any{"emoji": map[string]any{"name": "party", "id": "123"}}); got != "party:123" {
+		t.Fatalf("custom emoji normalization: %q", got)
+	}
+}

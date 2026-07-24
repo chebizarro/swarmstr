@@ -83,10 +83,92 @@ func (p *BlueBubblesPlugin) ConfigSchema() map[string]any {
 }
 
 func (p *BlueBubblesPlugin) Capabilities() sdk.ChannelCapabilities {
-	return sdk.ChannelCapabilities{Reactions: true}
+	// The current BlueBubbles transport implements text and Tapbacks. Do not
+	// advertise OpenClaw's native macOS media/reply surface until equivalent
+	// BlueBubbles REST operations are implemented here.
+	return sdk.ChannelCapabilities{Reactions: true, MultiAccount: true}
 }
 
-func (p *BlueBubblesPlugin) GatewayMethods() []sdk.GatewayMethod { return nil }
+func (p *BlueBubblesPlugin) GatewayMethods() []sdk.GatewayMethod {
+	return GatewayMethodsFor("bluebubbles", "bluebubbles")
+}
+
+// GatewayMethodsFor exposes the implementation-backed BlueBubbles action
+// surface under a provider-specific method prefix. The imessage facade uses
+// this to provide identical actions while preserving account resolution for
+// imessage-configured accounts.
+func GatewayMethodsFor(provider, prefix string) []sdk.GatewayMethod {
+	return channels.AccountScopedGatewayMethods(provider, []sdk.GatewayMethod{
+		{
+			Method:      prefix + ".send",
+			Description: "Send an iMessage text through BlueBubbles",
+			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+				text, _ := params["text"].(string)
+				if strings.TrimSpace(text) == "" {
+					return nil, fmt.Errorf("text is required")
+				}
+				bot, err := blueBubblesActionBot(params)
+				if err != nil {
+					return nil, err
+				}
+				if err := bot.Send(ctx, text); err != nil {
+					return nil, err
+				}
+				return map[string]any{"ok": true, "chat_guid": bot.chatGUID}, nil
+			},
+		},
+		{
+			Method:      prefix + ".add_reaction",
+			Description: "Add an iMessage Tapback through BlueBubbles",
+			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+				return blueBubblesReactionAction(ctx, params, false)
+			},
+		},
+		{
+			Method:      prefix + ".remove_reaction",
+			Description: "Remove an iMessage Tapback through BlueBubbles",
+			Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+				return blueBubblesReactionAction(ctx, params, true)
+			},
+		},
+	})
+}
+
+func blueBubblesActionBot(params map[string]any) (*bbBot, error) {
+	serverURL, _ := params["server_url"].(string)
+	password, _ := params["password"].(string)
+	chatGUID, _ := params["chat_guid"].(string)
+	if serverURL == "" || password == "" || chatGUID == "" {
+		return nil, fmt.Errorf("server_url, password, and chat_guid are required")
+	}
+	return &bbBot{
+		serverURL:  strings.TrimRight(serverURL, "/"),
+		password:   password,
+		chatGUID:   chatGUID,
+		httpClient: &http.Client{Timeout: 20 * time.Second},
+	}, nil
+}
+
+func blueBubblesReactionAction(ctx context.Context, params map[string]any, remove bool) (map[string]any, error) {
+	eventID, _ := params["event_id"].(string)
+	reaction, _ := params["reaction"].(string)
+	if eventID == "" || reaction == "" {
+		return nil, fmt.Errorf("event_id and reaction are required")
+	}
+	bot, err := blueBubblesActionBot(params)
+	if err != nil {
+		return nil, err
+	}
+	if remove {
+		err = bot.RemoveReaction(ctx, eventID, reaction)
+	} else {
+		err = bot.AddReaction(ctx, eventID, reaction)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "event_id": eventID, "reaction": reaction, "removed": remove}, nil
+}
 
 func (p *BlueBubblesPlugin) Connect(
 	ctx context.Context,

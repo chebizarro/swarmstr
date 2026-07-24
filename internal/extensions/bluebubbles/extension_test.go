@@ -4,10 +4,13 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
+	"metiq/internal/store/state"
 )
 
 func TestPlugin_ID(t *testing.T) {
@@ -47,10 +50,43 @@ func TestPlugin_Capabilities(t *testing.T) {
 }
 
 func TestPlugin_GatewayMethods(t *testing.T) {
-	p := &BlueBubblesPlugin{}
-	methods := p.GatewayMethods()
-	if methods != nil {
-		t.Errorf("expected nil, got %v", methods)
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":200}`)
+	}))
+	defer server.Close()
+
+	channels.ConfigureChannelAccounts(state.NostrChannelsConfig{
+		"personal": {Kind: "bluebubbles", Config: map[string]any{
+			"server_url": server.URL,
+			"password":   "secret",
+			"chat_guid":  "iMessage;-;+15551234567",
+		}},
+	})
+	t.Cleanup(func() { channels.ConfigureChannelAccounts(nil) })
+
+	methods := (&BlueBubblesPlugin{}).GatewayMethods()
+	if len(methods) != 3 {
+		t.Fatalf("expected 3 gateway methods, got %d", len(methods))
+	}
+	byName := map[string]sdk.GatewayMethod{}
+	for _, method := range methods {
+		byName[method.Method] = method
+	}
+	if _, err := byName["bluebubbles.send"].Handle(context.Background(), map[string]any{
+		"account_id": "personal", "text": "hello",
+	}); err != nil {
+		t.Fatalf("send action: %v", err)
+	}
+	if _, err := byName["bluebubbles.add_reaction"].Handle(context.Background(), map[string]any{
+		"account_id": "personal", "event_id": "msg-1", "reaction": "love",
+	}); err != nil {
+		t.Fatalf("reaction action: %v", err)
+	}
+	if len(paths) != 2 || paths[0] != "/api/v1/message/text" || paths[1] != "/api/v1/message/react" {
+		t.Fatalf("unexpected action paths: %#v", paths)
 	}
 }
 

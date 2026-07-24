@@ -74,9 +74,14 @@ func newTestSignalServer(handler http.Handler) (*httptest.Server, *signalBot) {
 		channelID:      "+15559876543",
 		apiURL:         srv.URL,
 		account:        "+15551234567",
+		defaultTo:      "+15559876543",
+		reactionLevel:  "minimal",
 		allowedSenders: map[string]bool{},
 		httpClient:     srv.Client(),
 		done:           make(chan struct{}),
+		routesByID:     map[string]signalReactionRoute{},
+		routesByTarget: map[string]string{},
+		activeTyping:   map[string]bool{},
 	}
 	return srv, bot
 }
@@ -358,5 +363,111 @@ func TestEventIDFormat(t *testing.T) {
 	}
 	if !reactCalled {
 		t.Fatal("expected react endpoint to be called")
+	}
+}
+
+func TestSignalAdvancedActionSurface(t *testing.T) {
+	p := &SignalPlugin{}
+	props, _ := p.ConfigSchema()["properties"].(map[string]any)
+	for _, key := range []string{"default_to", "reaction_level"} {
+		if _, ok := props[key]; !ok {
+			t.Fatalf("config schema missing %q", key)
+		}
+	}
+	want := []string{"signal.send", "signal.send_question", "signal.send_approval", "signal.remove_reaction_route"}
+	methods := p.GatewayMethods()
+	if len(methods) != len(want) {
+		t.Fatalf("expected %d methods, got %d", len(want), len(methods))
+	}
+	for i := range want {
+		if methods[i].Method != want[i] {
+			t.Fatalf("method %d: want %q, got %q", i, want[i], methods[i].Method)
+		}
+	}
+}
+
+func TestSignalRouteChoices(t *testing.T) {
+	approval, err := signalRouteChoices("approval", map[string]any{})
+	if err != nil || approval["✅"] != "approve" || approval["❌"] != "deny" {
+		t.Fatalf("unexpected default approval route: %#v, %v", approval, err)
+	}
+	question, err := signalRouteChoices("question", map[string]any{"choices": []any{
+		map[string]any{"emoji": "1️⃣", "value": "one"},
+		map[string]any{"emoji": "2️⃣", "value": "two"},
+	}})
+	if err != nil || question["2️⃣"] != "two" {
+		t.Fatalf("unexpected question route: %#v, %v", question, err)
+	}
+	if _, err := signalRouteChoices("question", map[string]any{"choices": []any{
+		map[string]any{"emoji": "1️⃣", "value": "one"},
+		map[string]any{"emoji": "1️⃣", "value": "again"},
+	}}); err == nil {
+		t.Fatal("expected duplicate question emoji error")
+	}
+}
+
+func TestSignalRoutesApprovalReactionOnce(t *testing.T) {
+	var delivered []sdk.InboundChannelMessage
+	bot := &signalBot{
+		channelID: "signal-personal",
+		onMessage: func(msg sdk.InboundChannelMessage) { delivered = append(delivered, msg) },
+	}
+	targetID := signalEventID("+15551234567", 1000)
+	bot.registerReactionRoute(signalReactionRoute{
+		ID: "approval-1", Kind: "approval", TargetID: targetID,
+		Choices: map[string]string{"✅": "approve", "❌": "deny"},
+	})
+
+	var env signalEnvelope
+	env.Envelope.Source = "+15557654321"
+	env.Envelope.Timestamp = 2000
+	env.Envelope.DataMessage = &struct {
+		Message     string             `json:"message"`
+		Timestamp   int64              `json:"timestamp"`
+		Attachments []signalAttachment `json:"attachments"`
+		Reaction    *signalReaction    `json:"reaction"`
+	}{Reaction: &signalReaction{Emoji: "✅", TargetAuthor: "+15551234567", TargetSentTimestamp: 1000}}
+	bot.deliverEnvelope(env)
+	bot.deliverEnvelope(env)
+
+	if len(delivered) != 1 {
+		t.Fatalf("expected one-shot routed reaction, got %d deliveries", len(delivered))
+	}
+	if !strings.Contains(delivered[0].Text, "route_id=approval-1 value=approve") {
+		t.Fatalf("unexpected routed reaction: %q", delivered[0].Text)
+	}
+}
+
+func TestSignalTypingClearsAfterSend(t *testing.T) {
+	var calls []string
+	srv, bot := newTestSignalServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/v2/send" {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"timestamp":9999}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	if err := bot.SendTyping(context.Background(), 0); err != nil {
+		t.Fatalf("send typing: %v", err)
+	}
+	if err := bot.Send(context.Background(), "done"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	want := []string{
+		"PUT /v1/typing-indicator/+15551234567",
+		"POST /v2/send",
+		"DELETE /v1/typing-indicator/+15551234567",
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("unexpected typing lifecycle calls: %#v", calls)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("call %d: want %q, got %q", i, want[i], calls[i])
+		}
 	}
 }

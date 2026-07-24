@@ -214,24 +214,9 @@ func (d *DiscordPlugin) GatewayMethods() []sdk.GatewayMethod {
 			}
 			return fmt.Sprintf("%s/guilds/%s/threads/active", discordAPIBase, guildID), nil, nil
 		}),
-		discordRESTMethod("discord.list_archived_threads", "List archived Discord threads for a channel", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
-			channelID, _ := params["channel_id"].(string)
-			if channelID == "" {
-				return "", nil, fmt.Errorf("discord.list_archived_threads: channel_id is required")
-			}
-			kind, _ := params["kind"].(string)
-			if kind == "" {
-				kind = "public"
-			}
-			return fmt.Sprintf("%s/channels/%s/threads/archived/%s", discordAPIBase, channelID, kind), nil, nil
-		}),
-		discordRESTMethod("discord.reopen_thread", "Reopen/unarchive a Discord thread", http.MethodPatch, func(params map[string]any) (string, map[string]any, error) {
-			threadID, _ := params["thread_id"].(string)
-			if threadID == "" {
-				return "", nil, fmt.Errorf("discord.reopen_thread: thread_id is required")
-			}
-			return fmt.Sprintf("%s/channels/%s", discordAPIBase, threadID), map[string]any{"archived": false, "locked": false}, nil
-		}),
+		discordArchivedThreadsMethod(),
+		discordRESTMethod("discord.rename_thread", "Rename a Discord thread", http.MethodPatch, discordRenameThreadRoute),
+		discordReopenThreadMethod(),
 		discordRESTMethod("discord.pin_message", "Pin a Discord message", http.MethodPut, discordMessagePinRoute("discord.pin_message")),
 		discordRESTMethod("discord.unpin_message", "Unpin a Discord message", http.MethodDelete, discordMessagePinRoute("discord.unpin_message")),
 		discordRESTMethod("discord.list_pins", "List pinned Discord messages", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
@@ -242,15 +227,11 @@ func (d *DiscordPlugin) GatewayMethods() []sdk.GatewayMethod {
 			return fmt.Sprintf("%s/channels/%s/pins", discordAPIBase, channelID), nil, nil
 		}),
 		discordRESTMethod("discord.fetch_message", "Fetch a Discord message", http.MethodGet, discordMessageRoute("discord.fetch_message")),
-		discordRESTMethod("discord.fetch_reactions", "Fetch reactions for a Discord message", http.MethodGet, func(params map[string]any) (string, map[string]any, error) {
-			channelID, _ := params["channel_id"].(string)
-			messageID, _ := params["message_id"].(string)
-			emoji, _ := params["emoji"].(string)
-			if channelID == "" || messageID == "" || emoji == "" {
-				return "", nil, fmt.Errorf("discord.fetch_reactions: channel_id, message_id, and emoji are required")
-			}
-			return fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s", discordAPIBase, channelID, messageID, url.PathEscape(emoji)), nil, nil
-		}),
+		discordRESTMethod("discord.fetch_reactions", "Fetch users for one reaction on a Discord message", http.MethodGet, discordReactionUsersRoute("discord.fetch_reactions")),
+		discordRESTMethod("discord.add_reaction", "Add a Discord reaction", http.MethodPut, discordOwnReactionRoute("discord.add_reaction")),
+		discordRESTMethod("discord.remove_reaction", "Remove the bot's Discord reaction", http.MethodDelete, discordOwnReactionRoute("discord.remove_reaction")),
+		discordListReactionsMethod(),
+		discordClearOwnReactionsMethod(),
 	})
 }
 
@@ -906,6 +887,294 @@ func discordSendRich(ctx context.Context, params map[string]any, method string, 
 }
 
 type discordRouteBuilder func(map[string]any) (string, map[string]any, error)
+
+func discordArchivedThreadsMethod() sdk.GatewayMethod {
+	return sdk.GatewayMethod{
+		Method:      "discord.list_archived_threads",
+		Description: "List one page of archived Discord threads with an explicit continuation cursor",
+		Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			token, _, err := discordRequiredAuth(params, "discord.list_archived_threads")
+			if err != nil {
+				return nil, err
+			}
+			apiURL, _, err := discordArchivedThreadsRoute(params)
+			if err != nil {
+				return nil, err
+			}
+			response, err := discordRESTJSON(ctx, token, http.MethodGet, apiURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			return normalizeDiscordArchivedThreads(response, params), nil
+		},
+	}
+}
+
+func discordArchivedThreadsRoute(params map[string]any) (string, map[string]any, error) {
+	channelID, _ := params["channel_id"].(string)
+	if channelID == "" {
+		return "", nil, fmt.Errorf("discord.list_archived_threads: channel_id is required")
+	}
+	kind := strings.ToLower(strings.TrimSpace(stringParam(params, "kind")))
+	if kind == "" {
+		kind = "public"
+	}
+	if kind != "public" && kind != "private" {
+		return "", nil, fmt.Errorf("discord.list_archived_threads: kind must be public or private")
+	}
+	u, _ := url.Parse(fmt.Sprintf("%s/channels/%s/threads/archived/%s", discordAPIBase, channelID, kind))
+	query := u.Query()
+	if before := strings.TrimSpace(stringParam(params, "before")); before != "" {
+		query.Set("before", before)
+	}
+	if _, present := params["limit"]; present {
+		limit, err := discordIntParam(params["limit"], 1, 100)
+		if err != nil {
+			return "", nil, fmt.Errorf("discord.list_archived_threads: limit %w", err)
+		}
+		query.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	u.RawQuery = query.Encode()
+	return u.String(), nil, nil
+}
+
+func normalizeDiscordArchivedThreads(response, params map[string]any) map[string]any {
+	out := map[string]any{"ok": true, "result": response["result"], "complete": true, "has_more": false, "returned_count": 0, "source": "discord.threadList.archived"}
+	query := map[string]any{"channel_id": stringParam(params, "channel_id"), "include_archived": true}
+	for _, key := range []string{"guild_id", "kind", "before", "limit"} {
+		if value, ok := params[key]; ok && value != "" {
+			query[key] = value
+		}
+	}
+	if query["kind"] == nil {
+		query["kind"] = "public"
+	}
+	out["query"] = query
+	record, _ := response["result"].(map[string]any)
+	threads, _ := record["threads"].([]any)
+	if threads == nil {
+		threads = []any{}
+	}
+	hasMore, _ := record["has_more"].(bool)
+	out["threads"] = threads
+	out["has_more"] = hasMore
+	out["complete"] = !hasMore
+	out["returned_count"] = len(threads)
+	if hasMore && len(threads) > 0 {
+		last, _ := threads[len(threads)-1].(map[string]any)
+		metadata, _ := last["thread_metadata"].(map[string]any)
+		if timestamp, _ := metadata["archive_timestamp"].(string); strings.TrimSpace(timestamp) != "" {
+			out["next_before"] = timestamp
+		}
+	}
+	return out
+}
+
+func discordRenameThreadRoute(params map[string]any) (string, map[string]any, error) {
+	threadID := strings.TrimSpace(stringParam(params, "thread_id"))
+	name := strings.TrimSpace(stringParam(params, "name"))
+	if threadID == "" || name == "" {
+		return "", nil, fmt.Errorf("discord.rename_thread: thread_id and name are required")
+	}
+	return fmt.Sprintf("%s/channels/%s", discordAPIBase, threadID), map[string]any{"name": name}, nil
+}
+
+func discordReopenThreadRoute(params map[string]any) (string, map[string]any, bool, error) {
+	threadID := strings.TrimSpace(stringParam(params, "thread_id"))
+	if threadID == "" {
+		return "", nil, false, fmt.Errorf("discord.reopen_thread: thread_id is required")
+	}
+	payload := map[string]any{"archived": false}
+	unlock, _ := params["unlock"].(bool)
+	if unlock {
+		payload["locked"] = false
+	}
+	return fmt.Sprintf("%s/channels/%s", discordAPIBase, threadID), payload, unlock, nil
+}
+
+func discordReopenThreadMethod() sdk.GatewayMethod {
+	return sdk.GatewayMethod{
+		Method:      "discord.reopen_thread",
+		Description: "Unarchive a Discord thread, optionally unlocking it when the bot has Manage Threads",
+		Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			token, _, err := discordRequiredAuth(params, "discord.reopen_thread")
+			if err != nil {
+				return nil, err
+			}
+			apiURL, payload, unlock, err := discordReopenThreadRoute(params)
+			if err != nil {
+				return nil, err
+			}
+			threadID := strings.TrimSpace(stringParam(params, "thread_id"))
+			result, err := discordRESTJSON(ctx, token, http.MethodPatch, apiURL, payload)
+			if err != nil && strings.Contains(err.Error(), "HTTP 403") {
+				action := "unarchive"
+				if unlock {
+					action = "unarchive and unlock"
+				}
+				return nil, fmt.Errorf("discord.reopen_thread: missing permission to %s thread %s: %w", action, threadID, err)
+			}
+			return result, err
+		},
+	}
+}
+
+func discordReactionUsersRoute(method string) discordRouteBuilder {
+	return func(params map[string]any) (string, map[string]any, error) {
+		channelID, messageID, emoji, err := discordReactionParams(params, method)
+		if err != nil {
+			return "", nil, err
+		}
+		u, _ := url.Parse(fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s", discordAPIBase, channelID, messageID, url.PathEscape(emoji)))
+		if _, present := params["limit"]; present {
+			limit, limitErr := discordIntParam(params["limit"], 1, 100)
+			if limitErr != nil {
+				return "", nil, fmt.Errorf("%s: limit %w", method, limitErr)
+			}
+			q := u.Query()
+			q.Set("limit", fmt.Sprintf("%d", limit))
+			u.RawQuery = q.Encode()
+		}
+		return u.String(), nil, nil
+	}
+}
+
+func discordOwnReactionRoute(method string) discordRouteBuilder {
+	return func(params map[string]any) (string, map[string]any, error) {
+		channelID, messageID, emoji, err := discordReactionParams(params, method)
+		if err != nil {
+			return "", nil, err
+		}
+		return fmt.Sprintf("%s/channels/%s/messages/%s/reactions/%s/@me", discordAPIBase, channelID, messageID, url.PathEscape(emoji)), nil, nil
+	}
+}
+
+func discordReactionParams(params map[string]any, method string) (string, string, string, error) {
+	channelID := strings.TrimSpace(stringParam(params, "channel_id"))
+	messageID := strings.TrimSpace(stringParam(params, "message_id"))
+	emoji := strings.TrimSpace(stringParam(params, "emoji"))
+	if channelID == "" || messageID == "" || emoji == "" {
+		return "", "", "", fmt.Errorf("%s: channel_id, message_id, and emoji are required", method)
+	}
+	return channelID, messageID, emoji, nil
+}
+
+func discordListReactionsMethod() sdk.GatewayMethod {
+	return sdk.GatewayMethod{
+		Method:      "discord.list_reactions",
+		Description: "List Discord reaction summaries and optionally users for one emoji",
+		Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			token, _, err := discordRequiredAuth(params, "discord.list_reactions")
+			if err != nil {
+				return nil, err
+			}
+			apiURL, _, err := discordMessageRoute("discord.list_reactions")(params)
+			if err != nil {
+				return nil, err
+			}
+			messageResponse, err := discordRESTJSON(ctx, token, http.MethodGet, apiURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			message, _ := messageResponse["result"].(map[string]any)
+			reactions, _ := message["reactions"].([]any)
+			if reactions == nil {
+				reactions = []any{}
+			}
+			out := map[string]any{"ok": true, "reactions": reactions, "query": map[string]any{"channel_id": params["channel_id"], "message_id": params["message_id"]}}
+			if emoji := strings.TrimSpace(stringParam(params, "emoji")); emoji != "" {
+				reactionURL, _, routeErr := discordReactionUsersRoute("discord.list_reactions")(params)
+				if routeErr != nil {
+					return nil, routeErr
+				}
+				usersResponse, requestErr := discordRESTJSON(ctx, token, http.MethodGet, reactionURL, nil)
+				if requestErr != nil {
+					return nil, requestErr
+				}
+				out["users"] = usersResponse["result"]
+			}
+			return out, nil
+		},
+	}
+}
+
+func discordClearOwnReactionsMethod() sdk.GatewayMethod {
+	return sdk.GatewayMethod{
+		Method:      "discord.clear_own_reactions",
+		Description: "Remove every reaction the current Discord bot added to a message",
+		Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
+			token, _, err := discordRequiredAuth(params, "discord.clear_own_reactions")
+			if err != nil {
+				return nil, err
+			}
+			apiURL, _, err := discordMessageRoute("discord.clear_own_reactions")(params)
+			if err != nil {
+				return nil, err
+			}
+			messageResponse, err := discordRESTJSON(ctx, token, http.MethodGet, apiURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			message, _ := messageResponse["result"].(map[string]any)
+			reactions, _ := message["reactions"].([]any)
+			removed := make([]string, 0)
+			for _, raw := range reactions {
+				summary, _ := raw.(map[string]any)
+				mine, _ := summary["me"].(bool)
+				if !mine {
+					continue
+				}
+				emoji := discordEmojiFromSummary(summary)
+				if emoji == "" {
+					continue
+				}
+				deleteURL := fmt.Sprintf("%s/reactions/%s/@me", apiURL, url.PathEscape(emoji))
+				if _, deleteErr := discordRESTJSON(ctx, token, http.MethodDelete, deleteURL, nil); deleteErr != nil {
+					return nil, fmt.Errorf("discord.clear_own_reactions: failed removing %q after %v: %w", emoji, removed, deleteErr)
+				}
+				removed = append(removed, emoji)
+			}
+			return map[string]any{"ok": true, "removed": removed}, nil
+		},
+	}
+}
+
+func discordEmojiFromSummary(summary map[string]any) string {
+	emoji, _ := summary["emoji"].(map[string]any)
+	name, _ := emoji["name"].(string)
+	id, _ := emoji["id"].(string)
+	if name == "" {
+		return ""
+	}
+	if id != "" {
+		return name + ":" + id
+	}
+	return name
+}
+
+func discordIntParam(value any, minValue, maxValue int) (int, error) {
+	var number int
+	switch v := value.(type) {
+	case int:
+		number = v
+	case float64:
+		number = int(v)
+		if float64(number) != v {
+			return 0, fmt.Errorf("must be an integer")
+		}
+	default:
+		return 0, fmt.Errorf("must be an integer")
+	}
+	if number < minValue || number > maxValue {
+		return 0, fmt.Errorf("must be between %d and %d", minValue, maxValue)
+	}
+	return number, nil
+}
+
+func stringParam(params map[string]any, key string) string {
+	value, _ := params[key].(string)
+	return value
+}
 
 func discordRESTMethod(method, description, httpMethod string, build discordRouteBuilder) sdk.GatewayMethod {
 	return sdk.GatewayMethod{

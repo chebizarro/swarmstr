@@ -35,7 +35,9 @@ func (p *IMessagePlugin) Capabilities() sdk.ChannelCapabilities {
 	return p.inner.Capabilities()
 }
 
-func (p *IMessagePlugin) GatewayMethods() []sdk.GatewayMethod { return nil }
+func (p *IMessagePlugin) GatewayMethods() []sdk.GatewayMethod {
+	return bluebubbles.GatewayMethodsFor("imessage", "imessage")
+}
 
 func (p *IMessagePlugin) Connect(ctx context.Context, channelID string, cfg map[string]any, onMessage func(sdk.InboundChannelMessage)) (sdk.ChannelHandle, error) {
 	return p.inner.Connect(ctx, channelID, cfg, onMessage)

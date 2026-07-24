@@ -70,7 +70,8 @@ type StatusReactionController struct {
 	ops chan func()
 
 	// current active emoji (so we can remove it before setting the next).
-	current string
+	current       string
+	reactionLevel string
 
 	// debounce timer for SetThinking.
 	thinkDebounce *time.Timer
@@ -90,12 +91,21 @@ const (
 // It does not add any reaction until one of the Set* methods is called.
 func NewStatusReactionController(ctx context.Context, rh sdk.ReactionHandle, eventID string) *StatusReactionController {
 	cctx, cancel := context.WithCancel(ctx)
+	level := "extensive" // preserve historical behavior for channels without a policy surface.
+	if provider, ok := rh.(interface{ ReactionLevel() string }); ok {
+		configured := strings.ToLower(strings.TrimSpace(provider.ReactionLevel()))
+		switch configured {
+		case "off", "ack", "minimal", "extensive":
+			level = configured
+		}
+	}
 	c := &StatusReactionController{
-		rh:      rh,
-		eventID: eventID,
-		ctx:     cctx,
-		cancel:  cancel,
-		ops:     make(chan func(), 32),
+		rh:            rh,
+		eventID:       eventID,
+		ctx:           cctx,
+		cancel:        cancel,
+		ops:           make(chan func(), 32),
+		reactionLevel: level,
 	}
 	c.wg.Add(1)
 	go c.loop()
@@ -139,6 +149,11 @@ func (c *StatusReactionController) enqueue(op func()) {
 }
 
 // setEmojiLocked swaps the current reaction emoji. Must run inside the loop goroutine.
+func (c *StatusReactionController) allowsReaction(minimum string) bool {
+	rank := map[string]int{"off": 0, "ack": 1, "minimal": 2, "extensive": 3}
+	return rank[c.reactionLevel] >= rank[minimum]
+}
+
 func (c *StatusReactionController) setEmojiLocked(emoji string) {
 	if c.current == emoji {
 		return
@@ -186,6 +201,9 @@ func (c *StatusReactionController) startStallTimers() {
 
 // SetQueued adds the 👀 queued emoji immediately (no debounce).
 func (c *StatusReactionController) SetQueued() {
+	if !c.allowsReaction("ack") {
+		return
+	}
 	c.enqueue(func() {
 		if c.thinkDebounce != nil {
 			c.thinkDebounce.Stop()
@@ -198,6 +216,9 @@ func (c *StatusReactionController) SetQueued() {
 // SetThinking schedules the 🤔 thinking emoji after a 700ms debounce.
 // This avoids flicker for very fast turns.
 func (c *StatusReactionController) SetThinking() {
+	if !c.allowsReaction("minimal") {
+		return
+	}
 	c.enqueue(func() {
 		if c.thinkDebounce != nil {
 			c.thinkDebounce.Stop()
@@ -205,7 +226,9 @@ func (c *StatusReactionController) SetThinking() {
 		c.thinkDebounce = time.AfterFunc(thinkDebounceDelay, func() {
 			c.enqueue(func() {
 				c.setEmojiLocked(EmojiThinking)
-				c.startStallTimers()
+				if c.allowsReaction("extensive") {
+					c.startStallTimers()
+				}
 			})
 		})
 	})
@@ -213,6 +236,9 @@ func (c *StatusReactionController) SetThinking() {
 
 // SetTool sets the emoji for the named tool immediately.
 func (c *StatusReactionController) SetTool(toolName string) {
+	if !c.allowsReaction("extensive") {
+		return
+	}
 	emoji := classifyTool(toolName)
 	c.enqueue(func() {
 		if c.thinkDebounce != nil {
@@ -227,6 +253,9 @@ func (c *StatusReactionController) SetTool(toolName string) {
 
 // SetDone sets ✅ and stops all timers.
 func (c *StatusReactionController) SetDone() {
+	if !c.allowsReaction("ack") {
+		return
+	}
 	c.enqueue(func() {
 		if c.thinkDebounce != nil {
 			c.thinkDebounce.Stop()
@@ -239,6 +268,9 @@ func (c *StatusReactionController) SetDone() {
 
 // SetError sets ❌ and stops all timers.
 func (c *StatusReactionController) SetError() {
+	if !c.allowsReaction("ack") {
+		return
+	}
 	c.enqueue(func() {
 		if c.thinkDebounce != nil {
 			c.thinkDebounce.Stop()
