@@ -549,12 +549,16 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 				OutputTokens:    chunk.Usage.CompletionTokens,
 				CacheReadTokens: chunk.Usage.PromptTokensDetails.CachedTokens,
 			}
+			usage = normalizeOpenAICompatibleUsage(chunk.Usage.RawJSON(), usage)
 			emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventUsage, SessionID: turn.SessionID, TurnID: turn.TurnID, Usage: providerUsageToTurnUsage(usage), Trace: turn.Trace})
 		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
 		delta := chunk.Choices[0].Delta
+		if thinking := openAICompatibleThinkingDelta(delta.RawJSON()); thinking != "" {
+			emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventThinkingDelta, SessionID: turn.SessionID, TurnID: turn.TurnID, Delta: thinking, Trace: turn.Trace})
+		}
 		if delta.Content != "" {
 			textBuf.WriteString(delta.Content)
 			if onChunk != nil {
@@ -619,6 +623,74 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 		ToolCalls: toolCalls,
 		Usage:     usage,
 	}, nil
+}
+
+func openAICompatibleThinkingDelta(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var delta map[string]any
+	if json.Unmarshal([]byte(raw), &delta) != nil {
+		return ""
+	}
+	for _, key := range []string{"reasoning_content", "reasoning", "thinking"} {
+		if value, ok := delta[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func normalizeOpenAICompatibleUsage(raw string, usage ProviderUsage) ProviderUsage {
+	if strings.TrimSpace(raw) == "" {
+		return usage
+	}
+	var body map[string]any
+	if json.Unmarshal([]byte(raw), &body) != nil {
+		return usage
+	}
+	read := func(keys ...string) int64 {
+		var current any = body
+		for _, key := range keys {
+			next, ok := current.(map[string]any)
+			if !ok {
+				return 0
+			}
+			current = next[key]
+		}
+		switch value := current.(type) {
+		case float64:
+			return int64(value)
+		case int64:
+			return value
+		case json.Number:
+			n, _ := value.Int64()
+			return n
+		}
+		return 0
+	}
+	if usage.InputTokens == 0 {
+		usage.InputTokens = read("input_tokens")
+		if usage.InputTokens == 0 {
+			usage.InputTokens = read("prompt_tokens")
+		}
+	}
+	if usage.OutputTokens == 0 {
+		usage.OutputTokens = read("output_tokens")
+		if usage.OutputTokens == 0 {
+			usage.OutputTokens = read("completion_tokens")
+		}
+	}
+	if usage.CacheReadTokens == 0 {
+		usage.CacheReadTokens = read("prompt_tokens_details", "cached_tokens")
+		if usage.CacheReadTokens == 0 {
+			usage.CacheReadTokens = read("cache_read_input_tokens")
+		}
+	}
+	if usage.CacheCreationTokens == 0 {
+		usage.CacheCreationTokens = read("cache_creation_input_tokens")
+	}
+	return usage
 }
 
 // StreamEvents implements provider-neutral structured streaming while preserving
@@ -1128,22 +1200,15 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 		strings.HasPrefix(norm, "o1-") || strings.HasPrefix(norm, "o3-") || strings.HasPrefix(norm, "o4-")
 
 	compatDesc, compatMatched := DefaultProviderRegistry().Match(norm)
-	if isOpenAIClass || compatMatched {
+	if compatMatched {
+		return compatDesc.Factory(effectiveModel, override)
+	}
+	if isOpenAIClass {
 		baseURL := overrideBaseURL
 		if baseURL == "" {
-			if compatMatched {
-				baseURL = compatDesc.resolvedBaseURL()
-			} else {
-				baseURL = "https://api.openai.com/v1"
-			}
+			baseURL = "https://api.openai.com/v1"
 		}
-		envKey := "OPENAI_API_KEY"
-		providerName := "OpenAI"
-		if compatMatched {
-			envKey = compatDesc.APIKeyEnv
-			providerName = compatDesc.Name
-		}
-		apiKey, err := requireOpenAICompatibleCredential(providerName, effectiveModel, overrideAPIKey, envKey, baseURL)
+		apiKey, err := requireOpenAICompatibleCredential("OpenAI", effectiveModel, overrideAPIKey, "OPENAI_API_KEY", baseURL)
 		if err != nil {
 			return nil, err
 		}
@@ -1151,12 +1216,7 @@ func BuildProviderWithOverride(model string, override ProviderOverride) (Provide
 		if err != nil {
 			return nil, err
 		}
-		return &OpenAIChatProvider{
-			BaseURL:     baseURL,
-			APIKey:      apiKey,
-			Model:       effectiveModel,
-			PromptCache: promptCacheProfilePtr(profile),
-		}, nil
+		return &OpenAIChatProvider{BaseURL: baseURL, APIKey: apiKey, Model: effectiveModel, PromptCache: promptCacheProfilePtr(profile)}, nil
 	}
 
 	// An explicit OpenAI-compatible base URL with no recognized hosted model is a

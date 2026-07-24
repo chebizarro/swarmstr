@@ -19,6 +19,7 @@ const (
 	AuthMethodNone   AuthMethod = "none"
 	AuthMethodAPIKey AuthMethod = "api_key"
 	AuthMethodOAuth  AuthMethod = "oauth"
+	AuthMethodAWS    AuthMethod = "aws_credentials"
 )
 
 // ProviderCapabilities advertises provider features used by runtime selection
@@ -291,6 +292,8 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 	mistralCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, ContextWindowTokens: 128000}
 	responsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: false, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576}
 	vertexCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1000000}
+	bedrockCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: false, SupportsPromptCaching: false, SupportsThinking: true, ContextWindowTokens: 200000}
+	anthropicVertexCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: false, SupportsPromptCaching: false, SupportsThinking: true, ContextWindowTokens: 200000}
 
 	mkOpenAICompat := func(id, name string, aliases, prefixes []string, baseURL, apiKeyEnv, baseURLEnv string) ProviderDescriptor {
 		desc := ProviderDescriptor{
@@ -311,6 +314,13 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 			}
 		case "xai":
 			desc.NormalizeToolSchema = NormalizeStrictOpenAIToolSchema
+		case "openrouter":
+			desc.PrepareRequest = openRouterPrepareRequest
+		}
+		if desc.ListModels == nil {
+			desc.ListModels = func(ctx context.Context) ([]ModelInfo, error) {
+				return listAuthenticatedOpenAICompatibleModels(ctx, desc)
+			}
 		}
 		return desc
 	}
@@ -421,6 +431,29 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 		return &VertexChatProvider{BaseURL: baseURL, APIKey: credential, Model: normalizeVertexModel(model), Client: vertexDesc.HTTPClient(nil)}, nil
 	}
 
+	bedrockDesc := ProviderDescriptor{ID: "bedrock", Name: "Amazon Bedrock", Aliases: []string{"bedrock", "amazon-bedrock"}, Prefixes: []string{"bedrock/"}, BaseURLEnv: "AWS_BEDROCK_ENDPOINT", AuthMethods: []AuthMethod{AuthMethodAWS}, Capabilities: bedrockCaps}
+	bedrockDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		baseURL := strings.TrimSpace(override.BaseURL)
+		if baseURL == "" {
+			baseURL = bedrockDesc.resolvedBaseURL()
+		}
+		return &BedrockProvider{Model: model, Region: strings.TrimSpace(os.Getenv("AWS_REGION")), Profile: strings.TrimSpace(os.Getenv("AWS_PROFILE")), BaseURL: baseURL}, nil
+	}
+
+	anthropicVertexDesc := ProviderDescriptor{ID: "anthropic-vertex", Name: "Anthropic on Vertex AI", Aliases: []string{"anthropic-vertex", "vertex-claude"}, Prefixes: []string{"anthropic-vertex/", "vertex-claude/"}, BaseURLEnv: "ANTHROPIC_VERTEX_BASE_URL", APIKeyEnv: "VERTEX_ACCESS_TOKEN", AuthMethods: []AuthMethod{AuthMethodOAuth}, Capabilities: anthropicVertexCaps}
+	anthropicVertexDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
+		credential := strings.TrimSpace(override.APIKey)
+		if credential == "" {
+			credential, _ = firstEnv("VERTEX_ACCESS_TOKEN", "GOOGLE_ACCESS_TOKEN")
+		}
+		baseURL := strings.TrimSpace(override.BaseURL)
+		if baseURL == "" {
+			baseURL = anthropicVertexDesc.resolvedBaseURL()
+		}
+		project := strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
+		return &AnthropicVertexProvider{Model: model, ProjectID: project, Region: strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_LOCATION")), AccessToken: credential, BaseURL: baseURL}, nil
+	}
+
 	return []ProviderDescriptor{
 		openaiDesc,
 		anthropicDesc,
@@ -430,6 +463,8 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 		openAIResponsesDesc,
 		azureResponsesDesc,
 		vertexDesc,
+		bedrockDesc,
+		anthropicVertexDesc,
 		mkOpenAICompat("xai", "xAI", []string{"xai"}, []string{"grok-"}, "https://api.x.ai/v1", "XAI_API_KEY", ""),
 		mkOpenAICompat("groq", "Groq", []string{"groq"}, []string{"groq/"}, "https://api.groq.com/openai/v1", "GROQ_API_KEY", ""),
 		mkOpenAICompat("minimax", "Minimax", []string{"minimax"}, []string{"minimax/"}, "https://api.minimax.io/v1", "MINIMAX_API_KEY", ""),
@@ -453,6 +488,7 @@ func buildOpenAICompatibleProvider(model string, override ProviderOverride, desc
 	if effectiveModel == "" {
 		effectiveModel = strings.TrimSpace(override.Model)
 	}
+	effectiveModel = normalizeProviderModelID(effectiveModel, desc)
 	apiKey, err := requireOpenAICompatibleCredential(desc.Name, effectiveModel, strings.TrimSpace(override.APIKey), desc.APIKeyEnv, baseURL)
 	if err != nil {
 		return nil, err
@@ -462,6 +498,53 @@ func buildOpenAICompatibleProvider(model string, override ProviderOverride, desc
 		return nil, err
 	}
 	return &OpenAIChatProvider{BaseURL: baseURL, APIKey: apiKey, Model: effectiveModel, Client: desc.HTTPClient(nil), PromptCache: promptCacheProfilePtr(profile), ToolSchemaNormalizer: desc.NormalizeToolSchema}, nil
+}
+
+func normalizeProviderModelID(model string, desc ProviderDescriptor) string {
+	trimmed := strings.TrimSpace(model)
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range desc.Prefixes {
+		prefix = strings.TrimSpace(prefix)
+		if strings.HasSuffix(prefix, "/") && strings.HasPrefix(lower, strings.ToLower(prefix)) {
+			return strings.TrimSpace(trimmed[len(prefix):])
+		}
+	}
+	return trimmed
+}
+
+func openRouterPrepareRequest(req *http.Request) error {
+	referrer := strings.TrimSpace(os.Getenv("OPENROUTER_HTTP_REFERER"))
+	if referrer == "" {
+		referrer = "https://github.com/chebizarro/swarmstr"
+	}
+	title := strings.TrimSpace(os.Getenv("OPENROUTER_APP_TITLE"))
+	if title == "" {
+		title = "swarmstr"
+	}
+	req.Header.Set("HTTP-Referer", referrer)
+	req.Header.Set("X-Title", title)
+	return nil
+}
+
+func listAuthenticatedOpenAICompatibleModels(ctx context.Context, desc ProviderDescriptor) ([]ModelInfo, error) {
+	apiKey := strings.TrimSpace(os.Getenv(desc.APIKeyEnv))
+	if apiKey == "" && !isLocalBaseURL(desc.resolvedBaseURL()) {
+		return nil, fmt.Errorf("%s is required for %s model discovery", desc.APIKeyEnv, desc.Name)
+	}
+	prepare := desc.PrepareRequest
+	client := &http.Client{}
+	client.Transport = providerPrepareRoundTripper{base: http.DefaultTransport, prepare: func(req *http.Request) error {
+		if prepare != nil {
+			if err := prepare(req); err != nil {
+				return err
+			}
+		}
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		return nil
+	}}
+	return listOpenAICompatibleModels(ctx, desc.resolvedBaseURL(), desc.ID, desc.Capabilities, client)
 }
 
 func resolveOpenAICompat(norm string) (baseURL, envKey string) {

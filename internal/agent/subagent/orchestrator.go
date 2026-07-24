@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	ctxengine "metiq/internal/context"
 	pluginhooks "metiq/internal/plugins/hooks"
 	pluginregistry "metiq/internal/plugins/registry"
+	"metiq/internal/skills"
 )
 
 var (
@@ -130,7 +132,9 @@ type AgentDefinition struct {
 	Description   string
 	Runtime       agent.Runtime
 	DefaultBudget Budget
-	Metadata      map[string]any
+	// SkillKeys explicitly associates this typed subagent with catalog skills.
+	SkillKeys []string
+	Metadata  map[string]any
 }
 
 // Config controls nesting, global concurrency, per-parent fanout, and stream buffering.
@@ -258,6 +262,7 @@ func (o *Orchestrator) RegisterDefinition(def AgentDefinition) error {
 		return errors.New("orchestrator is nil")
 	}
 	def.ID = strings.TrimSpace(def.ID)
+	def.SkillKeys = normalizedSkillKeys(def.SkillKeys)
 	if def.ID == "" || def.Runtime == nil {
 		return errors.New("subagent definition requires id and runtime")
 	}
@@ -268,6 +273,89 @@ func (o *Orchestrator) RegisterDefinition(def AgentDefinition) error {
 	}
 	o.definitions[def.ID] = def
 	return nil
+}
+
+// ResolveSkillAgentDefinitions returns spawnable typed agents explicitly
+// associated with an eligible catalog skill. Catalog loading remains owned by
+// internal/skills; the orchestrator only consumes its resolved, read-only view.
+func (o *Orchestrator) ResolveSkillAgentDefinitions(catalog *skills.SkillCatalog, skillKey string) []AgentDefinition {
+	if o == nil || catalog == nil {
+		return nil
+	}
+	key := strings.ToLower(strings.TrimSpace(skillKey))
+	if key == "" {
+		return nil
+	}
+	eligible := false
+	for _, resolved := range catalog.Skills {
+		if resolved == nil || resolved.Skill == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(resolved.Skill.SkillKey), key) && (resolved.Eligible || resolved.PromptEligible) {
+			eligible = true
+			break
+		}
+	}
+	if !eligible {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var out []AgentDefinition
+	for _, def := range o.definitions {
+		keys := def.SkillKeys
+		if len(keys) == 0 {
+			keys = skillKeysFromMetadata(def.Metadata)
+		}
+		for _, candidate := range keys {
+			if candidate == key {
+				out = append(out, def)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func normalizedSkillKeys(keys []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, key := range keys {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func skillKeysFromMetadata(metadata map[string]any) []string {
+	if metadata == nil {
+		return nil
+	}
+	switch raw := metadata["skills"].(type) {
+	case []string:
+		return normalizedSkillKeys(raw)
+	case []any:
+		keys := make([]string, 0, len(raw))
+		for _, value := range raw {
+			if key, ok := value.(string); ok {
+				keys = append(keys, key)
+			}
+		}
+		return normalizedSkillKeys(keys)
+	case string:
+		return normalizedSkillKeys([]string{raw})
+	default:
+		return nil
+	}
 }
 
 func (o *Orchestrator) Spawn(ctx context.Context, req SpawnRequest) (*Handle, error) {

@@ -9,6 +9,7 @@ import (
 	"metiq/internal/agent"
 	pluginhooks "metiq/internal/plugins/hooks"
 	pluginregistry "metiq/internal/plugins/registry"
+	"metiq/internal/skills"
 )
 
 type blockingRuntime struct {
@@ -58,6 +59,29 @@ func (usageRuntime) ProcessTurnStreaming(ctx context.Context, turn agent.Turn, _
 	turn.RuntimeEventSink(agent.RuntimeEvent{Type: agent.RuntimeEventUsage, Usage: agent.TurnUsage{InputTokens: 4, OutputTokens: 3}})
 	<-ctx.Done()
 	return agent.TurnResult{}, context.Cause(ctx)
+}
+
+func TestResolveSkillAgentDefinitions(t *testing.T) {
+	runtime, err := agent.NewProviderRuntime(agent.EchoProvider{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := NewOrchestrator(nil, DefaultConfig())
+	if err := o.RegisterDefinition(AgentDefinition{ID: "researcher", Runtime: runtime, SkillKeys: []string{" Web-Research "}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.RegisterDefinition(AgentDefinition{ID: "reviewer", Runtime: runtime, Metadata: map[string]any{"skills": []any{"web-research"}}}); err != nil {
+		t.Fatal(err)
+	}
+	catalog := &skills.SkillCatalog{Skills: []*skills.ResolvedSkill{{Skill: &skills.Skill{SkillKey: "web-research"}, Eligible: true}}}
+	defs := o.ResolveSkillAgentDefinitions(catalog, "WEB-RESEARCH")
+	if len(defs) != 2 || defs[0].ID != "researcher" || defs[1].ID != "reviewer" {
+		t.Fatalf("definitions = %#v", defs)
+	}
+	catalog.Skills[0].Eligible = false
+	if got := o.ResolveSkillAgentDefinitions(catalog, "web-research"); len(got) != 0 {
+		t.Fatalf("ineligible definitions = %#v", got)
+	}
 }
 
 func TestOrchestratorStreamsResultAndLifecycleHooks(t *testing.T) {
