@@ -33,11 +33,11 @@ func DecodeTasksTraceParams(params []byte) (TasksTraceRequest, error) {
 
 // TasksTraceResponse carries the unified, time-ordered trace for a task/run.
 type TasksTraceResponse struct {
-	TaskID   string       `json:"task_id"`
-	RunID    string       `json:"run_id,omitempty"`
-	GoalID   string       `json:"goal_id,omitempty"`
-	Events   []TraceEvent `json:"events"`
-	Truncated bool        `json:"truncated,omitempty"`
+	TaskID    string       `json:"task_id"`
+	RunID     string       `json:"run_id,omitempty"`
+	GoalID    string       `json:"goal_id,omitempty"`
+	Events    []TraceEvent `json:"events"`
+	Truncated bool         `json:"truncated,omitempty"`
 }
 
 // ─── Unified trace event ─────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ type TraceEventKind string
 
 const (
 	TraceKindTurn         TraceEventKind = "turn"
-	TraceKindTool         TraceEventKind = "tool"          // reserved: wired when tool lifecycle events are persisted
+	TraceKindTool         TraceEventKind = "tool" // reserved: wired when tool lifecycle events are persisted
 	TraceKindMemoryRecall TraceEventKind = "memory_recall"
 	TraceKindVerification TraceEventKind = "verification"
 	TraceKindDelegation   TraceEventKind = "delegation"
@@ -129,8 +129,8 @@ type TraceDelegationDetail struct {
 
 // TraceInput bundles the subsystem telemetry needed to assemble a unified trace.
 type TraceInput struct {
-	Task              state.TaskSpec
-	Runs              []state.TaskRun
+	Task               state.TaskSpec
+	Runs               []state.TaskRun
 	TurnTelemetry      []state.TurnTelemetry
 	ToolLifecycle      []state.ToolLifecycleTelemetry
 	MemoryRecall       []state.MemoryRecallSample

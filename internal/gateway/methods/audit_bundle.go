@@ -54,7 +54,7 @@ type AuditBundle struct {
 	ExportedBy    string `json:"exported_by,omitempty"`
 
 	// Scope of the export.
-	GoalID string `json:"goal_id,omitempty"`
+	GoalID     string `json:"goal_id,omitempty"`
 	RootTaskID string `json:"root_task_id,omitempty"`
 
 	// Summary statistics.
@@ -72,46 +72,46 @@ type AuditBundle struct {
 
 // AuditSummary provides aggregate statistics for the bundle.
 type AuditSummary struct {
-	TotalTasks      int            `json:"total_tasks"`
-	TotalRuns       int            `json:"total_runs"`
-	ByStatus        map[string]int `json:"by_status"`
-	MaxDepth        int            `json:"max_depth"`
-	EarliestCreated int64          `json:"earliest_created,omitempty"`
-	LatestUpdated   int64          `json:"latest_updated,omitempty"`
+	TotalTasks      int             `json:"total_tasks"`
+	TotalRuns       int             `json:"total_runs"`
+	ByStatus        map[string]int  `json:"by_status"`
+	MaxDepth        int             `json:"max_depth"`
+	EarliestCreated int64           `json:"earliest_created,omitempty"`
+	LatestUpdated   int64           `json:"latest_updated,omitempty"`
 	TotalUsage      state.TaskUsage `json:"total_usage"`
 }
 
 // AuditTask is a single task within the audit bundle.
 type AuditTask struct {
-	TaskID       string               `json:"task_id"`
-	GoalID       string               `json:"goal_id,omitempty"`
-	ParentTaskID string               `json:"parent_task_id,omitempty"`
-	PlanID       string               `json:"plan_id,omitempty"`
-	Title        string               `json:"title"`
-	Instructions string               `json:"instructions"`
-	Status       string               `json:"status"`
-	Priority     string               `json:"priority,omitempty"`
-	AssignedAgent string              `json:"assigned_agent,omitempty"`
-	CreatedAt    int64                `json:"created_at,omitempty"`
-	UpdatedAt    int64                `json:"updated_at,omitempty"`
-	Depth        int                  `json:"depth"`
+	TaskID        string `json:"task_id"`
+	GoalID        string `json:"goal_id,omitempty"`
+	ParentTaskID  string `json:"parent_task_id,omitempty"`
+	PlanID        string `json:"plan_id,omitempty"`
+	Title         string `json:"title"`
+	Instructions  string `json:"instructions"`
+	Status        string `json:"status"`
+	Priority      string `json:"priority,omitempty"`
+	AssignedAgent string `json:"assigned_agent,omitempty"`
+	CreatedAt     int64  `json:"created_at,omitempty"`
+	UpdatedAt     int64  `json:"updated_at,omitempty"`
+	Depth         int    `json:"depth"`
 
 	// Governance snapshot.
-	Authority    AuditAuthority       `json:"authority"`
-	Budget       state.TaskBudget     `json:"budget,omitempty"`
+	Authority AuditAuthority   `json:"authority"`
+	Budget    state.TaskBudget `json:"budget,omitempty"`
 
 	// Transitions show the full state machine history.
-	Transitions  []state.TaskTransition `json:"transitions,omitempty"`
+	Transitions []state.TaskTransition `json:"transitions,omitempty"`
 
 	// Verification evidence.
-	Verification AuditVerification    `json:"verification,omitempty"`
+	Verification AuditVerification `json:"verification,omitempty"`
 
 	// Runs ordered by attempt.
-	Runs         []AuditRun           `json:"runs,omitempty"`
+	Runs []AuditRun `json:"runs,omitempty"`
 
 	// Optional fields controlled by redaction flags.
-	Inputs       map[string]any       `json:"inputs,omitempty"`
-	Meta         map[string]any       `json:"meta,omitempty"`
+	Inputs map[string]any `json:"inputs,omitempty"`
+	Meta   map[string]any `json:"meta,omitempty"`
 }
 
 // AuditAuthority captures the governance configuration at export time.
