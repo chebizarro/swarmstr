@@ -202,36 +202,23 @@ func TestCapabilityRegistryPrefersNewestEvent(t *testing.T) {
 	}
 }
 
-func TestBuildAndParseCapabilityFIPSTags(t *testing.T) {
+func TestBuildCapabilityTagsDoesNotEmitLegacyFIPS(t *testing.T) {
 	cap := CapabilityAnnouncement{
 		PubKey:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Runtime:       "metiq",
 		FIPSEnabled:   true,
 		FIPSTransport: "udp:2121",
-		CreatedAt:     100,
 	}
-	tags := BuildCapabilityTags(cap)
-
-	// Verify FIPS tags are present.
-	foundFIPS := false
-	foundFIPSTransport := false
-	for _, tag := range tags {
-		if len(tag) >= 2 && tag[0] == "fips" && tag[1] == "true" {
-			foundFIPS = true
-		}
-		if len(tag) >= 2 && tag[0] == "fips_transport" && tag[1] == "udp:2121" {
-			foundFIPSTransport = true
+	for _, tag := range BuildCapabilityTags(cap) {
+		if len(tag) > 0 && (tag[0] == "fips" || tag[0] == "fips_transport") {
+			t.Fatalf("legacy FIPS tag must not be emitted: %v", tag)
 		}
 	}
-	if !foundFIPS {
-		t.Fatal("expected fips=true tag")
-	}
-	if !foundFIPSTransport {
-		t.Fatal("expected fips_transport tag")
-	}
+}
 
-	// Parse them back.
-	pk, err := ParsePubKey(cap.PubKey)
+func TestParseCapabilityEventReadsLegacyFIPSTags(t *testing.T) {
+	pubkey := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	pk, err := ParsePubKey(pubkey)
 	if err != nil {
 		t.Fatalf("ParsePubKey: %v", err)
 	}
@@ -239,17 +226,18 @@ func TestBuildAndParseCapabilityFIPSTags(t *testing.T) {
 		Kind:      nostr.Kind(events.CAS_AGENT_CAPABILITY),
 		PubKey:    pk,
 		CreatedAt: nostr.Timestamp(100),
-		Tags:      tags,
+		Tags: nostr.Tags{
+			{"d", pubkey},
+			{"fips", "true"},
+			{"fips_transport", "udp:2121"},
+		},
 	}
 	parsed, err := ParseCapabilityEvent(&evt)
 	if err != nil {
 		t.Fatalf("ParseCapabilityEvent: %v", err)
 	}
-	if !parsed.FIPSEnabled {
-		t.Fatal("expected FIPSEnabled=true after parse")
-	}
-	if parsed.FIPSTransport != "udp:2121" {
-		t.Fatalf("expected FIPSTransport=udp:2121, got %q", parsed.FIPSTransport)
+	if !parsed.FIPSEnabled || parsed.FIPSTransport != "udp:2121" {
+		t.Fatalf("legacy projection = enabled:%v transport:%q", parsed.FIPSEnabled, parsed.FIPSTransport)
 	}
 }
 

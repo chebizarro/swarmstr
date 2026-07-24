@@ -72,9 +72,13 @@ type CapabilityAnnouncement struct {
 	EventID           string
 	CreatedAt         int64
 	SoulFactory       SoulFactoryCapability
-	// FIPS mesh transport capability.
+	// FIPS mesh transport capability. FIPSEnabled/FIPSTransport are retained
+	// as a legacy read projection; current discovery uses the structured
+	// kind-37195 advert.
 	FIPSEnabled   bool
-	FIPSTransport string // e.g. "udp:2121"
+	FIPSTransport string // legacy singular transport, e.g. "udp:2121"
+	FIPSProtocol  string
+	FIPSAdvert    *FIPSOverlayAdvert
 }
 
 func normalizeCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnouncement {
@@ -95,6 +99,11 @@ func normalizeCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnoun
 	in.EventID = strings.TrimSpace(strings.ToLower(in.EventID))
 	in.SoulFactory = normalizeSoulFactoryCapability(in.SoulFactory, in.Runtime)
 	in.FIPSTransport = strings.TrimSpace(in.FIPSTransport)
+	in.FIPSProtocol = strings.TrimSpace(in.FIPSProtocol)
+	if in.FIPSAdvert != nil {
+		advert := cloneFIPSOverlayAdvert(*in.FIPSAdvert)
+		in.FIPSAdvert = &advert
+	}
 	return in
 }
 
@@ -321,12 +330,6 @@ func BuildCapabilityTags(cap CapabilityAnnouncement) nostr.Tags {
 	for _, relay := range cap.Relays {
 		tags = append(tags, []string{"relay", relay})
 	}
-	if cap.FIPSEnabled {
-		tags = append(tags, []string{"fips", "true"})
-	}
-	if cap.FIPSTransport != "" {
-		tags = append(tags, []string{"fips_transport", cap.FIPSTransport})
-	}
 	return tags
 }
 
@@ -455,15 +458,23 @@ func PublishCapability(ctx context.Context, pool *nostr.Pool, keyer nostr.Keyer,
 // CapabilityCallback fires when a peer capability changes.
 type CapabilityCallback func(pubkey string, cap CapabilityAnnouncement)
 
-// CapabilityRegistry tracks the latest accepted capability event per pubkey.
+// CapabilityRegistry tracks independently replaceable kind-30317 and
+// kind-37195 streams and exposes their effective merged capability.
 type CapabilityRegistry struct {
 	mu        sync.RWMutex
-	entries   map[string]*CapabilityAnnouncement
+	entries   map[string]*capabilityRegistryEntry
 	callbacks []CapabilityCallback
 }
 
+type capabilityRegistryEntry struct {
+	base             *CapabilityAnnouncement
+	fipsCreatedAt    int64
+	fipsEventID      string
+	fipsAnnouncement *FIPSAdvertAnnouncement
+}
+
 func NewCapabilityRegistry() *CapabilityRegistry {
-	return &CapabilityRegistry{entries: map[string]*CapabilityAnnouncement{}}
+	return &CapabilityRegistry{entries: map[string]*capabilityRegistryEntry{}}
 }
 
 func (r *CapabilityRegistry) OnChange(fn CapabilityCallback) {
@@ -475,25 +486,39 @@ func (r *CapabilityRegistry) OnChange(fn CapabilityCallback) {
 	r.mu.Unlock()
 }
 
+func effectiveCapability(entry *capabilityRegistryEntry, now time.Time) (CapabilityAnnouncement, bool) {
+	if entry == nil || entry.base == nil {
+		return CapabilityAnnouncement{}, false
+	}
+	out := cloneCapabilityAnnouncement(*entry.base)
+	fips := entry.fipsAnnouncement
+	if fips == nil || fips.ExpiresAt <= now.Unix() {
+		return out, true
+	}
+	advert := cloneFIPSOverlayAdvert(fips.Advert)
+	out.FIPSEnabled = true
+	out.FIPSTransport = ""
+	out.FIPSProtocol = fips.Protocol
+	out.FIPSAdvert = &advert
+	out.DMSchemes = append(out.DMSchemes, "fips")
+	return normalizeCapabilityAnnouncement(out), true
+}
+
 func (r *CapabilityRegistry) Get(pubkey string) (CapabilityAnnouncement, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	entry, ok := r.entries[strings.TrimSpace(strings.ToLower(pubkey))]
-	if !ok || entry == nil {
-		return CapabilityAnnouncement{}, false
-	}
-	return cloneCapabilityAnnouncement(*entry), true
+	return effectiveCapability(r.entries[strings.TrimSpace(strings.ToLower(pubkey))], time.Now())
 }
 
 func (r *CapabilityRegistry) All() map[string]CapabilityAnnouncement {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make(map[string]CapabilityAnnouncement, len(r.entries))
+	now := time.Now()
 	for pubkey, entry := range r.entries {
-		if entry == nil {
-			continue
+		if cap, ok := effectiveCapability(entry, now); ok {
+			out[pubkey] = cap
 		}
-		out[pubkey] = cloneCapabilityAnnouncement(*entry)
 	}
 	return out
 }
@@ -503,29 +528,124 @@ func (r *CapabilityRegistry) Set(cap CapabilityAnnouncement) bool {
 	if cap.PubKey == "" {
 		return false
 	}
+	// Structured discovery state may only enter through SetFIPSAdvert so its
+	// independent replacement ordering cannot be bypassed by callers.
+	cap.FIPSProtocol = ""
+	cap.FIPSAdvert = nil
 	r.mu.Lock()
-	existing := r.entries[cap.PubKey]
-	if existing != nil {
-		if existing.CreatedAt > cap.CreatedAt {
+	if r.entries == nil {
+		r.entries = map[string]*capabilityRegistryEntry{}
+	}
+	entry := r.entries[cap.PubKey]
+	if entry == nil {
+		entry = &capabilityRegistryEntry{}
+		r.entries[cap.PubKey] = entry
+	}
+	if entry.base != nil {
+		if entry.base.CreatedAt > cap.CreatedAt {
 			r.mu.Unlock()
 			return false
 		}
-		if existing.CreatedAt == cap.CreatedAt && strings.Compare(existing.EventID, cap.EventID) >= 0 {
+		if entry.base.CreatedAt == cap.CreatedAt && strings.Compare(entry.base.EventID, cap.EventID) >= 0 {
 			r.mu.Unlock()
 			return false
 		}
 	}
-	changed := existing == nil || !capabilitySemanticEqual(*existing, cap)
+	before, hadBefore := effectiveCapability(entry, time.Now())
 	copyCap := cloneCapabilityAnnouncement(cap)
-	r.entries[cap.PubKey] = &copyCap
+	entry.base = &copyCap
+	after, hasAfter := effectiveCapability(entry, time.Now())
+	changed := hadBefore != hasAfter || !hadBefore || !capabilitySemanticEqual(before, after)
+	callbacks := append([]CapabilityCallback{}, r.callbacks...)
+	r.mu.Unlock()
+	if changed && hasAfter {
+		for _, cb := range callbacks {
+			cb(cap.PubKey, cloneCapabilityAnnouncement(after))
+		}
+	}
+	return true
+}
+
+// SetFIPSAdvert accepts a kind-37195 advert independently of the base
+// capability stream. Expired adverts advance the high-water mark but are not
+// exposed as active capability state.
+func (r *CapabilityRegistry) SetFIPSAdvert(announcement FIPSAdvertAnnouncement) bool {
+	announcement.PubKey = strings.ToLower(strings.TrimSpace(announcement.PubKey))
+	announcement.EventID = strings.ToLower(strings.TrimSpace(announcement.EventID))
+	announcement.Protocol = defaultFIPSProtocol(announcement.Protocol)
+	if announcement.PubKey == "" || announcement.EventID == "" || announcement.CreatedAt <= 0 || announcement.ExpiresAt <= 0 {
+		return false
+	}
+	advert, err := ValidateFIPSOverlayAdvert(announcement.Advert)
+	if err != nil {
+		return false
+	}
+	announcement.Advert = advert
+	r.mu.Lock()
+	if r.entries == nil {
+		r.entries = map[string]*capabilityRegistryEntry{}
+	}
+	entry := r.entries[announcement.PubKey]
+	if entry == nil {
+		entry = &capabilityRegistryEntry{}
+		r.entries[announcement.PubKey] = entry
+	}
+	if entry.fipsCreatedAt > announcement.CreatedAt ||
+		(entry.fipsCreatedAt == announcement.CreatedAt && strings.Compare(entry.fipsEventID, announcement.EventID) >= 0) {
+		r.mu.Unlock()
+		return false
+	}
+	now := time.Now()
+	before, hadBefore := effectiveCapability(entry, now)
+	entry.fipsCreatedAt = announcement.CreatedAt
+	entry.fipsEventID = announcement.EventID
+	if announcement.ExpiresAt > now.Unix() {
+		copyAnnouncement := announcement
+		copyAnnouncement.Advert = cloneFIPSOverlayAdvert(announcement.Advert)
+		entry.fipsAnnouncement = &copyAnnouncement
+	} else {
+		entry.fipsAnnouncement = nil
+	}
+	after, hasAfter := effectiveCapability(entry, now)
+	changed := hadBefore && hasAfter && !capabilitySemanticEqual(before, after)
 	callbacks := append([]CapabilityCallback{}, r.callbacks...)
 	r.mu.Unlock()
 	if changed {
 		for _, cb := range callbacks {
-			cb(cap.PubKey, cloneCapabilityAnnouncement(cap))
+			cb(announcement.PubKey, cloneCapabilityAnnouncement(after))
 		}
 	}
 	return true
+}
+
+// PruneExpiredFIPS removes expired effective adverts while retaining their
+// replacement high-water marks. It returns the number of effective changes.
+func (r *CapabilityRegistry) PruneExpiredFIPS(now time.Time) int {
+	type notification struct {
+		pubkey string
+		cap    CapabilityAnnouncement
+	}
+	r.mu.Lock()
+	var notifications []notification
+	for pubkey, entry := range r.entries {
+		if entry == nil || entry.fipsAnnouncement == nil || entry.fipsAnnouncement.ExpiresAt > now.Unix() {
+			continue
+		}
+		before, hadBefore := effectiveCapability(entry, time.Unix(entry.fipsAnnouncement.ExpiresAt-1, 0))
+		entry.fipsAnnouncement = nil
+		after, hasAfter := effectiveCapability(entry, now)
+		if hadBefore && hasAfter && !capabilitySemanticEqual(before, after) {
+			notifications = append(notifications, notification{pubkey: pubkey, cap: after})
+		}
+	}
+	callbacks := append([]CapabilityCallback{}, r.callbacks...)
+	r.mu.Unlock()
+	for _, notification := range notifications {
+		for _, cb := range callbacks {
+			cb(notification.pubkey, cloneCapabilityAnnouncement(notification.cap))
+		}
+	}
+	return len(notifications)
 }
 
 func capabilitySemanticEqual(a, b CapabilityAnnouncement) bool {
@@ -538,6 +658,8 @@ func capabilitySemanticEqual(a, b CapabilityAnnouncement) bool {
 		a.ACPVersion == b.ACPVersion &&
 		a.FIPSEnabled == b.FIPSEnabled &&
 		a.FIPSTransport == b.FIPSTransport &&
+		a.FIPSProtocol == b.FIPSProtocol &&
+		fipsOverlayAdvertEqual(a.FIPSAdvert, b.FIPSAdvert) &&
 		relaySliceEqual(a.DMSchemes, b.DMSchemes) &&
 		relaySliceEqual(a.Tools, b.Tools) &&
 		relaySliceEqual(a.ContextVMFeatures, b.ContextVMFeatures) &&
@@ -549,6 +671,21 @@ func capabilitySemanticEqual(a, b CapabilityAnnouncement) bool {
 		relaySliceEqual(a.SoulFactory.ControllerPubKeys, b.SoulFactory.ControllerPubKeys) &&
 		soulFactoryFeatureCapabilitiesEqual(a.SoulFactory.Features, b.SoulFactory.Features) &&
 		soulFactoryFeatureParityEqual(a.SoulFactory.FeatureParity, b.SoulFactory.FeatureParity)
+}
+
+func fipsOverlayAdvertEqual(a, b *FIPSOverlayAdvert) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Identifier != b.Identifier || a.Version != b.Version || len(a.Endpoints) != len(b.Endpoints) {
+		return false
+	}
+	for i := range a.Endpoints {
+		if a.Endpoints[i] != b.Endpoints[i] {
+			return false
+		}
+	}
+	return relaySliceEqual(a.SignalRelays, b.SignalRelays) && relaySliceEqual(a.STUNServers, b.STUNServers)
 }
 
 func soulFactoryFeatureCapabilitiesEqual(a, b []SoulFactoryFeatureCapability) bool {
@@ -572,6 +709,10 @@ func cloneCapabilityAnnouncement(in CapabilityAnnouncement) CapabilityAnnounceme
 	in.Tools = append([]string{}, in.Tools...)
 	in.ContextVMFeatures = append([]string{}, in.ContextVMFeatures...)
 	in.Relays = append([]string{}, in.Relays...)
+	if in.FIPSAdvert != nil {
+		advert := cloneFIPSOverlayAdvert(*in.FIPSAdvert)
+		in.FIPSAdvert = &advert
+	}
 	in.SoulFactory.Methods = append([]string{}, in.SoulFactory.Methods...)
 	in.SoulFactory.ControllerPubKeys = append([]string{}, in.SoulFactory.ControllerPubKeys...)
 	in.SoulFactory.Features = cloneSoulFactoryFeatureCapabilities(in.SoulFactory.Features)
@@ -595,31 +736,40 @@ func cloneSoulFactoryFeatureCapabilities(in []SoulFactoryFeatureCapability) []So
 // CapabilityMonitor keeps the local capability event published and watches
 // kind:30317 updates for a dynamic fleet peer set.
 type CapabilityMonitor struct {
-	mu              sync.RWMutex
-	pool            *nostr.Pool
-	keyer           nostr.Keyer
-	registry        *CapabilityRegistry
-	publishRelays   []string
-	subscribeRelays []string
-	peers           []string
-	local           CapabilityAnnouncement
-	publishTimeout  time.Duration
-	onPublished     func(eventID string)
-	triggerCh       chan struct{}
-	rebindCh        chan struct{}
-	started         bool
+	mu                    sync.RWMutex
+	pool                  *nostr.Pool
+	keyer                 nostr.Keyer
+	registry              *CapabilityRegistry
+	publishRelays         []string
+	subscribeRelays       []string
+	peers                 []string
+	local                 CapabilityAnnouncement
+	publishTimeout        time.Duration
+	fipsProtocol          string
+	fipsAdvertTTL         time.Duration
+	fipsAdvertRefresh     time.Duration
+	onPublished           func(eventID string)
+	onFIPSAdvertPublished func(eventID string)
+	triggerCh             chan struct{}
+	rebindCh              chan struct{}
+	fipsRebindCh          chan struct{}
+	started               bool
 }
 
 type CapabilityMonitorOptions struct {
-	Pool            *nostr.Pool
-	Keyer           nostr.Keyer
-	Registry        *CapabilityRegistry
-	PublishRelays   []string
-	SubscribeRelays []string
-	Peers           []string
-	Local           CapabilityAnnouncement
-	PublishTimeout  time.Duration
-	OnPublished     func(eventID string)
+	Pool                  *nostr.Pool
+	Keyer                 nostr.Keyer
+	Registry              *CapabilityRegistry
+	PublishRelays         []string
+	SubscribeRelays       []string
+	Peers                 []string
+	Local                 CapabilityAnnouncement
+	PublishTimeout        time.Duration
+	FIPSProtocol          string
+	FIPSAdvertTTL         time.Duration
+	FIPSAdvertRefresh     time.Duration
+	OnPublished           func(eventID string)
+	OnFIPSAdvertPublished func(eventID string)
 }
 
 func NewCapabilityMonitor(opts CapabilityMonitorOptions) *CapabilityMonitor {
@@ -627,18 +777,39 @@ func NewCapabilityMonitor(opts CapabilityMonitorOptions) *CapabilityMonitor {
 	if publishTimeout <= 0 {
 		publishTimeout = 15 * time.Second
 	}
+	protocol := opts.FIPSProtocol
+	if strings.TrimSpace(protocol) == "" {
+		protocol = opts.Local.FIPSProtocol
+	}
+	protocol = defaultFIPSProtocol(protocol)
+	advertTTL := opts.FIPSAdvertTTL
+	if advertTTL <= 0 {
+		advertTTL = DefaultFIPSOverlayAdvertTTL
+	}
+	advertRefresh := opts.FIPSAdvertRefresh
+	if advertRefresh <= 0 || advertRefresh >= advertTTL {
+		advertRefresh = advertTTL / 2
+	}
+	if advertRefresh <= 0 {
+		advertRefresh = time.Second
+	}
 	return &CapabilityMonitor{
-		pool:            opts.Pool,
-		keyer:           opts.Keyer,
-		registry:        opts.Registry,
-		publishRelays:   normalizeRelayURLs(opts.PublishRelays),
-		subscribeRelays: normalizeRelayURLs(opts.SubscribeRelays),
-		peers:           normalizeCapabilityStrings(opts.Peers),
-		local:           normalizeCapabilityAnnouncement(opts.Local),
-		publishTimeout:  publishTimeout,
-		onPublished:     opts.OnPublished,
-		triggerCh:       make(chan struct{}, 1),
-		rebindCh:        make(chan struct{}, 1),
+		pool:                  opts.Pool,
+		keyer:                 opts.Keyer,
+		registry:              opts.Registry,
+		publishRelays:         normalizeRelayURLs(opts.PublishRelays),
+		subscribeRelays:       normalizeRelayURLs(opts.SubscribeRelays),
+		peers:                 normalizeCapabilityStrings(opts.Peers),
+		local:                 normalizeCapabilityAnnouncement(opts.Local),
+		publishTimeout:        publishTimeout,
+		fipsProtocol:          protocol,
+		fipsAdvertTTL:         advertTTL,
+		fipsAdvertRefresh:     advertRefresh,
+		onPublished:           opts.OnPublished,
+		onFIPSAdvertPublished: opts.OnFIPSAdvertPublished,
+		triggerCh:             make(chan struct{}, 1),
+		rebindCh:              make(chan struct{}, 1),
+		fipsRebindCh:          make(chan struct{}, 1),
 	}
 }
 
@@ -652,12 +823,15 @@ func (m *CapabilityMonitor) Start(ctx context.Context) {
 	m.mu.Unlock()
 	go m.runPublisher(ctx)
 	go m.runSubscriber(ctx)
+	go m.runFIPSSubscriber(ctx)
+	go m.runFIPSExpiry(ctx)
 }
 
 func (m *CapabilityMonitor) UpdatePublishRelays(relays []string) {
 	m.mu.Lock()
 	m.publishRelays = normalizeRelayURLs(relays)
 	m.mu.Unlock()
+	m.TriggerPublish()
 }
 
 func (m *CapabilityMonitor) UpdateSubscribeRelays(relays []string) {
@@ -692,16 +866,27 @@ func (m *CapabilityMonitor) requestRebind() {
 	case m.rebindCh <- struct{}{}:
 	default:
 	}
+	select {
+	case m.fipsRebindCh <- struct{}{}:
+	default:
+	}
 }
 
 func (m *CapabilityMonitor) runPublisher(ctx context.Context) {
 	m.publishLocal(ctx)
+	m.mu.RLock()
+	refresh := m.fipsAdvertRefresh
+	m.mu.RUnlock()
+	ticker := time.NewTicker(refresh)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-m.triggerCh:
 			m.publishLocal(ctx)
+		case <-ticker.C:
+			m.publishLocalFIPS(ctx)
 		}
 	}
 }
@@ -715,14 +900,41 @@ func (m *CapabilityMonitor) publishLocal(parent context.Context) {
 	timeout := m.publishTimeout
 	onPublished := m.onPublished
 	m.mu.RUnlock()
-	if pool == nil || keyer == nil || len(relays) == 0 {
+	if pool != nil && keyer != nil && len(relays) > 0 {
+		ctx, cancel := context.WithTimeout(parent, timeout)
+		eventID, err := PublishCapability(ctx, pool, keyer, relays, local)
+		cancel()
+		if err != nil {
+			log.Printf("capability-sync: publish failed: %v", err)
+		} else if onPublished != nil {
+			onPublished(eventID)
+		}
+	}
+	m.publishLocalFIPS(parent)
+}
+
+func (m *CapabilityMonitor) publishLocalFIPS(parent context.Context) {
+	m.mu.RLock()
+	pool := m.pool
+	keyer := m.keyer
+	relays := append([]string{}, m.publishRelays...)
+	local := cloneCapabilityAnnouncement(m.local)
+	timeout := m.publishTimeout
+	protocol := m.fipsProtocol
+	ttl := m.fipsAdvertTTL
+	onPublished := m.onFIPSAdvertPublished
+	m.mu.RUnlock()
+	if pool == nil || keyer == nil || len(relays) == 0 || local.FIPSAdvert == nil {
 		return
 	}
+	if local.FIPSProtocol != "" {
+		protocol = local.FIPSProtocol
+	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-	eventID, err := PublishCapability(ctx, pool, keyer, relays, local)
+	eventID, err := PublishFIPSAdvert(ctx, pool, keyer, relays, protocol, ttl, *local.FIPSAdvert)
+	cancel()
 	if err != nil {
-		log.Printf("capability-sync: publish failed: %v", err)
+		log.Printf("capability-sync: publish FIPS advert failed: %v", err)
 		return
 	}
 	if onPublished != nil {
@@ -785,6 +997,96 @@ func (m *CapabilityMonitor) runSubscriber(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (m *CapabilityMonitor) runFIPSSubscriber(ctx context.Context) {
+	for {
+		relays, authors := m.snapshotFIPSSubscriptionConfig()
+		if len(relays) == 0 || len(authors) == 0 || m.pool == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.fipsRebindCh:
+				continue
+			}
+		}
+		allowedAuthors := make(map[string]struct{}, len(authors))
+		for _, author := range authors {
+			allowedAuthors[author.Hex()] = struct{}{}
+		}
+		m.mu.RLock()
+		protocol := m.fipsProtocol
+		registry := m.registry
+		m.mu.RUnlock()
+		subCtx, cancel := context.WithCancel(ctx)
+		eventsCh, eoseCh := m.pool.SubscribeManyNotifyEOSE(subCtx, relays, nostr.Filter{
+			Kinds:   []nostr.Kind{nostr.Kind(FIPSOverlayAdvertKind)},
+			Authors: authors,
+			Tags:    nostr.TagMap{"d": []string{FIPSOverlayAdvertIdentifier}},
+		}, nostr.SubscriptionOptions{})
+	restartLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				cancel()
+				return
+			case <-m.fipsRebindCh:
+				cancel()
+				break restartLoop
+			case <-eoseCh:
+				eoseCh = nil
+				log.Printf("capability-sync: EOSE — watching %d peer FIPS advert streams", len(authors))
+			case re, ok := <-eventsCh:
+				if !ok {
+					cancel()
+					break restartLoop
+				}
+				now := time.Now()
+				if reason := fipsAdvertValidationFailure(re.Event, allowedAuthors, now); reason != "" {
+					continue
+				}
+				announcement, err := ParseFIPSAdvertEvent(&re.Event, protocol, now)
+				if err != nil {
+					continue
+				}
+				if registry != nil {
+					registry.SetFIPSAdvert(announcement)
+				}
+			}
+		}
+	}
+}
+
+func (m *CapabilityMonitor) runFIPSExpiry(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			m.mu.RLock()
+			registry := m.registry
+			m.mu.RUnlock()
+			if registry != nil {
+				registry.PruneExpiredFIPS(now)
+			}
+		}
+	}
+}
+
+func (m *CapabilityMonitor) snapshotFIPSSubscriptionConfig() ([]string, []nostr.PubKey) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	relays := append([]string{}, m.subscribeRelays...)
+	authors := make([]nostr.PubKey, 0, len(m.peers))
+	for _, raw := range m.peers {
+		pk, err := ParsePubKey(raw)
+		if err == nil {
+			authors = append(authors, pk)
+		}
+	}
+	return relays, authors
 }
 
 func (m *CapabilityMonitor) snapshotSubscriptionConfig() ([]string, []nostr.PubKey, []string) {
