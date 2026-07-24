@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"metiq/internal/agent"
+	ctxengine "metiq/internal/context"
 	pluginhooks "metiq/internal/plugins/hooks"
 	pluginregistry "metiq/internal/plugins/registry"
 )
@@ -33,6 +34,94 @@ func (b Budget) exceeded(usage agent.TurnUsage) bool {
 	return (b.MaxInputTokens > 0 && usage.InputTokens > b.MaxInputTokens) ||
 		(b.MaxOutputTokens > 0 && usage.OutputTokens > b.MaxOutputTokens) ||
 		(b.MaxTotalTokens > 0 && usage.InputTokens+usage.OutputTokens > b.MaxTotalTokens)
+}
+
+func (b Budget) prepareTurn(turn *agent.Turn) (int64, error) {
+	if turn == nil {
+		return 0, errors.New("subagent turn is nil")
+	}
+	inputEstimate := int64(agent.EstimateTurnTokens(*turn))
+	if (b.MaxInputTokens > 0 && inputEstimate > b.MaxInputTokens) ||
+		(b.MaxTotalTokens > 0 && inputEstimate >= b.MaxTotalTokens) {
+		return inputEstimate, ErrBudgetExceeded
+	}
+	outputLimit := b.MaxOutputTokens
+	if b.MaxTotalTokens > 0 {
+		remaining := b.MaxTotalTokens - inputEstimate
+		if outputLimit <= 0 || remaining < outputLimit {
+			outputLimit = remaining
+		}
+	}
+	if outputLimit > 0 {
+		maxInt := int64(^uint(0) >> 1)
+		if outputLimit > maxInt {
+			outputLimit = maxInt
+		}
+		turn.MaxOutputTokens = int(outputLimit)
+	}
+	return inputEstimate, nil
+}
+
+type budgetTracker struct {
+	mu             sync.Mutex
+	budget         Budget
+	inputEstimate  int64
+	callbackOutput int64
+	eventOutput    int64
+	providerUsage  agent.TurnUsage
+}
+
+func newBudgetTracker(budget Budget, inputEstimate int64) *budgetTracker {
+	return &budgetTracker{budget: budget, inputEstimate: inputEstimate}
+}
+
+func (t *budgetTracker) observeCallback(text string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.callbackOutput += int64(ctxengine.EstimateTextTokens(text))
+	return t.budget.exceeded(t.usageLocked())
+}
+
+func (t *budgetTracker) observeEvent(event agent.RuntimeEvent) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if event.Type == agent.RuntimeEventAssistantDelta || event.Type == agent.RuntimeEventThinkingDelta {
+		t.eventOutput += int64(ctxengine.EstimateTextTokens(event.Delta))
+	}
+	if event.Usage.InputTokens > t.providerUsage.InputTokens {
+		t.providerUsage.InputTokens = event.Usage.InputTokens
+	}
+	if event.Usage.OutputTokens > t.providerUsage.OutputTokens {
+		t.providerUsage.OutputTokens = event.Usage.OutputTokens
+	}
+	return t.budget.exceeded(t.usageLocked())
+}
+
+func (t *budgetTracker) observeResult(usage agent.TurnUsage) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if usage.InputTokens > t.providerUsage.InputTokens {
+		t.providerUsage.InputTokens = usage.InputTokens
+	}
+	if usage.OutputTokens > t.providerUsage.OutputTokens {
+		t.providerUsage.OutputTokens = usage.OutputTokens
+	}
+	return t.budget.exceeded(t.usageLocked())
+}
+
+func (t *budgetTracker) usageLocked() agent.TurnUsage {
+	usage := t.providerUsage
+	if usage.InputTokens < t.inputEstimate {
+		usage.InputTokens = t.inputEstimate
+	}
+	streamedOutput := t.callbackOutput
+	if t.eventOutput > streamedOutput {
+		streamedOutput = t.eventOutput
+	}
+	if usage.OutputTokens < streamedOutput {
+		usage.OutputTokens = streamedOutput
+	}
+	return usage
 }
 
 // AgentDefinition is a typed, spawnable agent runtime.
@@ -255,27 +344,35 @@ func (o *Orchestrator) run(ctx context.Context, cancel context.CancelCauseFunc, 
 	defer o.release(record.ParentRunID)
 	defer cancel(nil)
 
-	emitChildEvent(ctx, events, Event{Type: EventStarted, RunID: record.RunID, AgentID: record.AgentID, SessionID: record.ChildSessionKey})
 	turn := agent.Turn{SessionID: record.ChildSessionKey, TurnID: record.RunID, UserText: record.Task, HookInvoker: req.HookInvoker, ToolPolicyAgentID: record.AgentID}
+	inputEstimate, preflightErr := record.Budget.prepareTurn(&turn)
+	tracker := newBudgetTracker(record.Budget, inputEstimate)
 	turn.RuntimeEventSink = func(runtimeEvent agent.RuntimeEvent) {
 		if req.RuntimeEventSink != nil {
 			req.RuntimeEventSink(runtimeEvent)
 		}
 		copy := runtimeEvent
 		emitChildEvent(ctx, events, Event{Type: EventRuntime, RunID: record.RunID, AgentID: record.AgentID, SessionID: record.ChildSessionKey, RuntimeEvent: &copy})
-		if record.Budget.exceeded(runtimeEvent.Usage) {
+		if tracker.observeEvent(runtimeEvent) {
 			cancel(ErrBudgetExceeded)
 		}
 	}
 
 	var turnResult agent.TurnResult
-	var err error
-	if streaming, ok := def.Runtime.(agent.StreamingRuntime); ok {
-		turnResult, err = streaming.ProcessTurnStreaming(ctx, turn, nil)
-	} else {
-		turnResult, err = def.Runtime.ProcessTurn(ctx, turn)
+	err := preflightErr
+	if err == nil {
+		emitChildEvent(ctx, events, Event{Type: EventStarted, RunID: record.RunID, AgentID: record.AgentID, SessionID: record.ChildSessionKey})
+		if streaming, ok := def.Runtime.(agent.StreamingRuntime); ok {
+			turnResult, err = streaming.ProcessTurnStreaming(ctx, turn, func(text string) {
+				if tracker.observeCallback(text) {
+					cancel(ErrBudgetExceeded)
+				}
+			})
+		} else {
+			turnResult, err = def.Runtime.ProcessTurn(ctx, turn)
+		}
 	}
-	if err == nil && record.Budget.exceeded(turnResult.Usage) {
+	if err == nil && tracker.observeResult(turnResult.Usage) {
 		err = ErrBudgetExceeded
 	}
 	if cause := context.Cause(ctx); cause != nil {

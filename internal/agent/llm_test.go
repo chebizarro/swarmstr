@@ -95,6 +95,10 @@ func TestChatOptionsFromTurn_HonorsPromptCacheProfile(t *testing.T) {
 	if anthropicOpts.MaxTokens != 16000 || anthropicOpts.ThinkingBudget != 1000 {
 		t.Fatalf("unexpected thinking options: %+v", anthropicOpts)
 	}
+	budgetedOpts := chatOptionsFromTurn(Turn{MaxOutputTokens: 37, ThinkingBudget: 1000}, PromptCacheProfile{})
+	if budgetedOpts.MaxTokens != 37 {
+		t.Fatalf("expected runtime output budget to reach provider options, got %+v", budgetedOpts)
+	}
 
 	disabledOpts := chatOptionsFromTurn(Turn{}, disabledPromptCacheProfile())
 	if disabledOpts.CacheSystem || disabledOpts.CacheTools {

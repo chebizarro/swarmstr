@@ -1960,7 +1960,7 @@ func main() {
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)))
 		var turnHistory []agent.ConversationMessage
 		if controlContextEngine != nil {
-			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
+			if assembled, asmErr := controlContextEngine.Assemble(turnCtx, sessionID, maxContextTokensForAgent(configState.Get(), sessionRouter.Get(sessionID))); asmErr == nil {
 				if assembled.SystemPromptAddition != "" {
 					turnContext = joinPromptSections(turnContext, assembled.SystemPromptAddition)
 				}
@@ -5540,7 +5540,7 @@ func main() {
 		staticSystemPrompt := assembleMemorySystemPrompt(memoryIndex, scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID))
 		var chTurnHistory []agent.ConversationMessage
 		if controlServices.session.contextEngine != nil {
-			if assembled, asmErr := controlServices.session.contextEngine.Assemble(turnCtx, sessionID, 100_000); asmErr == nil {
+			if assembled, asmErr := controlServices.session.contextEngine.Assemble(turnCtx, sessionID, maxContextTokensForAgent(configState.Get(), activeAgentID)); asmErr == nil {
 				if assembled.SystemPromptAddition != "" {
 					turnContext = joinPromptSections(turnContext, assembled.SystemPromptAddition)
 				}

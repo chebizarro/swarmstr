@@ -127,6 +127,24 @@ func TestChatDeltaCoalescingReplaceSemantics(t *testing.T) {
 	}
 }
 
+func TestChatTerminalFlushesPendingDeltaFirst(t *testing.T) {
+	c := &client{id: "c1", subscriptions: map[string]struct{}{EventChat: {}}, eventQueue: make(chan any, 4), eventDone: make(chan struct{})}
+	r := &Runtime{opts: RuntimeOptions{DeltaCoalesceInterval: time.Hour}, clients: map[string]*client{"c1": c}, chatCoalesce: map[string]*chatChunkCoalescer{}}
+	base := ChatEventBase{RunID: "run", SessionKey: "session"}
+	r.Broadcast(EventChat, ChatDeltaEvent{ChatEventBase: base, State: ChatStateDelta, DeltaText: "pending"})
+	base.Seq++
+	r.Broadcast(EventChat, ChatFinalEvent{ChatEventBase: base, State: ChatStateFinal, Message: ChatAssistantMessage("pending")})
+
+	first := (<-c.eventQueue).(map[string]any)["payload"]
+	second := (<-c.eventQueue).(map[string]any)["payload"]
+	if delta, ok := first.(ChatDeltaEvent); !ok || delta.DeltaText != "pending" {
+		t.Fatalf("first event=%#v want pending delta", first)
+	}
+	if _, ok := second.(ChatFinalEvent); !ok {
+		t.Fatalf("second event=%#v want final", second)
+	}
+}
+
 func TestSessionSubscribeLifecycleUsesConnectionSubscriptions(t *testing.T) {
 	r := &Runtime{opts: RuntimeOptions{Events: []string{EventChat, EventChatMessage, EventAgentStatus, EventToolStart}}}
 	c := &client{subscriptions: map[string]struct{}{}}

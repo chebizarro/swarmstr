@@ -240,6 +240,9 @@ func chatOptionsFromTurn(turn Turn, profile PromptCacheProfile) ChatOptions {
 			maxTokens = 16000
 		}
 	}
+	if turn.MaxOutputTokens > 0 {
+		maxTokens = turn.MaxOutputTokens
+	}
 	return ChatOptions{
 		MaxTokens:      maxTokens,
 		ThinkingBudget: turn.ThinkingBudget,

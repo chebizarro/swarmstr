@@ -23,6 +23,33 @@ func (r *blockingRuntime) ProcessTurn(ctx context.Context, turn agent.Turn) (age
 
 type usageRuntime struct{}
 
+type streamingBudgetRuntime struct {
+	seen   chan agent.Turn
+	chunks []string
+}
+
+func (r *streamingBudgetRuntime) ProcessTurn(ctx context.Context, turn agent.Turn) (agent.TurnResult, error) {
+	return r.ProcessTurnStreaming(ctx, turn, nil)
+}
+
+func (r *streamingBudgetRuntime) ProcessTurnStreaming(ctx context.Context, turn agent.Turn, onChunk func(string)) (agent.TurnResult, error) {
+	r.seen <- turn
+	for _, chunk := range r.chunks {
+		if onChunk != nil {
+			onChunk(chunk)
+		}
+		if turn.RuntimeEventSink != nil {
+			turn.RuntimeEventSink(agent.RuntimeEvent{Type: agent.RuntimeEventAssistantDelta, Delta: chunk})
+		}
+		select {
+		case <-ctx.Done():
+			return agent.TurnResult{}, context.Cause(ctx)
+		default:
+		}
+	}
+	return agent.TurnResult{Text: "completed"}, nil
+}
+
 func (usageRuntime) ProcessTurn(ctx context.Context, turn agent.Turn) (agent.TurnResult, error) {
 	return usageRuntime{}.ProcessTurnStreaming(ctx, turn, nil)
 }
@@ -167,6 +194,49 @@ func TestOrchestratorCancelsWhenTokenBudgetExceeded(t *testing.T) {
 	record := orchestrator.registry.Get(handle.RunID)
 	if record == nil || record.Outcome == nil || record.Outcome.Error != ErrBudgetExceeded.Error() {
 		t.Fatalf("record=%#v", record)
+	}
+}
+
+func TestOrchestratorPreflightsInputBudgetBeforeGeneration(t *testing.T) {
+	runtime := &streamingBudgetRuntime{seen: make(chan agent.Turn, 1), chunks: []string{"unused"}}
+	orchestrator := NewOrchestrator(nil, DefaultConfig())
+	if err := orchestrator.RegisterDefinition(AgentDefinition{ID: "worker", Runtime: runtime}); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := orchestrator.Spawn(context.Background(), SpawnRequest{
+		AgentID: "worker", ParentSessionID: "s", Task: "a request that cannot fit", Budget: Budget{MaxInputTokens: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.Wait(context.Background()); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("preflight err=%v", err)
+	}
+	select {
+	case turn := <-runtime.seen:
+		t.Fatalf("runtime started despite failed preflight: %#v", turn)
+	default:
+	}
+}
+
+func TestOrchestratorPropagatesOutputHintAndCancelsMidStream(t *testing.T) {
+	runtime := &streamingBudgetRuntime{seen: make(chan agent.Turn, 1), chunks: []string{"123456789012", "should-not-run"}}
+	orchestrator := NewOrchestrator(nil, DefaultConfig())
+	if err := orchestrator.RegisterDefinition(AgentDefinition{ID: "worker", Runtime: runtime}); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := orchestrator.Spawn(context.Background(), SpawnRequest{
+		AgentID: "worker", ParentSessionID: "s", Task: "bounded", Budget: Budget{MaxOutputTokens: 2, MaxTotalTokens: 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := <-runtime.seen
+	if turn.MaxOutputTokens != 2 {
+		t.Fatalf("provider output hint=%d want=2", turn.MaxOutputTokens)
+	}
+	if _, err := handle.Wait(context.Background()); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("mid-stream budget err=%v", err)
 	}
 }
 

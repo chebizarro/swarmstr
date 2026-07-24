@@ -44,6 +44,45 @@ func TestFTSLifecycleRepairsMissingRowSelectively(t *testing.T) {
 	}
 }
 
+func TestSearchSelfHealsMissingFTSRowAtRuntime(t *testing.T) {
+	b := newTestSQLiteBackend(t)
+	b.Add(state.MemoryDoc{MemoryID: "live", SessionID: "s-live", Text: "runtime drift sentinel"})
+	if _, err := b.db.Exec(`DELETE FROM chunks_fts WHERE rowid = (SELECT rowid FROM chunks WHERE id = 'live')`); err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	b.clearCacheLocked()
+	b.mu.Unlock()
+
+	results := b.SearchSession("s-live", "sentinel", 5)
+	if len(results) != 1 || results[0].MemoryID != "live" {
+		t.Fatalf("live search did not repair and retry: %#v", results)
+	}
+	health := b.FTSHealth()
+	if health.State != FTSStateHealthy || health.TargetedReindexed != 1 {
+		t.Fatalf("expected targeted runtime repair, got %#v", health)
+	}
+}
+
+func TestSearchSelfHealsDroppedFTSTableAtRuntime(t *testing.T) {
+	b := newTestSQLiteBackend(t)
+	b.Add(state.MemoryDoc{MemoryID: "live", SessionID: "s-live", Text: "runtime query failure sentinel"})
+	if _, err := b.db.Exec(`DROP TABLE chunks_fts`); err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	b.clearCacheLocked()
+	b.mu.Unlock()
+
+	results := b.Search("sentinel", 5)
+	if len(results) != 1 || results[0].MemoryID != "live" {
+		t.Fatalf("failed query did not recreate, repair, and retry: %#v health=%#v", results, b.FTSHealth())
+	}
+	if health := b.FTSHealth(); health.State != FTSStateHealthy {
+		t.Fatalf("expected healthy FTS after live recovery, got %#v", health)
+	}
+}
+
 func TestReindexFTSSessionTargetsTranscriptRows(t *testing.T) {
 	b := newTestSQLiteBackend(t)
 	b.Add(state.MemoryDoc{MemoryID: "s1-user", SessionID: "s1", Role: "user", Text: "transcript question"})

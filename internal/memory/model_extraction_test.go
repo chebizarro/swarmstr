@@ -3,8 +3,10 @@ package memory
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"metiq/internal/agent"
 	"metiq/internal/store/state"
 )
 
@@ -17,6 +19,33 @@ type fakeModelExtractor struct {
 func (f *fakeModelExtractor) ExtractMemories(_ context.Context, corpus TranscriptCorpus) ([]ModelMemoryCandidate, error) {
 	f.seen = corpus
 	return f.candidates, f.err
+}
+
+type fakeExtractionRuntime struct {
+	result agent.TurnResult
+	err    error
+	seen   agent.Turn
+}
+
+func (f *fakeExtractionRuntime) ProcessTurn(_ context.Context, turn agent.Turn) (agent.TurnResult, error) {
+	f.seen = turn
+	return f.result, f.err
+}
+
+func useProductionExtractor(t *testing.T, extractor ModelMemoryExtractor) {
+	t.Helper()
+	productionModelExtraction.Lock()
+	oldExtractor := productionModelExtraction.extractor
+	oldResolved := productionModelExtraction.resolved
+	productionModelExtraction.extractor = extractor
+	productionModelExtraction.resolved = true
+	productionModelExtraction.Unlock()
+	t.Cleanup(func() {
+		productionModelExtraction.Lock()
+		productionModelExtraction.extractor = oldExtractor
+		productionModelExtraction.resolved = oldResolved
+		productionModelExtraction.Unlock()
+	})
 }
 
 type fakeConsolidator struct {
@@ -35,6 +64,72 @@ func transcriptCorpus() TranscriptCorpus {
 		{SessionID: "session-1", EntryID: "u1", Role: "user", Text: "Remember: I strongly prefer concise technical answers.", Unix: 100},
 		{SessionID: "session-1", EntryID: "a1", Role: "assistant", Text: "Understood; concise technical answers are preferred.", Unix: 101},
 	}}
+}
+
+func TestProviderModelMemoryExtractorUsesStructuredRuntimeTurn(t *testing.T) {
+	runtime := &fakeExtractionRuntime{result: agent.TurnResult{Text: `{"candidates":[{"key":"user/style","text":"User prefers concise technical answers.","type":"preference","confidence":0.95,"source_refs":["u1"]}]}`}}
+	extractor, err := NewProviderModelMemoryExtractor(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := extractor.ExtractMemories(context.Background(), transcriptCorpus())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].SourceRefs[0] != "u1" {
+		t.Fatalf("unexpected provider candidates: %#v", candidates)
+	}
+	if runtime.seen.ResponseFormat == nil || runtime.seen.ResponseFormat.Type != agent.ResponseFormatJSONSchema || !runtime.seen.ResponseFormat.Strict {
+		t.Fatalf("provider turn did not request strict structured output: %#v", runtime.seen.ResponseFormat)
+	}
+	if runtime.seen.MaxOutputTokens != 2048 || !strings.Contains(runtime.seen.UserText, `"entry_id":"u1"`) {
+		t.Fatalf("provider turn did not carry extraction budget/corpus: %#v", runtime.seen)
+	}
+}
+
+func TestAddDocRunsProductionModelExtractionWithHeuristicFallback(t *testing.T) {
+	idx, err := OpenIndex(t.TempDir() + "/memory.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &IndexBackend{idx: idx}
+	extractor := &fakeModelExtractor{candidates: []ModelMemoryCandidate{{
+		Key: "user/style", Text: "User prefers concise technical answers.", Type: "preference", Confidence: .95, SourceRefs: []string{"turn-1"},
+	}}}
+	useProductionExtractor(t, extractor)
+	AddDoc(context.Background(), backend, state.MemoryDoc{
+		MemoryID: "turn-1", SessionID: "session-1", SourceRef: "turn-1", Role: "user",
+		Text: "Remember: I strongly prefer concise technical answers.", Source: MemorySourceKindTurn,
+	})
+	if backend.Count() != 2 {
+		t.Fatalf("expected heuristic and model memories, got %d", backend.Count())
+	}
+	modelHits := backend.Search("concise technical", 10)
+	foundModel := false
+	for _, hit := range modelHits {
+		if hit.Source == "model_extraction" {
+			foundModel = true
+		}
+	}
+	if !foundModel {
+		t.Fatalf("model-backed memory was not persisted: %#v", modelHits)
+	}
+}
+
+func TestAddDocKeepsOriginalWhenProductionModelFails(t *testing.T) {
+	idx, err := OpenIndex(t.TempDir() + "/memory.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &IndexBackend{idx: idx}
+	useProductionExtractor(t, &fakeModelExtractor{err: errors.New("provider unavailable")})
+	AddDoc(context.Background(), backend, state.MemoryDoc{
+		MemoryID: "turn-1", SessionID: "session-1", SourceRef: "turn-1", Role: "user",
+		Text: "Remember this preference.", Source: MemorySourceKindTurn,
+	})
+	if backend.Count() != 1 {
+		t.Fatalf("provider failure must preserve exactly the original memory, got %d", backend.Count())
+	}
 }
 
 func TestModelExtractionValidatesAndResolvesConflicts(t *testing.T) {

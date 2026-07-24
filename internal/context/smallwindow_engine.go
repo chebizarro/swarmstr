@@ -124,10 +124,11 @@ const swClearedMarker = "[tool result cleared to free context]"
 type SmallWindowEngine struct {
 	NoOpCompact // default no-op; overridden when compact provider is set
 
-	mu       sync.Mutex
-	sessions map[string]*swSession
-	tier     ContextTierSW
-	budget   SmallWindowBudget
+	mu         sync.Mutex
+	sessions   map[string]*swSession
+	tier       ContextTierSW
+	budget     SmallWindowBudget
+	sessionEnd map[string]func(stdctx.Context, string)
 }
 
 type swSession struct {
@@ -139,9 +140,10 @@ type swSession struct {
 // NewSmallWindowEngine creates a SmallWindowEngine for the given tier.
 func NewSmallWindowEngine(tier ContextTierSW, budget SmallWindowBudget) *SmallWindowEngine {
 	return &SmallWindowEngine{
-		sessions: map[string]*swSession{},
-		tier:     tier,
-		budget:   budget,
+		sessions:   map[string]*swSession{},
+		tier:       tier,
+		budget:     budget,
+		sessionEnd: map[string]func(stdctx.Context, string){},
 	}
 }
 
@@ -206,10 +208,13 @@ func (e *SmallWindowEngine) Assemble(_ stdctx.Context, sessionID string, maxToke
 	return result, nil
 }
 
-func (e *SmallWindowEngine) Bootstrap(_ stdctx.Context, sessionID string, messages []Message) (BootstrapResult, error) {
+func (e *SmallWindowEngine) Bootstrap(ctx stdctx.Context, sessionID string, messages []Message) (BootstrapResult, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
+	observer := e.sessionEnd[sessionID]
+	_, existed := e.sessions[sessionID]
+	if existed {
+		delete(e.sessionEnd, sessionID)
+	}
 	sess := e.getOrCreateSession(sessionID)
 	msgs := make([]Message, len(messages))
 	copy(msgs, messages)
@@ -222,10 +227,35 @@ func (e *SmallWindowEngine) Bootstrap(_ stdctx.Context, sessionID string, messag
 	sess.messages = msgs
 	sess.summary = ""
 	sess.promptCacheLast = ""
+	e.mu.Unlock()
+	if existed && observer != nil {
+		observer(ctx, "context_reset")
+	}
 	return BootstrapResult{Bootstrapped: true, ImportedMessages: len(msgs)}, nil
 }
 
-func (e *SmallWindowEngine) Close() error { return nil }
+func (e *SmallWindowEngine) RegisterSessionEndObserver(sessionID string, observer func(stdctx.Context, string)) {
+	if strings.TrimSpace(sessionID) == "" || observer == nil {
+		return
+	}
+	e.mu.Lock()
+	e.sessionEnd[sessionID] = observer
+	e.mu.Unlock()
+}
+
+func (e *SmallWindowEngine) Close() error {
+	e.mu.Lock()
+	observers := make([]func(stdctx.Context, string), 0, len(e.sessionEnd))
+	for _, observer := range e.sessionEnd {
+		observers = append(observers, observer)
+	}
+	e.sessionEnd = map[string]func(stdctx.Context, string){}
+	e.mu.Unlock()
+	for _, observer := range observers {
+		observer(stdctx.Background(), "context_engine_close")
+	}
+	return nil
+}
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 

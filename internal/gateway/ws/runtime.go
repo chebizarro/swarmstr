@@ -230,7 +230,14 @@ func (r *Runtime) Broadcast(event string, payload any) {
 			return
 		}
 		if key := terminalChatCoalesceKey(payload); key != "" {
-			r.flushCoalescedChatChunk(key)
+			// Keep the coalescer lock across both enqueue operations. A timer flush
+			// cannot remove the pending delta and then lose the enqueue race to this
+			// terminal event.
+			r.coalesceMu.Lock()
+			r.flushCoalescedChatChunkLocked(key)
+			r.broadcastImmediate(event, payload)
+			r.coalesceMu.Unlock()
+			return
 		}
 	}
 	r.broadcastImmediate(event, payload)
@@ -316,21 +323,25 @@ func terminalChatCoalesceKey(payload any) string {
 
 func (r *Runtime) flushCoalescedChatChunk(key string) {
 	r.coalesceMu.Lock()
+	r.flushCoalescedChatChunkLocked(key)
+	r.coalesceMu.Unlock()
+}
+
+// flushCoalescedChatChunkLocked removes and broadcasts one pending delta while
+// coalesceMu remains held. Holding the lock through enqueue is required so a
+// concurrent terminal Broadcast cannot overtake a timer-owned delta.
+func (r *Runtime) flushCoalescedChatChunkLocked(key string) {
 	entry := r.chatCoalesce[key]
 	if entry == nil {
-		r.coalesceMu.Unlock()
 		return
 	}
 	delete(r.chatCoalesce, key)
 	if entry.timer != nil {
 		entry.timer.Stop()
 	}
-	payload := entry.payload
-	r.coalesceMu.Unlock()
-	if payload.DeltaText == "" {
-		return
+	if entry.payload.DeltaText != "" {
+		r.broadcastImmediate(EventChat, entry.payload)
 	}
-	r.broadcastImmediate(EventChat, payload)
 }
 
 func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {

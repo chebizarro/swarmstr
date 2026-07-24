@@ -60,8 +60,8 @@ func (n *StreamNormalizer) process(final bool) StreamOutput {
 			n.emit(&out, n.buffer[:start])
 			n.buffer = n.buffer[start:]
 		}
-		end, payloadText, complete := streamCandidate(n.buffer, kind)
-		if !complete {
+		end, payloadText, parsed, state := streamCandidate(n.buffer, kind, final)
+		if state == repairPrefix {
 			if !final && len(n.buffer) <= maxSuppressedStreamBytes {
 				break
 			}
@@ -74,8 +74,16 @@ func (n *StreamNormalizer) process(final bool) StreamOutput {
 			n.buffer = ""
 			break
 		}
+		if state == repairInvalid || end <= 0 || end > len(n.buffer) {
+			n.emit(&out, n.buffer)
+			n.buffer = ""
+			break
+		}
 		candidateText := n.buffer[:end]
-		parsed, ok := parsePayloads(payloadText)
+		ok := len(parsed) > 0
+		if !ok {
+			parsed, ok = parsePayloads(payloadText)
+		}
 		calls, valid := n.promoteParsed(parsed, ok)
 		if valid {
 			out.Calls = append(out.Calls, calls...)
@@ -137,6 +145,7 @@ const (
 	streamCandidateJSON
 	streamCandidateFence
 	streamCandidateXML
+	streamCandidateRepair
 )
 
 var streamMarkers = []struct {
@@ -163,6 +172,9 @@ func findStreamCandidateStart(text string, startsAtLineStart bool) (int, streamC
 				j += size
 			}
 			rest := text[j:]
+			if possibleRepairSyntax(rest) {
+				return i, streamCandidateRepair, true
+			}
 			for _, marker := range streamMarkers {
 				if strings.HasPrefix(rest, marker.text) {
 					return i, marker.kind, true
@@ -185,17 +197,24 @@ func findStreamCandidateStart(text string, startsAtLineStart bool) (int, streamC
 	return 0, 0, false
 }
 
-func streamCandidate(text string, kind streamCandidateKind) (end int, payloadText string, complete bool) {
+func streamCandidate(text string, kind streamCandidateKind, final bool) (end int, payloadText string, parsed []payload, state repairScanState) {
 	trimmedStart := len(text) - len(strings.TrimLeftFunc(text, unicode.IsSpace))
 	body := text[trimmedStart:]
+	if kind == streamCandidateRepair || possibleRepairSyntax(body) {
+		scan := scanRepairSyntax(body, final)
+		if scan.state == repairComplete {
+			return trimmedStart + scan.end, "", []payload{{Name: scan.name, Arguments: scan.args}}, repairComplete
+		}
+		return 0, "", nil, scan.state
+	}
 	switch kind {
 	case streamCandidatePrefix:
 		for _, marker := range streamMarkers {
 			if strings.HasPrefix(body, marker.text) {
-				return streamCandidate(text, marker.kind)
+				return streamCandidate(text, marker.kind, final)
 			}
 		}
-		return 0, "", false
+		return 0, "", nil, repairPrefix
 	case streamCandidateFence:
 		openerLen := 3
 		if strings.HasPrefix(strings.ToLower(body), "```json") {
@@ -204,20 +223,22 @@ func streamCandidate(text string, kind streamCandidateKind) (end int, payloadTex
 		if closeAt := strings.Index(body[openerLen:], "```"); closeAt >= 0 {
 			payloadStart := openerLen
 			payloadEnd := openerLen + closeAt
-			return trimmedStart + payloadEnd + 3, body[payloadStart:payloadEnd], true
+			return trimmedStart + payloadEnd + 3, body[payloadStart:payloadEnd], nil, repairComplete
 		}
 	case streamCandidateXML:
 		const open, close = "<tool_call>", "</tool_call>"
-		if closeAt := indexFold(body[len(open):], close); closeAt >= 0 {
-			payloadEnd := len(open) + closeAt
-			return trimmedStart + payloadEnd + len(close), body[len(open):payloadEnd], true
+		if len(body) >= len(open) {
+			if closeAt := indexFold(body[len(open):], close); closeAt >= 0 {
+				payloadEnd := len(open) + closeAt
+				return trimmedStart + payloadEnd + len(close), body[len(open):payloadEnd], nil, repairComplete
+			}
 		}
 	case streamCandidateJSON:
 		if jsonEnd := completeJSONValueEnd(body); jsonEnd > 0 {
-			return trimmedStart + jsonEnd, body[:jsonEnd], true
+			return trimmedStart + jsonEnd, body[:jsonEnd], nil, repairComplete
 		}
 	}
-	return 0, "", false
+	return 0, "", nil, repairPrefix
 }
 
 func completeJSONValueEnd(text string) int {
@@ -258,6 +279,13 @@ func completeJSONValueEnd(text string) int {
 }
 
 func incompleteNamesAllowedTool(text string, allowed map[string]bool) bool {
+	trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
+	if possibleRepairSyntax(trimmed) {
+		scan := scanRepairSyntax(trimmed, false)
+		if scan.name != "" && allowed[scan.name] {
+			return true
+		}
+	}
 	lower := strings.ToLower(text)
 	for name := range allowed {
 		quoted := string(rune(34)) + strings.ToLower(name) + string(rune(34))

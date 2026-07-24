@@ -547,6 +547,13 @@ type contextSessionSearcher interface {
 }
 
 func AddDoc(ctx context.Context, store Store, doc state.MemoryDoc) {
+	addDocDirect(ctx, store, doc)
+	for _, extracted := range extractModelMemoriesForStoredTurn(ctx, doc) {
+		addDocDirect(ctx, store, extracted)
+	}
+}
+
+func addDocDirect(ctx context.Context, store Store, doc state.MemoryDoc) {
 	if ctxStore, ok := any(store).(contextAdder); ok {
 		ctxStore.AddWithContext(ctx, doc)
 		return

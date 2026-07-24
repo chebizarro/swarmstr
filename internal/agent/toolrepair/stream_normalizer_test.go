@@ -33,6 +33,10 @@ func TestStreamNormalizerPromotesAcrossEveryChunkBoundary(t *testing.T) {
 		`{"name":"lookup","arguments":{"q":"x"}}`,
 		"```json\n{\"name\":\"lookup\",\"args\":{\"q\":\"x\"}}\n```",
 		"<tool_call>{\"name\":\"lookup\",\"arguments\":{\"q\":\"x\"}}</tool_call>",
+		`[tool:lookup] {"q":"x"}<|call|>`,
+		"[lookup]\n{\"q\":\"x\"}\n[/lookup]",
+		`<|channel|>commentary to=lookup code <|message|>{"q":"x"}<|call|>`,
+		`<function=lookup><parameter=q>x</parameter></function>`,
 	}
 	for _, input := range inputs {
 		for cut := 0; cut <= len(input); cut++ {
@@ -40,6 +44,57 @@ func TestStreamNormalizerPromotesAcrossEveryChunkBoundary(t *testing.T) {
 			if out.Text != "" || len(out.Calls) != 1 || out.Calls[0].Name != "lookup" || !out.Scrubbed {
 				t.Fatalf("input=%q cut=%d output=%#v", input, cut, out)
 			}
+		}
+	}
+}
+
+func TestStreamNormalizerPromotesRepairSyntaxAcrossMultipleChunks(t *testing.T) {
+	input := `<|channel|>analysis to=lookup code <|message|>{"nested":{"value":"x"},"items":[1,2]}<|call|>`
+	for first := 0; first <= len(input); first++ {
+		for second := first; second <= len(input); second += 7 {
+			out := collectNormalized(t, input, []int{first, second})
+			if out.Text != "" || len(out.Calls) != 1 || out.Calls[0].Name != "lookup" || !out.Scrubbed {
+				t.Fatalf("cuts=(%d,%d) output=%#v", first, second, out)
+			}
+		}
+	}
+}
+
+func TestStreamNormalizerReplaysHarmonyPrefixProse(t *testing.T) {
+	input := "analysis is ordinary prose"
+	out := collectNormalized(t, input, []int{2, 8, 12})
+	if out.Text != input || len(out.Calls) != 0 || out.Scrubbed {
+		t.Fatalf("output=%#v", out)
+	}
+}
+
+func TestStreamNormalizerScrubsIncompleteXMLKnownTool(t *testing.T) {
+	n := NewStreamNormalizer([]ToolDefinition{{Name: "lookup"}})
+	if out := n.Feed(`<function=lookup><parameter=q>SECRET`); out.Text != "" {
+		t.Fatalf("partial leaked: %#v", out)
+	}
+	out := n.Flush()
+	if out.Text != "" || !out.Scrubbed || len(out.Calls) != 0 {
+		t.Fatalf("flush=%#v", out)
+	}
+}
+
+func TestStreamNormalizerScrubsIncompleteKnownRepairSyntax(t *testing.T) {
+	inputs := []string{
+		`[tool:lookup] {"q":"SECRET"`,
+		"[lookup]\n{\"q\":\"SECRET\"",
+		`<|channel|>commentary to=lookup code <|message|>{"q":"SECRET"`,
+	}
+	for _, input := range inputs {
+		n := NewStreamNormalizer([]ToolDefinition{{Name: "lookup"}})
+		for _, chunk := range []string{input[:len(input)/2], input[len(input)/2:]} {
+			if out := n.Feed(chunk); out.Text != "" || len(out.Calls) != 0 {
+				t.Fatalf("input=%q partial leaked: %#v", input, out)
+			}
+		}
+		out := n.Flush()
+		if out.Text != "" || !out.Scrubbed || len(out.Calls) != 0 {
+			t.Fatalf("input=%q flush=%#v", input, out)
 		}
 	}
 }

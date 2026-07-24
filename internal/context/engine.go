@@ -185,6 +185,15 @@ type BootstrapResult struct {
 
 // Engine is the core context management interface.
 // Implementations must be safe for concurrent use.
+// SessionEndObserverRegistrar is an optional engine lifecycle contract. Runtime
+// owners register after session_start; engines invoke the observer exactly once
+// when an existing session is bootstrapped/reset or when the engine closes.
+// This keeps lifecycle signaling attached to the session-owning context engine
+// rather than to individual turns.
+type SessionEndObserverRegistrar interface {
+	RegisterSessionEndObserver(sessionID string, observer func(context.Context, string))
+}
+
 type Engine interface {
 	// Ingest records a new message from the conversation.
 	Ingest(ctx context.Context, sessionID string, msg Message) (IngestResult, error)
@@ -269,6 +278,7 @@ type WindowedEngine struct {
 	promptCacheLast map[string]string
 	maxMsgs         int
 	activeRecall    ActiveRecallProvider
+	sessionEnd      map[string]func(context.Context, string)
 }
 
 // NewWindowedEngine creates a WindowedEngine keeping up to maxMsgs messages per session.
@@ -276,7 +286,7 @@ func NewWindowedEngine(maxMsgs int) *WindowedEngine {
 	if maxMsgs <= 0 {
 		maxMsgs = 50
 	}
-	return &WindowedEngine{sessions: map[string][]Message{}, summaries: map[string]string{}, promptCacheLast: map[string]string{}, maxMsgs: maxMsgs}
+	return &WindowedEngine{sessions: map[string][]Message{}, summaries: map[string]string{}, promptCacheLast: map[string]string{}, maxMsgs: maxMsgs, sessionEnd: map[string]func(context.Context, string){}}
 }
 
 func (e *WindowedEngine) SetActiveRecallProvider(provider ActiveRecallProvider) {
@@ -385,9 +395,13 @@ func latestUserMessage(messages []Message) (Message, bool) {
 	return Message{}, false
 }
 
-func (e *WindowedEngine) Bootstrap(_ context.Context, sessionID string, messages []Message) (BootstrapResult, error) {
+func (e *WindowedEngine) Bootstrap(ctx context.Context, sessionID string, messages []Message) (BootstrapResult, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	observer := e.sessionEnd[sessionID]
+	_, existed := e.sessions[sessionID]
+	if existed {
+		delete(e.sessionEnd, sessionID)
+	}
 	msgs := make([]Message, len(messages))
 	copy(msgs, messages)
 	if len(msgs) > e.maxMsgs {
@@ -396,10 +410,35 @@ func (e *WindowedEngine) Bootstrap(_ context.Context, sessionID string, messages
 	e.sessions[sessionID] = msgs
 	delete(e.summaries, sessionID)
 	delete(e.promptCacheLast, sessionID)
+	e.mu.Unlock()
+	if existed && observer != nil {
+		observer(ctx, "context_reset")
+	}
 	return BootstrapResult{Bootstrapped: true, ImportedMessages: len(msgs)}, nil
 }
 
-func (e *WindowedEngine) Close() error { return nil }
+func (e *WindowedEngine) RegisterSessionEndObserver(sessionID string, observer func(context.Context, string)) {
+	if strings.TrimSpace(sessionID) == "" || observer == nil {
+		return
+	}
+	e.mu.Lock()
+	e.sessionEnd[sessionID] = observer
+	e.mu.Unlock()
+}
+
+func (e *WindowedEngine) Close() error {
+	e.mu.Lock()
+	observers := make([]func(context.Context, string), 0, len(e.sessionEnd))
+	for _, observer := range e.sessionEnd {
+		observers = append(observers, observer)
+	}
+	e.sessionEnd = map[string]func(context.Context, string){}
+	e.mu.Unlock()
+	for _, observer := range observers {
+		observer(context.Background(), "context_engine_close")
+	}
+	return nil
+}
 
 // init registers built-in engines.
 func init() {

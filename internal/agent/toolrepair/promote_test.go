@@ -40,6 +40,53 @@ func TestPromoteMultipleCalls(t *testing.T) {
 	}
 }
 
+func TestPromoteOpenClawRepairSyntaxes(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want map[string]any
+	}{
+		{name: "tool bracket", text: `[tool:read_file] {"path":"main.go"}<|call|>`, want: map[string]any{"path": "main.go"}},
+		{name: "named bracket", text: "[read_file]\n{\"path\":\"main.go\"}\n[/read_file]", want: map[string]any{"path": "main.go"}},
+		{name: "harmony", text: `<|channel|>analysis to=read_file code <|message|>{"path":"main.go"}<|call|>`, want: map[string]any{"path": "main.go"}},
+		{name: "xml function", text: `<function=read_file><parameter=path>main.go</parameter></function>`, want: map[string]any{"path": "main.go"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cleaned, calls, repaired := Promote("Before\n"+tc.text+"\nAfter", defs())
+			if !repaired || len(calls) != 1 || calls[0].Name != "read_file" || calls[0].Args["path"] != tc.want["path"] {
+				t.Fatalf("repair=%v calls=%#v", repaired, calls)
+			}
+			if cleaned != "Before\n\nAfter" {
+				t.Fatalf("cleaned=%q", cleaned)
+			}
+		})
+	}
+}
+
+func TestPromoteRepairsStringEncodedArguments(t *testing.T) {
+	text := "<tool_call>{\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"main.go\\\"}\"}}</tool_call>"
+	cleaned, calls, repaired := Promote(text, defs())
+	if !repaired || cleaned != "" || len(calls) != 1 || calls[0].Args["path"] != "main.go" {
+		t.Fatalf("cleaned=%q repaired=%v calls=%#v", cleaned, repaired, calls)
+	}
+}
+
+func TestPromoteRepairSyntaxFalsePositivesReplay(t *testing.T) {
+	for _, text := range []string{
+		"Use [read_file] inline as documentation.",
+		"analysis is ordinary prose",
+		"[unknown]\n{\"path\":\"main.go\"}\n[/unknown]",
+		"[read_file]\n{not-json}\n[/read_file]",
+		"<function=read_file><parameter=path>unterminated",
+	} {
+		cleaned, calls, repaired := Promote(text, defs())
+		if repaired || len(calls) != 0 || cleaned != text {
+			t.Fatalf("text=%q cleaned=%q repaired=%v calls=%#v", text, cleaned, repaired, calls)
+		}
+	}
+}
+
 func TestPromoteUnknownToolRejected(t *testing.T) {
 	text := "<tool_call>{\"name\":\"shell\",\"arguments\":{\"cmd\":\"rm -rf /\"}}</tool_call>"
 	cleaned, calls, repaired := Promote(text, defs())

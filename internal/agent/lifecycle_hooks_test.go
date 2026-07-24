@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	ctxengine "metiq/internal/context"
 	pluginhooks "metiq/internal/plugins/hooks"
 	pluginregistry "metiq/internal/plugins/registry"
 )
@@ -68,6 +69,40 @@ func TestProviderRuntimeLifecycleHooksOrderingAndIdentity(t *testing.T) {
 	}
 	if sessionEnd.SessionID != "sess" || sessionEnd.AgentID != "agent-a" || sessionEnd.Reason != "closed" {
 		t.Fatalf("sessionEnd=%#v", sessionEnd)
+	}
+}
+
+func TestProviderRuntimeSessionEndsAtContextResetAndClose(t *testing.T) {
+	invoker := pluginhooks.NewHookInvoker(nil, nil)
+	var starts int
+	var reasons []string
+	invoker.RegisterNative(pluginregistry.HookSessionStart, "start", 1, func(context.Context, any) (any, error) {
+		starts++
+		return nil, nil
+	})
+	invoker.RegisterNative(pluginregistry.HookSessionEnd, "end", 1, func(_ context.Context, payload any) (any, error) {
+		reasons = append(reasons, payload.(pluginhooks.SessionEndEvent).Reason)
+		return nil, nil
+	})
+
+	engine := ctxengine.NewWindowedEngine(10)
+	runtime, _ := NewProviderRuntime(EchoProvider{}, nil)
+	turn := Turn{SessionID: "sess", TurnID: "turn-1", UserText: "hello", ToolPolicyAgentID: "agent-a", HookInvoker: invoker, ContextEngine: engine}
+	if _, err := runtime.ProcessTurn(context.Background(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Bootstrap(context.Background(), "sess", nil); err != nil {
+		t.Fatal(err)
+	}
+	turn.TurnID = "turn-2"
+	if _, err := runtime.ProcessTurn(context.Background(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 2 || len(reasons) != 2 || reasons[0] != "context_reset" || reasons[1] != "context_engine_close" {
+		t.Fatalf("starts=%d reasons=%#v", starts, reasons)
 	}
 }
 

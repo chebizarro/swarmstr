@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -21,15 +22,26 @@ type ToolCall struct {
 }
 
 type candidate struct {
-	start int
-	end   int
-	text  string
+	start  int
+	end    int
+	text   string
+	parsed []payload
 }
 
 type payload struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
 	Args      map[string]any `json:"args"`
+}
+
+type rawPayload struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+	Args      json.RawMessage `json:"args"`
+	Function  *struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	} `json:"function"`
 }
 
 var (
@@ -54,7 +66,10 @@ func Promote(text string, defs []ToolDefinition) (cleanedText string, calls []To
 	var promoted []ToolCall
 	var accepted []candidate
 	for _, c := range candidates {
-		parsed, ok := parsePayloads(c.text)
+		parsed, ok := c.parsed, len(c.parsed) > 0
+		if !ok {
+			parsed, ok = parsePayloads(c.text)
+		}
 		if !ok || len(parsed) == 0 {
 			continue
 		}
@@ -99,6 +114,26 @@ func allowedTools(defs []ToolDefinition) map[string]bool {
 
 func collectCandidates(text string) []candidate {
 	var out []candidate
+	for index := 0; index < len(text); {
+		lineStart := index == 0 || text[index-1] == '\n' || text[index-1] == '\r'
+		if !lineStart {
+			index++
+			continue
+		}
+		start := index
+		for start < len(text) && text[start] != '\n' && text[start] != '\r' && (text[start] == ' ' || text[start] == '\t') {
+			start++
+		}
+		if possibleRepairSyntax(text[start:]) {
+			scan := scanRepairSyntax(text[start:], true)
+			if scan.state == repairComplete && scan.end > 0 {
+				out = append(out, candidate{start: index, end: start + scan.end, text: text[start : start+scan.end], parsed: []payload{{Name: scan.name, Arguments: scan.args}}})
+				index = start + scan.end
+				continue
+			}
+		}
+		index++
+	}
 	for _, loc := range fencedBlockRE.FindAllStringSubmatchIndex(text, -1) {
 		if len(loc) >= 4 {
 			out = append(out, candidate{start: loc[0], end: loc[1], text: text[loc[2]:loc[3]]})
@@ -136,26 +171,66 @@ func parsePayloads(raw string) ([]payload, bool) {
 	if trimmed == "" {
 		return nil, false
 	}
-	var one payload
-	if err := json.Unmarshal([]byte(trimmed), &one); err == nil && one.Name != "" {
-		return []payload{one}, true
+	var one rawPayload
+	if err := json.Unmarshal([]byte(trimmed), &one); err == nil {
+		if parsed, ok := normalizeRawPayload(one); ok {
+			return []payload{parsed}, true
+		}
 	}
-	var many []payload
+	var many []rawPayload
 	if err := json.Unmarshal([]byte(trimmed), &many); err == nil {
-		for _, p := range many {
-			if p.Name == "" {
+		out := make([]payload, 0, len(many))
+		for _, rawPayload := range many {
+			parsed, ok := normalizeRawPayload(rawPayload)
+			if !ok {
 				return nil, false
 			}
+			out = append(out, parsed)
 		}
-		return many, len(many) > 0
+		return out, len(out) > 0
 	}
 	return nil, false
+}
+
+func normalizeRawPayload(raw rawPayload) (payload, bool) {
+	name := strings.TrimSpace(raw.Name)
+	arguments := raw.Arguments
+	if raw.Function != nil {
+		if name == "" {
+			name = strings.TrimSpace(raw.Function.Name)
+		}
+		if len(arguments) == 0 {
+			arguments = raw.Function.Arguments
+		}
+	}
+	if name == "" {
+		return payload{}, false
+	}
+	if len(arguments) == 0 {
+		arguments = raw.Args
+	}
+	args := map[string]any{}
+	if len(arguments) > 0 && string(arguments) != "null" {
+		if err := json.Unmarshal(arguments, &args); err != nil {
+			var encoded string
+			if json.Unmarshal(arguments, &encoded) != nil || json.Unmarshal([]byte(encoded), &args) != nil {
+				return payload{}, false
+			}
+		}
+	}
+	return payload{Name: name, Arguments: args}, true
 }
 
 func scrub(text string, blocks []candidate) string {
 	if len(blocks) == 0 {
 		return text
 	}
+	sort.SliceStable(blocks, func(i, j int) bool {
+		if blocks[i].start == blocks[j].start {
+			return blocks[i].end > blocks[j].end
+		}
+		return blocks[i].start < blocks[j].start
+	})
 	var b strings.Builder
 	cursor := 0
 	for _, c := range blocks {

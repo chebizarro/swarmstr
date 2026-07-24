@@ -79,11 +79,16 @@ type Turn struct {
 	ContextEngine ctxengine.Engine
 	// Executor is the tool executor for agentic loops inside providers.
 	Executor ToolExecutor
+	// MaxOutputTokens constrains provider generation for this turn. Zero leaves
+	// the provider/model default in effect. Runtime owners such as subagent
+	// orchestration use this to propagate hard execution budgets into provider
+	// max-token hints instead of rejecting over-budget responses post hoc.
+	MaxOutputTokens int
 	// ThinkingBudget enables extended thinking for providers that support it.
 	// 0 means disabled; a positive value specifies the token budget for the
 	// model's internal reasoning phase (Anthropic: budget_tokens in the
-	// thinking config block).  The caller should ensure MaxTokens (if set) is
-	// strictly greater than ThinkingBudget.
+	// thinking config block).  The caller should ensure MaxOutputTokens (if set)
+	// is strictly greater than ThinkingBudget.
 	ThinkingBudget int
 	// ToolEventSink receives start/progress/result/error events emitted by the
 	// shared tool loop. Leave nil when runtime tool events are not needed.

@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 
+	ctxengine "metiq/internal/context"
 	pluginhooks "metiq/internal/plugins/hooks"
 	pluginregistry "metiq/internal/plugins/registry"
 )
@@ -111,6 +112,14 @@ func (r *ProviderRuntime) ensureSessionStarted(ctx context.Context, turn Turn) {
 		log.Printf("session_start hook error session=%s err=%v", turn.SessionID, err)
 	}
 	r.lifecycle.sessions[turn.SessionID] = true
+	if registrar, ok := turn.ContextEngine.(ctxengine.SessionEndObserverRegistrar); ok {
+		sessionID := turn.SessionID
+		agentID := turn.ToolPolicyAgentID
+		invoker := turn.HookInvoker
+		registrar.RegisterSessionEndObserver(sessionID, func(endCtx context.Context, reason string) {
+			r.EndSession(endCtx, sessionID, agentID, reason, invoker)
+		})
+	}
 }
 
 // EndSession emits session_end once for a session previously observed by this

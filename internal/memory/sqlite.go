@@ -372,11 +372,12 @@ func (b *SQLiteBackend) Search(query string, limit int) []IndexedMemory {
 		return nil
 	}
 
-	results := b.searchFTS(ftsQuery, "", limit)
-
-	b.mu.Lock()
-	b.setCacheLocked(cacheKey, results)
-	b.mu.Unlock()
+	results, ok := b.searchFTSSelfHealing(context.Background(), ftsQuery, "", limit)
+	if ok {
+		b.mu.Lock()
+		b.setCacheLocked(cacheKey, results)
+		b.mu.Unlock()
+	}
 
 	return cloneMemories(results)
 }
@@ -404,22 +405,79 @@ func (b *SQLiteBackend) SearchSession(sessionID, query string, limit int) []Inde
 		return b.ListSession(sessionID, limit)
 	}
 
-	results := b.searchFTS(ftsQuery, sessionID, limit)
-
-	b.mu.Lock()
-	b.setCacheLocked(cacheKey, results)
-	b.mu.Unlock()
+	results, ok := b.searchFTSSelfHealing(context.Background(), ftsQuery, sessionID, limit)
+	if ok {
+		b.mu.Lock()
+		b.setCacheLocked(cacheKey, results)
+		b.mu.Unlock()
+	}
 
 	return cloneMemories(results)
 }
 
-// searchFTS executes the FTS5 search query.
-func (b *SQLiteBackend) searchFTS(ftsQuery, sessionID string, limit int) []IndexedMemory {
+// searchFTSSelfHealing executes a live query, checks empty-result drift, and
+// performs at most one bounded repair/retry. Failed queries are never cached.
+func (b *SQLiteBackend) searchFTSSelfHealing(ctx context.Context, ftsQuery, sessionID string, limit int) ([]IndexedMemory, bool) {
+	results, queryErr := b.searchFTS(ctx, ftsQuery, sessionID, limit)
+	if queryErr == nil && len(results) > 0 {
+		return results, true
+	}
+
+	_, healthErr := b.CheckFTSHealth(ctx)
+	if queryErr == nil && healthErr == nil {
+		return results, true
+	}
+
+	// A missing/corrupt virtual table can make both the query and health check
+	// fail. Re-running idempotent schema creation restores the projection shell
+	// before targeted/session repair or authoritative-table recovery.
+	if queryErr != nil {
+		b.mu.Lock()
+		schemaErr := b.initSchema()
+		b.mu.Unlock()
+		if schemaErr != nil {
+			b.recordFTSRuntimeFailure(schemaErr)
+			return nil, false
+		}
+	}
+
+	var repairErr error
+	if strings.TrimSpace(sessionID) != "" {
+		_, repairErr = b.ReindexFTSSession(ctx, sessionID)
+	}
+	if strings.TrimSpace(sessionID) == "" || repairErr != nil {
+		_, repairErr = b.EnsureFTSHealthy(ctx)
+	}
+	if repairErr != nil {
+		b.recordFTSRuntimeFailure(repairErr)
+		return nil, false
+	}
+
+	results, queryErr = b.searchFTS(ctx, ftsQuery, sessionID, limit)
+	if queryErr != nil {
+		b.recordFTSRuntimeFailure(queryErr)
+		return nil, false
+	}
+	return results, true
+}
+
+func (b *SQLiteBackend) recordFTSRuntimeFailure(err error) {
+	if err == nil {
+		return
+	}
+	b.mu.Lock()
+	b.ftsHealth = FTSHealth{State: FTSStateDegraded, CheckedAtUnix: time.Now().Unix(), LastError: err.Error()}
+	b.clearCacheLocked()
+	b.mu.Unlock()
+}
+
+// searchFTS executes one FTS5 search query without repair.
+func (b *SQLiteBackend) searchFTS(ctx context.Context, ftsQuery, sessionID string, limit int) ([]IndexedMemory, error) {
 	var rows *sql.Rows
 	var err error
 
 	if sessionID != "" {
-		rows, err = b.db.Query(`
+		rows, err = b.db.QueryContext(ctx, `
 			SELECT c.id, c.session_id, c.role, c.topic, c.text, c.keywords, c.unix,
 			       c.type, c.goal_id, c.task_id, c.run_id, c.episode_kind,
 			       c.confidence, c.source, c.reviewed_at, c.reviewed_by, c.expires_at,
@@ -432,7 +490,7 @@ func (b *SQLiteBackend) searchFTS(ftsQuery, sessionID string, limit int) []Index
 			LIMIT ?
 		`, ftsQuery, sessionID, limit)
 	} else {
-		rows, err = b.db.Query(`
+		rows, err = b.db.QueryContext(ctx, `
 			SELECT c.id, c.session_id, c.role, c.topic, c.text, c.keywords, c.unix,
 			       c.type, c.goal_id, c.task_id, c.run_id, c.episode_kind,
 			       c.confidence, c.source, c.reviewed_at, c.reviewed_by, c.expires_at,
@@ -447,7 +505,7 @@ func (b *SQLiteBackend) searchFTS(ftsQuery, sessionID string, limit int) []Index
 	}
 
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -705,7 +763,7 @@ func (b *SQLiteBackend) BackendStatus() BackendStatus {
 }
 
 // scanRows scans result rows with rank column.
-func (b *SQLiteBackend) scanRows(rows *sql.Rows) []IndexedMemory {
+func (b *SQLiteBackend) scanRows(rows *sql.Rows) ([]IndexedMemory, error) {
 	var results []IndexedMemory
 	for rows.Next() {
 		var m IndexedMemory
@@ -720,7 +778,7 @@ func (b *SQLiteBackend) scanRows(rows *sql.Rows) []IndexedMemory {
 			&rank,
 		)
 		if err != nil {
-			continue
+			return nil, err
 		}
 
 		if keywords.Valid {
@@ -729,7 +787,10 @@ func (b *SQLiteBackend) scanRows(rows *sql.Rows) []IndexedMemory {
 
 		results = append(results, m)
 	}
-	return results
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // scanRowsNoRank scans result rows without rank column.
