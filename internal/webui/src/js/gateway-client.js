@@ -168,6 +168,9 @@
       case 'board.changed':
         handleBoardChanged(payload);
         break;
+      case 'mcp.app.viewCreated':
+        handleMcpAppViewCreated(payload);
+        break;
     }
   }
 
@@ -205,7 +208,7 @@
                 if (!Array.isArray(descriptors) || descriptors.length === 0) throw new Error('gateway does not advertise method descriptors');
                 gatewayMethodDescriptors = new Map(descriptors.filter(item => item && item.name).map(item => [item.name, item]));
                 gatewayScopes = new Set((hello.auth && hello.auth.scopes) || []);
-                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'question.requested', 'question.resolved', 'task.suggestion', 'board.changed'];
+                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'question.requested', 'question.resolved', 'task.suggestion', 'board.changed', 'mcp.app.viewCreated'];
                 const events = wanted.filter(name => advertised.has(name));
                 await callMethod('events.subscribe', { events });
                 await reconcilePendingApprovals();

@@ -78,6 +78,14 @@ const TOKEN   = '{{.Token}}';
   // Boards view state.
   let boardsSessionKey = null;
   let boardsRefreshTimer = null;
+  // Board widget interactivity: the parent page owns the WS, so sandboxed
+  // widget frames reach the ticket-scoped gateway methods only through the
+  // postMessage relay. boardWidgetFrames binds each live iframe's
+  // contentWindow to the view ticket minted for it by board.get; the relay
+  // injects that ticket (never one supplied by widget code).
+  let boardWidgetFrames = [];
+  let boardBridgeInstalled = false;
+  let boardsTicketTimer = null;
   let activeRun = false;
   let activeRunSessionID = null;
   let toolCards = {};

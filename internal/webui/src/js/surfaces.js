@@ -336,12 +336,130 @@
     await Promise.all([loadTaskSuggestionsCard(), loadPendingQuestionsCard()]);
   }
 
-  // ── Boards view: widget frame host ────────────────────────────────────────
+  // ── Boards view: widget frame host + ticket postMessage bridge ────────────
+  // The parent page owns the WebSocket, so a sandboxed widget frame (opaque
+  // origin) reaches the ticket-scoped gateway methods only by posting a
+  // request to this window. The relay matches the message's source window to a
+  // registered frame, injects THAT frame's view ticket (never a ticket from
+  // widget code), calls the gateway, and posts the reply back to the frame.
+  //   widget → host : { source:'metiq-board-widget', type:'request', id, method, params }
+  //   host   → widget: { source:'metiq-board-host',  type:'response', id, ok, result|error }
+  // method ∈ { 'prompt.authorize' | 'data.read' | 'action' | 'event' }.
+  function boardBridgeDispatch(entry, msg) {
+    const params = (msg && msg.params && typeof msg.params === 'object') ? msg.params : {};
+    if (msg.method === 'prompt.authorize') {
+      return callMethod('board.prompt.authorize', { ticket: entry.ticket });
+    }
+    if (msg.method === 'data.read') {
+      return callMethod('board.data.read', { ticket: entry.ticket, bindingId: String(params.bindingId || ''), params: params.params || {} });
+    }
+    if (msg.method === 'action') {
+      const call = { ticket: entry.ticket, action: String(params.action || '') };
+      if (params.jobId) call.jobId = String(params.jobId);
+      if (params.params) call.params = params.params;
+      return callMethod('board.action', call);
+    }
+    if (msg.method === 'event') {
+      return callMethod('board.event', { ticket: entry.ticket, payload: params.payload !== undefined ? params.payload : params });
+    }
+    return Promise.reject({ message: 'unknown board bridge method: ' + (msg && msg.method) });
+  }
+
+  async function onBoardWidgetMessage(event) {
+    const msg = event.data;
+    if (!msg || msg.source !== 'metiq-board-widget' || msg.type !== 'request' || typeof msg.id !== 'string') return;
+    const entry = boardWidgetFrames.find(e => e.frame.contentWindow && e.frame.contentWindow === event.source);
+    if (!entry || !entry.ticket) return; // unknown/foreign frame or no minted ticket
+    const reply = (ok, payload) => {
+      if (!event.source) return;
+      const body = { source: 'metiq-board-host', type: 'response', id: msg.id, ok };
+      if (ok) body.result = payload;
+      else body.error = { message: (payload && payload.message) ? payload.message : String((payload && payload.error) || payload || 'request failed') };
+      try { event.source.postMessage(body, '*'); } catch (e) { /* frame gone */ }
+    };
+    try { reply(true, await boardBridgeDispatch(entry, msg)); }
+    catch (err) { reply(false, err); }
+  }
+
+  function installBoardBridge() {
+    if (boardBridgeInstalled) return;
+    boardBridgeInstalled = true;
+    window.addEventListener('message', onBoardWidgetMessage);
+  }
+
+  // mcp.app.viewCreated fires when an MCP tool call mints an app view. Surface
+  // it, and refresh the board when it targets the session on screen so a
+  // freshly interactive mcp-app widget can be re-minted.
+  function handleMcpAppViewCreated(payload) {
+    if (!payload) return;
+    const origin = [payload.serverName, payload.toolName].filter(Boolean).join('/');
+    addMsg('MCP app view created' + (origin ? ' (' + origin + ')' : '') + (payload.viewId ? ' · ' + payload.viewId : ''), 'system');
+    if (mainView === 'boards' && boardsSessionKey && payload.sessionKey === boardsSessionKey) {
+      if (boardsRefreshTimer) clearTimeout(boardsRefreshTimer);
+      boardsRefreshTimer = setTimeout(() => { if (mainView === 'boards') loadBoardSnapshot(); }, 400);
+    }
+  }
+
   function handleBoardChanged(payload) {
     if (!payload || mainView !== 'boards') return;
     if (boardsSessionKey && payload.sessionKey !== boardsSessionKey) return;
     if (boardsRefreshTimer) clearTimeout(boardsRefreshTimer);
     boardsRefreshTimer = setTimeout(() => { if (mainView === 'boards') loadBoardSnapshot(); }, 400);
+  }
+
+  // board.widget.grant approval UX for pending widgets: show the declared
+  // capability surface (tools + net origins) and let the operator grant or
+  // reject at the widget's exact revision/instance.
+  function renderBoardWidgetGrant(row, widget) {
+    const caps = (widget.declaredSummary && widget.declaredSummary.length)
+      ? widget.declaredSummary
+      : ((widget.declared && widget.declared.tools) || []);
+    const origins = (widget.declared && widget.declared.netOrigins) || [];
+    const desc = document.createElement('div'); desc.className = 'sub';
+    desc.textContent = 'Requests: ' + (caps.length ? caps.join(', ') : 'no tools') + (origins.length ? ' · origins: ' + origins.join(', ') : '');
+    row.appendChild(desc);
+    const actions = document.createElement('div'); actions.className = 'action-row';
+    const decide = async (decision, btn, other) => {
+      btn.disabled = true; other.disabled = true;
+      const res = await callSafe('board.widget.grant', { sessionKey: boardsSessionKey, name: widget.name, decision, revision: widget.revision, instanceId: widget.instanceId });
+      if (res.error) { btn.textContent = truncate(res.error, 20); btn.disabled = false; other.disabled = false; return; }
+      loadBoardSnapshot();
+    };
+    const grant = document.createElement('button'); grant.className = 'mini-btn'; grant.textContent = 'Grant';
+    const reject = document.createElement('button'); reject.className = 'mini-btn'; reject.textContent = 'Reject';
+    grant.addEventListener('click', () => decide('granted', grant, reject));
+    reject.addEventListener('click', () => decide('rejected', reject, grant));
+    actions.append(grant, reject); row.appendChild(actions);
+  }
+
+  // mcp-app widgets carry no frame in board.get; re-mint an interactive view
+  // via board.widget.appView (read-only unless the pinned view was interactive
+  // and granted). Re-minting also refreshes a view gone stale after a re-put.
+  function renderBoardWidgetAppView(row, widget) {
+    const status = document.createElement('div'); status.className = 'sub';
+    status.textContent = 'MCP App widget — mint an interactive view.';
+    row.appendChild(status);
+    const actions = document.createElement('div'); actions.className = 'action-row';
+    const mint = document.createElement('button'); mint.className = 'mini-btn'; mint.textContent = 'Mint / re-mint app view';
+    mint.addEventListener('click', async () => {
+      mint.disabled = true; status.textContent = 'Minting…';
+      const res = await callSafe('board.widget.appView', { sessionKey: boardsSessionKey, name: widget.name, revision: widget.revision, instanceId: widget.instanceId });
+      mint.disabled = false;
+      if (res.error) { status.textContent = 'appView failed: ' + res.error; return; }
+      status.textContent = 'View ' + truncate(res.viewId || '', 32) + ' · expires ' + (res.expiresAtMs ? new Date(res.expiresAtMs).toLocaleTimeString() : '—');
+    });
+    actions.appendChild(mint); row.appendChild(actions);
+  }
+
+  function renderBoardWidgetFrame(row, widget) {
+    installBoardBridge();
+    const frame = document.createElement('iframe');
+    frame.className = 'board-frame';
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.src = widget.frameUrl;
+    frame.title = widget.title || widget.name;
+    row.appendChild(frame);
+    boardWidgetFrames.push({ frame, name: widget.name, ticket: widget.viewTicket, revision: widget.revision, instanceId: widget.instanceId });
   }
 
   async function loadBoardSnapshot() {
@@ -350,6 +468,10 @@
     const host = card.querySelector('.mgmt-list-host');
     if (!host) return;
     const res = await callSafe('board.get', { sessionKey: boardsSessionKey });
+    // Rebuild the frame→ticket registry from the fresh snapshot; stale entries
+    // (old tickets, removed frames) must never linger in the relay.
+    boardWidgetFrames = [];
+    if (boardsTicketTimer) { clearTimeout(boardsTicketTimer); boardsTicketTimer = null; }
     host.innerHTML = '';
     if (res.error) { host.innerHTML = `<div class="sidebar-empty">${escapeHTML(res.error)}</div>`; return; }
     const header = document.createElement('div');
@@ -364,19 +486,22 @@
       host.appendChild(empty);
       return;
     }
+    let minTicketTtl = 0;
     widgets.forEach(widget => {
       const row = document.createElement('div');
       row.className = 'board-widget';
       const title = document.createElement('div');
       title.innerHTML = `<strong>${escapeHTML(widget.title || widget.name)}</strong> <span class="sub">${escapeHTML(widget.contentKind || '')} · grant: ${escapeHTML(widget.grantState || 'none')}</span>`;
       row.appendChild(title);
-      if (widget.frameUrl) {
-        const frame = document.createElement('iframe');
-        frame.className = 'board-frame';
-        frame.setAttribute('sandbox', 'allow-scripts');
-        frame.src = widget.frameUrl;
-        frame.title = widget.title || widget.name;
-        row.appendChild(frame);
+      if (widget.grantState === 'pending') {
+        renderBoardWidgetGrant(row, widget);
+      } else if (widget.grantState === 'rejected') {
+        const note = document.createElement('div'); note.className = 'sub'; note.textContent = 'Grant rejected — no view is rendered.'; row.appendChild(note);
+      } else if (widget.contentKind === 'mcp-app') {
+        renderBoardWidgetAppView(row, widget);
+      } else if (widget.frameUrl) {
+        renderBoardWidgetFrame(row, widget);
+        if (widget.viewTicketTtlMs && (!minTicketTtl || widget.viewTicketTtlMs < minTicketTtl)) minTicketTtl = widget.viewTicketTtlMs;
       } else {
         const note = document.createElement('div');
         note.className = 'sub';
@@ -385,10 +510,17 @@
       }
       host.appendChild(row);
     });
+    // View tickets expire on their own TTL; refresh the snapshot before the
+    // earliest one lapses so bridged calls keep resolving without a manual
+    // reload (board.changed already covers re-put/grant churn).
+    if (minTicketTtl > 0) {
+      const delay = Math.max(15000, minTicketTtl - 15000);
+      boardsTicketTimer = setTimeout(() => { if (mainView === 'boards') loadBoardSnapshot(); }, delay);
+    }
   }
 
   async function showBoardsView(token) {
-    const { grid } = beginManagementView('Boards', 'Session boards: pinned widgets rendered through the sandboxed frame host.');
+    const { grid } = beginManagementView('Boards', 'Session boards: sandboxed widget frames bridged to the gateway ticket methods, mcp-app views, and grant approvals.');
     const sessionsRes = await callSafe('sessions.list', { limit: 100 });
     if (!isViewCurrent('boards', token)) return;
     const pickerCard = addMgmtCard(grid, 'Session');
