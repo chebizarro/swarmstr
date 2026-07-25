@@ -1,8 +1,11 @@
 package ws
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
+
+	"metiq/internal/gateway/protocol"
 )
 
 // ─── captureEmitter ────────────────────────────────────────────────────────────
@@ -132,6 +135,56 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 	for _, name := range required {
 		if _, ok := set[name]; !ok {
 			t.Errorf("AllPushEvents missing %q", name)
+		}
+	}
+}
+
+// TestQuestionAndTaskSuggestionEventsSubscribeAndDeliver guards the catalog
+// entries for the daemon-emitted question/task-suggestion events
+// (swarmstr-j5dq): events.subscribe rejects names outside the advertised
+// catalog, so dropping them from AllPushEvents silently disables the Web UI's
+// live handlers. The test drives the real subscribe path against the
+// production catalog and asserts each event is accepted and delivered.
+func TestQuestionAndTaskSuggestionEventsSubscribeAndDeliver(t *testing.T) {
+	events := []string{EventQuestionRequested, EventQuestionResolved, EventTaskSuggestion}
+	c := &client{
+		id:            "c1",
+		subscriptions: map[string]struct{}{},
+		eventQueue:    make(chan any, 8),
+		eventDone:     make(chan struct{}),
+	}
+	r := &Runtime{
+		opts:         RuntimeOptions{Events: AllPushEvents},
+		clients:      map[string]*client{"c1": c},
+		chatCoalesce: map[string]*chatChunkCoalescer{},
+	}
+
+	params, err := json.Marshal(map[string]any{"events": events})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	handled, _, shape := r.handleInternalRequest(c, protocol.RequestFrame{Method: MethodEventsSubscribe, Params: params})
+	if !handled || shape != nil {
+		t.Fatalf("events.subscribe rejected question/task-suggestion events: handled=%v shape=%+v", handled, shape)
+	}
+
+	for _, name := range events {
+		if !c.isSubscribed(name) {
+			t.Errorf("client not subscribed to %q after events.subscribe", name)
+			continue
+		}
+		r.Broadcast(name, map[string]any{"id": "x"})
+		select {
+		case frame := <-c.eventQueue:
+			m, ok := frame.(map[string]any)
+			if !ok {
+				t.Fatalf("expected map frame for %q, got %T", name, frame)
+			}
+			if m["event"] != name {
+				t.Errorf("delivered event = %v, want %q", m["event"], name)
+			}
+		default:
+			t.Errorf("expected %q broadcast delivered to subscribed client", name)
 		}
 	}
 }

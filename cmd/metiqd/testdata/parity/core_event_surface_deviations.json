@@ -36,6 +36,9 @@
     "terminal.data",
     "terminal.exit",
     "board.changed",
-    "mcp.app.viewCreated"
+    "mcp.app.viewCreated",
+    "question.requested",
+    "question.resolved",
+    "task.suggestion"
   ]
 }
