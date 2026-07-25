@@ -211,6 +211,12 @@ var exactMethodScopes = map[string]string{
 	MethodTerminalOpen:                protocol.MethodScopeOperatorAdmin,
 	MethodTerminalInput:               protocol.MethodScopeOperatorAdmin,
 	MethodTerminalResize:              protocol.MethodScopeOperatorAdmin,
+	MethodTerminalAttach:              protocol.MethodScopeOperatorAdmin,
+	MethodTerminalList:                protocol.MethodScopeOperatorAdmin,
+	MethodTerminalText:                protocol.MethodScopeOperatorAdmin,
+	MethodTerminalUpload:              protocol.MethodScopeOperatorAdmin,
+	MethodAttachGrant:                 protocol.MethodScopeOperatorAdmin,
+	MethodAttachRevoke:                protocol.MethodScopeOperatorAdmin,
 	MethodTerminalClose:               protocol.MethodScopeOperatorAdmin,
 	MethodFSListDir:                   protocol.MethodScopeOperatorAdmin,
 	MethodWorktreesList:               protocol.MethodScopeOperatorRead,
@@ -313,4 +319,5 @@ var controlPlaneWriteMethods = map[string]bool{
 	MethodWorktreesGc:             true,
 	MethodEnvironmentsCreate:      true,
 	MethodEnvironmentsDestroy:     true,
+	MethodAttachGrant:             true,
 }

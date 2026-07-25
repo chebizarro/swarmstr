@@ -12,13 +12,13 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 195,
+    "implemented": 201,
     "partial": 0,
-    "missing": 129,
+    "missing": 123,
     "triage_category_counts": {
       "accepted-deviation": 16,
-      "defer": 9,
-      "implement": 299
+      "defer": 7,
+      "implement": 301
     }
   },
   "entries": [
@@ -2315,31 +2315,35 @@
     },
     {
       "method": "attach.grant",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "metiq_method": "attach.grant",
+      "notes": "Metiq deviation: sessionKey is required (no main-session default); mcpConfig references the admin MCP loopback runtime and the env token is METIQ_MCP_TOKEN.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "attach.revoke",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
-    },
-    {
-      "method": "terminal.attach",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "attach.revoke",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
+      "method": "terminal.attach",
+      "status": "implemented",
+      "metiq_method": "terminal.attach",
+      "notes": "Single-owner take-over with ring-buffer replay; previous owner receives terminal.exit reason=detached. Metiq has no agent-owned shared-viewer sessions.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7"
+    },
+    {
       "method": "terminal.list",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "terminal.list",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -2347,7 +2351,8 @@
     },
     {
       "method": "terminal.text",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "terminal.text",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -2537,8 +2542,9 @@
     },
     {
       "method": "terminal.upload",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "terminal.upload",
+      "notes": "Metiq deviation: the file is staged into the PTY session's working directory under os.Root containment instead of a host temp dir.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"

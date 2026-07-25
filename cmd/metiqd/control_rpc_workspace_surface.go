@@ -43,6 +43,18 @@ func (h controlRPCHandler) handleWorkspaceSurfaceRPC(ctx context.Context, in nos
 		return h.handleTerminalResize(ctx, in)
 	case methods.MethodTerminalClose:
 		return h.handleTerminalClose(ctx, in)
+	case methods.MethodTerminalAttach:
+		return h.handleTerminalAttach(ctx, in)
+	case methods.MethodTerminalList:
+		return h.handleTerminalList(ctx, in)
+	case methods.MethodTerminalText:
+		return h.handleTerminalText(ctx, in)
+	case methods.MethodTerminalUpload:
+		return h.handleTerminalUpload(ctx, in)
+	case methods.MethodAttachGrant:
+		return h.handleAttachGrant(ctx, in)
+	case methods.MethodAttachRevoke:
+		return h.handleAttachRevoke(ctx, in)
 	case methods.MethodFSListDir:
 		return h.handleFSListDir(ctx, in, cfg)
 	case methods.MethodWorktreesList:

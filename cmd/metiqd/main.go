@@ -27,6 +27,7 @@ import (
 	"metiq/internal/canvas"
 	"metiq/internal/config"
 	"metiq/internal/cron"
+	attachpkg "metiq/internal/gateway/attach"
 	boardpkg "metiq/internal/gateway/board"
 	"metiq/internal/gateway/channels"
 	conversationspkg "metiq/internal/gateway/conversations"
@@ -38,8 +39,8 @@ import (
 	"metiq/internal/gateway/sessioncoord"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
-	gatewayws "metiq/internal/gateway/ws"
 	worktreespkg "metiq/internal/gateway/worktrees"
+	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/grasp"
 	hookspkg "metiq/internal/hooks"
 	"metiq/internal/imagegen"
@@ -140,6 +141,9 @@ var (
 	// controlTerminalManager owns live PTY terminal sessions (WS-A/A7). Set once
 	// the WS gateway starts; nil disables the terminal surface.
 	controlTerminalManager *terminalpkg.Manager
+	// controlAttachGrants holds process-local attach.grant bearer tokens for the
+	// MCP loopback surface (WS-A/A7 attach.* slice). Grants never persist.
+	controlAttachGrants = attachpkg.NewStore()
 	// controlWorktrees backs the worktrees.* git worktree lifecycle (WS-A/A7).
 	controlWorktrees *worktreespkg.Service
 	// controlBoardStore holds per-session board tabs/widgets (WS-A/A7.4).
@@ -159,14 +163,14 @@ var (
 	controlTaskSuggestions = tasksuggestionspkg.NewRegistry()
 	// controlEnvironments manages long-lived sandbox-backed execution
 	// environments for the environments.* surface (WS-A/A7 deferred slice).
-	controlEnvironments = environmentspkg.NewManager(environmentspkg.Options{})
-	controlWizards              *wizardRegistry
-	controlOps                  *operationsRegistry
-	controlAgentRegistry        *agent.AgentRuntimeRegistry
-	controlSessionRouter        *agent.AgentSessionRouter
-	controlKeyer                nostr.Keyer                   // always set at startup; plain mode wraps key in a keyer
-	controlPresenceHeartbeat38  *nip38.Heartbeat              // NIP-38 presence/status heartbeat; nil when disabled
-	controlProfilePublisher     *nostruntime.ProfilePublisher // routine kind:0 profile publisher; nil when no profile configured
+	controlEnvironments        = environmentspkg.NewManager(environmentspkg.Options{})
+	controlWizards             *wizardRegistry
+	controlOps                 *operationsRegistry
+	controlAgentRegistry       *agent.AgentRuntimeRegistry
+	controlSessionRouter       *agent.AgentSessionRouter
+	controlKeyer               nostr.Keyer                   // always set at startup; plain mode wraps key in a keyer
+	controlPresenceHeartbeat38 *nip38.Heartbeat              // NIP-38 presence/status heartbeat; nil when disabled
+	controlProfilePublisher    *nostruntime.ProfilePublisher // routine kind:0 profile publisher; nil when no profile configured
 	// controlWsEmitter forwards typed events to connected WS clients.
 	// Starts as NoopEmitter; upgraded to RuntimeEmitter once the WS gateway starts.
 	controlWsEmitter       gatewayws.EventEmitter = gatewayws.NoopEmitter{}
@@ -7663,6 +7667,7 @@ func handleControlRPCRequest(
 		nostrHub:        svc.relay.hub,
 		keyer:           svc.relay.keyer,
 		terminalManager: controlTerminalManager,
+		attachGrants:    controlAttachGrants,
 		worktrees:       controlWorktrees,
 		boardStore:      controlBoardStore,
 		boardNotices:    controlBoardNotices,

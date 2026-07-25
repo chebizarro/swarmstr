@@ -16,6 +16,7 @@ import (
 	"metiq/internal/autoreply"
 	"metiq/internal/canvas"
 	ctxengine "metiq/internal/context"
+	attachpkg "metiq/internal/gateway/attach"
 	boardpkg "metiq/internal/gateway/board"
 	"metiq/internal/gateway/channels"
 	conversationspkg "metiq/internal/gateway/conversations"
@@ -96,6 +97,7 @@ type controlRPCDeps struct {
 	nostrHub        *nostruntime.NostrHub
 	keyer           nostr.Keyer
 	terminalManager *terminalpkg.Manager
+	attachGrants    *attachpkg.Store
 	worktrees       *worktreespkg.Service
 	boardStore      *boardpkg.Store
 	boardNotices    *boardpkg.NoticeDeduper

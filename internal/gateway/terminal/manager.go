@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -59,7 +60,11 @@ const (
 	ExitReasonProcessExit  = "process_exit"
 	ExitReasonClosed       = "closed"
 	ExitReasonDisconnected = "disconnected"
-	ExitReasonError        = "error"
+	// ExitReasonDetached reports that another admin connection attached the
+	// session away; the session is still alive server-side, but no longer
+	// streams to this connection.
+	ExitReasonDetached = "detached"
+	ExitReasonError    = "error"
 )
 
 // Emitter delivers one event to one gateway connection. Implementations must
@@ -91,13 +96,33 @@ type OpenResult struct {
 
 // SessionInfo is one attachable session as reported by list.
 type SessionInfo struct {
-	SessionID   string `json:"sessionId"`
-	AgentID     string `json:"agentId"`
-	Shell       string `json:"shell"`
-	Cwd         string `json:"cwd"`
-	Confined    bool   `json:"confined"`
-	Attached    bool   `json:"attached"`
+	SessionID string `json:"sessionId"`
+	AgentID   string `json:"agentId"`
+	Shell     string `json:"shell"`
+	Cwd       string `json:"cwd"`
+	Confined  bool   `json:"confined"`
+	Attached  bool   `json:"attached"`
+	// Owner is always "conn" today: every metiq session is connection-owned.
+	// The field mirrors the OpenClaw wire contract, where agent-owned sessions
+	// report "agent:<sessionKey>" instead.
+	Owner       string `json:"owner"`
 	CreatedAtMs int64  `json:"createdAtMs"`
+}
+
+// AttachResult mirrors OpenResult plus the replay ring buffer so a client can
+// catch up before live terminal.data resumes.
+type AttachResult struct {
+	SessionID string `json:"sessionId"`
+	AgentID   string `json:"agentId"`
+	Shell     string `json:"shell"`
+	Cwd       string `json:"cwd"`
+	// Buffer is recent raw output from the bounded ring buffer. Not a true
+	// screen snapshot: after truncation it can start mid-escape-sequence;
+	// emulators recover on the next full repaint.
+	Buffer string `json:"buffer"`
+	// Seq is the cumulative UTF-16 offset at the end of Buffer, so clients can
+	// reconcile the replay against subsequent terminal.data events.
+	Seq int64 `json:"seq"`
 }
 
 // Options configures a Manager.
@@ -372,6 +397,15 @@ func (m *Manager) Close(connID, sessionID string) bool {
 // DropConnection tears down every session owned by connID (socket closed).
 func (m *Manager) DropConnection(connID string) {
 	for _, s := range m.ownedAll(connID) {
+		// Re-check ownership right before teardown: another connection can
+		// take the session over via Attach between the snapshot above and
+		// this kill, and a take-over must survive the old owner's disconnect.
+		s.mu.Lock()
+		stillOwned := s.connID == connID
+		s.mu.Unlock()
+		if !stillOwned {
+			continue
+		}
 		m.finish(s, ExitReasonDisconnected, "")
 	}
 }
@@ -390,8 +424,8 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-// List reports every live session. The terminal surface is operator.admin, so
-// cross-connection visibility adds no privilege.
+// List reports every live session, oldest first. The terminal surface is
+// operator.admin, so cross-connection visibility adds no privilege.
 func (m *Manager) List() []SessionInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -405,11 +439,92 @@ func (m *Manager) List() []SessionInfo {
 			Cwd:         s.cwd,
 			Confined:    false,
 			Attached:    true,
+			Owner:       "conn",
 			CreatedAtMs: s.createdAt.UnixMilli(),
 		})
 		s.mu.Unlock()
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAtMs != out[j].CreatedAtMs {
+			return out[i].CreatedAtMs < out[j].CreatedAtMs
+		}
+		return out[i].SessionID < out[j].SessionID
+	})
 	return out
+}
+
+// Attach transfers ownership of one live session to connID and returns a
+// replay snapshot of the ring buffer. Metiq sessions are connection-owned, so
+// attach is always take-over (mirroring OpenClaw's conn-owned semantics): the
+// previous owner receives terminal.exit with reason "detached" and stops
+// receiving terminal.data, while the session stays alive server-side.
+func (m *Manager) Attach(connID, sessionID string) (AttachResult, bool) {
+	if strings.TrimSpace(connID) == "" {
+		return AttachResult{}, false
+	}
+	m.mu.Lock()
+	s := m.sessions[sessionID]
+	m.mu.Unlock()
+	if s == nil {
+		return AttachResult{}, false
+	}
+	s.mu.Lock()
+	if s.done {
+		s.mu.Unlock()
+		return AttachResult{}, false
+	}
+	prevConnID := s.connID
+	s.connID = connID
+	// Snapshot buffer and seq under the same lock as the ownership swap so the
+	// replay boundary is exact: chunks emitted before the swap went to the old
+	// owner, chunks after it go to the new owner with seq > result.Seq.
+	result := AttachResult{
+		SessionID: s.id,
+		AgentID:   s.agentID,
+		Shell:     s.shell,
+		Cwd:       s.cwd,
+		Buffer:    string(s.buffer),
+		Seq:       s.seq,
+	}
+	s.mu.Unlock()
+	if prevConnID != "" && prevConnID != connID && m.opts.Emitter != nil {
+		m.opts.Emitter.EmitTo(prevConnID, EventExit, ExitEvent{SessionID: s.id, Reason: ExitReasonDetached})
+	}
+	return result, true
+}
+
+// Snapshot returns the raw buffered output for one live session without
+// changing ownership. All admin connections may read it: the terminal surface
+// is operator.admin, so cross-connection visibility adds no privilege.
+func (m *Manager) Snapshot(sessionID string) (string, bool) {
+	m.mu.Lock()
+	s := m.sessions[sessionID]
+	m.mu.Unlock()
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return "", false
+	}
+	return string(s.buffer), true
+}
+
+// SessionCwd reports the working directory of one owned session; uploads are
+// staged there. It reports false for unknown sessions or callers that do not
+// own the session.
+func (m *Manager) SessionCwd(connID, sessionID string) (string, bool) {
+	s := m.owned(connID, sessionID)
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return "", false
+	}
+	return s.cwd, true
 }
 
 // Count reports the number of live sessions.

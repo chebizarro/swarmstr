@@ -121,6 +121,7 @@
       "id": "workspace-interactive-surfaces-a7",
       "prefixes": [
         "artifacts",
+        "attach",
         "board",
         "conversations",
         "environments",
@@ -132,12 +133,11 @@
       ],
       "category": "implement",
       "workstream": "WS-A/A7",
-      "rationale": "Terminal PTY sessions, workspace-rooted fs.listDir, the git worktree lifecycle, the per-session board store, gateway conversations, the durable question.* operator-question lifecycle, and the ephemeral taskSuggestions.* registry are implemented as WS-native gateway surfaces in the A7 pass. Board view-ticket methods and remaining terminal helpers stay missing within this implement group until their follow-up slices land."
+      "rationale": "Terminal PTY sessions (including the attach/list/text/upload helpers), attach.* MCP-loopback grants, workspace-rooted fs.listDir, the git worktree lifecycle, the per-session board store, gateway conversations, the durable question.* operator-question lifecycle, and the ephemeral taskSuggestions.* registry are implemented as WS-native gateway surfaces in the A7 pass. Board view-ticket methods stay missing within this implement group until their follow-up slices land."
     },
     {
       "id": "workspace-interactive-surfaces",
       "prefixes": [
-        "attach",
         "mcp"
       ],
       "category": "defer",
