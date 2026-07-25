@@ -35,6 +35,7 @@
     "canvas.update",
     "terminal.data",
     "terminal.exit",
-    "board.changed"
+    "board.changed",
+    "mcp.app.viewCreated"
   ]
 }

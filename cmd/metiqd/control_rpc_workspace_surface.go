@@ -79,6 +79,28 @@ func (h controlRPCHandler) handleWorkspaceSurfaceRPC(ctx context.Context, in nos
 		return h.handleBoardWidgetGrant(ctx, in)
 	case methods.MethodBoardEvent:
 		return h.handleBoardEvent(ctx, in)
+	case methods.MethodBoardWidgetAppView:
+		return h.handleBoardWidgetAppView(ctx, in)
+	case methods.MethodBoardPromptAuthorize:
+		return h.handleBoardPromptAuthorize(ctx, in)
+	case methods.MethodBoardDataRead:
+		return h.handleBoardDataRead(ctx, in)
+	case methods.MethodBoardAction:
+		return h.handleBoardAction(ctx, in)
+	case methods.MethodMcpAppView:
+		return h.handleMcpAppView(ctx, in)
+	case methods.MethodMcpAppListTools:
+		return h.handleMcpAppListTools(ctx, in, method)
+	case methods.MethodMcpAppListResources:
+		return h.handleMcpAppListResources(ctx, in, method, false)
+	case methods.MethodMcpAppListResourceTpls:
+		return h.handleMcpAppListResources(ctx, in, method, true)
+	case methods.MethodMcpAppReadResource:
+		return h.handleMcpAppReadResource(ctx, in)
+	case methods.MethodMcpAppCallTool:
+		return h.handleMcpAppCallTool(ctx, in)
+	case methods.MethodMcpAppUpdateModelContext:
+		return h.handleMcpAppUpdateModelContext(ctx, in)
 	case methods.MethodConversationsList:
 		return h.handleConversationsList(ctx, in)
 	case methods.MethodConversationsSend:

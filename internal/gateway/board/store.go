@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sync"
+	"time"
 )
 
 // htmlDocument is the stored source for an html widget. The board snapshot
@@ -17,11 +18,44 @@ type htmlDocument struct {
 	Revision   int
 	GrantState string
 	Declared   *Declared
+	// ViewGeneration pins the widget instance the document was put under so
+	// view tickets minted against it go stale on any re-put.
+	ViewGeneration string
+}
+
+// McpAppDescriptor pins the provenance of an MCP-App widget so views can be
+// re-minted after the originating view expires.
+type McpAppDescriptor struct {
+	ServerName    string
+	ToolName      string
+	UIResourceURI string
+	ToolCallID    string
+}
+
+// mcpAppDocument is the stored source for an mcp-app widget.
+type mcpAppDocument struct {
+	Descriptor  McpAppDescriptor
+	Interactive bool
+	Revision    int
+	InstanceID  string
+	GrantState  string
+	Declared    *Declared
+}
+
+// McpAppView is the read-back of a pinned mcp-app widget document.
+type McpAppView struct {
+	Descriptor  McpAppDescriptor
+	Interactive bool
+	Revision    int
+	InstanceID  string
+	GrantState  string
+	Declared    *Declared
 }
 
 type storedBoard struct {
-	snapshot  Snapshot
-	documents map[string]*htmlDocument
+	snapshot     Snapshot
+	documents    map[string]*htmlDocument
+	appDocuments map[string]*mcpAppDocument
 }
 
 // Store is the in-memory per-sessionKey board store. All methods are safe for
@@ -30,11 +64,19 @@ type storedBoard struct {
 type Store struct {
 	mu     sync.Mutex
 	boards map[string]*storedBoard
+	// ticketSecret signs view tickets; per-process so tickets never survive
+	// a restart. now is injectable for ticket expiry tests.
+	ticketSecret []byte
+	now          func() time.Time
 }
 
 // NewStore returns an empty board store.
 func NewStore() *Store {
-	return &Store{boards: map[string]*storedBoard{}}
+	return &Store{
+		boards:       map[string]*storedBoard{},
+		ticketSecret: newTicketSecret(),
+		now:          time.Now,
+	}
 }
 
 func emptySnapshot(sessionKey string) Snapshot {
@@ -92,17 +134,23 @@ func (s *Store) ApplyOps(sessionKey string, ops []Op) (Snapshot, error) {
 		remaining[w.Name] = true
 	}
 	documents := map[string]*htmlDocument{}
+	appDocuments := map[string]*mcpAppDocument{}
 	if current != nil {
 		for name, doc := range current.documents {
 			if remaining[name] {
 				documents[name] = doc
 			}
 		}
+		for name, doc := range current.appDocuments {
+			if remaining[name] {
+				appDocuments[name] = doc
+			}
+		}
 	}
 	if len(next.Tabs) == 0 && len(next.Widgets) == 0 {
 		delete(s.boards, sessionKey)
 	} else {
-		s.boards[sessionKey] = &storedBoard{snapshot: next, documents: documents}
+		s.boards[sessionKey] = &storedBoard{snapshot: next, documents: documents, appDocuments: appDocuments}
 	}
 	return CloneSnapshot(next), nil
 }
@@ -113,6 +161,10 @@ type PutContent struct {
 	HTML       string
 	PluginKind string
 	Props      map[string]any
+	// McpApp pins the descriptor for mcp-app content (resolved from an
+	// active MCP-App view by the handler before the store sees it).
+	McpApp      *McpAppDescriptor
+	Interactive bool
 }
 
 // PutPlacement optionally targets a tab, size preset, and anchor widget.
@@ -152,6 +204,11 @@ func (s *Store) PutWidget(params PutParams) (Snapshot, error) {
 	case ContentKindHTML:
 		if len(params.Content.HTML) > MaxWidgetHTMLBytes {
 			return Snapshot{}, errInvalid("board widget HTML exceeds %d UTF-8 bytes", MaxWidgetHTMLBytes)
+		}
+	case ContentKindMcpApp:
+		if params.Content.McpApp == nil || params.Content.McpApp.ServerName == "" ||
+			params.Content.McpApp.ToolName == "" || params.Content.McpApp.UIResourceURI == "" {
+			return Snapshot{}, errInvalid("board mcp-app widget requires a resolved view descriptor")
 		}
 	case ContentKindPlugin:
 		if params.Declared != nil {
@@ -332,24 +389,65 @@ func (s *Store) PutWidget(params PutParams) (Snapshot, error) {
 
 	next := Snapshot{SessionKey: params.SessionKey, Revision: prior.Revision + 1, Tabs: l.Tabs, Widgets: l.Widgets}
 	documents := map[string]*htmlDocument{}
+	appDocuments := map[string]*mcpAppDocument{}
 	if current != nil {
 		for name, doc := range current.documents {
 			documents[name] = doc
 		}
-	}
-	if params.Content.Kind == ContentKindHTML {
-		documents[params.Name] = &htmlDocument{
-			HTML:       params.Content.HTML,
-			SHA256:     contentSHA,
-			Revision:   widgetRevision,
-			GrantState: grantState,
-			Declared:   cloneDeclared(declared),
+		for name, doc := range current.appDocuments {
+			appDocuments[name] = doc
 		}
-	} else {
-		delete(documents, params.Name)
 	}
-	s.boards[params.SessionKey] = &storedBoard{snapshot: next, documents: documents}
+	switch params.Content.Kind {
+	case ContentKindHTML:
+		documents[params.Name] = &htmlDocument{
+			HTML:           params.Content.HTML,
+			SHA256:         contentSHA,
+			Revision:       widgetRevision,
+			GrantState:     grantState,
+			Declared:       cloneDeclared(declared),
+			ViewGeneration: instanceID,
+		}
+		delete(appDocuments, params.Name)
+	case ContentKindMcpApp:
+		descriptor := *params.Content.McpApp
+		appDocuments[params.Name] = &mcpAppDocument{
+			Descriptor:  descriptor,
+			Interactive: params.Content.Interactive,
+			Revision:    widgetRevision,
+			InstanceID:  instanceID,
+			GrantState:  grantState,
+			Declared:    cloneDeclared(declared),
+		}
+		delete(documents, params.Name)
+	default:
+		delete(documents, params.Name)
+		delete(appDocuments, params.Name)
+	}
+	s.boards[params.SessionKey] = &storedBoard{snapshot: next, documents: documents, appDocuments: appDocuments}
 	return CloneSnapshot(next), nil
+}
+
+// ReadWidgetMcpApp returns the pinned mcp-app document for a widget.
+func (s *Store) ReadWidgetMcpApp(sessionKey, name string) (McpAppView, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.boards[sessionKey]
+	if !ok {
+		return McpAppView{}, false
+	}
+	doc, ok := b.appDocuments[name]
+	if !ok {
+		return McpAppView{}, false
+	}
+	return McpAppView{
+		Descriptor:  doc.Descriptor,
+		Interactive: doc.Interactive,
+		Revision:    doc.Revision,
+		InstanceID:  doc.InstanceID,
+		GrantState:  doc.GrantState,
+		Declared:    cloneDeclared(doc.Declared),
+	}, true
 }
 
 // Grant resolves a pending capability grant. The caller must present the
@@ -389,6 +487,9 @@ func (s *Store) Grant(sessionKey, name, decision string, revision int, instanceI
 	widget.GrantState = decision
 	snapshot.Revision++
 	if doc, ok := current.documents[name]; ok {
+		doc.GrantState = decision
+	}
+	if doc, ok := current.appDocuments[name]; ok {
 		doc.GrantState = decision
 	}
 	current.snapshot = snapshot

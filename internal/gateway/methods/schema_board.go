@@ -6,10 +6,13 @@ import (
 	"strings"
 )
 
-// Board method schemas. Params mirror the OpenClaw board.* wire contract for
-// the A7.4 slice; board state is backed by internal/gateway/board. Widget
-// content sources are limited to "html" and "plugin": "mcp-app" and
-// "canvas-doc" sources depend on deferred surfaces and are rejected here.
+// Board method schemas. Params mirror the OpenClaw board.* wire contract;
+// board state is backed by internal/gateway/board. Widget content sources are
+// limited to "html" and "plugin": "mcp-app" and "canvas-doc" sources depend
+// on deferred surfaces and are rejected here. The ticket-authorized view
+// methods (board.prompt.authorize, board.data.read, board.action, the ticket
+// variant of board.event) authenticate via short-lived view tickets minted by
+// board.get.
 
 type BoardGetRequest struct {
 	SessionKey string `json:"sessionKey"`
@@ -77,13 +80,156 @@ type BoardWidgetGrantRequest struct {
 	InstanceID string `json:"instance_id"`
 }
 
-// BoardEventRequest accepts the legacy sessionKey+widget variant. The
-// ticket-authorized variant belongs to the deferred board view-ticket surface.
+// BoardEventRequest accepts either the legacy sessionKey+widget variant or
+// the ticket-authorized variant (exactly one of the two).
 type BoardEventRequest struct {
 	SessionKey string          `json:"sessionKey"`
 	Widget     string          `json:"widget"`
 	Payload    json.RawMessage `json:"payload"`
 	Ticket     string          `json:"ticket,omitempty"`
+}
+
+// Ticket-scoped wire limits mirroring the OpenClaw board protocol schema.
+const (
+	maxBoardTicketLength    = 2048
+	maxBoardBindingIDLength = 64
+	maxBoardCronJobIDLength = 256
+	boardCronTriggerAction  = "cron.trigger"
+	maxBoardActionLength    = len(boardCronTriggerAction+":") + maxBoardCronJobIDLength
+	maxBoardCapabilityProps = 64
+	maxBoardCapabilityKey   = 80
+)
+
+func validateBoardTicket(method, ticket string) error {
+	if strings.TrimSpace(ticket) == "" {
+		return fmt.Errorf("invalid %s params: ticket is required", method)
+	}
+	if len(ticket) > maxBoardTicketLength {
+		return fmt.Errorf("invalid %s params: ticket exceeds %d characters", method, maxBoardTicketLength)
+	}
+	return nil
+}
+
+func validateBoardCapabilityParams(method string, params map[string]any) error {
+	if len(params) > maxBoardCapabilityProps {
+		return fmt.Errorf("invalid %s params: params exceed %d properties", method, maxBoardCapabilityProps)
+	}
+	for key := range params {
+		if key == "" || len(key) > maxBoardCapabilityKey {
+			return fmt.Errorf("invalid %s params: param keys must be 1-%d characters", method, maxBoardCapabilityKey)
+		}
+	}
+	return nil
+}
+
+// BoardWidgetAppViewRequest re-mints an MCP-App view from a pinned mcp-app
+// widget at an exact revision and instance.
+type BoardWidgetAppViewRequest struct {
+	SessionKey string `json:"sessionKey"`
+	Name       string `json:"name"`
+	Revision   int    `json:"revision"`
+	// Wire name is instanceId; the shared alias normalizer rewrites it to
+	// instance_id before strict decoding (same as board.widget.grant).
+	InstanceID string `json:"instance_id"`
+}
+
+func (r BoardWidgetAppViewRequest) Normalize() (BoardWidgetAppViewRequest, error) {
+	r.SessionKey = strings.TrimSpace(r.SessionKey)
+	r.Name = strings.TrimSpace(r.Name)
+	r.InstanceID = strings.TrimSpace(r.InstanceID)
+	if r.SessionKey == "" {
+		return r, fmt.Errorf("invalid board.widget.appView params: sessionKey is required")
+	}
+	if r.Name == "" {
+		return r, fmt.Errorf("invalid board.widget.appView params: name is required")
+	}
+	if r.Revision < 1 {
+		return r, fmt.Errorf("invalid board.widget.appView params: revision is required")
+	}
+	if r.InstanceID == "" {
+		return r, fmt.Errorf("invalid board.widget.appView params: instanceId is required")
+	}
+	return r, nil
+}
+
+// BoardPromptAuthorizeRequest asks whether a widget-initiated prompt needs
+// operator confirmation (it does unless the "prompt" tool was granted).
+type BoardPromptAuthorizeRequest struct {
+	Ticket string `json:"ticket"`
+}
+
+func (r BoardPromptAuthorizeRequest) Normalize() (BoardPromptAuthorizeRequest, error) {
+	if err := validateBoardTicket("board.prompt.authorize", r.Ticket); err != nil {
+		return r, err
+	}
+	return r, nil
+}
+
+// BoardDataReadRequest reads one granted data binding on behalf of a widget
+// view.
+type BoardDataReadRequest struct {
+	Ticket    string         `json:"ticket"`
+	BindingID string         `json:"bindingId"`
+	Params    map[string]any `json:"params,omitempty"`
+}
+
+func (r BoardDataReadRequest) Normalize() (BoardDataReadRequest, error) {
+	if err := validateBoardTicket("board.data.read", r.Ticket); err != nil {
+		return r, err
+	}
+	if strings.TrimSpace(r.BindingID) == "" {
+		return r, fmt.Errorf("invalid board.data.read params: bindingId is required")
+	}
+	if len(r.BindingID) > maxBoardBindingIDLength {
+		return r, fmt.Errorf("invalid board.data.read params: bindingId exceeds %d characters", maxBoardBindingIDLength)
+	}
+	if err := validateBoardCapabilityParams("board.data.read", r.Params); err != nil {
+		return r, err
+	}
+	return r, nil
+}
+
+// BoardActionRequest runs one granted action verb (or triggers a cron job via
+// the dedicated cron.trigger variant) on behalf of a widget view. Exactly one
+// of the cron variant (action=="cron.trigger" with jobId) or the plugin verb
+// variant (any other action, optional params) applies.
+type BoardActionRequest struct {
+	Ticket string         `json:"ticket"`
+	Action string         `json:"action"`
+	JobID  string         `json:"jobId,omitempty"`
+	Params map[string]any `json:"params,omitempty"`
+}
+
+func (r BoardActionRequest) Normalize() (BoardActionRequest, error) {
+	if err := validateBoardTicket("board.action", r.Ticket); err != nil {
+		return r, err
+	}
+	if strings.TrimSpace(r.Action) == "" {
+		return r, fmt.Errorf("invalid board.action params: action is required")
+	}
+	if len(r.Action) > maxBoardActionLength {
+		return r, fmt.Errorf("invalid board.action params: action exceeds %d characters", maxBoardActionLength)
+	}
+	if r.Action == boardCronTriggerAction {
+		r.JobID = strings.TrimSpace(r.JobID)
+		if r.JobID == "" {
+			return r, fmt.Errorf("invalid board.action params: jobId is required for cron.trigger")
+		}
+		if len(r.JobID) > maxBoardCronJobIDLength {
+			return r, fmt.Errorf("invalid board.action params: jobId exceeds %d characters", maxBoardCronJobIDLength)
+		}
+		if len(r.Params) > 0 {
+			return r, fmt.Errorf("invalid board.action params: cron.trigger does not accept params")
+		}
+		return r, nil
+	}
+	if r.JobID != "" {
+		return r, fmt.Errorf("invalid board.action params: jobId is only valid with action cron.trigger")
+	}
+	if err := validateBoardCapabilityParams("board.action", r.Params); err != nil {
+		return r, err
+	}
+	return r, nil
 }
 
 func (r BoardGetRequest) Normalize() (BoardGetRequest, error) {
@@ -137,9 +283,13 @@ func (r BoardWidgetPutRequest) Normalize() (BoardWidgetPutRequest, error) {
 		if strings.TrimSpace(r.Content.PluginKind) == "" {
 			return r, fmt.Errorf("invalid board.widget.put params: pluginKind is required")
 		}
-	case "mcp-app", "canvas-doc":
-		// Metiq deviation: MCP-App views and Canvas documents are deferred
-		// board sources; reject explicitly instead of decoding to html.
+	case "mcp-app":
+		if strings.TrimSpace(r.Content.ViewID) == "" {
+			return r, fmt.Errorf("invalid board.widget.put params: viewId is required for mcp-app content")
+		}
+	case "canvas-doc":
+		// Metiq deviation: Canvas documents are a deferred board source;
+		// reject explicitly instead of decoding to html.
 		return r, fmt.Errorf("board widget content kind %q is not supported yet", r.Content.Kind)
 	default:
 		return r, fmt.Errorf("invalid board.widget.put params: unknown content kind %q", r.Content.Kind)
@@ -173,10 +323,15 @@ func (r BoardWidgetGrantRequest) Normalize() (BoardWidgetGrantRequest, error) {
 func (r BoardEventRequest) Normalize() (BoardEventRequest, error) {
 	r.SessionKey = strings.TrimSpace(r.SessionKey)
 	r.Widget = strings.TrimSpace(r.Widget)
-	if strings.TrimSpace(r.Ticket) != "" {
-		// Metiq deviation: view tickets belong to the deferred board sandbox
-		// surface (board.prompt.authorize/data.read/action).
-		return r, fmt.Errorf("board view tickets are not supported yet")
+	if r.Ticket != "" {
+		// Ticket variant: the ticket alone identifies the widget view.
+		if r.SessionKey != "" || r.Widget != "" {
+			return r, fmt.Errorf("invalid board.event params: ticket and sessionKey/widget are mutually exclusive")
+		}
+		if len(r.Ticket) > maxBoardTicketLength {
+			return r, fmt.Errorf("invalid board.event params: ticket exceeds %d characters", maxBoardTicketLength)
+		}
+		return r, nil
 	}
 	if r.SessionKey == "" {
 		return r, fmt.Errorf("invalid board.event params: sessionKey is required")
@@ -205,4 +360,20 @@ func DecodeBoardWidgetGrantParams(params json.RawMessage) (BoardWidgetGrantReque
 
 func DecodeBoardEventParams(params json.RawMessage) (BoardEventRequest, error) {
 	return decodeMethodParams[BoardEventRequest](params)
+}
+
+func DecodeBoardWidgetAppViewParams(params json.RawMessage) (BoardWidgetAppViewRequest, error) {
+	return decodeMethodParams[BoardWidgetAppViewRequest](params)
+}
+
+func DecodeBoardPromptAuthorizeParams(params json.RawMessage) (BoardPromptAuthorizeRequest, error) {
+	return decodeMethodParams[BoardPromptAuthorizeRequest](params)
+}
+
+func DecodeBoardDataReadParams(params json.RawMessage) (BoardDataReadRequest, error) {
+	return decodeMethodParams[BoardDataReadRequest](params)
+}
+
+func DecodeBoardActionParams(params json.RawMessage) (BoardActionRequest, error) {
+	return decodeMethodParams[BoardActionRequest](params)
 }

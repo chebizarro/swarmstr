@@ -12,13 +12,12 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 201,
+    "implemented": 212,
     "partial": 0,
-    "missing": 123,
+    "missing": 112,
     "triage_category_counts": {
       "accepted-deviation": 16,
-      "defer": 7,
-      "implement": 301
+      "implement": 308
     }
   },
   "entries": [
@@ -796,64 +795,71 @@
     },
     {
       "method": "mcp.app.view",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "status": "implemented",
+      "notes": "Resolves a minted MCP-App view: html (inline or lazily fetched via resources/read), toolInput/toolResult, expiry; views minted from agent MCP tool calls returning ui:// resources, announced via mcp.app.viewCreated.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "mcp.app.view"
     },
     {
       "method": "mcp.app.listTools",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "status": "implemented",
+      "notes": "Lists tools advertised by the view's originating server.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "mcp.app.listTools"
     },
     {
       "method": "mcp.app.listResources",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "status": "implemented",
+      "notes": "Proxies resources/list to the view's originating server.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "mcp.app.listResources"
     },
     {
       "method": "mcp.app.listResourceTemplates",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "status": "implemented",
+      "notes": "Proxies resources/templates/list to the view's originating server.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "mcp.app.listResourceTemplates"
     },
     {
       "method": "mcp.app.readResource",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "status": "implemented",
+      "notes": "Proxies resources/read to the view's originating server.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "mcp.app.readResource"
     },
     {
       "method": "mcp.app.callTool",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "status": "implemented",
+      "notes": "Calls a tool on the view's originating server; denied for read-only views. Metiq deviation: scoped to server-advertised tools (OpenClaw additionally narrows to app-declared tool names).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "mcp.app.callTool"
     },
     {
       "method": "mcp.app.updateModelContext",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "status": "implemented",
+      "notes": "Metiq deviation: widget model context is delivered as active-run steering at the next model boundary, matching board.event delivery.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "mcp.app.updateModelContext"
     },
     {
       "method": "board.get",
       "status": "implemented",
-      "notes": "Per-sessionKey tabs/widgets store in internal/gateway/board; no view tickets/sandbox URLs yet (deferred with board ticket methods).",
+      "notes": "Per-sessionKey tabs/widgets store in internal/gateway/board; mints 2-minute HMAC view tickets (viewTicket/viewTicketTtlMs/viewGeneration/frameUrl) for renderable html widgets, served by the sandboxed frame host at /__metiq__/board/ on the gateway WS HTTP server.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
@@ -869,7 +875,7 @@
     {
       "method": "board.widget.put",
       "status": "implemented",
-      "notes": "html and plugin content sources; mcp-app and canvas-doc sources rejected until their surfaces land. HTML grants frozen to approved bytes.",
+      "notes": "html, plugin, and mcp-app content sources (mcp-app pins the descriptor from an active MCP-App view; interactivity grant-gated via mcp.app.interact); canvas-doc rejected until the canvas-document surface lands. HTML grants frozen to approved bytes.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
@@ -884,16 +890,17 @@
     },
     {
       "method": "board.widget.appView",
-      "status": "missing",
-      "notes": "Deferred: board view-ticket / MCP-App surface (see defer bucket issue).",
+      "status": "implemented",
+      "notes": "Re-mints an MCP-App view from the pinned mcp-app widget descriptor at an exact revision+instance; interactivity requires the granted mcp.app.interact capability, otherwise views mint read-only.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7"
+      "workstream": "WS-A/A7",
+      "metiq_method": "board.widget.appView"
     },
     {
       "method": "board.event",
       "status": "implemented",
-      "notes": "Legacy sessionKey+widget variant with 8KB payload cap and 5s dedupe; notices delivered as active-run steering (ticket variant deferred).",
+      "notes": "Legacy sessionKey+widget variant and ticket-authorized variant, 8KB payload cap and 5s dedupe; notices delivered as active-run steering.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
@@ -2688,24 +2695,27 @@
     },
     {
       "method": "board.prompt.authorize",
-      "status": "missing",
-      "notes": "Deferred: board view-ticket / MCP-App surface (see defer bucket issue).",
+      "status": "implemented",
+      "metiq_method": "board.prompt.authorize",
+      "notes": "Ticket-authorized prompt confirmation check; confirmationRequired unless the 'prompt' tool is granted.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.data.read",
-      "status": "missing",
-      "notes": "Deferred: board view-ticket / MCP-App surface (see defer bucket issue).",
+      "status": "implemented",
+      "metiq_method": "board.data.read",
+      "notes": "Ticket-authorized granted data bindings over the core allowlist (sessions.list, usage.status, usage.cost, cron.list, cron.status, agents.list, health); plugin dashboard bindings deferred with the plugin dashboard registry.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "board.action",
-      "status": "missing",
-      "notes": "Deferred: board view-ticket / MCP-App surface (see defer bucket issue).",
+      "status": "implemented",
+      "metiq_method": "board.action",
+      "notes": "Ticket-authorized cron.trigger:<jobId> actions dispatching cron.run; plugin dashboard action verbs deferred with the plugin dashboard registry.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"

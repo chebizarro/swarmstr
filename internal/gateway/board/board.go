@@ -1,10 +1,11 @@
 // Package board implements the per-session workspace board surface: tabs and
 // widgets arranged by layout operations, guarded by a per-widget capability
-// grant flow. It mirrors the OpenClaw board.* wire contract for the methods
-// implemented by the WS-A/A7 slice (board.get/update/widget.put/widget.grant/
-// board.event plus the board.changed push event). Ticket-based view methods
-// (board.prompt.authorize, board.data.read, board.action) and MCP-App widget
-// sources remain deferred follow-ups.
+// grant flow. It mirrors the OpenClaw board.* wire contract for
+// board.get/update/widget.put/widget.grant/board.event plus the board.changed
+// push event, and the ticket-authorized view surface (board.prompt.authorize,
+// board.data.read, board.action, ticket-variant board.event) backed by the
+// short-lived HMAC view tickets in ticket.go. MCP-App widget sources remain
+// deferred follow-ups.
 package board
 
 import (
@@ -13,13 +14,19 @@ import (
 	"sort"
 )
 
-// Content kinds accepted by the A7.4 slice. OpenClaw additionally supports
-// "mcp-app" and "canvas-doc" sources; both depend on surfaces Metiq has not
-// implemented yet and are rejected at decode time.
+// Content kinds accepted by the board store. OpenClaw additionally supports
+// "canvas-doc" sources, which depend on the canvas-document surface Metiq
+// has not implemented yet and stay rejected at decode time.
 const (
 	ContentKindHTML   = "html"
 	ContentKindPlugin = "plugin"
+	ContentKindMcpApp = "mcp-app"
 )
+
+// McpAppInteractCapability is the single declared capability gating MCP-App
+// widget interactivity through the standard grant flow. Metiq deviation:
+// OpenClaw declares the app-allowed tool names individually.
+const McpAppInteractCapability = "mcp.app.interact"
 
 // Grant states for widget capability declarations.
 const (
@@ -108,6 +115,13 @@ type Widget struct {
 	InstanceID      string         `json:"instanceId,omitempty"`
 	DeclaredSummary []string       `json:"declaredSummary,omitempty"`
 	Declared        *Declared      `json:"declared,omitempty"`
+
+	// View-ticket fields are ephemeral: minted per board.get response by
+	// GetSnapshotWithTickets, never persisted in the store.
+	FrameURL        string `json:"frameUrl,omitempty"`
+	ViewTicket      string `json:"viewTicket,omitempty"`
+	ViewTicketTTLMs int    `json:"viewTicketTtlMs,omitempty"`
+	ViewGeneration  string `json:"viewGeneration,omitempty"`
 }
 
 // Snapshot is the full board state for one session key.

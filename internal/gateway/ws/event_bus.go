@@ -114,6 +114,10 @@ const (
 	// change so clients can refetch the snapshot via board.get.
 	EventBoardChanged = "board.changed"
 
+	// EventMcpAppViewCreated is broadcast when an MCP tool call mints an
+	// MCP-App view so clients can render it via mcp.app.view.
+	EventMcpAppViewCreated = "mcp.app.viewCreated"
+
 	// EventQuestionRequested is broadcast when an agent posts a structured
 	// question set for an operator (payload: the full question record).
 	EventQuestionRequested = "question.requested"
@@ -190,6 +194,7 @@ var AllPushEvents = []string{
 	EventTerminalData,
 	EventTerminalExit,
 	EventBoardChanged,
+	EventMcpAppViewCreated,
 	EventToolStart,
 	EventToolProgress,
 	EventToolResult,
@@ -831,6 +836,15 @@ type BoardChangedPayload struct {
 	SessionKey string `json:"sessionKey"`
 	Revision   int    `json:"revision"`
 	Widget     string `json:"widget,omitempty"`
+}
+
+// McpAppViewCreatedPayload is the payload for EventMcpAppViewCreated events.
+type McpAppViewCreatedPayload struct {
+	SessionKey  string `json:"sessionKey"`
+	ViewID      string `json:"viewId"`
+	ServerName  string `json:"serverName"`
+	ToolName    string `json:"toolName"`
+	ExpiresAtMs int64  `json:"expiresAtMs"`
 }
 
 // QuestionResolvedPayload is the payload for EventQuestionResolved events.

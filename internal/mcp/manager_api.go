@@ -145,6 +145,26 @@ func (m *Manager) ReadResource(ctx context.Context, serverName, uri string) (*mc
 	return result, nil
 }
 
+// ListResourceTemplates lists resource templates from a specific connected
+// MCP server.
+func (m *Manager) ListResourceTemplates(ctx context.Context, serverName string) (*mcp.ListResourceTemplatesResult, error) {
+	conn, err := m.acquireConnection(serverName)
+	if err != nil {
+		return nil, err
+	}
+	defer m.wg.Done()
+
+	if !conn.Capabilities.Resources {
+		return nil, fmt.Errorf("server %s does not support resources", serverName)
+	}
+
+	result, err := conn.listResourceTemplates(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list resource templates: %w", err)
+	}
+	return result, nil
+}
+
 // ListPrompts lists prompts from a specific connected MCP server.
 // ListPrompts lists prompts from a specific connected MCP server.
 func (m *Manager) ListPrompts(ctx context.Context, serverName string) (*mcp.ListPromptsResult, error) {

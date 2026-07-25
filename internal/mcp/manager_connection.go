@@ -28,6 +28,8 @@ type ServerConnection struct {
 	ReadResourceFunc  func(context.Context, *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error)
 	ListPromptsFunc   func(context.Context, *mcp.ListPromptsParams) (*mcp.ListPromptsResult, error)
 	GetPromptFunc     func(context.Context, *mcp.GetPromptParams) (*mcp.GetPromptResult, error)
+
+	ListResourceTemplatesFunc func(context.Context, *mcp.ListResourceTemplatesParams) (*mcp.ListResourceTemplatesResult, error)
 }
 
 func (c *ServerConnection) callTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
@@ -67,6 +69,19 @@ func (c *ServerConnection) readResource(ctx context.Context, params *mcp.ReadRes
 		return nil, fmt.Errorf("server session unavailable")
 	}
 	return c.Session.ReadResource(ctx, params)
+}
+
+func (c *ServerConnection) listResourceTemplates(ctx context.Context, params *mcp.ListResourceTemplatesParams) (*mcp.ListResourceTemplatesResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("server is not connected")
+	}
+	if c.ListResourceTemplatesFunc != nil {
+		return c.ListResourceTemplatesFunc(ctx, params)
+	}
+	if c.Session == nil {
+		return nil, fmt.Errorf("server session unavailable")
+	}
+	return c.Session.ListResourceTemplates(ctx, params)
 }
 
 func (c *ServerConnection) listPrompts(ctx context.Context, params *mcp.ListPromptsParams) (*mcp.ListPromptsResult, error) {

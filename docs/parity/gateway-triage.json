@@ -1,148 +1,70 @@
 {
   "schema_version": 1,
-  "category_values": [
-    "implement",
-    "accepted-deviation",
-    "defer"
-  ],
+  "category_values": ["implement", "accepted-deviation", "defer"],
   "notes": "Every advertised OpenClaw gateway method is classified exactly once by its leading method group. 'implement' includes methods already present in Metiq and methods assigned to a future workstream; this file does not implement those methods.",
   "groups": [
     {
       "id": "core-runtime",
-      "prefixes": [
-        "agent",
-        "agents",
-        "audit",
-        "commands",
-        "config",
-        "diagnostics",
-        "gateway",
-        "health",
-        "last-heartbeat",
-        "logs",
-        "models",
-        "secrets",
-        "send",
-        "set-heartbeats",
-        "status",
-        "system",
-        "system-event",
-        "system-presence",
-        "tasks",
-        "tools",
-        "update",
-        "usage",
-        "wake",
-        "wizard"
-      ],
+      "prefixes": ["agent", "agents", "audit", "commands", "config", "diagnostics", "gateway", "health", "last-heartbeat", "logs", "models", "secrets", "send", "set-heartbeats", "status", "system", "system-event", "system-presence", "tasks", "tools", "update", "usage", "wake", "wizard"],
       "category": "implement",
       "workstream": "WS-A/core",
       "rationale": "Core operator/runtime methods are part of the supported or planned Metiq control surface; gaps remain backlog rather than accepted incompatibilities."
     },
     {
       "id": "sessions-chat-v4",
-      "prefixes": [
-        "approval",
-        "chat",
-        "session",
-        "sessions",
-        "ui"
-      ],
+      "prefixes": ["approval", "chat", "session", "sessions", "ui"],
       "category": "implement",
       "workstream": "WS-A",
       "rationale": "Session lifecycle, collaboration, approvals, and protocol-v4 chat are the primary WS-A parity target."
     },
     {
       "id": "gateway-lifecycle",
-      "prefixes": [
-        "channels",
-        "cron",
-        "device",
-        "exec",
-        "node"
-      ],
+      "prefixes": ["channels", "cron", "device", "exec", "node"],
       "category": "implement",
       "workstream": "WS-A",
       "rationale": "Channel lifecycle, cron, approvals, and node/device management map to WS-A items A3 and A5-A8."
     },
     {
       "id": "memory-health",
-      "prefixes": [
-        "doctor",
-        "migrations"
-      ],
+      "prefixes": ["doctor", "migrations"],
       "category": "implement",
       "workstream": "WS-C",
       "rationale": "Memory diagnostics and migration controls align with the existing memory subsystem and WS-C lifecycle work."
     },
     {
       "id": "plugin-skill-security",
-      "prefixes": [
-        "plugin",
-        "plugins",
-        "skills"
-      ],
+      "prefixes": ["plugin", "plugins", "skills"],
       "category": "implement",
       "workstream": "WS-G",
       "rationale": "Plugin approvals, package lifecycle, and skill curation belong to the WS-G platform/security roadmap."
     },
     {
       "id": "media-and-messaging",
-      "prefixes": [
-        "message",
-        "talk",
-        "tts",
-        "voicewake"
-      ],
+      "prefixes": ["message", "talk", "tts", "voicewake"],
       "category": "implement",
       "workstream": "WS-D/runtime",
       "rationale": "Messaging and media methods extend existing channel, voice, and TTS capabilities rather than defining an incompatible product boundary."
     },
     {
       "id": "nostr-user-identity",
-      "prefixes": [
-        "users"
-      ],
+      "prefixes": ["users"],
       "category": "accepted-deviation",
       "workstream": "Nostr identity",
       "rationale": "OpenClaw durable local user profiles and email aliases differ from Metiq's Nostr-pubkey identity and event-derived profile model."
     },
     {
       "id": "openclaw-branded-control-ui",
-      "prefixes": [
-        "controlUi",
-        "openclaw"
-      ],
+      "prefixes": ["controlUi", "openclaw"],
       "category": "accepted-deviation",
       "workstream": "none",
       "rationale": "These methods are OpenClaw-branded editor/setup or Control UI integrations; Metiq exposes its own Web UI and migration surfaces instead."
     },
     {
       "id": "workspace-interactive-surfaces-a7",
-      "prefixes": [
-        "artifacts",
-        "attach",
-        "board",
-        "conversations",
-        "environments",
-        "fs",
-        "question",
-        "taskSuggestions",
-        "terminal",
-        "worktrees"
-      ],
+      "prefixes": ["artifacts", "attach", "board", "conversations", "environments", "fs", "mcp", "question", "taskSuggestions", "terminal", "worktrees"],
       "category": "implement",
       "workstream": "WS-A/A7",
-      "rationale": "Terminal PTY sessions (including the attach/list/text/upload helpers), attach.* MCP-loopback grants, workspace-rooted fs.listDir, the git worktree lifecycle, the per-session board store, gateway conversations, the durable question.* operator-question lifecycle, and the ephemeral taskSuggestions.* registry are implemented as WS-native gateway surfaces in the A7 pass. Board view-ticket methods stay missing within this implement group until their follow-up slices land."
-    },
-    {
-      "id": "workspace-interactive-surfaces",
-      "prefixes": [
-        "mcp"
-      ],
-      "category": "defer",
-      "workstream": "WS-A/A7",
-      "rationale": "MCP-app surfaces remain deferred until their vertical slices land (WS-A/A7 follow-ups)."
+      "rationale": "Terminal PTY sessions (including the attach/list/text/upload helpers), attach.* MCP-loopback grants, workspace-rooted fs.listDir, the git worktree lifecycle, the per-session board store (including the view-ticket surface and sandboxed frame host), gateway conversations, the durable question.* operator-question lifecycle, the ephemeral taskSuggestions.* registry, and the mcp.app.* MCP-App view surface are implemented as WS-native gateway surfaces in the A7 pass."
     }
   ],
   "method_notes": {

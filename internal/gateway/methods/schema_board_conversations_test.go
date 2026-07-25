@@ -42,7 +42,7 @@ func TestDecodeBoardWidgetPutParamsRejectsDeferredSources(t *testing.T) {
 	if req.Content.Kind != "html" || req.Placement.Size != "lg" || len(req.Declared.Tools) != 1 {
 		t.Fatalf("unexpected: %+v", req)
 	}
-	for _, kind := range []string{"mcp-app", "canvas-doc", "bogus"} {
+	for _, kind := range []string{"canvas-doc", "bogus"} {
 		req, err := DecodeBoardWidgetPutParams(json.RawMessage(`{"sessionKey":"sess","name":"w","content":{"kind":"` + kind + `","viewId":"v","docId":"d"}}`))
 		if err != nil {
 			t.Fatalf("decode %s: %v", kind, err)
@@ -50,6 +50,21 @@ func TestDecodeBoardWidgetPutParamsRejectsDeferredSources(t *testing.T) {
 		if _, err := req.Normalize(); err == nil {
 			t.Fatalf("expected rejection for content kind %s", kind)
 		}
+	}
+	// mcp-app is an accepted source but requires the originating viewId.
+	appReq, err := DecodeBoardWidgetPutParams(json.RawMessage(`{"sessionKey":"sess","name":"w","content":{"kind":"mcp-app","viewId":"view_1"}}`))
+	if err != nil {
+		t.Fatalf("decode mcp-app: %v", err)
+	}
+	if _, err := appReq.Normalize(); err != nil {
+		t.Fatalf("mcp-app content must be accepted: %v", err)
+	}
+	appReq, err = DecodeBoardWidgetPutParams(json.RawMessage(`{"sessionKey":"sess","name":"w","content":{"kind":"mcp-app"}}`))
+	if err != nil {
+		t.Fatalf("decode mcp-app without viewId: %v", err)
+	}
+	if _, err := appReq.Normalize(); err == nil {
+		t.Fatal("expected viewId requirement for mcp-app content")
 	}
 }
 
@@ -72,7 +87,7 @@ func TestDecodeBoardWidgetGrantParams(t *testing.T) {
 	}
 }
 
-func TestDecodeBoardEventParamsRejectsTickets(t *testing.T) {
+func TestDecodeBoardEventParamsVariants(t *testing.T) {
 	req, err := DecodeBoardEventParams(json.RawMessage(`{"sessionKey":"sess","widget":"chart","payload":{"a":1}}`))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
@@ -84,8 +99,16 @@ func TestDecodeBoardEventParamsRejectsTickets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode ticket variant: %v", err)
 	}
+	if req, err = req.Normalize(); err != nil || req.Ticket != "tok" {
+		t.Fatalf("ticket variant must be accepted: %+v err=%v", req, err)
+	}
+	// The two identity variants are mutually exclusive.
+	req, err = DecodeBoardEventParams(json.RawMessage(`{"ticket":"tok","sessionKey":"sess","widget":"chart","payload":{}}`))
+	if err != nil {
+		t.Fatalf("decode mixed variant: %v", err)
+	}
 	if _, err := req.Normalize(); err == nil {
-		t.Fatal("expected ticket rejection")
+		t.Fatal("expected mutual-exclusion rejection")
 	}
 }
 

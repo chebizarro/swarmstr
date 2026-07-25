@@ -21,6 +21,7 @@ import (
 	"metiq/internal/gateway/channels"
 	conversationspkg "metiq/internal/gateway/conversations"
 	environmentspkg "metiq/internal/gateway/environments"
+	mcpapppkg "metiq/internal/gateway/mcpapp"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	questionspkg "metiq/internal/gateway/questions"
@@ -101,6 +102,7 @@ type controlRPCDeps struct {
 	worktrees       *worktreespkg.Service
 	boardStore      *boardpkg.Store
 	boardNotices    *boardpkg.NoticeDeduper
+	mcpAppViews     *mcpapppkg.Registry
 	conversations   *conversationspkg.Registry
 	questions       *questionspkg.Manager
 	taskSuggestions *tasksuggestionspkg.Registry

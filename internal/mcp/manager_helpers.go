@@ -62,11 +62,20 @@ func MCPToolToToolDef(mgr *Manager, serverName string, tool *mcp.Tool) (name str
 		if result.IsError {
 			return "", fmt.Errorf("MCP tool error: %s", extractContentText(result.Content))
 		}
+		if observer := ToolCallObserver; observer != nil {
+			observer(ctx, serverName, tool.Name, args, result)
+		}
 		return extractContentText(result.Content), nil
 	}
 
 	return name, fn, params
 }
+
+// ToolCallObserver, when set at daemon startup, observes every successful
+// MCP tool-call result flowing through agent tool executors. The mcp.app.*
+// gateway surface uses it to mint MCP-App views from ui:// resources; the
+// observer must be fast and non-blocking.
+var ToolCallObserver func(ctx context.Context, serverName, toolName string, args map[string]any, result *mcp.CallToolResult)
 
 func shortHashHex(s string) string {
 	h := sha1.Sum([]byte(s))

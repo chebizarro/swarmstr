@@ -32,6 +32,7 @@ import (
 	"metiq/internal/gateway/channels"
 	conversationspkg "metiq/internal/gateway/conversations"
 	environmentspkg "metiq/internal/gateway/environments"
+	mcpapppkg "metiq/internal/gateway/mcpapp"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	gatewayprotocol "metiq/internal/gateway/protocol"
@@ -45,6 +46,8 @@ import (
 	hookspkg "metiq/internal/hooks"
 	"metiq/internal/imagegen"
 	mcppkg "metiq/internal/mcp"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	"metiq/internal/musicgen"
@@ -150,6 +153,9 @@ var (
 	controlBoardStore = boardpkg.NewStore()
 	// controlBoardNotices dedupes board.event notices per widget (WS-A/A7.4).
 	controlBoardNotices = boardpkg.NewNoticeDeduper()
+	// controlMcpAppViews holds process-local MCP-App views minted from agent
+	// MCP tool calls that return ui:// resources (mcp.app.* surface).
+	controlMcpAppViews = mcpapppkg.NewRegistry()
 	// controlConversations tracks external conversation addresses and pending
 	// conversation turns (WS-A/A7.5).
 	controlConversations = conversationspkg.NewRegistry()
@@ -1217,6 +1223,25 @@ func main() {
 	// secrets/auth controller is available.
 	mcpManager := mcppkg.NewManager()
 	memoryBootstrapper = &memorySessionBootstrapper{client: func() memoryBootstrapPromptClient { return mcpManager }}
+	// Mint MCP-App views from agent tool calls that return ui:// resources
+	// and announce them so clients can render via mcp.app.view.
+	mcppkg.ToolCallObserver = func(ctx context.Context, serverName, toolName string, args map[string]any, result *mcpsdk.CallToolResult) {
+		sessionKey := agent.SessionIDFromContext(ctx)
+		if sessionKey == "" {
+			return
+		}
+		view, minted := controlMcpAppViews.ObserveToolResult(sessionKey, serverName, toolName, "", args, result)
+		if !minted {
+			return
+		}
+		emitControlWSEvent(gatewayws.EventMcpAppViewCreated, gatewayws.McpAppViewCreatedPayload{
+			SessionKey:  view.SessionKey,
+			ViewID:      view.ViewID,
+			ServerName:  view.ServerName,
+			ToolName:    view.ToolName,
+			ExpiresAtMs: view.ExpiresAt.UnixMilli(),
+		})
+	}
 	toolbuiltin.RegisterMCPResourceTools(tools, toolbuiltin.MCPResourceToolOpts{
 		Manager: func() *mcppkg.Manager { return mcpManager },
 	})
@@ -6277,6 +6302,11 @@ func main() {
 				return sessionCoordinator.AllowEventDelivery(gatewayPrincipalCollabActor(principal), event, payload)
 			},
 			StaticHandler: webui.Handler(wsPath, gatewayWSToken),
+			ExtraHandlers: map[string]http.Handler{
+				// Board widget frame host: view-ticket-authorized, sandboxed
+				// widget HTML (internal/gateway/board/framehost.go).
+				boardpkg.HTTPPathPrefix: boardpkg.NewFrameHandler(controlBoardStore),
+			},
 			HandleRequest: func(ctx context.Context, req gatewayprotocol.RequestFrame) (any, *gatewayprotocol.ErrorShape) {
 				principal, _ := gatewayws.PrincipalFromContext(ctx)
 				res, err := handleControlRPCRequest(ctx, gatewayControlRPCInbound(principal, req), bus, controlBus, chatCancels, usageState, logBuffer, channelState, docsRepo, transcriptRepo, memoryIndex, configState, tools, pluginMgr, startedAt)
@@ -7671,6 +7701,7 @@ func handleControlRPCRequest(
 		worktrees:       controlWorktrees,
 		boardStore:      controlBoardStore,
 		boardNotices:    controlBoardNotices,
+		mcpAppViews:     controlMcpAppViews,
 		conversations:   controlConversations,
 		questions:       controlQuestions,
 		taskSuggestions: controlTaskSuggestions,

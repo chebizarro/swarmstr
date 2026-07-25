@@ -103,6 +103,10 @@ type RuntimeOptions struct {
 	// as the WebSocket endpoint.  It is called only when the request path
 	// does not match Path (the WS path).
 	StaticHandler http.Handler
+	// ExtraHandlers maps additional path patterns (e.g. "/__metiq__/board/")
+	// to handlers mounted on the same HTTP server, taking precedence over
+	// StaticHandler for their subtrees.
+	ExtraHandlers map[string]http.Handler
 }
 
 type Runtime struct {
@@ -236,6 +240,11 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(opts.Path, r.handleWS)
+	for pattern, handler := range opts.ExtraHandlers {
+		if handler != nil {
+			mux.Handle(pattern, handler)
+		}
+	}
 	if opts.StaticHandler != nil {
 		mux.Handle("/", opts.StaticHandler)
 	}
