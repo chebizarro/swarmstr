@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 277,
+    "implemented": 286,
     "partial": 0,
-    "missing": 47,
+    "missing": 38,
     "triage_category_counts": {
       "implement": 308,
       "accepted-deviation": 16
@@ -781,16 +781,18 @@
     },
     {
       "method": "models.authStatus",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "models.authStatus",
+      "notes": "Per-provider credential/auth status over the provider layer (state.ProvidersConfig + env credentials + internal/agent OAuth adapters). Reports configured/enabled + auth method (api_key | oauth | none); no secret material is returned.",
       "triage": "implement",
       "triage_group": "core-runtime",
       "workstream": "WS-A/core"
     },
     {
       "method": "models.authLogout",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "models.authLogout",
+      "notes": "Clears a provider's config-stored credentials via a runtime config mutation. Env-var credentials cannot be cleared from a running process and are reported as remaining.",
       "triage": "implement",
       "triage_group": "core-runtime",
       "workstream": "WS-A/core"
@@ -1732,16 +1734,18 @@
     },
     {
       "method": "sessions.pluginPatch",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.pluginPatch",
+      "notes": "Applies a plugin-provided mutation to a session, namespaced under meta.plugins.<pluginId>, after validating the owning plugin against the merged plugin catalog.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
     },
     {
       "method": "sessions.cleanup",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.cleanup",
+      "notes": "GCs terminal/stale sessions (tombstoned past a grace period + optionally long-idle), deleting residual transcript entries. Complements age-based sessions.prune.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -1964,24 +1968,27 @@
     },
     {
       "method": "node.pluginSurface.refresh",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "node.pluginSurface.refresh",
+      "notes": "Node-scoped plugin-surface refresh delivered to a paired+active node over the durable node pending-command queue (the node applies on pull). Deviation: unlike gateway-local plugin.surface.refresh (deferred, swarmstr-5p0v), the node owns its surface, so no local UI-surface registry is required.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
     },
     {
       "method": "node.pluginTools.update",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "node.pluginTools.update",
+      "notes": "Pushes an updated plugin-tool surface to a paired+active node over the durable node pending-command queue; the node applies on pull.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
     },
     {
       "method": "node.skills.update",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "node.skills.update",
+      "notes": "Pushes an updated skills surface to a paired+active node over the durable node pending-command queue; the node applies on pull.",
       "triage": "implement",
       "triage_group": "gateway-lifecycle",
       "workstream": "WS-A"
@@ -2560,8 +2567,9 @@
     },
     {
       "method": "sessions.diff",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "sessions.diff",
+      "notes": "Diffs two durable session snapshots (compaction checkpoints) on the session DAG, reporting field-level deltas plus token/timestamp deltas.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -2684,8 +2692,9 @@
     },
     {
       "method": "models.probe",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "models.probe",
+      "notes": "Bounded reachability probe of a provider's configured endpoint (config base_url or provider default); reports reachable/status/latency. The endpoint is derived from operator config, never request params.",
       "triage": "implement",
       "triage_group": "core-runtime",
       "workstream": "WS-A/core"

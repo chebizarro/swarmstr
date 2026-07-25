@@ -398,3 +398,32 @@ const (
 	MethodTaskSuggestionsAccept    = "taskSuggestions.accept"
 	MethodTaskSuggestionsDismiss   = "taskSuggestions.dismiss"
 )
+
+// Gateway operational long tail (swarmstr-kmhu): three buckets of OpenClaw
+// parity methods backed by existing swarmstr subsystems.
+const (
+	// models.* provider-auth surface (BUCKET 1). Backed by the provider/model
+	// layer (cfg.Providers + env credentials + the OAuth adapters in
+	// internal/agent). authStatus/probe are reads; authLogout clears stored
+	// provider credentials.
+	MethodModelsAuthStatus = "models.authStatus"
+	MethodModelsAuthLogout = "models.authLogout"
+	MethodModelsProbe      = "models.probe"
+
+	// sessions.* operational long tail (BUCKET 2). Backed by the session
+	// subsystem (docs/transcript repos + the durable compaction-checkpoint DAG).
+	// pluginPatch applies a plugin-namespaced mutation; cleanup GCs terminal/
+	// stale sessions; diff compares two durable snapshots (compaction
+	// checkpoints).
+	MethodSessionsPluginPatch = "sessions.pluginPatch"
+	MethodSessionsCleanup     = "sessions.cleanup"
+	MethodSessionsDiff        = "sessions.diff"
+
+	// node.* plugin/skills surface (BUCKET 3). Node-scoped refresh/update ops
+	// delivered to a paired+active node over the durable node pending-command
+	// queue (the same delivery channel as node.invoke/node.pending.enqueue); the
+	// node applies them on pull.
+	MethodNodePluginSurfaceRefresh = "node.pluginSurface.refresh"
+	MethodNodePluginToolsUpdate    = "node.pluginTools.update"
+	MethodNodeSkillsUpdate         = "node.skills.update"
+)

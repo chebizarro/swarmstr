@@ -51,6 +51,12 @@ var adminDispatchRegistry = []struct {
 		MethodAgentsFilesGet,
 		MethodAgentsFilesSet,
 		MethodModelsList,
+		// models.* provider-auth surface (swarmstr-kmhu, BUCKET 1). Grouped with
+		// models.list on the agents dispatch surface; backed by the provider/model
+		// layer + OAuth adapters. authStatus/probe read; authLogout is admin.
+		MethodModelsAuthStatus,
+		MethodModelsAuthLogout,
+		MethodModelsProbe,
 		MethodToolsCatalog,
 		MethodToolsProfileGet,
 		MethodToolsProfileSet,
@@ -218,6 +224,12 @@ var adminDispatchRegistry = []struct {
 		MethodNodePendingDrain,
 		MethodExecApprovalsNodeGet,
 		MethodExecApprovalsNodeSet,
+		// node.* plugin/skills surface (swarmstr-kmhu, BUCKET 3). Node-scoped
+		// refresh/update ops delivered over the durable node pending-command queue
+		// (gated on the node being paired + not revoked); the node applies on pull.
+		MethodNodePluginSurfaceRefresh,
+		MethodNodePluginToolsUpdate,
+		MethodNodeSkillsUpdate,
 		MethodCanvasGet,
 		MethodCanvasList,
 		MethodCanvasUpdate,
@@ -309,6 +321,12 @@ var adminDispatchRegistry = []struct {
 		MethodChatMetadata,
 		MethodChatMessageGet,
 		MethodChatToolTitles,
+		// sessions.* operational long tail (swarmstr-kmhu, BUCKET 2). pluginPatch
+		// (plugin-namespaced session-meta mutation), cleanup (terminal/stale-session
+		// GC), diff (durable compaction-checkpoint snapshot diff).
+		MethodSessionsPluginPatch,
+		MethodSessionsCleanup,
+		MethodSessionsDiff,
 	}},
 	{AdminDispatchUsers, []string{
 		// Durable user-profile surface (swarmstr-5lln). nostr-user-identity

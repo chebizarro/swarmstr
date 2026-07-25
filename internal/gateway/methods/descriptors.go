@@ -129,6 +129,22 @@ var exactMethodScopes = map[string]string{
 	MethodUsageStatus:                         protocol.MethodScopeOperatorRead,
 	MethodUsageCost:                           protocol.MethodScopeOperatorRead,
 	MethodModelsList:                          protocol.MethodScopeOperatorRead,
+	// models.* provider-auth surface (swarmstr-kmhu, BUCKET 1): status/probe are
+	// read-only (probe is a bounded reachability check that leaks no secrets);
+	// authLogout clears stored provider credentials → operator.admin.
+	MethodModelsAuthStatus: protocol.MethodScopeOperatorRead,
+	MethodModelsProbe:      protocol.MethodScopeOperatorRead,
+	MethodModelsAuthLogout: protocol.MethodScopeOperatorAdmin,
+	// sessions.* operational long tail (swarmstr-kmhu, BUCKET 2): diff is a
+	// read-only snapshot comparison; pluginPatch + cleanup mutate → operator.admin.
+	MethodSessionsDiff:        protocol.MethodScopeOperatorRead,
+	MethodSessionsPluginPatch: protocol.MethodScopeOperatorAdmin,
+	MethodSessionsCleanup:     protocol.MethodScopeOperatorAdmin,
+	// node.* plugin/skills surface (swarmstr-kmhu, BUCKET 3): all three enqueue a
+	// durable command to a paired node → operator.admin.
+	MethodNodePluginSurfaceRefresh: protocol.MethodScopeOperatorAdmin,
+	MethodNodePluginToolsUpdate:    protocol.MethodScopeOperatorAdmin,
+	MethodNodeSkillsUpdate:         protocol.MethodScopeOperatorAdmin,
 	MethodToolsCatalog:                        protocol.MethodScopeOperatorRead,
 	MethodToolsProfileGet:                     protocol.MethodScopeOperatorRead,
 	MethodSkillsStatus:                        protocol.MethodScopeOperatorRead,

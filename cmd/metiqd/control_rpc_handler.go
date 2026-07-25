@@ -185,6 +185,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 	if result, handled, err := h.handleSessionRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
+	if result, handled, err := h.handleSessionsOpsRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
 	if result, handled, err := h.handleSessionCollabRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
@@ -198,6 +201,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return result, err
 	}
 	if result, handled, err := h.handleToolingRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleModelsRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
 	if result, handled, err := h.handlePluginSurfaceRPC(ctx, in, method, cfg); handled {
@@ -222,6 +228,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return result, err
 	}
 	if result, handled, err := h.handleNodeRPC(ctx, in, method); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleNodeSurfaceRPC(ctx, in, method); handled {
 		return result, err
 	}
 	if result, handled, err := h.handleOpsRPC(ctx, in, method, cfg); handled {
