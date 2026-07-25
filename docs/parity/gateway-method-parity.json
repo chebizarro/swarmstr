@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 212,
+    "implemented": 224,
     "partial": 0,
-    "missing": 112,
+    "missing": 100,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "implement": 308
@@ -1325,7 +1325,8 @@
     },
     {
       "method": "skills.curator.status",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.curator.status",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1333,7 +1334,8 @@
     },
     {
       "method": "skills.curator.pin",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.curator.pin",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1341,7 +1343,8 @@
     },
     {
       "method": "skills.curator.unpin",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.curator.unpin",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1349,7 +1352,8 @@
     },
     {
       "method": "skills.curator.restore",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.curator.restore",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1357,7 +1361,8 @@
     },
     {
       "method": "skills.proposals.list",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.list",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1365,7 +1370,8 @@
     },
     {
       "method": "skills.proposals.inspect",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.inspect",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1389,7 +1395,8 @@
     },
     {
       "method": "skills.proposals.create",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.create",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1397,7 +1404,8 @@
     },
     {
       "method": "skills.proposals.update",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.update",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1405,7 +1413,8 @@
     },
     {
       "method": "skills.proposals.revise",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.revise",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1421,7 +1430,8 @@
     },
     {
       "method": "skills.proposals.apply",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.apply",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1429,7 +1439,8 @@
     },
     {
       "method": "skills.proposals.reject",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.reject",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1437,7 +1448,8 @@
     },
     {
       "method": "skills.proposals.quarantine",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.quarantine",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",

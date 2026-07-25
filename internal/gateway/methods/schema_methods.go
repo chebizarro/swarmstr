@@ -146,6 +146,24 @@ const (
 	MethodSkillsBins                  = "skills.bins"
 	MethodSkillsInstall               = "skills.install"
 	MethodSkillsUpdate                = "skills.update"
+
+	// skills.curator.* — curator lifecycle (WS-G, swarmstr-xfny.3).
+	MethodSkillsCuratorStatus  = "skills.curator.status"
+	MethodSkillsCuratorPin     = "skills.curator.pin"
+	MethodSkillsCuratorUnpin   = "skills.curator.unpin"
+	MethodSkillsCuratorRestore = "skills.curator.restore"
+
+	// skills.proposals.* — skill-workshop proposals core (WS-G, swarmstr-xfny.4).
+	// NOTE: historyStatus/historyScan/requestRevision (swarmstr-xfny.5) are
+	// intentionally deferred; see that issue.
+	MethodSkillsProposalsList       = "skills.proposals.list"
+	MethodSkillsProposalsInspect    = "skills.proposals.inspect"
+	MethodSkillsProposalsCreate     = "skills.proposals.create"
+	MethodSkillsProposalsUpdate     = "skills.proposals.update"
+	MethodSkillsProposalsRevise     = "skills.proposals.revise"
+	MethodSkillsProposalsApply      = "skills.proposals.apply"
+	MethodSkillsProposalsReject     = "skills.proposals.reject"
+	MethodSkillsProposalsQuarantine = "skills.proposals.quarantine"
 	MethodPluginsInstall              = "plugins.install"
 	MethodPluginsUninstall            = "plugins.uninstall"
 	MethodPluginsUpdate               = "plugins.update"

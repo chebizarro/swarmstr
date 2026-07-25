@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
+	skillspkg "metiq/internal/skills"
 	"metiq/internal/store/state"
 )
 
@@ -151,6 +153,170 @@ func (h controlRPCHandler) handleToolingRPC(ctx context.Context, in nostruntime.
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "skillKey": strings.ToLower(strings.TrimSpace(req.SkillKey)), "config": entry}}, true, nil
+	case methods.MethodSkillsCuratorStatus:
+		req, err := methods.DecodeSkillsCuratorStatusParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := skillspkg.BuildCuratorStatus(cfg, defaultAgentID(req.AgentID))
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, true, nil
+	case methods.MethodSkillsCuratorPin, methods.MethodSkillsCuratorUnpin, methods.MethodSkillsCuratorRestore:
+		req, err := methods.DecodeSkillsCuratorSkillParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		agentID := defaultAgentID(req.AgentID)
+		var entry map[string]any
+		switch method {
+		case methods.MethodSkillsCuratorPin:
+			entry, err = skillspkg.SetCuratorPin(cfg, agentID, req.Skill, true)
+		case methods.MethodSkillsCuratorUnpin:
+			entry, err = skillspkg.SetCuratorPin(cfg, agentID, req.Skill, false)
+		default:
+			entry, err = skillspkg.RestoreCuratorSkill(cfg, agentID, req.Skill)
+		}
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("skill %q not found", req.Skill)
+			}
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"skill": entry}}, true, nil
+	case methods.MethodSkillsProposalsList:
+		req, err := methods.DecodeSkillsProposalsListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := skillspkg.NewProposalStore(cfg, defaultAgentID(req.AgentID)).List()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, true, nil
+	case methods.MethodSkillsProposalsInspect:
+		req, err := methods.DecodeSkillsProposalsInspectParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		out, err := skillspkg.NewProposalStore(cfg, defaultAgentID(req.AgentID)).Inspect(req.ProposalID)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("proposal %q not found", req.ProposalID)
+			}
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: out}, true, nil
+	case methods.MethodSkillsProposalsCreate, methods.MethodSkillsProposalsUpdate:
+		req, err := methods.DecodeSkillsProposalsCreateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		store := skillspkg.NewProposalStore(cfg, defaultAgentID(req.AgentID))
+		var rec skillspkg.ProposalRecord
+		if method == methods.MethodSkillsProposalsUpdate {
+			rec, err = store.Update(proposalCreateInput(req))
+		} else {
+			rec, err = store.Create(proposalCreateInput(req))
+		}
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"proposal": rec}}, true, nil
+	case methods.MethodSkillsProposalsRevise:
+		req, err := methods.DecodeSkillsProposalsReviseParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		rec, err := skillspkg.NewProposalStore(cfg, defaultAgentID(req.AgentID)).Revise(req.ProposalID, proposalReviseInput(req))
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("proposal %q not found", req.ProposalID)
+			}
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"proposal": rec}}, true, nil
+	case methods.MethodSkillsProposalsApply, methods.MethodSkillsProposalsReject, methods.MethodSkillsProposalsQuarantine:
+		req, err := methods.DecodeSkillsProposalsIDParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if err := isKnownAgentID(ctx, docsRepo, req.AgentID); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		store := skillspkg.NewProposalStore(cfg, defaultAgentID(req.AgentID))
+		switch method {
+		case methods.MethodSkillsProposalsApply:
+			out, applyErr := store.Apply(req.ProposalID)
+			if applyErr != nil {
+				if errors.Is(applyErr, state.ErrNotFound) {
+					return nostruntime.ControlRPCResult{}, true, fmt.Errorf("proposal %q not found", req.ProposalID)
+				}
+				return nostruntime.ControlRPCResult{}, true, applyErr
+			}
+			return nostruntime.ControlRPCResult{Result: out}, true, nil
+		default:
+			var rec skillspkg.ProposalRecord
+			if method == methods.MethodSkillsProposalsReject {
+				rec, err = store.Reject(req.ProposalID, req.Reason)
+			} else {
+				rec, err = store.Quarantine(req.ProposalID, req.Reason)
+			}
+			if err != nil {
+				if errors.Is(err, state.ErrNotFound) {
+					return nostruntime.ControlRPCResult{}, true, fmt.Errorf("proposal %q not found", req.ProposalID)
+				}
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			return nostruntime.ControlRPCResult{Result: map[string]any{"proposal": rec}}, true, nil
+		}
 	case methods.MethodPluginsInstall:
 		req, err := methods.DecodePluginsInstallParams(in.Params)
 		if err != nil {

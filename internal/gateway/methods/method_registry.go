@@ -26,6 +26,7 @@ const (
 	AdminDispatchACP         AdminDispatchGroup = "acp"
 	AdminDispatchSoulFactory AdminDispatchGroup = "soulfactory"
 	AdminDispatchWorkspace   AdminDispatchGroup = "workspace"
+	AdminDispatchSkills      AdminDispatchGroup = "skills"
 )
 
 var adminDispatchRegistry = []struct {
@@ -55,6 +56,23 @@ var adminDispatchRegistry = []struct {
 		MethodSkillsBins,
 		MethodSkillsInstall,
 		MethodSkillsUpdate,
+	}},
+	{AdminDispatchSkills, []string{
+		// Curator lifecycle (swarmstr-xfny.3) + skill-workshop proposals
+		// (swarmstr-xfny.4). Served over the control-RPC tooling surface only
+		// (like soulfactory/workspace); not exposed on the admin HTTP dispatch.
+		MethodSkillsCuratorStatus,
+		MethodSkillsCuratorPin,
+		MethodSkillsCuratorUnpin,
+		MethodSkillsCuratorRestore,
+		MethodSkillsProposalsList,
+		MethodSkillsProposalsInspect,
+		MethodSkillsProposalsCreate,
+		MethodSkillsProposalsUpdate,
+		MethodSkillsProposalsRevise,
+		MethodSkillsProposalsApply,
+		MethodSkillsProposalsReject,
+		MethodSkillsProposalsQuarantine,
 	}},
 	{AdminDispatchChannels, []string{
 		MethodChannelsStatus,
