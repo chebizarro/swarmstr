@@ -38,6 +38,7 @@ import (
 	gatewayprotocol "metiq/internal/gateway/protocol"
 	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
+	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
 	worktreespkg "metiq/internal/gateway/worktrees"
@@ -149,6 +150,14 @@ var (
 	controlAttachGrants = attachpkg.NewStore()
 	// controlWorktrees backs the worktrees.* git worktree lifecycle (WS-A/A7).
 	controlWorktrees *worktreespkg.Service
+	// controlTalkSessions owns server-side (gateway-relay) voice sessions keyed
+	// by the owning WS connection (swarmstr-0tfj phase B). Set once the WS
+	// gateway starts; nil disables the talk.session.* surface.
+	controlTalkSessions *talkpkg.SessionManager
+	// controlTalkClients tracks client-owned voice session records (phase C).
+	controlTalkClients *talkpkg.ClientStore
+	// controlTalkRouting persists the voicewake routing table (phase A).
+	controlTalkRouting = talkpkg.NewRoutingStore()
 	// controlBoardStore holds per-session board tabs/widgets (WS-A/A7.4).
 	controlBoardStore = boardpkg.NewStore()
 	// controlBoardNotices dedupes board.event notices per widget (WS-A/A7.4).
@@ -6288,6 +6297,12 @@ func main() {
 				if controlTerminalManager != nil {
 					controlTerminalManager.DropConnection(info.ID)
 				}
+				// Reclaim server-owned (gateway-relay) talk sessions: tear down
+				// provider bridges + steering for the dead connection. Client-owned
+				// records are intentionally resumable and not conn-scoped.
+				if controlTalkSessions != nil {
+					controlTalkSessions.CloseConnection(info.ID)
+				}
 				if sessionCoordinator != nil {
 					sessionCoordinator.DropConnection(info.ID)
 				}
@@ -6330,6 +6345,12 @@ func main() {
 			Emitter: gatewayTerminalEmitter{rt: wsRuntime},
 		})
 		defer controlTerminalManager.Shutdown()
+		// swarmstr-0tfj: talk.session.* streams audio/transcript/state events to
+		// the owning connection. The realtimevoice/realtimestt registries are not
+		// wired into the daemon, so sessions bind to nil registries and fail
+		// honestly (talk.ErrUnavailable) until an audio provider lands.
+		controlTalkSessions = talkpkg.NewSessionManager(nil, nil, steeringMailboxes, gatewayTerminalEmitter{rt: wsRuntime})
+		controlTalkClients = talkpkg.NewClientStore(nil, steeringMailboxes)
 		// WS-A/A7: git worktree lifecycle, rooted under the workspace container.
 		controlWorktrees = worktreespkg.NewService(filepath.Join(workspace.ResolveWorkspaceDir(configState.Get(), ""), ".metiq", "worktrees"))
 	}
@@ -7719,6 +7740,9 @@ func handleControlRPCRequest(
 		questions:       controlQuestions,
 		taskSuggestions: controlTaskSuggestions,
 		environments:    controlEnvironments,
+		talkSessions:    controlTalkSessions,
+		talkClients:     controlTalkClients,
+		talkRouting:     controlTalkRouting,
 	}
 	if svc.handlers.hooksMgr != nil {
 		deps.hooksMgr = svc.handlers.hooksMgr

@@ -26,6 +26,7 @@ import (
 	"metiq/internal/gateway/nodepending"
 	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
+	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
 	worktreespkg "metiq/internal/gateway/worktrees"
@@ -107,6 +108,13 @@ type controlRPCDeps struct {
 	questions       *questionspkg.Manager
 	taskSuggestions *tasksuggestionspkg.Registry
 	environments    *environmentspkg.Manager
+
+	// Voice/talk long-tail surface (swarmstr-0tfj). talkSessions is nil until
+	// the WS gateway starts (session output streams to the owning connection);
+	// talkRouting/talkClients are process-local and always present.
+	talkSessions *talkpkg.SessionManager
+	talkClients  *talkpkg.ClientStore
+	talkRouting  *talkpkg.RoutingStore
 }
 
 type hooksEventFirer interface {
@@ -185,6 +193,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return result, err
 	}
 	if result, handled, err := h.handleSkillsSurfaceRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleTalkRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
 	if result, handled, err := h.handleNodeRPC(ctx, in, method); handled {

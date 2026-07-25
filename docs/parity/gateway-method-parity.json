@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 231,
+    "implemented": 253,
     "partial": 0,
-    "missing": 93,
+    "missing": 71,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "implement": 308
@@ -195,8 +195,9 @@
     },
     {
       "method": "tts.personas",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "tts.personas",
+      "notes": "Lists personas from cfg.Extra[talk].personas; active persona persisted via the ops registry.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
@@ -239,8 +240,9 @@
     },
     {
       "method": "tts.setPersona",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "tts.setPersona",
+      "notes": "Validates against configured persona ids; off/none/default clear the active persona to null.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
@@ -575,8 +577,9 @@
     },
     {
       "method": "talk.catalog",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.catalog",
+      "notes": "Speech section backed by the live tts manager; transcription/realtime sections honestly report ready:false while the realtimestt/realtimevoice registries are unwired.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
@@ -592,136 +595,153 @@
     },
     {
       "method": "talk.client.create",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.client.create",
+      "notes": "Client-owned session record store; browser-owned realtime transports require a realtimevoice provider with createBrowserSession support and return UNAVAILABLE until one is wired.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.client.transcript",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.client.transcript",
+      "notes": "Appends transcript entries to the client session record.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.client.close",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.client.close",
+      "notes": "Closes a client-origin session record.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.client.toolCall",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.client.toolCall",
+      "notes": "Bridges the realtime agent-consult tool into a managed agent run (agent runtime dispatch + run id).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.client.steer",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.client.steer",
+      "notes": "Steers the client session's active browser-owned run via the steering mailbox.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.create",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.create",
+      "notes": "Connection-owned gateway-relay session + turn state machine; audio transport binds to the realtimevoice/realtimestt registries and returns UNAVAILABLE until an audio provider is wired. managed-room transport is an accepted deviation (no LiveKit infra).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.join",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.join",
+      "notes": "managed-room only; accepted deviation — returns unsupported (no LiveKit room infra in metiq).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.appendAudio",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.appendAudio",
+      "notes": "Forwards decoded audio to the bound realtime provider; UNAVAILABLE until a realtime provider is wired.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.startTurn",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.startTurn",
+      "notes": "Explicit-commit relay turn boundary (relay substitute for the managed-room turn protocol).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.endTurn",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.endTurn",
+      "notes": "Commits an open relay turn into processing (relay substitute for the managed-room turn protocol).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.cancelTurn",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.cancelTurn",
+      "notes": "Interrupts the in-flight turn via the provider bridge and returns the session to idle.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.cancelOutput",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.cancelOutput",
+      "notes": "Interrupts model audio output via the provider bridge.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.acknowledgeMark",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.acknowledgeMark",
+      "notes": "Gateway-side playback-mark bookkeeping.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.submitToolResult",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.submitToolResult",
+      "notes": "Forwards a realtime tool-call result to the voice bridge; UNAVAILABLE/unsupported without a realtime bridge.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.steer",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.steer",
+      "notes": "Enqueues steering text into the session steering mailbox.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.session.close",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.session.close",
+      "notes": "Tears down the session and its provider transport; emits talk.session.closed.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "talk.speak",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "talk.speak",
+      "notes": "Synthesizes via the live tts manager with talk-config provider/voice-alias + persona overrides; structured error reasons (talk_unconfigured/synthesis_failed/invalid_audio_result).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
@@ -1517,16 +1537,18 @@
     },
     {
       "method": "voicewake.routing.get",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "voicewake.routing.get",
+      "notes": "Reads the persisted voicewake routing table (version/defaultTarget/routes).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
     },
     {
       "method": "voicewake.routing.set",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "voicewake.routing.set",
+      "notes": "Persists a validated routing table (max 32 routes, trigger normalization) and broadcasts voicewake.routing.changed.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"

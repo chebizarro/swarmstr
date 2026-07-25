@@ -1901,6 +1901,7 @@ type operationsRegistry struct {
 	voicewake                 []string
 	ttsEnabled                bool
 	ttsProvider               string
+	ttsPersona                string
 	heartbeatRunnerEnabled    bool
 	heartbeatRunnerIntervalMS int
 	lastHeartbeatRunMS        int64
@@ -1965,6 +1966,21 @@ func (r *operationsRegistry) SetTTSEnabled(enabled bool) bool {
 	defer r.mu.Unlock()
 	r.ttsEnabled = enabled
 	return r.ttsEnabled
+}
+
+// TTSPersona returns the active tts persona id (empty when unset).
+func (r *operationsRegistry) TTSPersona() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ttsPersona
+}
+
+// SetTTSPersona persists the active tts persona id (empty clears it).
+func (r *operationsRegistry) SetTTSPersona(persona string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ttsPersona = strings.TrimSpace(persona)
+	return r.ttsPersona
 }
 
 func (r *operationsRegistry) SetTTSProvider(provider string) string {

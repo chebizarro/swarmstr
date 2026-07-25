@@ -27,6 +27,7 @@ const (
 	AdminDispatchSoulFactory AdminDispatchGroup = "soulfactory"
 	AdminDispatchWorkspace   AdminDispatchGroup = "workspace"
 	AdminDispatchSkills      AdminDispatchGroup = "skills"
+	AdminDispatchTalk        AdminDispatchGroup = "talk"
 )
 
 var adminDispatchRegistry = []struct {
@@ -82,6 +83,34 @@ var adminDispatchRegistry = []struct {
 		MethodSkillsUploadBegin,
 		MethodSkillsUploadChunk,
 		MethodSkillsUploadCommit,
+	}},
+	{AdminDispatchTalk, []string{
+		// Voice/talk long tail (swarmstr-0tfj). Control-RPC talk surface only.
+		// Phase A: personas / catalog / speak / voicewake routing.
+		MethodTTSPersonas,
+		MethodTTSSetPersona,
+		MethodTalkCatalog,
+		MethodTalkSpeak,
+		MethodVoicewakeRoutingGet,
+		MethodVoicewakeRoutingSet,
+		// Phase B: talk.session.* turn lifecycle over gateway-relay.
+		MethodTalkSessionCreate,
+		MethodTalkSessionJoin,
+		MethodTalkSessionAppendAudio,
+		MethodTalkSessionStartTurn,
+		MethodTalkSessionEndTurn,
+		MethodTalkSessionCancelTurn,
+		MethodTalkSessionCancelOutput,
+		MethodTalkSessionAcknowledgeMark,
+		MethodTalkSessionSubmitToolResult,
+		MethodTalkSessionSteer,
+		MethodTalkSessionClose,
+		// Phase C: talk.client.* client-owned sessions.
+		MethodTalkClientCreate,
+		MethodTalkClientTranscript,
+		MethodTalkClientClose,
+		MethodTalkClientToolCall,
+		MethodTalkClientSteer,
 	}},
 	{AdminDispatchChannels, []string{
 		MethodChannelsStatus,
