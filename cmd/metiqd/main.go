@@ -304,6 +304,12 @@ var (
 	controlServicesMu sync.RWMutex
 	controlServices   *daemonServices
 
+	// controlPermEngine mirrors the live WS-G permission engine so the control-RPC
+	// deps (constructed per request in handleControlRPCRequest) can expose the
+	// effective tool policy + permission audit log. Nil when permissions are not
+	// configured; the introspection handlers degrade to an honest empty state.
+	controlPermEngine *permissions.Engine
+
 	// controlCronExecutor dispatches a gateway method from the cron scheduler.
 	// Nil until startup completes; the scheduler goroutine checks for nil before calling.
 	controlCronExecutorMu sync.RWMutex
@@ -1751,6 +1757,7 @@ func main() {
 			}
 		}
 	}
+	controlPermEngine = permEngine
 
 	// Hook the tool registry so that tools matching the configured approval list
 	// pause execution, create an approval request, and wait for a human decision
@@ -7766,6 +7773,7 @@ func handleControlRPCRequest(
 		questions:       controlQuestions,
 		pluginApprovals: controlPluginApprovals,
 		userProfiles:    controlUserProfiles,
+		permEngine:      controlPermEngine,
 		restartCh:       restartChForDeps,
 		taskSuggestions: controlTaskSuggestions,
 		environments:    controlEnvironments,

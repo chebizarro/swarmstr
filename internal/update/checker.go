@@ -88,6 +88,29 @@ func (c *Checker) Check(ctx context.Context, force bool) Result {
 	return r
 }
 
+// Current returns the running version the checker was constructed with.
+func (c *Checker) Current() string {
+	if c == nil {
+		return ""
+	}
+	return c.current
+}
+
+// Cached returns the most recent successful check result, if one is cached, and
+// whether it is still within the cache TTL. It never performs network I/O, so it
+// is safe for read-only status endpoints.
+func (c *Checker) Cached() (Result, bool) {
+	if c == nil {
+		return Result{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cached == nil || time.Since(c.cachedAt) >= CacheTTL {
+		return Result{}, false
+	}
+	return *c.cached, true
+}
+
 // fetchLatest retrieves the tag_name of the latest GitHub release.
 func (c *Checker) fetchLatest(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.checkURL, nil)

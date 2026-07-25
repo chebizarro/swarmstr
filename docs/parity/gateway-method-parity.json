@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 286,
+    "implemented": 298,
     "partial": 0,
-    "missing": 38,
+    "missing": 26,
     "triage_category_counts": {
       "implement": 308,
       "accepted-deviation": 16
@@ -32,11 +32,12 @@
     },
     {
       "method": "diagnostics.stability",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Process stability/health snapshot backed by the Go runtime (goroutines/cpu/memstats/GC), the boot crash/restart recovery outcomes (recoveryStatusSnapshot), and the agent-job registry (in-flight runs) + restart-scheduler readiness.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "diagnostics.stability"
     },
     {
       "method": "doctor.memory.status",
@@ -764,11 +765,12 @@
     },
     {
       "method": "commands.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Operator/slash command registry backed by the embedded Web UI command catalog (internal/webui) \u2014 the same surface advertised to clients via /command-catalog.json.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "commands.list"
     },
     {
       "method": "models.list",
@@ -808,19 +810,21 @@
     },
     {
       "method": "tools.effective",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Effective tool set for an agent: the tool catalog filtered by the agent's active profile (agent.FilterCatalogByProfile), overlaid \u2014 when the WS-G permission engine is configured \u2014 with each tool's engine decision behavior.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "tools.effective"
     },
     {
       "method": "tools.invoke",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Operator-driven single-tool invocation through the live agent.ToolRegistry.Execute path (schema + semantic validation, tool policy, pre/post hooks). OperatorAdmin because it executes.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "tools.invoke"
     },
     {
       "method": "mcp.app.view",
@@ -936,19 +940,21 @@
     },
     {
       "method": "audit.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Permission-engine audit-log listing backed by the WS-G engine's durable Auditor (internal/permissions) with time/type/tool/limit filters. Returns an honest available:false empty set when permissions are not configured.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "audit.list"
     },
     {
       "method": "audit.activity.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Agent/session activity feed projected from the same WS-G permission audit log (decision/override/escalation events carry the acting agent + session). Honest available:false when permissions are not configured.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "audit.activity.list"
     },
     {
       "method": "users.list",
@@ -1498,11 +1504,12 @@
     },
     {
       "method": "update.status",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Self-update status backed by the real update.Checker. Read-only: reports the running version plus the last cached GitHub-release check; never forces a network fetch (that stays update.run).",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "update.status"
     },
     {
       "method": "update.run",
@@ -2203,7 +2210,7 @@
     {
       "method": "message.action",
       "status": "missing",
-      "notes": "",
+      "notes": "Honest UNAVAILABLE (unregistered \u2192 status missing). swarmstr has no durable per-message action runtime (no mutable chat-message store with react/edit/delete/retry); the conversations registry tracks turns, not message mutations. The implement-locked `message` triage prefix cannot express a per-method accepted-deviation, so the method is left unregistered per the gateway.suspend precedent. Follow-up: swarmstr-ko2f (human_input_required product decision).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
@@ -2433,34 +2440,37 @@
     {
       "method": "controlUi.githubPreview",
       "status": "missing",
-      "notes": "",
+      "notes": "Honest UNAVAILABLE (accepted-deviation). swarmstr wires no GitHub/git-forge integration, so PR/branch preview data cannot be produced without a fabricated stub. Left unimplemented consistent with the openclaw-branded-control-ui deviation. Follow-up: swarmstr-uhup.",
       "triage": "accepted-deviation",
       "triage_group": "openclaw-branded-control-ui",
       "workstream": "none"
     },
     {
       "method": "system.info",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Daemon identity/health snapshot backed by the build-info globals (version/commit from ldflags), the Go runtime, and live subsystem presence. Reports version, commit, platform (os/arch/go/cpu), pid, uptime, and capability flags (mcp/permissions/channels/node/tasks/sessions/worktrees).",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "system.info"
     },
     {
       "method": "agents.workspace.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Workspace-scoped agent listing over the durable agent-docs surface (DocsRepository.ListAgents), optionally filtered to one workspace; tombstoned agents excluded.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "agents.workspace.list"
     },
     {
       "method": "agents.workspace.get",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Single workspace agent detail from the durable agent-docs surface (DocsRepository.GetAgent).",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core"
+      "workstream": "WS-A/core",
+      "metiq_method": "agents.workspace.get"
     },
     {
       "method": "tts.speak",
@@ -2527,7 +2537,7 @@
     {
       "method": "controlUi.sessionPullRequests",
       "status": "missing",
-      "notes": "",
+      "notes": "Honest UNAVAILABLE (accepted-deviation). No git-forge integration exists to associate PRs with a session. Left unimplemented consistent with the openclaw-branded-control-ui deviation. Follow-up: swarmstr-uhup.",
       "triage": "accepted-deviation",
       "triage_group": "openclaw-branded-control-ui",
       "workstream": "none"
@@ -2719,19 +2729,21 @@
     },
     {
       "method": "ui.command",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Executes a UI-originated named command by dispatching the gateway method the embedded Web UI maps that slash command to (e.g. /status\u2192status, /agents\u2192agents.list, /compact\u2192memory.compact). OperatorAdmin.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
+      "workstream": "WS-A",
+      "metiq_method": "ui.command"
     },
     {
       "method": "approval.history",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Resolved (closed) records from the durable exec/unified approval ledger \u2014 the historical counterpart of approval.list (which defaults to pending), newest-resolved first.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
+      "workstream": "WS-A",
+      "metiq_method": "approval.history"
     },
     {
       "method": "plugin.surface.refresh",

@@ -22,6 +22,30 @@ func TestNewEngine(t *testing.T) {
 	}
 }
 
+func TestEvaluatePreviewDoesNotRecordAudit(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.AuditEnabled = true
+	engine := NewEngine(t.TempDir(), cfg)
+
+	// Preview many tools: none of them should produce an audit entry.
+	for i := 0; i < 5; i++ {
+		if d := engine.EvaluatePreview(NewToolRequest("preview_tool", CategoryBuiltin)); d == nil {
+			t.Fatal("expected a preview decision")
+		}
+	}
+	if n := engine.Stats().AuditEntries; n != 0 {
+		t.Fatalf("EvaluatePreview recorded %d audit entries, want 0", n)
+	}
+
+	// A real Evaluate, by contrast, records exactly one.
+	if d := engine.Evaluate(context.Background(), NewToolRequest("real_tool", CategoryBuiltin)); d == nil {
+		t.Fatal("expected a decision")
+	}
+	if n := engine.Stats().AuditEntries; n != 1 {
+		t.Fatalf("Evaluate recorded %d audit entries, want 1", n)
+	}
+}
+
 func TestAddAndRemoveRule(t *testing.T) {
 	cfg := DefaultEngineConfig()
 	cfg.AuditEnabled = false

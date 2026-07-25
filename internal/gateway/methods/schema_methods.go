@@ -427,3 +427,63 @@ const (
 	MethodNodePluginToolsUpdate    = "node.pluginTools.update"
 	MethodNodeSkillsUpdate         = "node.skills.update"
 )
+
+// Gateway introspection long tail (swarmstr-wapc): mostly-read operator
+// introspection methods backed by existing swarmstr subsystems. Each is wired
+// through handleIntrospectionRPC (cmd/metiqd/control_rpc_introspection.go).
+const (
+	// system.info — daemon identity/health snapshot (version+commit, platform,
+	// uptime, pid, capabilities). Backed by the build-info globals + runtime +
+	// the live capability signals already assembled for status.
+	MethodSystemInfo = "system.info"
+
+	// diagnostics.stability — process stability/health snapshot (uptime,
+	// goroutines, cpu, memory, GC, crash/restart recovery outcomes, in-flight
+	// runs). Backed by the Go runtime + the boot recovery snapshot + agentJobs.
+	MethodDiagnosticsStability = "diagnostics.stability"
+
+	// commands.list — operator/slash command registry. Backed by the embedded
+	// Web UI command catalog (internal/webui) advertised to clients.
+	MethodCommandsList = "commands.list"
+
+	// update.status — self-update status (current version + available update).
+	// Read-only view over the real update.Checker (never forces a network
+	// fetch); reports the cached release check when one exists.
+	MethodUpdateStatus = "update.status"
+
+	// tools.effective — the effective tool set/policy for an agent: the tool
+	// catalog filtered by the agent's active profile, overlaid (when the WS-G
+	// permission engine is configured) with the per-tool permission behavior.
+	MethodToolsEffective = "tools.effective"
+
+	// tools.invoke — invoke a single builtin tool by name through the gateway
+	// (operator-driven). Backed by the live agent.ToolRegistry.Execute path,
+	// which enforces schema validation, semantic validation and tool policy.
+	MethodToolsInvoke = "tools.invoke"
+
+	// audit.list — list permission-engine audit-log entries (filters:
+	// time/type/tool/limit). Backed by the WS-G permission engine's durable
+	// Auditor (internal/permissions).
+	MethodAuditList = "audit.list"
+
+	// audit.activity.list — agent/session activity feed projected from the same
+	// permission-engine audit log (decision/override/escalation events carry the
+	// agent + session that acted).
+	MethodAuditActivityList = "audit.activity.list"
+
+	// agents.workspace.list — list workspace-scoped agents (the durable agent
+	// docs surface, optionally filtered to one workspace).
+	MethodAgentsWorkspaceList = "agents.workspace.list"
+
+	// agents.workspace.get — one workspace agent's detail (durable agent doc).
+	MethodAgentsWorkspaceGet = "agents.workspace.get"
+
+	// approval.history — historical (resolved) approvals from the durable
+	// exec/unified approval ledger; the closed-records counterpart of
+	// approval.list (which defaults to pending).
+	MethodApprovalHistory = "approval.history"
+
+	// ui.command — execute a UI-originated named command by dispatching the
+	// gateway method the embedded Web UI would invoke for that slash command.
+	MethodUICommand = "ui.command"
+)

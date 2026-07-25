@@ -156,6 +156,32 @@ func NewEngine(baseDir string, cfg EngineConfig) *Engine {
 	return e
 }
 
+// AuditEnabled reports whether the engine is recording permission audit events.
+func (e *Engine) AuditEnabled() bool {
+	if e == nil {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.auditor != nil
+}
+
+// QueryAudit returns permission audit events matching opts. It returns an empty
+// slice (no error) when auditing is disabled, so callers can surface an honest
+// "no audit log configured" state without special-casing a nil engine.
+func (e *Engine) QueryAudit(opts AuditQueryOptions) ([]AuditEvent, error) {
+	if e == nil {
+		return nil, nil
+	}
+	e.mu.RLock()
+	auditor := e.auditor
+	e.mu.RUnlock()
+	if auditor == nil {
+		return nil, nil
+	}
+	return auditor.Query(opts)
+}
+
 // ─── Rule Management ─────────────────────────────────────────────────────────
 
 // AddRule adds a permission rule.
@@ -287,6 +313,25 @@ func (e *Engine) Evaluate(ctx context.Context, req *ToolRequest) *Decision {
 	}
 
 	return cloneDecision(decision)
+}
+
+// EvaluatePreview resolves the decision behavior for a tool request WITHOUT
+// recording an audit event and without touching the decision cache. It is for
+// read-only introspection (e.g. tools.effective) that reports what the policy
+// would do for many tools at once; using Evaluate there would flood the bounded
+// audit log with synthetic "decision" entries for tools that were never run.
+func (e *Engine) EvaluatePreview(req *ToolRequest) *Decision {
+	if e == nil {
+		return nil
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	evalReq := cloneToolRequest(req)
+	if e.classify != nil && evalReq.Category == "" {
+		evalReq.Category = e.classify.Classify(evalReq.ToolName)
+	}
+	matches := e.ruleSet.MatchingRules(evalReq)
+	return cloneDecision(e.makeDecision(evalReq, matches))
 }
 
 // makeDecision determines the final behavior using the shared evaluator that

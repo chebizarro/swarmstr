@@ -27,6 +27,7 @@ import (
 	pluginapprovalpkg "metiq/internal/gateway/pluginapproval"
 	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
+	"metiq/internal/permissions"
 	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
@@ -110,6 +111,12 @@ type controlRPCDeps struct {
 	questions       *questionspkg.Manager
 	pluginApprovals *pluginapprovalpkg.Manager
 	userProfiles    *userprofilespkg.Manager
+
+	// permEngine is the live WS-G unified permission engine (nil when the
+	// operator has not configured permissions). Read-only consumers use it for
+	// the effective tool policy overlay (tools.effective) and the permission
+	// audit log (audit.list / audit.activity.list).
+	permEngine *permissions.Engine
 
 	// restartCh mirrors main()'s restart scheduler channel so gateway.restart.request
 	// can trigger the real restart path. nil in unit tests that do not exercise it.
@@ -201,6 +208,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return result, err
 	}
 	if result, handled, err := h.handleToolingRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleIntrospectionRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
 	if result, handled, err := h.handleModelsRPC(ctx, in, method, cfg); handled {

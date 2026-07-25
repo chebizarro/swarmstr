@@ -145,6 +145,22 @@ var exactMethodScopes = map[string]string{
 	MethodNodePluginSurfaceRefresh: protocol.MethodScopeOperatorAdmin,
 	MethodNodePluginToolsUpdate:    protocol.MethodScopeOperatorAdmin,
 	MethodNodeSkillsUpdate:         protocol.MethodScopeOperatorAdmin,
+	// Gateway introspection long tail (swarmstr-wapc): all reads are
+	// operator.read. tools.invoke executes a tool and ui.command dispatches an
+	// operator command, so both are operator.admin. approval.history reads the
+	// approval ledger and matches the approval.* family (operator.approvals).
+	MethodSystemInfo:           protocol.MethodScopeOperatorRead,
+	MethodDiagnosticsStability: protocol.MethodScopeOperatorRead,
+	MethodCommandsList:         protocol.MethodScopeOperatorRead,
+	MethodUpdateStatus:         protocol.MethodScopeOperatorRead,
+	MethodToolsEffective:       protocol.MethodScopeOperatorRead,
+	MethodToolsInvoke:          protocol.MethodScopeOperatorAdmin,
+	MethodAuditList:            protocol.MethodScopeOperatorRead,
+	MethodAuditActivityList:    protocol.MethodScopeOperatorRead,
+	MethodAgentsWorkspaceList:  protocol.MethodScopeOperatorRead,
+	MethodAgentsWorkspaceGet:   protocol.MethodScopeOperatorRead,
+	MethodApprovalHistory:      protocol.MethodScopeOperatorApprovals,
+	MethodUICommand:            protocol.MethodScopeOperatorAdmin,
 	MethodToolsCatalog:                        protocol.MethodScopeOperatorRead,
 	MethodToolsProfileGet:                     protocol.MethodScopeOperatorRead,
 	MethodSkillsStatus:                        protocol.MethodScopeOperatorRead,

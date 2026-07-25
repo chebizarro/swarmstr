@@ -67,6 +67,15 @@ var commandCatalog = []Command{
 	{Command: "/compact", Text: "/compact", Source: "gateway", Desc: "Compact current session"},
 }
 
+// CommandCatalog returns a copy of the slash-command catalog advertised to the
+// embedded Web UI. It backs the gateway commands.list method so operators see
+// the same command surface the UI renders.
+func CommandCatalog() []Command {
+	out := make([]Command, len(commandCatalog))
+	copy(out, commandCatalog)
+	return out
+}
+
 // templateData holds the values injected into the HTML template.
 type templateData struct {
 	WSPath string // e.g. "/ws"

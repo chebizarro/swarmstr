@@ -50,6 +50,14 @@ var adminDispatchRegistry = []struct {
 		MethodAgentsFilesList,
 		MethodAgentsFilesGet,
 		MethodAgentsFilesSet,
+		// Gateway introspection long tail (swarmstr-wapc): tools.effective (the
+		// catalog filtered by profile + permission overlay), tools.invoke (operator
+		// tool call via the live ToolRegistry), and the workspace-scoped agent
+		// list/get. Grouped with the agents/tools surface.
+		MethodToolsEffective,
+		MethodToolsInvoke,
+		MethodAgentsWorkspaceList,
+		MethodAgentsWorkspaceGet,
 		MethodModelsList,
 		// models.* provider-auth surface (swarmstr-kmhu, BUCKET 1). Grouped with
 		// models.list on the agents dispatch surface; backed by the provider/model
@@ -168,6 +176,9 @@ var adminDispatchRegistry = []struct {
 		MethodApprovalGet,
 		MethodApprovalList,
 		MethodApprovalResolve,
+		// approval.history (swarmstr-wapc): resolved-records view of the durable
+		// approval ledger; the closed counterpart of approval.list.
+		MethodApprovalHistory,
 	}},
 	{AdminDispatchMCP, []string{
 		MethodMCPList,
@@ -397,6 +408,19 @@ var adminDispatchRegistry = []struct {
 		MethodDoctorMemoryRemHarness,
 		MethodMigrationsMemoryPlan,
 		MethodMigrationsMemoryApply,
+		// Gateway introspection long tail (swarmstr-wapc). system.info (daemon
+		// identity/health), diagnostics.stability (runtime stability snapshot),
+		// commands.list (Web UI command catalog), update.status (self-update
+		// status over the real update.Checker), audit.list / audit.activity.list
+		// (WS-G permission-engine audit log), and ui.command (dispatch a named UI
+		// command). All served over handleIntrospectionRPC.
+		MethodSystemInfo,
+		MethodDiagnosticsStability,
+		MethodCommandsList,
+		MethodUpdateStatus,
+		MethodAuditList,
+		MethodAuditActivityList,
+		MethodUICommand,
 	}},
 	{AdminDispatchACP, []string{
 		MethodACPRegister,
