@@ -365,6 +365,20 @@ var adminDispatchRegistry = []struct {
 		// (honest UNAVAILABLE — no cooperative suspend machinery in the daemon).
 		MethodGatewayRestartPreflight,
 		MethodGatewayRestartRequest,
+		// Memory-maintenance long tail (swarmstr-wvwk). doctor prefix -> memory-
+		// health triage; migrations prefix -> memory-health triage. Backed by
+		// internal/memory diagnostics (RepairMemoryHealth/CompactMemoryRecords),
+		// the REM dreaming/consolidation phase, and the schema_version migration
+		// machinery. Served over the metiqd control-RPC surface
+		// (handleMemoryMaintenanceRPC), not admin HTTP dispatch. The remaining
+		// dream-diary/grounded-short-term ops stay an honest UNAVAILABLE gap
+		// (swarmstr has no persisted diary artifact / grounded-short-term tier;
+		// follow-up swarmstr-qc53).
+		MethodDoctorMemoryRepairDreamingArtifacts,
+		MethodDoctorMemoryDedupeDreamDiary,
+		MethodDoctorMemoryRemHarness,
+		MethodMigrationsMemoryPlan,
+		MethodMigrationsMemoryApply,
 	}},
 	{AdminDispatchACP, []string{
 		MethodACPRegister,

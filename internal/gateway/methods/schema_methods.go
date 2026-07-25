@@ -23,6 +23,14 @@ const (
 	MethodUsageCost                   = "usage.cost"
 	MethodMemorySearch                = "memory.search"
 	MethodMemoryCompact               = "memory.compact"
+	// Memory-maintenance long tail (swarmstr-wvwk). doctor.memory.* diagnostic/
+	// consolidation ops + migrations.memory.* versioned-store maintenance,
+	// backed by internal/memory diagnostics + schema_version machinery.
+	MethodDoctorMemoryRepairDreamingArtifacts = "doctor.memory.repairDreamingArtifacts"
+	MethodDoctorMemoryDedupeDreamDiary        = "doctor.memory.dedupeDreamDiary"
+	MethodDoctorMemoryRemHarness              = "doctor.memory.remHarness"
+	MethodMigrationsMemoryPlan                = "migrations.memory.plan"
+	MethodMigrationsMemoryApply               = "migrations.memory.apply"
 	MethodAgent                       = "agent"
 	MethodAgentWait                   = "agent.wait"
 	MethodAgentIdentityGet            = "agent.identity.get"

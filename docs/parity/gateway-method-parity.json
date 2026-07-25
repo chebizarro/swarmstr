@@ -12,12 +12,12 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 272,
+    "implemented": 277,
     "partial": 0,
-    "missing": 52,
+    "missing": 47,
     "triage_category_counts": {
-      "accepted-deviation": 16,
-      "implement": 308
+      "implement": 308,
+      "accepted-deviation": 16
     }
   },
   "entries": [
@@ -50,7 +50,7 @@
     {
       "method": "doctor.memory.dreamDiary",
       "status": "missing",
-      "notes": "",
+      "notes": "UNAVAILABLE (accepted deviation, stays missing): swarmstr has no persisted dream-diary artifact store; dreaming narratives are ephemeral. Follow-up swarmstr-qc53.",
       "triage": "implement",
       "triage_group": "memory-health",
       "workstream": "WS-C"
@@ -58,7 +58,7 @@
     {
       "method": "doctor.memory.backfillDreamDiary",
       "status": "missing",
-      "notes": "",
+      "notes": "UNAVAILABLE (accepted deviation, stays missing): no persisted dream-diary store to backfill. Follow-up swarmstr-qc53.",
       "triage": "implement",
       "triage_group": "memory-health",
       "workstream": "WS-C"
@@ -66,7 +66,7 @@
     {
       "method": "doctor.memory.resetDreamDiary",
       "status": "missing",
-      "notes": "",
+      "notes": "UNAVAILABLE (accepted deviation, stays missing): no persisted dream-diary store to reset. Follow-up swarmstr-qc53.",
       "triage": "implement",
       "triage_group": "memory-health",
       "workstream": "WS-C"
@@ -74,34 +74,37 @@
     {
       "method": "doctor.memory.resetGroundedShortTerm",
       "status": "missing",
-      "notes": "",
+      "notes": "UNAVAILABLE (accepted deviation, stays missing): swarmstr has no grounded-short-term memory tier. Follow-up swarmstr-qc53.",
       "triage": "implement",
       "triage_group": "memory-health",
       "workstream": "WS-C"
     },
     {
       "method": "doctor.memory.repairDreamingArtifacts",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Repairs consolidated-record integrity via memory.RepairMemoryHealth (supersession/index/dedupe). swarmstr's 'dreaming artifacts' are the promoted/consolidated memory records.",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C"
+      "workstream": "WS-C",
+      "metiq_method": "doctor.memory.repairDreamingArtifacts"
     },
     {
       "method": "doctor.memory.dedupeDreamDiary",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "No persisted dream-diary artifact in swarmstr; dedupes the analogous consolidated/promoted memory records via CompactMemoryRecords.",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C"
+      "workstream": "WS-C",
+      "metiq_method": "doctor.memory.dedupeDreamDiary"
     },
     {
       "method": "doctor.memory.remHarness",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Exercises the real REM dreaming/consolidation phase (RunDreamingPhases/PromotionManager) as a non-committing dry run by default; apply=true promotes.",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C"
+      "workstream": "WS-C",
+      "metiq_method": "doctor.memory.remHarness"
     },
     {
       "method": "logs.tail",
@@ -655,7 +658,7 @@
       "method": "talk.session.join",
       "status": "implemented",
       "metiq_method": "talk.session.join",
-      "notes": "managed-room only; accepted deviation — returns unsupported (no LiveKit room infra in metiq).",
+      "notes": "managed-room only; accepted deviation \u2014 returns unsupported (no LiveKit room infra in metiq).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
@@ -2689,19 +2692,21 @@
     },
     {
       "method": "migrations.memory.plan",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Computes a migration/maintenance plan over the versioned SQLite store (schema_version vs sqliteSchemaVersion, FTS drift, embedding reindex backlog, legacy chunks).",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C"
+      "workstream": "WS-C",
+      "metiq_method": "migrations.memory.plan"
     },
     {
       "method": "migrations.memory.apply",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "notes": "Applies the plan: idempotent schema migration + FTS rebuild + legacy backfill; reports before/after.",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C"
+      "workstream": "WS-C",
+      "metiq_method": "migrations.memory.apply"
     },
     {
       "method": "ui.command",

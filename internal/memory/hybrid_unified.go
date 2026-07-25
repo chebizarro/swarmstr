@@ -139,6 +139,36 @@ func (h *HybridIndex) MemoryHealth(ctx context.Context) (MemoryHealthReport, err
 	return MemoryHealth(ctx, h.Index)
 }
 
+func (h *HybridIndex) RepairMemoryHealth(ctx context.Context, opts MemoryHealthRepairOptions) (MemoryHealthRepairReport, error) {
+	if backend, ok := h.backend.(interface {
+		RepairMemoryHealth(context.Context, MemoryHealthRepairOptions) (MemoryHealthRepairReport, error)
+	}); ok {
+		return backend.RepairMemoryHealth(ctx, opts)
+	}
+	return MemoryHealthRepairReport{}, fmt.Errorf("memory health repairs are not supported by this backend")
+}
+
+func (h *HybridIndex) MemoryMigrationPlan(ctx context.Context) (MemoryMigrationPlan, error) {
+	if planner, ok := h.backend.(MemoryMigrationPlanner); ok {
+		return planner.MemoryMigrationPlan(ctx)
+	}
+	return MemoryMigrationPlan{}, fmt.Errorf("memory store does not support versioned migrations")
+}
+
+func (h *HybridIndex) MemoryMigrationApply(ctx context.Context, opts MemoryMigrationApplyOptions) (MemoryMigrationApplyReport, error) {
+	if planner, ok := h.backend.(MemoryMigrationPlanner); ok {
+		return planner.MemoryMigrationApply(ctx, opts)
+	}
+	return MemoryMigrationApplyReport{}, fmt.Errorf("memory store does not support versioned migrations")
+}
+
+func (h *HybridIndex) RunREMHarness(ctx context.Context, opts REMHarnessOptions) (REMHarnessResult, error) {
+	if runner, ok := h.backend.(REMHarnessRunner); ok {
+		return runner.RunREMHarness(ctx, opts)
+	}
+	return REMHarnessResult{}, fmt.Errorf("memory store does not support REM consolidation harness")
+}
+
 func (h *HybridIndex) MemoryCompactionState(ctx context.Context) (MemoryCompactionState, error) {
 	if backend, ok := h.backend.(interface {
 		MemoryCompactionState(context.Context) (MemoryCompactionState, error)
