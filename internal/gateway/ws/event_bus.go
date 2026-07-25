@@ -114,6 +114,17 @@ const (
 	// change so clients can refetch the snapshot via board.get.
 	EventBoardChanged = "board.changed"
 
+	// EventQuestionRequested is broadcast when an agent posts a structured
+	// question set for an operator (payload: the full question record).
+	EventQuestionRequested = "question.requested"
+	// EventQuestionResolved is broadcast when a question is answered,
+	// cancelled, or expired.
+	EventQuestionResolved = "question.resolved"
+
+	// EventTaskSuggestion is broadcast when a model-proposed follow-up task
+	// suggestion is created or resolved (accepted/dismissed/expired).
+	EventTaskSuggestion = "task.suggestion"
+
 	// EventToolStart is emitted when the shared loop begins executing a tool call.
 	EventToolStart = "tool.start"
 	// EventToolProgress is emitted for in-flight tool progress updates.
@@ -820,6 +831,25 @@ type BoardChangedPayload struct {
 	SessionKey string `json:"sessionKey"`
 	Revision   int    `json:"revision"`
 	Widget     string `json:"widget,omitempty"`
+}
+
+// QuestionResolvedPayload is the payload for EventQuestionResolved events.
+// Answers carries the {"answers":{...}} wrapper only when status is
+// "answered".
+type QuestionResolvedPayload struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Answers any    `json:"answers,omitempty"`
+}
+
+// TaskSuggestionPayload is the payload for EventTaskSuggestion events.
+// Action "created" carries the suggestion; action "resolved" carries the
+// task id plus its resolution (accepted | dismissed | expired).
+type TaskSuggestionPayload struct {
+	Action     string `json:"action"`
+	Suggestion any    `json:"suggestion,omitempty"`
+	TaskID     string `json:"taskId,omitempty"`
+	Resolution string `json:"resolution,omitempty"`
 }
 
 // TalkModePayload is the payload for EventTalkMode events.

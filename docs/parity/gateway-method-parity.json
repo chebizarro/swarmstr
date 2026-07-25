@@ -12,13 +12,13 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 186,
+    "implemented": 195,
     "partial": 0,
-    "missing": 138,
+    "missing": 129,
     "triage_category_counts": {
       "accepted-deviation": 16,
-      "defer": 18,
-      "implement": 290
+      "defer": 9,
+      "implement": 299
     }
   },
   "entries": [
@@ -383,43 +383,48 @@
     },
     {
       "method": "question.request",
-      "status": "missing",
+      "status": "implemented",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "question.request"
     },
     {
       "method": "question.waitAnswer",
-      "status": "missing",
+      "status": "implemented",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "question.waitAnswer"
     },
     {
       "method": "question.resolve",
-      "status": "missing",
+      "status": "implemented",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "question.resolve"
     },
     {
       "method": "question.get",
-      "status": "missing",
+      "status": "implemented",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "question.get"
     },
     {
       "method": "question.list",
-      "status": "missing",
+      "status": "implemented",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "question.list"
     },
     {
       "method": "plugin.approval.list",
@@ -978,35 +983,39 @@
     },
     {
       "method": "taskSuggestions.list",
-      "status": "missing",
+      "status": "implemented",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "taskSuggestions.list"
     },
     {
       "method": "taskSuggestions.create",
-      "status": "missing",
+      "status": "implemented",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "taskSuggestions.create"
     },
     {
       "method": "taskSuggestions.accept",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "status": "implemented",
+      "notes": "Accept seeds the suggested session via the shared sessions.create path; Metiq sessions.create does not auto-start a run, so acceptance completes when the session entry exists.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "taskSuggestions.accept"
     },
     {
       "method": "taskSuggestions.dismiss",
-      "status": "missing",
+      "status": "implemented",
       "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
-      "workstream": "WS-A/A7"
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
+      "workstream": "WS-A/A7",
+      "metiq_method": "taskSuggestions.dismiss"
     },
     {
       "method": "environments.list",

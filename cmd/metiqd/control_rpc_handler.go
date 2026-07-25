@@ -22,7 +22,9 @@ import (
 	environmentspkg "metiq/internal/gateway/environments"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
+	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
+	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
 	worktreespkg "metiq/internal/gateway/worktrees"
 	hookspkg "metiq/internal/hooks"
@@ -98,6 +100,8 @@ type controlRPCDeps struct {
 	boardStore      *boardpkg.Store
 	boardNotices    *boardpkg.NoticeDeduper
 	conversations   *conversationspkg.Registry
+	questions       *questionspkg.Manager
+	taskSuggestions *tasksuggestionspkg.Registry
 	environments    *environmentspkg.Manager
 }
 

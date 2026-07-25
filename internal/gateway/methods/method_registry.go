@@ -319,6 +319,15 @@ var adminDispatchRegistry = []struct {
 		MethodEnvironmentsStatus,
 		MethodEnvironmentsCreate,
 		MethodEnvironmentsDestroy,
+		MethodQuestionRequest,
+		MethodQuestionWaitAnswer,
+		MethodQuestionResolve,
+		MethodQuestionGet,
+		MethodQuestionList,
+		MethodTaskSuggestionsList,
+		MethodTaskSuggestionsCreate,
+		MethodTaskSuggestionsAccept,
+		MethodTaskSuggestionsDismiss,
 	}},
 }
 

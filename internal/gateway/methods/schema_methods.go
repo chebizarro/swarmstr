@@ -274,4 +274,13 @@ const (
 	MethodEnvironmentsStatus       = "environments.status"
 	MethodEnvironmentsCreate       = "environments.create"
 	MethodEnvironmentsDestroy      = "environments.destroy"
+	MethodQuestionRequest          = "question.request"
+	MethodQuestionWaitAnswer       = "question.waitAnswer"
+	MethodQuestionResolve          = "question.resolve"
+	MethodQuestionGet              = "question.get"
+	MethodQuestionList             = "question.list"
+	MethodTaskSuggestionsList      = "taskSuggestions.list"
+	MethodTaskSuggestionsCreate    = "taskSuggestions.create"
+	MethodTaskSuggestionsAccept    = "taskSuggestions.accept"
+	MethodTaskSuggestionsDismiss   = "taskSuggestions.dismiss"
 )

@@ -34,7 +34,9 @@ import (
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	gatewayprotocol "metiq/internal/gateway/protocol"
+	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
+	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
 	gatewayws "metiq/internal/gateway/ws"
 	worktreespkg "metiq/internal/gateway/worktrees"
@@ -147,6 +149,14 @@ var (
 	// controlConversations tracks external conversation addresses and pending
 	// conversation turns (WS-A/A7.5).
 	controlConversations = conversationspkg.NewRegistry()
+	// controlQuestions owns the durable question.* pending/resolve lifecycle
+	// (WS-A/A7). Set at startup once the ledger path is known; nil disables
+	// the question surface.
+	controlQuestions *questionspkg.Manager
+	// controlTaskSuggestions tracks ephemeral model-proposed follow-up tasks
+	// (taskSuggestions.*, WS-A/A7). Suggestion ids intentionally vanish on
+	// restart.
+	controlTaskSuggestions = tasksuggestionspkg.NewRegistry()
 	// controlEnvironments manages long-lived sandbox-backed execution
 	// environments for the environments.* surface (WS-A/A7 deferred slice).
 	controlEnvironments = environmentspkg.NewManager(environmentspkg.Options{})
@@ -1634,6 +1644,14 @@ func main() {
 		}
 	}
 	controlExecApprovals = execApprovals
+	questionLedger, err := questionspkg.NewManagerAt(filepath.Join(filepath.Dir(configFilePath), "question-ledger.json"))
+	if err != nil {
+		log.Fatalf("load question ledger: %v", err)
+	}
+	questionLedger.SetExpiryHook(func(rec questionspkg.Record) {
+		emitControlWSEvent(gatewayws.EventQuestionResolved, gatewayws.QuestionResolvedPayload{ID: rec.ID, Status: rec.Status})
+	})
+	controlQuestions = questionLedger
 	controlWizards = wizards
 	controlSubagents = subagents
 	controlOps = ops
@@ -7649,6 +7667,8 @@ func handleControlRPCRequest(
 		boardStore:      controlBoardStore,
 		boardNotices:    controlBoardNotices,
 		conversations:   controlConversations,
+		questions:       controlQuestions,
+		taskSuggestions: controlTaskSuggestions,
 		environments:    controlEnvironments,
 	}
 	if svc.handlers.hooksMgr != nil {

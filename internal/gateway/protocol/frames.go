@@ -66,6 +66,7 @@ const (
 	MethodScopeOperatorWrite     = "operator.write"
 	MethodScopeOperatorAdmin     = "operator.admin"
 	MethodScopeOperatorApprovals = "operator.approvals"
+	MethodScopeOperatorQuestions = "operator.questions"
 	MethodScopeOperatorPairing   = "operator.pairing"
 	MethodScopeNode              = "node"
 	MethodScopeDynamic           = "dynamic"

@@ -1258,6 +1258,7 @@ func buildMethodDescriptors(descriptors []protocol.MethodDescriptor, methods []s
 		protocol.MethodScopeOperatorWrite:     true,
 		protocol.MethodScopeOperatorAdmin:     true,
 		protocol.MethodScopeOperatorApprovals: true,
+		protocol.MethodScopeOperatorQuestions: true,
 		protocol.MethodScopeOperatorPairing:   true,
 		protocol.MethodScopeNode:              true,
 		protocol.MethodScopeDynamic:           true,
@@ -1389,6 +1390,7 @@ func defaultOperatorScopes() []string {
 		protocol.MethodScopeOperatorAdmin,
 		protocol.MethodScopeOperatorApprovals,
 		protocol.MethodScopeOperatorPairing,
+		protocol.MethodScopeOperatorQuestions,
 		protocol.MethodScopeOperatorRead,
 		protocol.MethodScopeOperatorWrite,
 	}

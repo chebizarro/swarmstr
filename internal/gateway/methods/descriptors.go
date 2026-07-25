@@ -235,6 +235,15 @@ var exactMethodScopes = map[string]string{
 	MethodEnvironmentsStatus:          protocol.MethodScopeOperatorRead,
 	MethodEnvironmentsCreate:          protocol.MethodScopeOperatorAdmin,
 	MethodEnvironmentsDestroy:         protocol.MethodScopeOperatorAdmin,
+	MethodQuestionRequest:             protocol.MethodScopeOperatorQuestions,
+	MethodQuestionWaitAnswer:          protocol.MethodScopeOperatorQuestions,
+	MethodQuestionResolve:             protocol.MethodScopeOperatorQuestions,
+	MethodQuestionGet:                 protocol.MethodScopeOperatorQuestions,
+	MethodQuestionList:                protocol.MethodScopeOperatorQuestions,
+	MethodTaskSuggestionsList:         protocol.MethodScopeOperatorRead,
+	MethodTaskSuggestionsCreate:       protocol.MethodScopeOperatorWrite,
+	MethodTaskSuggestionsAccept:       protocol.MethodScopeOperatorAdmin,
+	MethodTaskSuggestionsDismiss:      protocol.MethodScopeOperatorWrite,
 }
 
 func inferredMethodScope(name string) string {
