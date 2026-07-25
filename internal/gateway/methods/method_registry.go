@@ -73,6 +73,15 @@ var adminDispatchRegistry = []struct {
 		MethodSkillsProposalsApply,
 		MethodSkillsProposalsReject,
 		MethodSkillsProposalsQuarantine,
+		// Discovery quartet (swarmstr-xfny.1) + chunked skill-archive upload
+		// (swarmstr-xfny.2). Control-RPC tooling surface only.
+		MethodSkillsSearch,
+		MethodSkillsDetail,
+		MethodSkillsSecurityVerdicts,
+		MethodSkillsSkillCard,
+		MethodSkillsUploadBegin,
+		MethodSkillsUploadChunk,
+		MethodSkillsUploadCommit,
 	}},
 	{AdminDispatchChannels, []string{
 		MethodChannelsStatus,

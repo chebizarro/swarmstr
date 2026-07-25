@@ -184,6 +184,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 	if result, handled, err := h.handleToolingRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
+	if result, handled, err := h.handleSkillsSurfaceRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
 	if result, handled, err := h.handleNodeRPC(ctx, in, method); handled {
 		return result, err
 	}

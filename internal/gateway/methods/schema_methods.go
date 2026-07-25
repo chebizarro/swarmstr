@@ -146,6 +146,13 @@ const (
 	MethodSkillsBins                  = "skills.bins"
 	MethodSkillsInstall               = "skills.install"
 	MethodSkillsUpdate                = "skills.update"
+	MethodSkillsSearch                = "skills.search"
+	MethodSkillsDetail                = "skills.detail"
+	MethodSkillsSecurityVerdicts      = "skills.securityVerdicts"
+	MethodSkillsSkillCard             = "skills.skillCard"
+	MethodSkillsUploadBegin           = "skills.upload.begin"
+	MethodSkillsUploadChunk           = "skills.upload.chunk"
+	MethodSkillsUploadCommit          = "skills.upload.commit"
 
 	// skills.curator.* — curator lifecycle (WS-G, swarmstr-xfny.3).
 	MethodSkillsCuratorStatus  = "skills.curator.status"
