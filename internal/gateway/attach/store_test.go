@@ -1,6 +1,8 @@
 package attach
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -88,4 +90,61 @@ func TestStoreMintSweepsStaleGrants(t *testing.T) {
 	if got := s.Count(); got != 1 {
 		t.Fatalf("stale grant not swept: count=%d", got)
 	}
+}
+
+func TestStoreResolvePicksCorrectGrantAmongMany(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	s := newTestStore(&now)
+
+	grants := make([]Grant, 0, 8)
+	for i := 0; i < 8; i++ {
+		grant, err := s.Mint(fmt.Sprintf("sess-%d", i), time.Minute)
+		if err != nil {
+			t.Fatalf("mint %d: %v", i, err)
+		}
+		grants = append(grants, grant)
+	}
+	// The constant-time scan must still resolve each token to its own grant.
+	for i, grant := range grants {
+		resolved, ok := s.Resolve(grant.Token)
+		if !ok || resolved.SessionKey != fmt.Sprintf("sess-%d", i) {
+			t.Fatalf("grant %d resolved to %+v ok=%v", i, resolved, ok)
+		}
+	}
+	if _, ok := s.Resolve(grants[0].Token + "x"); ok {
+		t.Fatal("near-miss token resolved")
+	}
+}
+
+func TestStoreConcurrentMintResolveRevoke(t *testing.T) {
+	s := NewStore()
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				grant, err := s.Mint(fmt.Sprintf("sess-%d-%d", g, i), time.Minute)
+				if err != nil {
+					t.Errorf("mint: %v", err)
+					return
+				}
+				if resolved, ok := s.Resolve(grant.Token); !ok || resolved.SessionKey != grant.SessionKey {
+					t.Errorf("resolve after mint failed: %+v ok=%v", resolved, ok)
+					return
+				}
+				if i%2 == 0 {
+					if !s.Revoke(grant.Token) {
+						t.Errorf("revoke failed for live grant")
+						return
+					}
+					if _, ok := s.Resolve(grant.Token); ok {
+						t.Errorf("revoked grant resolved")
+						return
+					}
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
 }

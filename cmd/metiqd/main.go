@@ -6481,6 +6481,19 @@ func main() {
 					}
 					return controlServices.handlers.mcpOps.telemetrySnapshotPtr()
 				},
+				// MCPManager mounts the /mcp loopback surface and publishes the
+				// active runtime so attach.grant can mint scoped bearer tokens.
+				MCPManager: mcpManager,
+				// AttachGrantResolver lets minted attach.grant tokens authenticate
+				// /mcp requests scoped to the grant's session key. Resolution is
+				// per request, so revoked/expired grants fail closed immediately.
+				AttachGrantResolver: func(token string) (string, bool) {
+					grant, ok := controlAttachGrants.Resolve(token)
+					if !ok {
+						return "", false
+					}
+					return grant.SessionKey, true
+				},
 				Metrics: func(_ context.Context) string {
 					// Update live gauges before rendering.
 					metricspkg.UptimeSeconds.Set(time.Since(startedAt).Seconds())

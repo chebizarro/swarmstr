@@ -155,7 +155,10 @@ func (h controlRPCHandler) handleAttachGrant(_ context.Context, in nostruntime.C
 		return nostruntime.ControlRPCResult{}, true, err
 	}
 	// Mirrors OpenClaw: a grant is only useful against a live MCP loopback
-	// surface, so refuse to mint one when no loopback runtime is active.
+	// surface, so refuse to mint one when no loopback runtime is active. In
+	// production admin.Start publishes the runtime whenever the /mcp surface
+	// is mounted (MCPManager wired), so this only trips when the admin API is
+	// disabled or MCP is off.
 	runtime := adminpkg.GetActiveMCPLoopbackRuntime()
 	if runtime == nil {
 		return nostruntime.ControlRPCResult{}, true, fmt.Errorf("mcp loopback server unavailable")
@@ -168,7 +171,7 @@ func (h controlRPCHandler) handleAttachGrant(_ context.Context, in nostruntime.C
 		"sessionKey":  grant.SessionKey,
 		"token":       grant.Token,
 		"expiresAtMs": grant.ExpiresAt.UnixMilli(),
-		"mcpConfig":   adminpkg.MCPLoopbackServerConfig(runtime.Port),
+		"mcpConfig":   adminpkg.MCPAttachGrantServerConfig(runtime.Port),
 		"env": map[string]string{
 			"METIQ_MCP_TOKEN": grant.Token,
 		},

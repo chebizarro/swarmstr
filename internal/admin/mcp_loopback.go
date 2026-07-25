@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	agentpkg "metiq/internal/agent"
 	mcppkg "metiq/internal/mcp"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -101,6 +103,86 @@ type MCPLoopbackOptions struct {
 
 	// MCPManager provides tool resolution and invocation.
 	MCPManager *mcppkg.Manager
+
+	// ResolveGrant validates an attach.grant bearer token and returns the
+	// session key the grant is bound to. Nil disables grant-token auth.
+	ResolveGrant func(token string) (sessionKey string, ok bool)
+}
+
+// ── Loopback auth ───────────────────────────────────────────────────────────
+
+// mcpAuthScope describes how one authenticated /mcp request may act.
+type mcpAuthScope struct {
+	// admin is true for requests authenticated with the static admin token
+	// (or made credential-less against a tokenless loopback-only bind).
+	admin bool
+	// sessionKey is the session an attach grant binds the request to.
+	// Empty for admin-scope requests.
+	sessionKey string
+}
+
+type mcpAuthScopeContextKey struct{}
+
+// mcpScopeFromContext extracts the auth scope stamped by withMCPLoopbackAuth.
+func mcpScopeFromContext(ctx context.Context) (mcpAuthScope, bool) {
+	scope, ok := ctx.Value(mcpAuthScopeContextKey{}).(mcpAuthScope)
+	return scope, ok
+}
+
+// mcpLoopbackCallContext returns the context tool dispatch must run under for
+// one /mcp request. Attach-grant requests are bound to the grant's session
+// key server-side — request headers can never widen or change the scope.
+func mcpLoopbackCallContext(r *http.Request) context.Context {
+	ctx := r.Context()
+	if scope, ok := mcpScopeFromContext(ctx); ok && scope.sessionKey != "" {
+		ctx = agentpkg.ContextWithSessionID(ctx, scope.sessionKey)
+	}
+	return ctx
+}
+
+// withMCPLoopbackAuth authenticates /mcp requests. Two credentials are
+// accepted, mirroring the OpenClaw loopback auth path:
+//
+//   - the static admin token → full (unscoped) access;
+//   - a live attach.grant token → access scoped to the grant's session key.
+//
+// Grants are re-resolved on every request (the surface is stateless), so
+// expiry and revocation take effect immediately — not just at connect time.
+// A grant match never escalates to admin scope: the session key is fixed by
+// the resolver. Any presented bearer that matches neither credential is
+// rejected with 401 (fail closed), even when no admin token is configured;
+// only a fully credential-less request against a tokenless (loopback-only)
+// bind passes through, matching withAuth parity for the rest of the admin
+// surface.
+func withMCPLoopbackAuth(adminToken string, resolveGrant func(string) (string, bool), next http.HandlerFunc) http.HandlerFunc {
+	adminToken = strings.TrimSpace(adminToken)
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		parts := strings.Fields(auth)
+		bearer := ""
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+			bearer = parts[1]
+		}
+		if adminToken != "" && bearer != "" && subtle.ConstantTimeCompare([]byte(bearer), []byte(adminToken)) == 1 {
+			ctx := context.WithValue(r.Context(), tokenAuthContextKey, true)
+			ctx = context.WithValue(ctx, mcpAuthScopeContextKey{}, mcpAuthScope{admin: true})
+			next(w, r.WithContext(ctx))
+			return
+		}
+		if resolveGrant != nil && bearer != "" {
+			if sessionKey, ok := resolveGrant(bearer); ok && strings.TrimSpace(sessionKey) != "" {
+				ctx := context.WithValue(r.Context(), mcpAuthScopeContextKey{}, mcpAuthScope{sessionKey: strings.TrimSpace(sessionKey)})
+				next(w, r.WithContext(ctx))
+				return
+			}
+		}
+		if adminToken == "" && auth == "" {
+			ctx := context.WithValue(r.Context(), mcpAuthScopeContextKey{}, mcpAuthScope{admin: true})
+			next(w, r.WithContext(ctx))
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+	}
 }
 
 // ── Tool cache ──────────────────────────────────────────────────────────────
@@ -341,7 +423,7 @@ func handleMCPJsonRPC(
 		}
 		return jsonRPCResult(id, map[string]any{
 			"protocolVersion": negotiated,
-			"capabilities":   map[string]any{"tools": map[string]any{}},
+			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo": map[string]any{
 				"name":    mcpLoopbackServerName,
 				"version": mcpLoopbackServerVersion,
@@ -489,10 +571,14 @@ func handleMCPLoopback(loopOpts MCPLoopbackOptions) http.HandlerFunc {
 		// Resolve tools.
 		schema, toolRefs := cache.resolve(loopOpts.MCPManager)
 
+		// Bind the request's auth scope into the dispatch context so grant-
+		// scoped requests execute every tool call under the grant's session.
+		ctx := mcpLoopbackCallContext(r)
+
 		// Process all messages.
 		responses := make([]any, 0, len(messages))
 		for _, msg := range messages {
-			resp, err := handleMCPJsonRPC(r.Context(), msg, schema, toolRefs, loopOpts.MCPManager)
+			resp, err := handleMCPJsonRPC(ctx, msg, schema, toolRefs, loopOpts.MCPManager)
 			if err != nil {
 				log.Printf("mcp loopback: handler error: %v", err)
 				responses = append(responses, jsonRPCError(parsedJSONRPCID(msg.ID), -32603, "Internal error"))
@@ -591,12 +677,30 @@ func MCPLoopbackServerConfig(port int) map[string]any {
 				"type": "http",
 				"url":  fmt.Sprintf("http://127.0.0.1:%d/mcp", port),
 				"headers": map[string]string{
-					"Authorization":               "Bearer ${METIQ_MCP_TOKEN}",
-					"x-session-key":                "${METIQ_MCP_SESSION_KEY}",
-					"x-metiq-agent-id":             "${METIQ_MCP_AGENT_ID}",
-					"x-metiq-account-id":           "${METIQ_MCP_ACCOUNT_ID}",
-					"x-metiq-message-channel":      "${METIQ_MCP_MESSAGE_CHANNEL}",
-					"x-metiq-sender-is-owner":      "${METIQ_MCP_SENDER_IS_OWNER}",
+					"Authorization":           "Bearer ${METIQ_MCP_TOKEN}",
+					"x-session-key":           "${METIQ_MCP_SESSION_KEY}",
+					"x-metiq-agent-id":        "${METIQ_MCP_AGENT_ID}",
+					"x-metiq-account-id":      "${METIQ_MCP_ACCOUNT_ID}",
+					"x-metiq-message-channel": "${METIQ_MCP_MESSAGE_CHANNEL}",
+					"x-metiq-sender-is-owner": "${METIQ_MCP_SENDER_IS_OWNER}",
+				},
+			},
+		},
+	}
+}
+
+// MCPAttachGrantServerConfig builds the server configuration block returned
+// by attach.grant. Unlike MCPLoopbackServerConfig it carries only the
+// token-backed Authorization header (OpenClaw parity: the grant binds the
+// session key server-side, so no other identity headers are honored).
+func MCPAttachGrantServerConfig(port int) map[string]any {
+	return map[string]any{
+		"mcpServers": map[string]any{
+			"metiq": map[string]any{
+				"type": "http",
+				"url":  fmt.Sprintf("http://127.0.0.1:%d/mcp", port),
+				"headers": map[string]string{
+					"Authorization": "Bearer ${METIQ_MCP_TOKEN}",
 				},
 			},
 		},
@@ -606,15 +710,17 @@ func MCPLoopbackServerConfig(port int) map[string]any {
 // ── Mount on admin mux ──────────────────────────────────────────────────────
 
 // mountMCPLoopback registers the MCP loopback endpoint on the admin mux.
-// The endpoint is mounted at POST /mcp with bearer token auth.
+// The endpoint is mounted at POST /mcp with bearer token auth; minted
+// attach.grant tokens are accepted when opts.AttachGrantResolver is wired.
 func mountMCPLoopback(mux *http.ServeMux, opts ServerOptions) {
 	if opts.MCPManager == nil {
 		return
 	}
 
 	loopOpts := MCPLoopbackOptions{
-		Token:      opts.Token,
-		MCPManager: opts.MCPManager,
+		Token:        opts.Token,
+		MCPManager:   opts.MCPManager,
+		ResolveGrant: opts.AttachGrantResolver,
 	}
-	mux.HandleFunc("/mcp", withAuth(opts.Token, handleMCPLoopback(loopOpts)))
+	mux.HandleFunc("/mcp", withMCPLoopbackAuth(opts.Token, opts.AttachGrantResolver, handleMCPLoopback(loopOpts)))
 }

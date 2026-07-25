@@ -8,6 +8,7 @@ package attach
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -114,6 +115,9 @@ func (s *Store) Mint(sessionKey string, ttl time.Duration) (Grant, error) {
 }
 
 // Resolve returns the live grant for token; expired grants are dropped.
+// The presented token is compared against every stored grant with a
+// constant-time comparison so lookup timing cannot leak token contents
+// (the /mcp loopback surface authenticates on this path).
 func (s *Store) Resolve(token string) (Grant, bool) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -122,15 +126,22 @@ func (s *Store) Resolve(token string) (Grant, bool) {
 	now := s.opts.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	grant, ok := s.grants[token]
-	if !ok {
+	var match Grant
+	found := false
+	for stored, grant := range s.grants {
+		if subtle.ConstantTimeCompare([]byte(stored), []byte(token)) == 1 {
+			match = grant
+			found = true
+		}
+	}
+	if !found {
 		return Grant{}, false
 	}
-	if !grant.ExpiresAt.After(now) {
-		delete(s.grants, token)
+	if !match.ExpiresAt.After(now) {
+		delete(s.grants, match.Token)
 		return Grant{}, false
 	}
-	return grant, true
+	return match, true
 }
 
 // Revoke invalidates one token and reports whether a live grant was removed.

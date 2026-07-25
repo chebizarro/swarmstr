@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -199,6 +200,13 @@ type ServerOptions struct {
 	// MCPManager is the MCP server manager used for the loopback MCP server.
 	// If nil, the /mcp endpoint is not mounted.
 	MCPManager *mcppkg.Manager
+
+	// AttachGrantResolver validates an attach.grant bearer token presented to
+	// the /mcp loopback surface and returns the session key it is bound to.
+	// Grants are re-resolved on every request, so revocation and expiry take
+	// effect immediately. Nil disables grant-token auth (the static admin
+	// token still works).
+	AttachGrantResolver func(token string) (sessionKey string, ok bool)
 
 	// Metrics is an optional callback that returns the Prometheus text
 	// exposition for /metrics.  If nil the endpoint returns a minimal stub.
@@ -531,8 +539,21 @@ func Start(ctx context.Context, opts ServerOptions) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("admin API listening on %s", opts.Addr)
-	err := srv.ListenAndServe()
+	ln, err := net.Listen("tcp", opts.Addr)
+	if err != nil {
+		return err
+	}
+	if opts.MCPManager != nil {
+		if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
+			// Publish the active loopback runtime so attach.grant can mint
+			// grants against the live /mcp surface; cleared when the server
+			// exits so grants fail closed after shutdown.
+			SetActiveMCPLoopbackRuntime(MCPLoopbackRuntime{Port: tcpAddr.Port, Token: opts.Token})
+			defer ClearActiveMCPLoopbackRuntime(opts.Token)
+		}
+	}
+	log.Printf("admin API listening on %s", ln.Addr())
+	err = srv.Serve(ln)
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
