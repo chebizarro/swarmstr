@@ -30,6 +30,7 @@ import (
 	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
+	userprofilespkg "metiq/internal/gateway/userprofiles"
 	worktreespkg "metiq/internal/gateway/worktrees"
 	hookspkg "metiq/internal/hooks"
 	mediapkg "metiq/internal/media"
@@ -108,6 +109,11 @@ type controlRPCDeps struct {
 	conversations   *conversationspkg.Registry
 	questions       *questionspkg.Manager
 	pluginApprovals *pluginapprovalpkg.Manager
+	userProfiles    *userprofilespkg.Manager
+
+	// restartCh mirrors main()'s restart scheduler channel so gateway.restart.request
+	// can trigger the real restart path. nil in unit tests that do not exercise it.
+	restartCh       chan int
 	taskSuggestions *tasksuggestionspkg.Registry
 	environments    *environmentspkg.Manager
 
@@ -195,6 +201,15 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return result, err
 	}
 	if result, handled, err := h.handlePluginSurfaceRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleUsersRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleGatewayLifecycleRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleChatSurfaceRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
 	if result, handled, err := h.handleSkillsSurfaceRPC(ctx, in, method, cfg); handled {

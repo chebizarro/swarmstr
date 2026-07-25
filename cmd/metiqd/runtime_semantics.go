@@ -622,6 +622,29 @@ func (r *agentJobRegistry) SetFallback(runID, from, to, reason string) {
 	h.mu.Unlock()
 }
 
+// ActiveRuns returns the number of agent runs still in flight (status pending).
+// Used by gateway.restart.preflight to report restart readiness.
+func (r *agentJobRegistry) ActiveRuns() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	active := 0
+	for _, h := range r.jobs {
+		if h == nil {
+			continue
+		}
+		h.mu.Lock()
+		status := h.snapshot.Status
+		h.mu.Unlock()
+		if status == "pending" {
+			active++
+		}
+	}
+	return active
+}
+
 // Get returns a snapshot of the job for runID, or (zero, false) if not found.
 func (r *agentJobRegistry) Get(runID string) (agentJobSnapshot, bool) {
 	r.mu.Lock()

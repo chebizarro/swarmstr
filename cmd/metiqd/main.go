@@ -42,6 +42,7 @@ import (
 	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
+	userprofilespkg "metiq/internal/gateway/userprofiles"
 	worktreespkg "metiq/internal/gateway/worktrees"
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/grasp"
@@ -177,6 +178,9 @@ var (
 	// lifecycle (swarmstr-zzin, WS-G). Set at startup once the ledger path is
 	// known; nil disables the plugin approval surface.
 	controlPluginApprovals *pluginapprovalpkg.Manager
+	// controlUserProfiles owns the durable users.* profile ledger
+	// (swarmstr-5lln). Set at startup once the ledger path is known.
+	controlUserProfiles *userprofilespkg.Manager
 	// controlTaskSuggestions tracks ephemeral model-proposed follow-up tasks
 	// (taskSuggestions.*, WS-A/A7). Suggestion ids intentionally vanish on
 	// restart.
@@ -1700,6 +1704,11 @@ func main() {
 		log.Fatalf("load plugin approval ledger: %v", err)
 	}
 	controlPluginApprovals = pluginApprovalLedger
+	userProfileLedger, err := userprofilespkg.NewManagerAt(filepath.Join(filepath.Dir(configFilePath), "user-profile-ledger.json"))
+	if err != nil {
+		log.Fatalf("load user profile ledger: %v", err)
+	}
+	controlUserProfiles = userProfileLedger
 	controlWizards = wizards
 	controlSubagents = subagents
 	controlOps = ops
@@ -7687,6 +7696,13 @@ func handleControlRPCRequest(
 			runtimeConfig: controlRuntimeConfig,
 		}
 	}
+	// controlServices is nil in unit tests that call handleControlRPCRequest
+	// directly; guard the restart-channel bridge so gateway.restart.request is a
+	// no-op ("restart scheduler unavailable") rather than a nil deref there.
+	var restartChForDeps chan int
+	if controlServices != nil {
+		restartChForDeps = controlServices.restartCh
+	}
 	deps := controlRPCDeps{
 		dmBus:             dmBus,
 		controlBus:        controlBus,
@@ -7749,6 +7765,8 @@ func handleControlRPCRequest(
 		conversations:   controlConversations,
 		questions:       controlQuestions,
 		pluginApprovals: controlPluginApprovals,
+		userProfiles:    controlUserProfiles,
+		restartCh:       restartChForDeps,
 		taskSuggestions: controlTaskSuggestions,
 		environments:    controlEnvironments,
 		talkSessions:    controlTalkSessions,

@@ -179,14 +179,42 @@ const (
 	MethodPluginsRegistrySearch     = "plugins.registry.search"
 	// Plugin-surface long tail (swarmstr-zzin, WS-G). Control-RPC tooling
 	// surface, mirroring the skills discovery wiring.
-	MethodPluginsList                 = "plugins.list"
-	MethodPluginsSearch               = "plugins.search"
-	MethodPluginsSetEnabled           = "plugins.setEnabled"
-	MethodPluginsRefresh              = "plugins.refresh"
-	MethodPluginApprovalList          = "plugin.approval.list"
-	MethodPluginApprovalRequest       = "plugin.approval.request"
-	MethodPluginApprovalWaitDecision  = "plugin.approval.waitDecision"
-	MethodPluginApprovalResolve       = "plugin.approval.resolve"
+	MethodPluginsList                = "plugins.list"
+	MethodPluginsSearch              = "plugins.search"
+	MethodPluginsSetEnabled          = "plugins.setEnabled"
+	MethodPluginsRefresh             = "plugins.refresh"
+	MethodPluginApprovalList         = "plugin.approval.list"
+	MethodPluginApprovalRequest      = "plugin.approval.request"
+	MethodPluginApprovalWaitDecision = "plugin.approval.waitDecision"
+	MethodPluginApprovalResolve      = "plugin.approval.resolve"
+	// Users durable-profile surface (swarmstr-5lln). Metiq deviation
+	// (nostr-user-identity accepted-deviation): profiles are keyed by nostr
+	// identity rather than OpenClaw's email-primary accounts, with optional
+	// email aliases + display name + avatar. Control-RPC surface only.
+	MethodUsersList           = "users.list"
+	MethodUsersSelf           = "users.self"
+	MethodUsersLinkEmail      = "users.linkEmail"
+	MethodUsersSetDisplayName = "users.setDisplayName"
+	MethodUsersSetAvatar      = "users.setAvatar"
+	// Gateway lifecycle (swarmstr-iiot). restart.preflight reports restart
+	// readiness (in-flight agent runs + active sessions); restart.request
+	// triggers the real restart scheduler (restartCh). gateway.suspend.* is
+	// intentionally NOT registered — the daemon has no cooperative suspend/
+	// resume machinery, so it stays an honest UNAVAILABLE gap (follow-up
+	// swarmstr issue); the shared `gateway` triage prefix is locked to the
+	// core-runtime/implement category so per-method accepted-deviation is not
+	// expressible in the parity matrix.
+	MethodGatewayRestartPreflight = "gateway.restart.preflight"
+	MethodGatewayRestartRequest   = "gateway.restart.request"
+	// Chat control-UI surface (swarmstr-viqq). Backed by the existing
+	// docs/transcript session subsystem. startup returns bootstrap state;
+	// metadata returns per-session chat metadata; message.get fetches one
+	// transcript entry by id; toolTitles returns deterministic tool-call
+	// display titles.
+	MethodChatStartup                 = "chat.startup"
+	MethodChatMetadata                = "chat.metadata"
+	MethodChatMessageGet              = "chat.message.get"
+	MethodChatToolTitles              = "chat.toolTitles"
 	MethodNodePairRequest             = "node.pair.request"
 	MethodNodePairList                = "node.pair.list"
 	MethodNodePairApprove             = "node.pair.approve"

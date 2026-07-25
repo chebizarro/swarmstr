@@ -138,9 +138,26 @@ var exactMethodScopes = map[string]string{
 	MethodPluginsList:        protocol.MethodScopeOperatorRead,
 	MethodPluginsSearch:      protocol.MethodScopeOperatorRead,
 	MethodPluginApprovalList: protocol.MethodScopeOperatorRead,
-	MethodVoicewakeGet:       protocol.MethodScopeOperatorRead,
-	MethodTTSStatus:          protocol.MethodScopeOperatorRead,
-	MethodTTSProviders:       protocol.MethodScopeOperatorRead,
+	// Users durable-profile surface (swarmstr-5lln): reads enumerate/self,
+	// mutations (linkEmail/setDisplayName/setAvatar) require operator.admin.
+	MethodUsersList:           protocol.MethodScopeOperatorRead,
+	MethodUsersSelf:           protocol.MethodScopeOperatorRead,
+	MethodUsersLinkEmail:      protocol.MethodScopeOperatorAdmin,
+	MethodUsersSetDisplayName: protocol.MethodScopeOperatorAdmin,
+	MethodUsersSetAvatar:      protocol.MethodScopeOperatorAdmin,
+	// Gateway lifecycle (swarmstr-iiot): preflight is a read-only readiness
+	// snapshot (OpenClaw scopes it operator.read); request triggers a restart.
+	MethodGatewayRestartPreflight: protocol.MethodScopeOperatorRead,
+	MethodGatewayRestartRequest:   protocol.MethodScopeOperatorAdmin,
+	// Chat control-UI surface (swarmstr-viqq): read-only bootstrap/metadata/
+	// message lookup + deterministic tool titles.
+	MethodChatStartup:    protocol.MethodScopeOperatorRead,
+	MethodChatMetadata:   protocol.MethodScopeOperatorRead,
+	MethodChatMessageGet: protocol.MethodScopeOperatorRead,
+	MethodChatToolTitles: protocol.MethodScopeOperatorRead,
+	MethodVoicewakeGet:   protocol.MethodScopeOperatorRead,
+	MethodTTSStatus:      protocol.MethodScopeOperatorRead,
+	MethodTTSProviders:   protocol.MethodScopeOperatorRead,
 	// Voice/talk long tail (swarmstr-0tfj): read for discovery/get, write for
 	// synthesis + session/turn/routing mutations.
 	MethodTTSPersonas:                 protocol.MethodScopeOperatorRead,

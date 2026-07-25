@@ -28,6 +28,7 @@ const (
 	AdminDispatchWorkspace   AdminDispatchGroup = "workspace"
 	AdminDispatchSkills      AdminDispatchGroup = "skills"
 	AdminDispatchTalk        AdminDispatchGroup = "talk"
+	AdminDispatchUsers       AdminDispatchGroup = "users"
 )
 
 var adminDispatchRegistry = []struct {
@@ -302,6 +303,22 @@ var adminDispatchRegistry = []struct {
 		MethodSessionDiscussionInfo,
 		MethodSessionDiscussionOpen,
 		MethodSessionsObserverAsk,
+		// Chat control-UI surface (swarmstr-viqq). chat prefix -> sessions-chat-v4
+		// triage group. Backed by the docs/transcript session subsystem.
+		MethodChatStartup,
+		MethodChatMetadata,
+		MethodChatMessageGet,
+		MethodChatToolTitles,
+	}},
+	{AdminDispatchUsers, []string{
+		// Durable user-profile surface (swarmstr-5lln). nostr-user-identity
+		// accepted-deviation: profiles keyed by nostr identity + optional email
+		// aliases. Reads=OperatorRead, mutations=OperatorAdmin.
+		MethodUsersList,
+		MethodUsersSelf,
+		MethodUsersLinkEmail,
+		MethodUsersSetDisplayName,
+		MethodUsersSetAvatar,
 	}},
 	{AdminDispatchTasks, []string{
 		MethodTasksCreate,
@@ -342,6 +359,12 @@ var adminDispatchRegistry = []struct {
 		MethodHooksDisable,
 		MethodHooksInfo,
 		MethodHooksCheck,
+		// Gateway lifecycle (swarmstr-iiot). gateway prefix -> core-runtime triage.
+		// restart.preflight = readiness snapshot; restart.request triggers the
+		// real restart scheduler. gateway.suspend.* is intentionally NOT wired
+		// (honest UNAVAILABLE — no cooperative suspend machinery in the daemon).
+		MethodGatewayRestartPreflight,
+		MethodGatewayRestartRequest,
 	}},
 	{AdminDispatchACP, []string{
 		MethodACPRegister,

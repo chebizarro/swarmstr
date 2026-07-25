@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 261,
+    "implemented": 272,
     "partial": 0,
-    "missing": 63,
+    "missing": 52,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "implement": 308
@@ -947,7 +947,8 @@
     },
     {
       "method": "users.list",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "users.list",
       "notes": "",
       "triage": "accepted-deviation",
       "triage_group": "nostr-user-identity",
@@ -955,7 +956,8 @@
     },
     {
       "method": "users.self",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "users.self",
       "notes": "",
       "triage": "accepted-deviation",
       "triage_group": "nostr-user-identity",
@@ -963,7 +965,8 @@
     },
     {
       "method": "users.linkEmail",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "users.linkEmail",
       "notes": "",
       "triage": "accepted-deviation",
       "triage_group": "nostr-user-identity",
@@ -971,7 +974,8 @@
     },
     {
       "method": "users.setDisplayName",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "users.setDisplayName",
       "notes": "",
       "triage": "accepted-deviation",
       "triage_group": "nostr-user-identity",
@@ -979,7 +983,8 @@
     },
     {
       "method": "users.setAvatar",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "users.setAvatar",
       "notes": "",
       "triage": "accepted-deviation",
       "triage_group": "nostr-user-identity",
@@ -2151,7 +2156,8 @@
     },
     {
       "method": "gateway.restart.preflight",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "gateway.restart.preflight",
       "notes": "",
       "triage": "implement",
       "triage_group": "core-runtime",
@@ -2159,7 +2165,8 @@
     },
     {
       "method": "gateway.restart.request",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "gateway.restart.request",
       "notes": "",
       "triage": "implement",
       "triage_group": "core-runtime",
@@ -2262,7 +2269,8 @@
     },
     {
       "method": "chat.startup",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "chat.startup",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -2270,7 +2278,8 @@
     },
     {
       "method": "chat.metadata",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "chat.metadata",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -2278,7 +2287,8 @@
     },
     {
       "method": "chat.message.get",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "chat.message.get",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -2538,7 +2548,8 @@
     },
     {
       "method": "chat.toolTitles",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "chat.toolTitles",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
