@@ -39,6 +39,15 @@ declarations plus their own top-level statements in original execution order
 - `js/views.js`: management views (dashboard, agents, channels, sessions,
   cron, nodes, MCP, skills, config, usage) plus the session files and sharing
   panels.
+- `js/terminal.js`: terminal panel — `terminal.list` session picker,
+  open/attach with seq-reconciled replay, a dependency-free `<pre>` renderer
+  fed by `terminal.data`, keyboard input, resize, and drag-drop
+  `terminal.upload` (16 MiB cap, canonical padded base64).
+- `js/surfaces.js`: question wizard queue (`question.requested` →
+  `question.resolve`, reconciled via `question.list` like the approval
+  queue), the Tasks view (taskSuggestions accept/dismiss, pending questions,
+  attach.grant/revoke operator card), and the Boards view embedding the
+  sandboxed board frame host.
 - `js/controllers.js`: run controls, mobile sidebar/drawer, thinking/typing
   indicators, connection state, streaming-bubble lifecycle.
 - `js/gateway-client.js`: Gateway client — WebSocket framing, request/response

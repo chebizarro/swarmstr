@@ -598,6 +598,46 @@ footer.drag-over { outline: 2px dashed var(--info); outline-offset: -0.35rem; }
   transform: translateY(0);
 }
 
+/* ── Terminal panel ── */
+.terminal-card { grid-column: 1 / -1; }
+.terminal-screen {
+  display: block; width: 100%; height: 52vh; min-height: 240px;
+  margin: 0.5rem 0; padding: 0.5rem 0.6rem; overflow-y: auto;
+  background: #05070c; color: #d6e4f0;
+  border: 1px solid var(--border); border-radius: 0.45rem;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.78rem; line-height: 1.25;
+  white-space: pre-wrap; word-break: break-all;
+  cursor: text;
+}
+.terminal-screen:focus { outline: 1px solid var(--info); box-shadow: 0 0 10px rgba(0, 212, 255, 0.25); }
+.terminal-screen.drag-over { outline: 2px dashed var(--info); }
+
+/* ── Question wizard modal ── */
+.question-body { max-height: 46vh; overflow-y: auto; margin: 0.6rem 0; }
+.question-fieldset {
+  border: 1px solid var(--border); border-radius: 0.45rem;
+  padding: 0.55rem 0.7rem; margin-bottom: 0.6rem;
+}
+.question-fieldset legend { font-size: 0.72rem; color: var(--info); padding: 0 0.3rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.question-text { font-size: 0.85rem; margin-bottom: 0.45rem; }
+.question-option { display: flex; align-items: baseline; gap: 0.45rem; font-size: 0.8rem; padding: 0.2rem 0; cursor: pointer; }
+.question-other { width: 100%; margin-top: 0.35rem; }
+
+/* ── Boards frame host ── */
+.board-card { grid-column: 1 / -1; }
+.board-widget { border: 1px solid var(--border); border-radius: 0.45rem; padding: 0.5rem 0.6rem; margin: 0.5rem 0; }
+.board-frame {
+  display: block; width: 100%; height: 340px; margin-top: 0.45rem;
+  border: 1px solid var(--border); border-radius: 0.4rem; background: #fff;
+}
+.grant-detail {
+  margin-top: 0.5rem; padding: 0.5rem 0.6rem; overflow-x: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 0.4rem;
+  font-size: 0.7rem; white-space: pre-wrap; word-break: break-all;
+}
+.mgmt-list-host { margin-top: 0.45rem; }
+
 @media (max-width: 900px) {
   body { min-width: 0; }
   header {

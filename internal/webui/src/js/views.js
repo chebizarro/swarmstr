@@ -458,5 +458,8 @@
     if (view === 'channels') return showChannelsView(null, token);
     if (view === 'config') return showConfigView(token);
     if (view === 'usage') return showUsageView(token);
+    if (view === 'terminal') return showTerminalView(token);
+    if (view === 'boards') return showBoardsView(token);
+    if (view === 'tasks') return showTasksView(token);
   }
 

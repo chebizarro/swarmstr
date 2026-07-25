@@ -29,6 +29,8 @@ var UISourceFiles = []string{
 	"js/state.js",          // template consts, IIFE open, DOM refs, state, I18N
 	"js/chat.js",           // composer, markdown, messages, tool cards, history rendering
 	"js/views.js",          // management views (dashboard/agents/channels/files/sharing/…)
+	"js/terminal.js",       // terminal panel: PTY viewer, attach replay, input, uploads
+	"js/surfaces.js",       // question wizard queue, tasks/suggestions, attach grants, boards
 	"js/controllers.js",    // run controls, sidebar toggle, thinking/typing, streaming bubble
 	"js/gateway-client.js", // sendFrame/callMethod, WS event dispatcher, connect/reconnect
 	"js/sidebar.js",        // grouped sidebar loaders, session history, session switching

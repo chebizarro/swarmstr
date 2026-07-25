@@ -150,6 +150,24 @@
       case 'channel.message':
         // Optionally surface channel messages in a notification.
         break;
+      case 'terminal.data':
+        handleTerminalData(payload);
+        break;
+      case 'terminal.exit':
+        handleTerminalExit(payload);
+        break;
+      case 'question.requested':
+        if (payload) enqueueQuestion(payload);
+        break;
+      case 'question.resolved':
+        if (payload && payload.id) dropQuestion(payload.id);
+        break;
+      case 'task.suggestion':
+        handleTaskSuggestionEvent(payload);
+        break;
+      case 'board.changed':
+        handleBoardChanged(payload);
+        break;
     }
   }
 
@@ -173,7 +191,7 @@
               client: { id: 'metiq-webui', mode: 'local', platform: navigator.platform || 'browser', version: '0.0.0', instanceId: 'webui-' + Math.random().toString(36).slice(2) },
               minProtocol: 4, maxProtocol: 4,
               role: 'operator',
-              scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals', 'operator.pairing'],
+              scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals', 'operator.pairing', 'operator.questions'],
               auth: { token: TOKEN, nonce }
             }
           });
@@ -187,10 +205,11 @@
                 if (!Array.isArray(descriptors) || descriptors.length === 0) throw new Error('gateway does not advertise method descriptors');
                 gatewayMethodDescriptors = new Map(descriptors.filter(item => item && item.name).map(item => [item.name, item]));
                 gatewayScopes = new Set((hello.auth && hello.auth.scopes) || []);
-                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion'];
+                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'question.requested', 'question.resolved', 'task.suggestion', 'board.changed'];
                 const events = wanted.filter(name => advertised.has(name));
                 await callMethod('events.subscribe', { events });
                 await reconcilePendingApprovals();
+                await reconcilePendingQuestions();
                 connected = true;
                 reconnectDelay = 1500;
                 chatRunSeq.clear();
@@ -240,6 +259,7 @@
       gatewayScopes = new Set();
       finalizeStreaming();
       setRunActive(false);
+      handleTerminalDisconnect();
       setConnected(null, 'reconnecting in ' + (reconnectDelay / 1000).toFixed(1) + 's…');
       Object.values(pendingResolvers).forEach(resolver => resolver.reject({ message: 'gateway disconnected' }));
       pendingResolvers = {};

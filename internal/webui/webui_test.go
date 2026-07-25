@@ -287,6 +287,39 @@ func TestHandler_IncludesExpandedWebUIViewsAndCatalog(t *testing.T) {
 	}
 }
 
+func TestHandler_IncludesWorkspaceSurfacePanels(t *testing.T) {
+	h := Handler("/ws", "")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		// Terminal panel: picker, attach replay reconcile, input, uploads.
+		"data-view=\"terminal\"", "showTerminalView",
+		"terminal.list", "terminal.open", "terminal.attach", "terminal.input",
+		"terminal.resize", "terminal.close", "terminal.text", "terminal.upload",
+		"handleTerminalData", "handleTerminalExit", "'detached'",
+		// Question surface: queue + wizard + reconnect reconciliation.
+		"question-modal", "question.list", "question.resolve",
+		"reconcilePendingQuestions", "enqueueQuestion",
+		// Task suggestions and attach grants.
+		"data-view=\"tasks\"", "taskSuggestions.list", "taskSuggestions.accept",
+		"taskSuggestions.dismiss", "attach.grant", "attach.revoke",
+		// Boards frame host embedding.
+		"data-view=\"boards\"", "board.get", "board-frame", "allow-scripts",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body should contain %q", want)
+		}
+	}
+}
+
 func TestGatewayMethodCallsitesAreRegistered(t *testing.T) {
 	raw, err := os.ReadFile("ui.html")
 	if err != nil {
@@ -340,7 +373,7 @@ func TestProtocolV4ChatStreamingContract(t *testing.T) {
 	html := string(raw)
 	for _, required := range []string{
 		"minProtocol: 4, maxProtocol: 4",
-		"scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals', 'operator.pairing']",
+		"scopes: ['operator.admin', 'operator.read', 'operator.write', 'operator.approvals', 'operator.pairing', 'operator.questions']",
 		"hello.features.methodDescriptors",
 		"gatewayMethodDescriptors.get(method)",
 		"callMethod('events.subscribe'",

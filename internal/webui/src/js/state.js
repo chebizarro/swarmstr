@@ -32,6 +32,17 @@ const TOKEN   = '{{.Token}}';
   const approvalIDLabel    = $('approval-id');
   const approvalError      = $('approval-error');
   const approvalButtons    = ['approval-deny', 'approval-approve-once', 'approval-approve-always'].map($);
+  const questionsBadge     = $('questions-badge');
+  const questionModal      = $('question-modal');
+  const questionSubtitle   = $('question-subtitle');
+  const questionBody       = $('question-body');
+  const questionError      = $('question-error');
+  const questionQueueCount = $('question-queue-count');
+  const questionCountdown  = $('question-countdown');
+  const questionIDLabel    = $('question-id');
+  const questionSubmitBtn  = $('question-submit');
+  const questionCancelBtn  = $('question-cancel');
+  const questionLaterBtn   = $('question-later');
   const sessionsList    = $('sessions-list');
   const channelsList    = $('channels-list');
   const agentsList      = $('agents-list');
@@ -58,6 +69,15 @@ const TOKEN   = '{{.Token}}';
   let approvalQueue = [];
   let currentApprovalID = null;
   let currentApproval = null;
+  // Question queue: pending question.requested records (agent pose-and-block).
+  let questionQueue = [];
+  let currentQuestionID = null;
+  let questionCountdownTimer = null;
+  // Operator-minted attach grants (process-local; tokens vanish on reload).
+  let mintedAttachGrants = [];
+  // Boards view state.
+  let boardsSessionKey = null;
+  let boardsRefreshTimer = null;
   let activeRun = false;
   let activeRunSessionID = null;
   let toolCards = {};

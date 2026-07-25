@@ -57,9 +57,18 @@ func TestUISourceManifestFragmentsExist(t *testing.T) {
 // (wanted.filter(advertised.has)), so these subscriptions are inert until the
 // gateway starts advertising them.  Keep them allowlisted rather than silently
 // dropping the handlers.
+//
+// question.requested/question.resolved/task.suggestion are emitted by the
+// daemon (control_rpc_questions.go / control_rpc_task_suggestions.go) but are
+// not yet listed in gatewayws.AllPushEvents; until that catalog gap closes
+// (swarmstr follow-up), the subscriptions stay inert and the UI falls back to
+// question.list / taskSuggestions.list reconciliation.
 var pluginApprovalEvents = map[string]struct{}{
 	"plugin.approval.requested": {},
 	"plugin.approval.resolved":  {},
+	"question.requested":        {},
+	"question.resolved":         {},
+	"task.suggestion":           {},
 }
 
 // TestUIEventContractMatchesGatewayCatalog is the protocol-v4 event-handling

@@ -15,6 +15,7 @@
   <div class="header-info">
     <span class="badge" id="agent-badge">agent: main</span>
     <span class="badge warn" id="approvals-badge" style="display:none">⚠ approval pending</span>
+    <span class="badge warn" id="questions-badge" style="display:none">? question pending</span>
     <span id="conn-label">connecting…</span>
   </div>
 </header>
@@ -68,6 +69,26 @@
       <button class="btn btn-deny" id="approval-deny">Deny</button>
       <button class="btn btn-approve-once" id="approval-approve-once">Allow once</button>
       <button class="btn btn-approve" id="approval-approve-always">Always allow</button>
+    </div>
+  </div>
+</div>
+
+<!-- Question wizard modal (agent pose-and-block flow) -->
+<div class="modal-overlay" id="question-modal">
+  <div class="modal">
+    <h2 id="question-title">? Agent Question</h2>
+    <p id="question-subtitle" style="font-size:0.82rem;color:var(--text-muted)">An agent is blocked on your answer:</p>
+    <div class="approval-summary">
+      <span class="approval-pill warn" id="question-queue-count">queue: 1</span>
+      <span class="approval-pill warn" id="question-countdown">expires: —</span>
+      <span class="approval-pill" id="question-id">id: —</span>
+    </div>
+    <div class="question-body" id="question-body"></div>
+    <p class="modal-error" id="question-error"></p>
+    <div class="modal-actions">
+      <button class="btn" id="question-later">Later</button>
+      <button class="btn btn-deny" id="question-cancel">Cancel question</button>
+      <button class="btn btn-approve" id="question-submit">Submit answers</button>
     </div>
   </div>
 </div>
