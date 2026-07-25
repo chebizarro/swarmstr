@@ -228,6 +228,13 @@ var exactMethodScopes = map[string]string{
 	MethodConversationsSend:           protocol.MethodScopeOperatorAdmin,
 	MethodConversationsTurn:           protocol.MethodScopeOperatorAdmin,
 	MethodConversationsTurnCancel:     protocol.MethodScopeOperatorAdmin,
+	MethodArtifactsList:               protocol.MethodScopeOperatorRead,
+	MethodArtifactsGet:                protocol.MethodScopeOperatorRead,
+	MethodArtifactsDownload:           protocol.MethodScopeOperatorRead,
+	MethodEnvironmentsList:            protocol.MethodScopeOperatorRead,
+	MethodEnvironmentsStatus:          protocol.MethodScopeOperatorRead,
+	MethodEnvironmentsCreate:          protocol.MethodScopeOperatorAdmin,
+	MethodEnvironmentsDestroy:         protocol.MethodScopeOperatorAdmin,
 }
 
 func inferredMethodScope(name string) string {
@@ -295,4 +302,6 @@ var controlPlaneWriteMethods = map[string]bool{
 	MethodWorktreesRemove:         true,
 	MethodWorktreesRestore:        true,
 	MethodWorktreesGc:             true,
+	MethodEnvironmentsCreate:      true,
+	MethodEnvironmentsDestroy:     true,
 }

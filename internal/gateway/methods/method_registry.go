@@ -312,6 +312,13 @@ var adminDispatchRegistry = []struct {
 		MethodConversationsSend,
 		MethodConversationsTurn,
 		MethodConversationsTurnCancel,
+		MethodArtifactsList,
+		MethodArtifactsGet,
+		MethodArtifactsDownload,
+		MethodEnvironmentsList,
+		MethodEnvironmentsStatus,
+		MethodEnvironmentsCreate,
+		MethodEnvironmentsDestroy,
 	}},
 }
 

@@ -19,6 +19,7 @@ import (
 	boardpkg "metiq/internal/gateway/board"
 	"metiq/internal/gateway/channels"
 	conversationspkg "metiq/internal/gateway/conversations"
+	environmentspkg "metiq/internal/gateway/environments"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	"metiq/internal/gateway/sessioncoord"
@@ -97,6 +98,7 @@ type controlRPCDeps struct {
 	boardStore      *boardpkg.Store
 	boardNotices    *boardpkg.NoticeDeduper
 	conversations   *conversationspkg.Registry
+	environments    *environmentspkg.Manager
 }
 
 type hooksEventFirer interface {

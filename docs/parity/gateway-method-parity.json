@@ -12,13 +12,13 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 179,
+    "implemented": 186,
     "partial": 0,
-    "missing": 145,
+    "missing": 138,
     "triage_category_counts": {
       "accepted-deviation": 16,
-      "defer": 25,
-      "implement": 283
+      "defer": 18,
+      "implement": 290
     }
   },
   "entries": [
@@ -1010,18 +1010,20 @@
     },
     {
       "method": "environments.list",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "metiq_method": "environments.list",
+      "notes": "Static gateway-local environment plus sandbox-backed worker environments and configured extra.environments.profiles.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "environments.status",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "metiq_method": "environments.status",
+      "notes": "Status projection for gateway and managed sandbox environments.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -1188,26 +1190,29 @@
     },
     {
       "method": "artifacts.list",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "metiq_method": "artifacts.list",
+      "notes": "Workspace CAS-backed artifact store (internal/gateway/artifacts); artifacts are content-addressed blobs scoped by sessionKey/runId/taskId/agentId.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "artifacts.get",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "metiq_method": "artifacts.get",
+      "notes": "Workspace CAS-backed artifact lookup with scope filters.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "artifacts.download",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "metiq_method": "artifacts.download",
+      "notes": "Inline base64 download from the workspace CAS store (download.mode=bytes).",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
@@ -2487,18 +2492,20 @@
     },
     {
       "method": "environments.create",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "metiq_method": "environments.create",
+      "notes": "Provisions a docker-sandbox environment from a configured profile with idempotencyKey dedupe; fails closed when docker is unavailable.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {
       "method": "environments.destroy",
-      "status": "missing",
-      "notes": "",
-      "triage": "defer",
-      "triage_group": "workspace-interactive-surfaces",
+      "status": "implemented",
+      "metiq_method": "environments.destroy",
+      "notes": "Retires a managed sandbox environment; idempotent on already-destroyed ids.",
+      "triage": "implement",
+      "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
     },
     {

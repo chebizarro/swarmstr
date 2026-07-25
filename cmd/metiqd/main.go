@@ -30,6 +30,7 @@ import (
 	boardpkg "metiq/internal/gateway/board"
 	"metiq/internal/gateway/channels"
 	conversationspkg "metiq/internal/gateway/conversations"
+	environmentspkg "metiq/internal/gateway/environments"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
 	gatewayprotocol "metiq/internal/gateway/protocol"
@@ -146,6 +147,9 @@ var (
 	// controlConversations tracks external conversation addresses and pending
 	// conversation turns (WS-A/A7.5).
 	controlConversations = conversationspkg.NewRegistry()
+	// controlEnvironments manages long-lived sandbox-backed execution
+	// environments for the environments.* surface (WS-A/A7 deferred slice).
+	controlEnvironments = environmentspkg.NewManager(environmentspkg.Options{})
 	controlWizards              *wizardRegistry
 	controlOps                  *operationsRegistry
 	controlAgentRegistry        *agent.AgentRuntimeRegistry
@@ -7645,6 +7649,7 @@ func handleControlRPCRequest(
 		boardStore:      controlBoardStore,
 		boardNotices:    controlBoardNotices,
 		conversations:   controlConversations,
+		environments:    controlEnvironments,
 	}
 	if svc.handlers.hooksMgr != nil {
 		deps.hooksMgr = svc.handlers.hooksMgr

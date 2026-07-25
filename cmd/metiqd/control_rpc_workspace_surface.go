@@ -75,6 +75,20 @@ func (h controlRPCHandler) handleWorkspaceSurfaceRPC(ctx context.Context, in nos
 		return h.handleConversationsTurn(ctx, in)
 	case methods.MethodConversationsTurnCancel:
 		return h.handleConversationsTurnCancel(ctx, in)
+	case methods.MethodArtifactsList:
+		return h.handleArtifactsList(ctx, in, cfg)
+	case methods.MethodArtifactsGet:
+		return h.handleArtifactsGet(ctx, in, cfg)
+	case methods.MethodArtifactsDownload:
+		return h.handleArtifactsDownload(ctx, in, cfg)
+	case methods.MethodEnvironmentsList:
+		return h.handleEnvironmentsList(ctx, in, cfg)
+	case methods.MethodEnvironmentsStatus:
+		return h.handleEnvironmentsStatus(ctx, in)
+	case methods.MethodEnvironmentsCreate:
+		return h.handleEnvironmentsCreate(ctx, in, cfg)
+	case methods.MethodEnvironmentsDestroy:
+		return h.handleEnvironmentsDestroy(ctx, in)
 	default:
 		return nostruntime.ControlRPCResult{}, false, nil
 	}

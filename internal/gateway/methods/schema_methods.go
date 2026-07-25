@@ -267,4 +267,11 @@ const (
 	MethodConversationsSend        = "conversations.send"
 	MethodConversationsTurn        = "conversations.turn"
 	MethodConversationsTurnCancel  = "conversations.turn.cancel"
+	MethodArtifactsList            = "artifacts.list"
+	MethodArtifactsGet             = "artifacts.get"
+	MethodArtifactsDownload        = "artifacts.download"
+	MethodEnvironmentsList         = "environments.list"
+	MethodEnvironmentsStatus       = "environments.status"
+	MethodEnvironmentsCreate       = "environments.create"
+	MethodEnvironmentsDestroy      = "environments.destroy"
 )
