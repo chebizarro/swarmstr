@@ -1758,10 +1758,186 @@ const TOKEN   = '{{.Token}}';
     addKV(addMgmtCard(grid, 'Cost'), Object.keys(cost).sort().map(k => [k, cost[k]]));
   }
 
+  // ── Conversations view: channel conversation targets, send + blocking turn ─
+  async function showConversationsView(token) {
+    const { grid } = beginManagementView('Conversations', 'Channel conversation targets: list, send a message, or run a blocking turn.');
+    if (!isViewCurrent('conversations', token)) return;
+    const filters = addMgmtCard(grid, 'Filters');
+    const filterRow = document.createElement('div'); filterRow.className = 'action-row';
+    const agentInput = document.createElement('input'); agentInput.className = 'mini-input'; agentInput.placeholder = 'agent id'; agentInput.value = activeAgentID || 'main';
+    const channelInput = document.createElement('input'); channelInput.className = 'mini-input'; channelInput.placeholder = 'channel filter (optional)';
+    const refreshBtn = document.createElement('button'); refreshBtn.className = 'mini-btn'; refreshBtn.textContent = 'Refresh';
+    filterRow.append(agentInput, channelInput, refreshBtn); filters.appendChild(filterRow);
+
+    const listCard = addMgmtCard(grid, 'Conversations');
+    const listHost = document.createElement('div'); listHost.className = 'mgmt-list-host'; listCard.appendChild(listHost);
+
+    const composeCard = addMgmtCard(grid, 'Send / Turn');
+    const refInput = document.createElement('input'); refInput.className = 'mini-input'; refInput.placeholder = 'conversationRef';
+    const message = document.createElement('textarea'); message.className = 'config-editor'; message.placeholder = 'message';
+    const timeoutInput = document.createElement('input'); timeoutInput.className = 'mini-input'; timeoutInput.placeholder = 'turn timeout ms (default 30000)';
+    const composeActions = document.createElement('div'); composeActions.className = 'action-row';
+    const status = document.createElement('div'); status.className = 'sub';
+    composeCard.append(refInput, message, timeoutInput, composeActions, status);
+
+    async function loadConversations() {
+      listHost.innerHTML = '<div class="sidebar-empty">Loading…</div>';
+      const params = { agent_id: agentInput.value.trim() || 'main', limit: 100 };
+      const channel = channelInput.value.trim(); if (channel) params.channel = channel;
+      const res = await callSafe('conversations.list', params);
+      listHost.innerHTML = '';
+      if (res.error) { listHost.innerHTML = `<div class="sidebar-empty">${escapeHTML(res.error)}</div>`; return; }
+      const conversations = res.conversations || [];
+      if (!conversations.length) { listHost.innerHTML = '<div class="sidebar-empty">No conversations observed yet</div>'; return; }
+      conversations.forEach(conv => {
+        const row = document.createElement('div'); row.className = 'mgmt-row';
+        row.innerHTML = `<strong>${escapeHTML(conv.label || conv.target || conv.conversationRef)}</strong><div class="sub">${escapeHTML(conv.channel || '')} · ${escapeHTML(conv.kind || '')} · ${escapeHTML(truncate(conv.conversationRef, 40))}</div>`;
+        const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
+        const select = document.createElement('button'); select.className = 'mini-btn'; select.textContent = 'Select';
+        select.addEventListener('click', () => { refInput.value = conv.conversationRef; status.textContent = 'Selected ' + truncate(conv.conversationRef, 48); });
+        actions.appendChild(select);
+        listHost.appendChild(row);
+      });
+    }
+
+    const sendBtn = document.createElement('button'); sendBtn.className = 'mini-btn'; sendBtn.textContent = 'Send';
+    sendBtn.addEventListener('click', async () => {
+      const ref = refInput.value.trim(); const msg = message.value.trim();
+      if (!ref || !msg) { status.textContent = 'conversationRef and message are required'; return; }
+      sendBtn.disabled = true; status.textContent = 'Sending…';
+      const res = await callSafe('conversations.send', { agent_id: agentInput.value.trim() || 'main', operationId: 'webui-send-' + Date.now(), conversationRef: ref, message: msg });
+      sendBtn.disabled = false;
+      status.textContent = res.error ? ('Send failed: ' + res.error) : ('Sent · ' + (res.status || 'ok') + (res.messageId ? ' · ' + res.messageId : ''));
+    });
+    const turnBtn = document.createElement('button'); turnBtn.className = 'mini-btn'; turnBtn.textContent = 'Turn (blocking)';
+    turnBtn.addEventListener('click', async () => {
+      const ref = refInput.value.trim(); const msg = message.value.trim();
+      if (!ref || !msg) { status.textContent = 'conversationRef and message are required'; return; }
+      let ms = parseInt(timeoutInput.value, 10); if (!(ms > 0)) ms = 30000; ms = Math.min(ms, 300000);
+      turnBtn.disabled = true; status.textContent = 'Waiting for reply…';
+      const res = await callSafe('conversations.turn', { agent_id: agentInput.value.trim() || 'main', turnId: 'webui-turn-' + Date.now(), conversationRef: ref, message: msg, timeout_ms: ms });
+      turnBtn.disabled = false;
+      if (res.error) { status.textContent = 'Turn failed: ' + res.error; return; }
+      const reply = res.reply && res.reply.text ? res.reply.text : '';
+      status.textContent = 'Turn ' + (res.status || '') + (reply ? (' · reply: ' + truncate(reply, 200)) : '');
+    });
+    composeActions.append(sendBtn, turnBtn);
+
+    refreshBtn.addEventListener('click', loadConversations);
+    await loadConversations();
+  }
+
+  // ── Artifacts view: workspace content-addressed store + blob download ──────
+  function base64ToBytes(b64) {
+    const binary = atob(b64 || '');
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  function triggerBrowserDownload(filename, mimeType, bytes) {
+    const blob = new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename || 'artifact';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  async function showArtifactsView(token) {
+    const { grid } = beginManagementView('Artifacts', 'Workspace artifacts: list, inspect metadata, and download inline bytes via a blob URL.');
+    if (!isViewCurrent('artifacts', token)) return;
+    const filters = addMgmtCard(grid, 'Filters');
+    const frow = document.createElement('div'); frow.className = 'action-row';
+    const sessionInput = document.createElement('input'); sessionInput.className = 'mini-input'; sessionInput.placeholder = 'session key (optional)'; if (sessionID) sessionInput.value = sessionID;
+    const refreshBtn = document.createElement('button'); refreshBtn.className = 'mini-btn'; refreshBtn.textContent = 'Refresh';
+    frow.append(sessionInput, refreshBtn); filters.appendChild(frow);
+
+    const listCard = addMgmtCard(grid, 'Artifacts');
+    const host = document.createElement('div'); host.className = 'mgmt-list-host'; listCard.appendChild(host);
+    const detail = document.createElement('pre'); detail.className = 'grant-detail'; detail.style.display = 'none'; listCard.appendChild(detail);
+
+    function scopeParams(base) { const sk = sessionInput.value.trim(); if (sk) base.sessionKey = sk; return base; }
+
+    async function loadArtifacts() {
+      host.innerHTML = '<div class="sidebar-empty">Loading…</div>';
+      const res = await callSafe('artifacts.list', scopeParams({}));
+      host.innerHTML = '';
+      if (res.error) { host.innerHTML = `<div class="sidebar-empty">${escapeHTML(res.error)}</div>`; return; }
+      const artifacts = res.artifacts || [];
+      if (!artifacts.length) { host.innerHTML = '<div class="sidebar-empty">No artifacts for this scope</div>'; return; }
+      artifacts.forEach(art => {
+        const row = document.createElement('div'); row.className = 'mgmt-row';
+        const size = art.sizeBytes ? art.sizeBytes + ' B' : '—';
+        row.innerHTML = `<strong>${escapeHTML(art.title || art.id)}</strong><div class="sub">${escapeHTML(art.type || '')} · ${escapeHTML(art.mimeType || '—')} · ${escapeHTML(size)}</div>`;
+        const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
+        const info = document.createElement('button'); info.className = 'mini-btn'; info.textContent = 'Details';
+        info.addEventListener('click', async () => {
+          const got = await callSafe('artifacts.get', scopeParams({ artifactId: art.id }));
+          detail.style.display = ''; detail.textContent = got.error ? got.error : formatValue(got.artifact || got);
+        });
+        actions.appendChild(info);
+        const bytesMode = art.download && art.download.mode === 'bytes';
+        const dl = document.createElement('button'); dl.className = 'mini-btn'; dl.textContent = 'Download'; dl.disabled = !bytesMode;
+        if (!bytesMode) dl.title = 'Download unsupported for this artifact';
+        dl.addEventListener('click', async () => {
+          dl.disabled = true; const old = dl.textContent; dl.textContent = 'Downloading…';
+          const got = await callSafe('artifacts.download', scopeParams({ artifactId: art.id }));
+          if (got.error) { dl.textContent = truncate(got.error, 24); }
+          else { try { triggerBrowserDownload(art.title || art.id, art.mimeType, base64ToBytes(got.data)); dl.textContent = 'Done'; } catch (e) { dl.textContent = 'Failed'; } }
+          setTimeout(() => { dl.textContent = old; dl.disabled = false; }, 1500);
+        });
+        actions.appendChild(dl);
+        host.appendChild(row);
+      });
+    }
+    refreshBtn.addEventListener('click', loadArtifacts);
+    await loadArtifacts();
+  }
+
+  // ── Environments view: isolated execution environments + profiles ─────────
+  async function showEnvironmentsView(token) {
+    const { grid } = beginManagementView('Environments', 'Isolated execution environments: list, status, create from a profile, and destroy.');
+    const res = await callSafe('environments.list', {});
+    if (!isViewCurrent('environments', token)) return;
+    const environments = res.environments || [];
+    const profiles = res.profiles || [];
+    const listCard = addMgmtCard(grid, 'Environments');
+    const detail = document.createElement('pre'); detail.className = 'grant-detail'; detail.style.display = 'none';
+    if (res.error) { const e = document.createElement('div'); e.className = 'mgmt-error'; e.textContent = res.error; listCard.appendChild(e); }
+    addRows(listCard, environments, (row, env) => {
+      const caps = env.capabilities && env.capabilities.length ? ' · ' + env.capabilities.join(', ') : '';
+      row.innerHTML = `<strong>${escapeHTML(env.label || env.id)}</strong><div class="sub">${escapeHTML(env.type || '')} · ${escapeHTML(env.status || '')}${escapeHTML(caps)}</div>`;
+      const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
+      const st = document.createElement('button'); st.className = 'mini-btn'; st.textContent = 'Status';
+      st.addEventListener('click', async () => { const r = await callSafe('environments.status', { environmentId: env.id }); detail.style.display = ''; detail.textContent = r.error ? r.error : formatValue(r); });
+      actions.appendChild(st);
+      if (env.id !== 'gateway') {
+        addActionButton(actions, 'Destroy', 'environments.destroy', () => ({ environmentId: env.id }), () => showEnvironmentsView(++viewSeq));
+      }
+    });
+    listCard.appendChild(detail);
+    const profilesCard = addMgmtCard(grid, 'Profiles');
+    if (!profiles.length) {
+      const empty = document.createElement('div'); empty.className = 'sidebar-empty';
+      empty.textContent = 'No environment profiles configured (extra.environments.profiles).';
+      profilesCard.appendChild(empty);
+    } else {
+      addRows(profilesCard, profiles, (row, prof) => {
+        row.innerHTML = `<strong>${escapeHTML(prof.id)}</strong><div class="sub">${escapeHTML(prof.providerId || '')}</div>`;
+        const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
+        addActionButton(actions, 'Create', 'environments.create', () => ({ profileId: prof.id, idempotencyKey: 'webui-' + Date.now() }), () => showEnvironmentsView(++viewSeq));
+      });
+    }
+  }
+
   function openManagementView(view) {
     closeSidebarOnMobile();
     mainView = view;
     const token = ++viewSeq;
+    if (view === 'conversations') return showConversationsView(token);
+    if (view === 'artifacts') return showArtifactsView(token);
+    if (view === 'environments') return showEnvironmentsView(token);
     if (view === 'sessions') return showSessionsView(token);
     if (view === 'cron') return showCronView(token);
     if (view === 'nodes') return showNodesView(token);
