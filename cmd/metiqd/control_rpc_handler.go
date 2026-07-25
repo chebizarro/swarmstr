@@ -24,6 +24,7 @@ import (
 	mcpapppkg "metiq/internal/gateway/mcpapp"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
+	pluginapprovalpkg "metiq/internal/gateway/pluginapproval"
 	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
 	talkpkg "metiq/internal/gateway/talk"
@@ -106,6 +107,7 @@ type controlRPCDeps struct {
 	mcpAppViews     *mcpapppkg.Registry
 	conversations   *conversationspkg.Registry
 	questions       *questionspkg.Manager
+	pluginApprovals *pluginapprovalpkg.Manager
 	taskSuggestions *tasksuggestionspkg.Registry
 	environments    *environmentspkg.Manager
 
@@ -190,6 +192,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return result, err
 	}
 	if result, handled, err := h.handleToolingRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handlePluginSurfaceRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
 	if result, handled, err := h.handleSkillsSurfaceRPC(ctx, in, method, cfg); handled {

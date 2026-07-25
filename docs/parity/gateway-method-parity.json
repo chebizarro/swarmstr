@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 253,
+    "implemented": 261,
     "partial": 0,
-    "missing": 71,
+    "missing": 63,
     "triage_category_counts": {
       "accepted-deviation": 16,
       "implement": 308
@@ -429,32 +429,36 @@
     },
     {
       "method": "plugin.approval.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "plugin.approval.list",
+      "notes": "Durable plugin-approval ledger (internal/gateway/pluginapproval), modeled on question.* / exec.approval.*.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
     },
     {
       "method": "plugin.approval.request",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "plugin.approval.request",
+      "notes": "Poses a pending approval into the durable plugin-approval ledger.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
     },
     {
       "method": "plugin.approval.waitDecision",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "plugin.approval.waitDecision",
+      "notes": "Pose-and-block on the operator decision, mirroring question.waitAnswer / exec.approval.waitDecision.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
     },
     {
       "method": "plugin.approval.resolve",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "plugin.approval.resolve",
+      "notes": "Records an operator approve/deny decision and wakes waiters.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
@@ -462,7 +466,7 @@
     {
       "method": "plugins.uiDescriptors",
       "status": "missing",
-      "notes": "",
+      "notes": "Deferred: no plugin UI-surface/descriptor registry in swarmstr (SDK Manifest exposes no UI fields). Tracked by swarmstr-5p0v (plugin dashboard binding/verb registries).",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
@@ -470,7 +474,7 @@
     {
       "method": "plugins.sessionAction",
       "status": "missing",
-      "notes": "",
+      "notes": "Deferred: no plugin session-action/verb registry in swarmstr. Tracked by swarmstr-5p0v.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
@@ -2448,16 +2452,18 @@
     },
     {
       "method": "plugins.list",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "plugins.list",
+      "notes": "Merged catalog: config plugins.installs/entries unioned with live GojaPluginManager manifests (enabled/loaded/source/tools).",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
     },
     {
       "method": "plugins.search",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "plugins.search",
+      "notes": "Substring ranking over the merged local plugin catalog.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
@@ -2473,8 +2479,9 @@
     },
     {
       "method": "plugins.setEnabled",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "plugins.setEnabled",
+      "notes": "Toggles plugins.entries.<id>.enabled via the runtime config mutation commit path.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
@@ -2490,8 +2497,9 @@
     },
     {
       "method": "plugins.refresh",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "plugins.refresh",
+      "notes": "Idempotent GojaPluginManager reload against current config, returning the refreshed listing.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
@@ -2703,7 +2711,7 @@
     {
       "method": "plugin.surface.refresh",
       "status": "missing",
-      "notes": "",
+      "notes": "Deferred: depends on the plugin UI-surface registry (plugins.uiDescriptors). Tracked by swarmstr-5p0v.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"

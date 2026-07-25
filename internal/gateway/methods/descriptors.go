@@ -132,9 +132,15 @@ var exactMethodScopes = map[string]string{
 	MethodSkillsUploadBegin:        protocol.MethodScopeOperatorAdmin,
 	MethodSkillsUploadChunk:        protocol.MethodScopeOperatorAdmin,
 	MethodSkillsUploadCommit:       protocol.MethodScopeOperatorAdmin,
-	MethodVoicewakeGet:             protocol.MethodScopeOperatorRead,
-	MethodTTSStatus:                protocol.MethodScopeOperatorRead,
-	MethodTTSProviders:             protocol.MethodScopeOperatorRead,
+	// Plugin-surface long tail (swarmstr-zzin): reads for listing/search +
+	// pending-approval enumeration; setEnabled/refresh + approval
+	// request/waitDecision/resolve default to OperatorAdmin.
+	MethodPluginsList:        protocol.MethodScopeOperatorRead,
+	MethodPluginsSearch:      protocol.MethodScopeOperatorRead,
+	MethodPluginApprovalList: protocol.MethodScopeOperatorRead,
+	MethodVoicewakeGet:       protocol.MethodScopeOperatorRead,
+	MethodTTSStatus:          protocol.MethodScopeOperatorRead,
+	MethodTTSProviders:       protocol.MethodScopeOperatorRead,
 	// Voice/talk long tail (swarmstr-0tfj): read for discovery/get, write for
 	// synthesis + session/turn/routing mutations.
 	MethodTTSPersonas:                 protocol.MethodScopeOperatorRead,

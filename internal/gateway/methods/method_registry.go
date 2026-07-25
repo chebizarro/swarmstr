@@ -229,6 +229,17 @@ var adminDispatchRegistry = []struct {
 		MethodPluginsRegistryList,
 		MethodPluginsRegistryGet,
 		MethodPluginsRegistrySearch,
+		// Plugin-surface long tail (swarmstr-zzin). Control-RPC tooling
+		// surface only; merged installed/loaded listing + config-backed
+		// enable toggle + manager reload + durable plugin.approval.* ledger.
+		MethodPluginsList,
+		MethodPluginsSearch,
+		MethodPluginsSetEnabled,
+		MethodPluginsRefresh,
+		MethodPluginApprovalList,
+		MethodPluginApprovalRequest,
+		MethodPluginApprovalWaitDecision,
+		MethodPluginApprovalResolve,
 	}},
 	{AdminDispatchRuntime, []string{
 		MethodLogsTail,

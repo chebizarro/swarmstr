@@ -35,6 +35,7 @@ import (
 	mcpapppkg "metiq/internal/gateway/mcpapp"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/nodepending"
+	pluginapprovalpkg "metiq/internal/gateway/pluginapproval"
 	gatewayprotocol "metiq/internal/gateway/protocol"
 	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
@@ -172,6 +173,10 @@ var (
 	// (WS-A/A7). Set at startup once the ledger path is known; nil disables
 	// the question surface.
 	controlQuestions *questionspkg.Manager
+	// controlPluginApprovals owns the durable plugin.approval.* pending/resolve
+	// lifecycle (swarmstr-zzin, WS-G). Set at startup once the ledger path is
+	// known; nil disables the plugin approval surface.
+	controlPluginApprovals *pluginapprovalpkg.Manager
 	// controlTaskSuggestions tracks ephemeral model-proposed follow-up tasks
 	// (taskSuggestions.*, WS-A/A7). Suggestion ids intentionally vanish on
 	// restart.
@@ -1690,6 +1695,11 @@ func main() {
 		emitControlWSEvent(gatewayws.EventQuestionResolved, gatewayws.QuestionResolvedPayload{ID: rec.ID, Status: rec.Status})
 	})
 	controlQuestions = questionLedger
+	pluginApprovalLedger, err := pluginapprovalpkg.NewManagerAt(filepath.Join(filepath.Dir(configFilePath), "plugin-approval-ledger.json"))
+	if err != nil {
+		log.Fatalf("load plugin approval ledger: %v", err)
+	}
+	controlPluginApprovals = pluginApprovalLedger
 	controlWizards = wizards
 	controlSubagents = subagents
 	controlOps = ops
@@ -7738,6 +7748,7 @@ func handleControlRPCRequest(
 		mcpAppViews:     controlMcpAppViews,
 		conversations:   controlConversations,
 		questions:       controlQuestions,
+		pluginApprovals: controlPluginApprovals,
 		taskSuggestions: controlTaskSuggestions,
 		environments:    controlEnvironments,
 		talkSessions:    controlTalkSessions,
