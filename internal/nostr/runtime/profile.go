@@ -72,7 +72,13 @@ func selectIdentityBoundProfile(events []nostr.Event, pubkey nostr.PubKey) (nost
 		if profileMetadataValidationFailure(ev, pubkey) != "" {
 			continue
 		}
-		if best == nil || ev.CreatedAt > best.CreatedAt {
+		// NIP-01 replaceable-event semantics: newest created_at wins; on an
+		// equal timestamp the lexicographically lower event id is the
+		// tie-breaker, so the verdict is deterministic regardless of relay
+		// arrival order.
+		if best == nil ||
+			ev.CreatedAt > best.CreatedAt ||
+			(ev.CreatedAt == best.CreatedAt && ev.ID.Hex() < best.ID.Hex()) {
 			cp := ev
 			best = &cp
 		}

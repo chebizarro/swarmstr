@@ -120,6 +120,14 @@ type PeerAgentIndex struct {
 	entries  map[string]*list.Element // key -> element in lru
 	lru      *list.List               // front = oldest, back = newest
 	inFlight map[string]chan struct{}
+	// activeFetches counts live fetch goroutines. It is INDEPENDENT of gen so a
+	// Clear() cannot let new fetches exceed maxConcurrent while old goroutines
+	// still run (a fetch decrements it on completion regardless of generation).
+	activeFetches int
+	// keyEpoch is bumped per key on Set() so an older in-flight fetch that
+	// resolves later cannot overwrite an authoritative Set (e.g. the agent's own
+	// seeded bot flag).
+	keyEpoch map[string]uint64
 	// gen is bumped on Clear()/Close() so a fetch started earlier cannot
 	// repopulate state or delete a newer in-flight marker.
 	gen    uint64
@@ -168,6 +176,7 @@ func NewPeerAgentIndex(opts PeerAgentIndexOptions) (*PeerAgentIndex, error) {
 		entries:       make(map[string]*list.Element),
 		lru:           list.New(),
 		inFlight:      make(map[string]chan struct{}),
+		keyEpoch:      make(map[string]uint64),
 		fetch:         opts.FetchProfile,
 		override:      opts.DirectoryOverride,
 		ttl:           opts.TTL,
@@ -195,11 +204,19 @@ func (idx *PeerAgentIndex) isFresh(e *peerEntry) bool {
 	return idx.now().Sub(e.fetchedAt) <= ttl
 }
 
-func (idx *PeerAgentIndex) overrideLocked(key string) (bool, bool) {
+// overrideVerdict consults the caller-supplied directory override. It is safe to
+// call WITHOUT idx.mu (idx.override is immutable after construction), so callers
+// resolve it before locking — a caller callback that re-enters the index cannot
+// deadlock on idx.mu.
+func (idx *PeerAgentIndex) overrideVerdict(key string) (PeerAgentVerdict, bool) {
 	if idx.override == nil {
-		return false, false
+		return VerdictUnknown, false
 	}
-	return idx.override(key)
+	v, ok := idx.override(key)
+	if !ok {
+		return VerdictUnknown, false
+	}
+	return boolVerdict(v), true
 }
 
 // putEntryLocked inserts/refreshes an entry, capping total size with oldest-first
@@ -219,21 +236,24 @@ func (idx *PeerAgentIndex) putEntryLocked(key string, entry *peerEntry) {
 		item := front.Value.(*lruItem)
 		idx.lru.Remove(front)
 		delete(idx.entries, item.key)
+		delete(idx.keyEpoch, item.key)
 	}
 }
 
+// entryLocked returns the entry for key and refreshes its LRU recency (a read
+// moves it to the newest slot so hot keys survive eviction).
 func (idx *PeerAgentIndex) entryLocked(key string) (*peerEntry, bool) {
 	el, ok := idx.entries[key]
 	if !ok {
 		return nil, false
 	}
+	idx.lru.MoveToBack(el)
 	return el.Value.(*lruItem).entry, true
 }
 
+// verdictForLocked computes the cache verdict. The directory override is handled
+// by callers BEFORE locking, so it is intentionally not consulted here.
 func (idx *PeerAgentIndex) verdictForLocked(key string) PeerAgentVerdict {
-	if v, ok := idx.overrideLocked(key); ok {
-		return boolVerdict(v)
-	}
 	e, ok := idx.entryLocked(key)
 	// A stale or negative entry is authoritative for NOTHING: it degrades to
 	// Unknown so a former-agent key now run by a human, or an entry whose
@@ -259,38 +279,44 @@ func (idx *PeerAgentIndex) refreshLocked(key string) <-chan struct{} {
 		return ch
 	}
 	// Cap concurrent relay work on the hardened admission path; excess lookups
-	// simply stay Unknown (fail open) until a slot frees.
-	if len(idx.inFlight) >= idx.maxConcurrent {
+	// simply stay Unknown (fail open) until a slot frees. activeFetches (not the
+	// inFlight map) is the cap source so a Clear() that replaces inFlight cannot
+	// let new fetches exceed the limit while old goroutines still run.
+	if idx.activeFetches >= idx.maxConcurrent {
 		return nil
 	}
 	startedGen := idx.gen
+	startedEpoch := idx.keyEpoch[key]
 	done := make(chan struct{})
 	idx.inFlight[key] = done
+	idx.activeFetches++
 	idx.wg.Add(1)
 	go func() {
-		defer idx.wg.Done()
-		defer close(done)
-
 		facts, err := idx.fetch(key)
 
 		idx.mu.Lock()
-		superseded := startedGen != idx.gen
-		if !superseded {
-			if err == nil {
-				idx.putEntryLocked(key, &peerEntry{
-					isBot:       facts != nil && facts.IsBot,
-					displayName: displayNameOf(facts),
-					fetchedAt:   idx.now(),
-					negative:    facts == nil,
-				})
-			}
-			if idx.inFlight[key] == done {
-				delete(idx.inFlight, key)
-			}
+		// Superseded if the whole index was cleared (gen) or this key was
+		// explicitly Set while the fetch was in flight (keyEpoch) — either way
+		// the fetch result is stale and must not overwrite newer state.
+		superseded := startedGen != idx.gen || idx.keyEpoch[key] != startedEpoch
+		if !superseded && err == nil {
+			idx.putEntryLocked(key, &peerEntry{
+				isBot:       facts != nil && facts.IsBot,
+				displayName: displayNameOf(facts),
+				fetchedAt:   idx.now(),
+				negative:    facts == nil,
+			})
 		}
+		if idx.inFlight[key] == done {
+			delete(idx.inFlight, key)
+		}
+		idx.activeFetches--
 		idx.mu.Unlock()
 
-		// Report fetch errors outside the lock so a callback can't deadlock.
+		close(done)
+		// Mark the worker done BEFORE the user callback so an OnError that calls
+		// Close() cannot deadlock waiting on this goroutine's own wg entry.
+		idx.wg.Done()
 		if err != nil && !superseded && idx.onError != nil {
 			idx.onError(err, key)
 		}
@@ -313,11 +339,13 @@ func (idx *PeerAgentIndex) IsPeerAgent(pubkey string) PeerAgentVerdict {
 	if key == "" {
 		return VerdictUnknown
 	}
+	// Resolve the directory override WITHOUT idx.mu so a re-entrant callback
+	// cannot deadlock.
+	if v, ok := idx.overrideVerdict(key); ok {
+		return v
+	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	if v, ok := idx.overrideLocked(key); ok {
-		return boolVerdict(v)
-	}
 	e, ok := idx.entryLocked(key)
 	if !ok || !idx.isFresh(e) {
 		idx.refreshLocked(key)
@@ -331,11 +359,10 @@ func (idx *PeerAgentIndex) Resolve(pubkey string) PeerAgentVerdict {
 	if key == "" {
 		return VerdictUnknown
 	}
-	idx.mu.Lock()
-	if v, ok := idx.overrideLocked(key); ok {
-		idx.mu.Unlock()
-		return boolVerdict(v)
+	if v, ok := idx.overrideVerdict(key); ok {
+		return v
 	}
+	idx.mu.Lock()
 	e, ok := idx.entryLocked(key)
 	var done <-chan struct{}
 	if !ok || !idx.isFresh(e) {
@@ -360,6 +387,9 @@ func (idx *PeerAgentIndex) Set(pubkey string, facts PeerProfileFacts) {
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	// Bump the key epoch so an older in-flight fetch cannot overwrite this
+	// authoritative Set when it resolves later.
+	idx.keyEpoch[key]++
 	idx.putEntryLocked(key, &peerEntry{
 		isBot:       facts.IsBot,
 		displayName: facts.DisplayName,
@@ -384,6 +414,9 @@ func (idx *PeerAgentIndex) Clear() {
 	idx.entries = make(map[string]*list.Element)
 	idx.lru.Init()
 	idx.inFlight = make(map[string]chan struct{})
+	idx.keyEpoch = make(map[string]uint64)
+	// activeFetches is intentionally NOT reset: in-flight goroutines still hold
+	// their slots and will decrement it on completion.
 }
 
 // Close stops accepting new fetches and waits for outstanding ones to finish.

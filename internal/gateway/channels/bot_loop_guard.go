@@ -387,32 +387,31 @@ func NewBotLoopProtection(guard *PairLoopGuard, idempotencyCap int) *BotLoopProt
 // RecordAndCheck resolves settings, replays a cached decision for a
 // previously-seen event, or records the interaction and caches the decision.
 func (b *BotLoopProtection) RecordAndCheck(facts BotLoopProtectionFacts) PairLoopGuardResult {
-	if facts.EventID != "" {
-		idemKey := facts.ScopeID + pairKeySeparator + facts.ConversationID + pairKeySeparator + facts.EventID
-		b.mu.Lock()
-		if cached, ok := b.idem[idemKey]; ok {
-			b.mu.Unlock()
-			return cached
-		}
-		b.mu.Unlock()
-
-		result := b.record(facts)
-
-		b.mu.Lock()
-		if _, ok := b.idem[idemKey]; !ok {
-			b.idem[idemKey] = result
-			b.idemFIFO = append(b.idemFIFO, idemKey)
-			for len(b.idemFIFO) > b.idemCap {
-				evict := b.idemFIFO[0]
-				b.idemFIFO = b.idemFIFO[1:]
-				delete(b.idem, evict)
-			}
-		}
-		b.mu.Unlock()
-		return result
-	}
 	// No event id: no idempotency possible; record directly.
-	return b.record(facts)
+	if facts.EventID == "" {
+		return b.record(facts)
+	}
+	idemKey := facts.ScopeID + pairKeySeparator + facts.ConversationID + pairKeySeparator + facts.EventID
+
+	// Hold b.mu across the cache lookup, the recording, and the insertion so a
+	// concurrent redelivery of the same event cannot both miss the cache and
+	// double-record the pair budget. b.mu is always acquired BEFORE the guard's
+	// own mutex (b.record -> guard.RecordAndCheck), and the guard never calls
+	// back into BotLoopProtection, so there is no lock-order inversion.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if cached, ok := b.idem[idemKey]; ok {
+		return cached
+	}
+	result := b.record(facts)
+	b.idem[idemKey] = result
+	b.idemFIFO = append(b.idemFIFO, idemKey)
+	for len(b.idemFIFO) > b.idemCap {
+		evict := b.idemFIFO[0]
+		b.idemFIFO = b.idemFIFO[1:]
+		delete(b.idem, evict)
+	}
+	return result
 }
 
 func (b *BotLoopProtection) record(facts BotLoopProtectionFacts) PairLoopGuardResult {

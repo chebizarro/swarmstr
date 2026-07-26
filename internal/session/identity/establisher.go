@@ -56,11 +56,15 @@ func (e *Establisher) Establish(key string) (state.SessionEntry, bool, error) {
 
 	unlock := e.km.Lock(key)
 	defer unlock()
+	return e.establishLocked(key)
+}
 
+// establishLocked performs the read-decide-write. The caller MUST hold the
+// per-key critical section for key.
+func (e *Establisher) establishLocked(key string) (state.SessionEntry, bool, error) {
 	if entry, ok := e.store.Get(key); ok {
 		return entry, false, nil
 	}
-
 	now := e.now()
 	entry := state.SessionEntry{SessionID: key, CreatedAt: now, UpdatedAt: now}
 	if err := e.store.Put(key, entry); err != nil {
@@ -73,9 +77,29 @@ func (e *Establisher) Establish(key string) (state.SessionEntry, bool, error) {
 	return entry, true, nil
 }
 
-// Do runs fn while holding the per-key critical section for key. Use to extend
-// the atomic identity section over additional first-turn setup (e.g. transcript
-// graph init) that must not race with a concurrent first-turn.
-func (e *Establisher) Do(key string, fn func()) {
-	e.km.Do(strings.TrimSpace(key), fn)
+// EstablishAndDo establishes identity and runs fn under the SAME per-key
+// critical section (a single lock acquisition), so first-turn setup that must
+// not race with a concurrent first-turn (transcript graph init, memory scope)
+// is covered atomically together with identity establishment. fn receives the
+// established entry and whether it was newly created.
+func (e *Establisher) EstablishAndDo(key string, fn func(entry state.SessionEntry, created bool) error) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("establish session identity: key is required")
+	}
+	if e.store == nil {
+		return fmt.Errorf("establish session identity: store is required")
+	}
+
+	unlock := e.km.Lock(key)
+	defer unlock()
+
+	entry, created, err := e.establishLocked(key)
+	if err != nil {
+		return err
+	}
+	if fn == nil {
+		return nil
+	}
+	return fn(entry, created)
 }
