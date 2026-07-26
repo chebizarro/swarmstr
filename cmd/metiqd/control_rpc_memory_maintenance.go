@@ -14,15 +14,20 @@ package main
 //	                                          phase (dry-run default)
 //
 // Mirrors OpenClaw src/gateway/server-methods/doctor*.ts + memory-migrations,
-// mapped onto swarmstr's memory subsystem. The remaining OpenClaw ops —
-// doctor.memory.dreamDiary / backfillDreamDiary / resetDreamDiary /
-// resetGroundedShortTerm — are intentionally NOT handled here: swarmstr has no
-// persisted dream-diary artifact store and no grounded-short-term memory tier,
-// so exposing them would be a fake stub. They stay an honest UNAVAILABLE gap
-// (unregistered -> parity status "missing"); the doctor/migrations triage
-// prefixes are locked to the memory-health/implement category so a per-method
-// accepted-deviation is not expressible in the parity matrix. Tracked by
-// follow-up swarmstr-qc53.
+// mapped onto swarmstr's memory subsystem.
+//
+// The persisted dream-diary + grounded-short-term subsystem (swarmstr-qc53) is
+// now implemented, so the remaining four OpenClaw ops are handled here for real:
+//
+//	doctor.memory.dreamDiary              — read/list durable diary entries
+//	doctor.memory.backfillDreamDiary      — replay consolidation over existing
+//	                                        memories into retroactive dated entries
+//	doctor.memory.resetDreamDiary         — clear the diary (confirm-gated)
+//	doctor.memory.resetGroundedShortTerm  — demote/unpromote the grounded-short-
+//	                                        term buffer (confirm-gated, reversible)
+//
+// The two reset ops are per-scope and require a confirmation token: a tokenless
+// call previews the required token; a mismatched token is rejected.
 
 import (
 	"context"
@@ -151,6 +156,115 @@ func (h controlRPCHandler) handleMemoryMaintenanceRPC(ctx context.Context, in no
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "harness": result}}, true, nil
+
+	case methods.MethodDoctorMemoryDreamDiary:
+		req, err := methods.DecodeDoctorMemoryDreamDiaryParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		store, err := h.memoryMaintenanceStore()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		entries, err := memory.ListMemoryDreamDiary(ctx, store, memory.DreamDiaryFilter{
+			Scope:     req.Scope,
+			Phase:     memory.DreamingPhase(req.Phase),
+			SinceUnix: req.SinceUnix,
+			UntilUnix: req.UntilUnix,
+			Synthetic: req.Synthetic,
+			Limit:     req.Limit,
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "entries": entries, "count": len(entries)}}, true, nil
+
+	case methods.MethodDoctorMemoryBackfillDreamDiary:
+		req, err := methods.DecodeDoctorMemoryBackfillDreamDiaryParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		store, err := h.memoryMaintenanceStore()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := memory.BackfillMemoryDreamDiary(ctx, store, memory.BackfillDreamDiaryOptions{
+			Days:  req.Days,
+			Scope: req.Scope,
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "backfill": result}}, true, nil
+
+	case methods.MethodDoctorMemoryResetDreamDiary:
+		req, err := methods.DecodeDoctorMemoryResetDreamDiaryParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		confirmation, err := memory.EvaluateMaintenanceConfirmation("resetDreamDiary", req.Scope, req.Confirm)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		store, err := h.memoryMaintenanceStore()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if !confirmation.Confirmed {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "applied": false, "confirmation": confirmation, "note": "confirmation token required; re-issue with the confirm token to clear the diary"}}, true, nil
+		}
+		removed, err := memory.ResetMemoryDreamDiary(ctx, store, req.Scope)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "applied": true, "removed": removed, "scope": req.Scope, "confirmation": confirmation}}, true, nil
+
+	case methods.MethodDoctorMemoryResetGroundedShortTerm:
+		req, err := methods.DecodeDoctorMemoryResetGroundedShortTermParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		scopeKey := req.ScopeKey()
+		confirmation, err := memory.EvaluateMaintenanceConfirmation("resetGroundedShortTerm", scopeKey, req.Confirm)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		store, err := h.memoryMaintenanceStore()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		opts := memory.GroundedShortTermOptions{
+			Window: time.Duration(req.WindowHours) * time.Hour,
+			Scope: memory.ScopedContext{
+				Scope:        state.NormalizeAgentMemoryScope(req.ScopeKind),
+				AgentID:      req.AgentID,
+				WorkspaceDir: req.WorkspaceDir,
+				SessionID:    req.SessionID,
+			},
+		}
+		if req.RequireCitation != nil {
+			opts = opts.WithExplicitCitation(*req.RequireCitation)
+		}
+		if !confirmation.Confirmed {
+			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "applied": false, "confirmation": confirmation, "note": "confirmation token required; re-issue with the confirm token to demote the grounded-short-term buffer"}}, true, nil
+		}
+		result, err := memory.ResetMemoryGroundedShortTerm(ctx, store, opts)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "applied": true, "result": result, "scope": scopeKey, "confirmation": confirmation}}, true, nil
 
 	default:
 		return nostruntime.ControlRPCResult{}, false, nil

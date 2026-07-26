@@ -31,6 +31,15 @@ const (
 	MethodDoctorMemoryRemHarness              = "doctor.memory.remHarness"
 	MethodMigrationsMemoryPlan                = "migrations.memory.plan"
 	MethodMigrationsMemoryApply               = "migrations.memory.apply"
+	// Persisted dream-diary + grounded-short-term subsystem (swarmstr-qc53).
+	// dreamDiary reads the durable diary; backfillDreamDiary replays
+	// consolidation over existing memories into retroactive dated entries;
+	// resetDreamDiary clears the diary (confirm-gated); resetGroundedShortTerm
+	// demotes/unpromotes the grounded-short-term buffer (confirm-gated).
+	MethodDoctorMemoryDreamDiary              = "doctor.memory.dreamDiary"
+	MethodDoctorMemoryBackfillDreamDiary      = "doctor.memory.backfillDreamDiary"
+	MethodDoctorMemoryResetDreamDiary         = "doctor.memory.resetDreamDiary"
+	MethodDoctorMemoryResetGroundedShortTerm  = "doctor.memory.resetGroundedShortTerm"
 	MethodAgent                       = "agent"
 	MethodAgentWait                   = "agent.wait"
 	MethodAgentIdentityGet            = "agent.identity.get"

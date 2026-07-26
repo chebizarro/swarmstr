@@ -125,6 +125,109 @@ func TestMemoryMaintenance_RemHarnessRejectsBadPhase(t *testing.T) {
 	}
 }
 
+func TestMemoryMaintenance_DreamDiaryReadAndBackfill(t *testing.T) {
+	h := newControlRPCHandler(controlRPCDeps{memoryIndex: newSQLiteBackedStore(t)})
+
+	res, handled, err := memoryMaintCall(t, h, methods.MethodDoctorMemoryDreamDiary, `{}`)
+	if !handled || err != nil {
+		t.Fatalf("dreamDiary handled=%v err=%v", handled, err)
+	}
+	out := res.Result.(map[string]any)
+	if out["ok"] != true {
+		t.Fatalf("expected ok=true, got %#v", out)
+	}
+	if _, ok := out["entries"].([]memory.DreamDiaryEntry); !ok {
+		t.Fatalf("expected entries payload, got %#v", out["entries"])
+	}
+
+	res, handled, err = memoryMaintCall(t, h, methods.MethodDoctorMemoryBackfillDreamDiary, `{"days":30}`)
+	if !handled || err != nil {
+		t.Fatalf("backfill handled=%v err=%v", handled, err)
+	}
+	if _, ok := res.Result.(map[string]any)["backfill"].(memory.BackfillDreamDiaryResult); !ok {
+		t.Fatalf("expected backfill result, got %#v", res.Result)
+	}
+}
+
+func TestMemoryMaintenance_ResetDreamDiaryConfirmationGate(t *testing.T) {
+	h := newControlRPCHandler(controlRPCDeps{memoryIndex: newSQLiteBackedStore(t)})
+
+	// Tokenless call previews the required token and does not apply.
+	res, handled, err := memoryMaintCall(t, h, methods.MethodDoctorMemoryResetDreamDiary, `{"scope":"agentA"}`)
+	if !handled || err != nil {
+		t.Fatalf("preview handled=%v err=%v", handled, err)
+	}
+	out := res.Result.(map[string]any)
+	if out["applied"] != false {
+		t.Fatalf("tokenless call must not apply: %#v", out)
+	}
+	confirmation := out["confirmation"].(memory.MaintenanceConfirmation)
+	if !confirmation.Required || confirmation.ConfirmToken == "" {
+		t.Fatalf("expected confirmation token in preview: %#v", confirmation)
+	}
+
+	// Wrong token is rejected.
+	_, handled, err = memoryMaintCall(t, h, methods.MethodDoctorMemoryResetDreamDiary, `{"scope":"agentA","confirm":"nope"}`)
+	if !handled {
+		t.Fatalf("expected handled")
+	}
+	if err == nil {
+		t.Fatalf("expected mismatch error for wrong token")
+	}
+
+	// Correct token applies.
+	params := `{"scope":"agentA","confirm":"` + memory.MaintenanceConfirmToken("resetDreamDiary", "agentA") + `"}`
+	res, handled, err = memoryMaintCall(t, h, methods.MethodDoctorMemoryResetDreamDiary, params)
+	if !handled || err != nil {
+		t.Fatalf("apply handled=%v err=%v", handled, err)
+	}
+	if res.Result.(map[string]any)["applied"] != true {
+		t.Fatalf("expected applied=true with correct token: %#v", res.Result)
+	}
+}
+
+func TestMemoryMaintenance_ResetGroundedShortTermConfirmationGate(t *testing.T) {
+	h := newControlRPCHandler(controlRPCDeps{memoryIndex: newSQLiteBackedStore(t)})
+
+	// Store-wide (empty scope key) preview.
+	res, handled, err := memoryMaintCall(t, h, methods.MethodDoctorMemoryResetGroundedShortTerm, `{}`)
+	if !handled || err != nil {
+		t.Fatalf("preview handled=%v err=%v", handled, err)
+	}
+	out := res.Result.(map[string]any)
+	if out["applied"] != false {
+		t.Fatalf("tokenless call must not apply: %#v", out)
+	}
+	confirmation := out["confirmation"].(memory.MaintenanceConfirmation)
+	if confirmation.ConfirmToken != memory.MaintenanceConfirmToken("resetGroundedShortTerm", "") {
+		t.Fatalf("unexpected token for empty scope: %#v", confirmation)
+	}
+
+	// Correct token applies (empty tier -> demoted 0, but applied).
+	params := `{"confirm":"` + memory.MaintenanceConfirmToken("resetGroundedShortTerm", "") + `"}`
+	res, handled, err = memoryMaintCall(t, h, methods.MethodDoctorMemoryResetGroundedShortTerm, params)
+	if !handled || err != nil {
+		t.Fatalf("apply handled=%v err=%v", handled, err)
+	}
+	if res.Result.(map[string]any)["applied"] != true {
+		t.Fatalf("expected applied=true: %#v", res.Result)
+	}
+}
+
+func TestMemoryMaintenance_GroundedScopeTokenIsolation(t *testing.T) {
+	// A token minted for one agent must not authorize another agent's scope.
+	tokenA := memory.MaintenanceConfirmToken("resetGroundedShortTerm", "project:agentA")
+	h := newControlRPCHandler(controlRPCDeps{memoryIndex: newSQLiteBackedStore(t)})
+	params := `{"scopeKind":"project","agentId":"agentB","confirm":"` + tokenA + `"}`
+	_, handled, err := memoryMaintCall(t, h, methods.MethodDoctorMemoryResetGroundedShortTerm, params)
+	if !handled {
+		t.Fatalf("expected handled")
+	}
+	if err == nil {
+		t.Fatalf("cross-scope token must be rejected")
+	}
+}
+
 func TestMemoryMaintenance_StoreUnavailable(t *testing.T) {
 	h := newControlRPCHandler(controlRPCDeps{})
 	_, handled, err := memoryMaintCall(t, h, methods.MethodMigrationsMemoryPlan, `{}`)

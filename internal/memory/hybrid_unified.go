@@ -169,6 +169,67 @@ func (h *HybridIndex) RunREMHarness(ctx context.Context, opts REMHarnessOptions)
 	return REMHarnessResult{}, fmt.Errorf("memory store does not support REM consolidation harness")
 }
 
+// ── Dream diary / grounded-short-term forwarding (swarmstr-qc53) ────────────
+
+func (h *HybridIndex) AppendDreamDiaryEntry(ctx context.Context, entry DreamDiaryEntry) (DreamDiaryEntry, error) {
+	if ds, ok := h.backend.(DreamDiaryStore); ok {
+		return ds.AppendDreamDiaryEntry(ctx, entry)
+	}
+	return DreamDiaryEntry{}, errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) ListDreamDiaryEntries(ctx context.Context, filter DreamDiaryFilter) ([]DreamDiaryEntry, error) {
+	if ds, ok := h.backend.(DreamDiaryStore); ok {
+		return ds.ListDreamDiaryEntries(ctx, filter)
+	}
+	return nil, errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) ResetDreamDiary(ctx context.Context, scope string) (int, error) {
+	if ds, ok := h.backend.(DreamDiaryStore); ok {
+		return ds.ResetDreamDiary(ctx, scope)
+	}
+	return 0, errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) DreamDiaryEntryExists(ctx context.Context, scope, date string, phase DreamingPhase, synthetic bool) (bool, error) {
+	if ds, ok := h.backend.(DreamDiaryStore); ok {
+		return ds.DreamDiaryEntryExists(ctx, scope, date, phase, synthetic)
+	}
+	return false, errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) BackfillDreamDiary(ctx context.Context, opts BackfillDreamDiaryOptions) (BackfillDreamDiaryResult, error) {
+	if r, ok := h.backend.(BackfillDreamDiaryRunner); ok {
+		return r.BackfillDreamDiary(ctx, opts)
+	}
+	return BackfillDreamDiaryResult{}, errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) GroundedShortTerm(ctx context.Context, opts GroundedShortTermOptions) ([]GroundedShortTermItem, error) {
+	if gs, ok := h.backend.(GroundedShortTermStore); ok {
+		return gs.GroundedShortTerm(ctx, opts)
+	}
+	return nil, errNoGroundedShortTerm
+}
+
+func (h *HybridIndex) ResetGroundedShortTerm(ctx context.Context, opts GroundedShortTermOptions) (GroundedShortTermResetResult, error) {
+	if gs, ok := h.backend.(GroundedShortTermStore); ok {
+		return gs.ResetGroundedShortTerm(ctx, opts)
+	}
+	return GroundedShortTermResetResult{}, errNoGroundedShortTerm
+}
+
+// DreamDiaryManager builds a PromotionManager over the concrete SQLite backend
+// so callers (e.g. the DreamingJob) can run diary-writing dreaming cycles. It
+// returns nil when the backend is not a SQLite backend.
+func (h *HybridIndex) DreamDiaryManager(cfg PromotionConfig) *PromotionManager {
+	if be, ok := h.backend.(*SQLiteBackend); ok {
+		return NewPromotionManager(be, cfg)
+	}
+	return nil
+}
+
 func (h *HybridIndex) MemoryCompactionState(ctx context.Context) (MemoryCompactionState, error) {
 	if backend, ok := h.backend.(interface {
 		MemoryCompactionState(context.Context) (MemoryCompactionState, error)

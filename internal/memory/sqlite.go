@@ -66,6 +66,45 @@ type SQLiteBackend struct {
 	recovery       SQLiteRecoveryOptions
 	recoveryReport SQLiteRecoveryReport
 	ftsHealth      FTSHealth
+
+	// maintenanceMu serializes destructive store-level maintenance operations
+	// (dream-diary reset/backfill, grounded-short-term demotion, diary-writing
+	// dreaming cycles) so they cannot interleave and race relational invariants.
+	// See swarmstr-s4wl. Lock order: acquire maintenanceMu BEFORE PromotionManager.mu
+	// and BEFORE b.mu.
+	maintenanceMu sync.Mutex
+
+	// payloadEncryptor optionally encrypts memory outbox payloads (NIP-44 self)
+	// before they are enqueued for publish. Nil means payloads are enqueued in
+	// cleartext (local-only / test). Wired by the daemon to the node's NIP-44
+	// self codec.
+	payloadEncryptor MemoryPayloadEncryptor
+}
+
+// SetMemoryPayloadEncryptor installs (or clears, with nil) the NIP-44 payload
+// encryptor used when enqueuing memory outbox events such as dream-diary
+// entries. Safe to call once during daemon wiring before the store serves
+// traffic.
+func (b *SQLiteBackend) SetMemoryPayloadEncryptor(enc MemoryPayloadEncryptor) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.payloadEncryptor = enc
+	b.mu.Unlock()
+}
+
+// WithMaintenanceLock runs fn while holding the store-level maintenance mutex.
+// It provides a single serialization point for destructive maintenance ops so
+// concurrent live writes / scheduled dreaming / periodic compaction cannot race
+// (swarmstr-s4wl).
+func (b *SQLiteBackend) WithMaintenanceLock(fn func() error) error {
+	if b == nil {
+		return fmt.Errorf("sqlite backend is nil")
+	}
+	b.maintenanceMu.Lock()
+	defer b.maintenanceMu.Unlock()
+	return fn()
 }
 
 func init() {

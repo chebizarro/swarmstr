@@ -14,6 +14,9 @@ func startMemoryMaintenance(ctx context.Context, store memory.Store, currentConf
 		return
 	}
 	runMemoryStartupMaintenance(ctx, store, currentConfig())
+	// Background dreaming/consolidation job (swarmstr-qc53.2). Config-gated,
+	// default OFF; writes a dream-diary entry per phase per cycle.
+	startDreamingJob(ctx, store, currentConfig)
 	go func() {
 		policy := memory.MemoryCompactionPolicyFromMap(memoryExtraConfig(currentConfig()))
 		policy = memory.NormalizeMemoryCompactionPolicy(policy)

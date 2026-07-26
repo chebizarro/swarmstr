@@ -1360,6 +1360,12 @@ func main() {
 			}
 			memoryIndex = memory.NewHybridIndex(baseMemoryIndex, be)
 			if sqliteMemoryBackend != nil {
+				// Publish dream-diary outbox payloads encrypted to the node's own
+				// key (NIP-44 self), mirroring the encrypted memory outbox pattern
+				// (swarmstr-qc53.1).
+				if enc := newMemoryPayloadEncryptor(controlKeyer); enc != nil {
+					sqliteMemoryBackend.SetMemoryPayloadEncryptor(enc)
+				}
 				backupCtx, stopWeeklyBackups := context.WithCancel(ctx)
 				weeklyBackupDone := memory.StartWeeklySQLiteBackups(backupCtx, sqliteMemoryBackend)
 				defer func() {

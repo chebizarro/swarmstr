@@ -28,12 +28,14 @@ type DreamingConfig struct {
 
 // DreamingPhaseResult reports one phase of a dreaming run.
 type DreamingPhaseResult struct {
-	Phase       DreamingPhase `json:"phase"`
-	Candidates  int           `json:"candidates"`
-	Promoted    int           `json:"promoted"`
-	Narrative   string        `json:"narrative,omitempty"`
-	StartedUnix int64         `json:"started_unix"`
-	EndedUnix   int64         `json:"ended_unix"`
+	Phase        DreamingPhase `json:"phase"`
+	Candidates   int           `json:"candidates"`
+	Promoted     int           `json:"promoted"`
+	CandidateIDs []string      `json:"candidate_ids,omitempty"`
+	PromotedIDs  []string      `json:"promoted_ids,omitempty"`
+	Narrative    string        `json:"narrative,omitempty"`
+	StartedUnix  int64         `json:"started_unix"`
+	EndedUnix    int64         `json:"ended_unix"`
 }
 
 // DreamingResult reports a complete phased dreaming run.
@@ -119,6 +121,11 @@ func runDreamingPhase(manager *PromotionManager, phase DreamingPhase, limit int,
 	}
 	candidates = filterDreamingCandidates(phase, candidates, limit)
 	out.Candidates = len(candidates)
+	candidateIDs := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidateIDs = append(candidateIDs, candidate.Memory.MemoryID)
+	}
+	out.CandidateIDs = candidateIDs
 	if len(candidates) > 0 {
 		byTopic := map[string][]PromotionCandidate{}
 		now := time.Now().UTC().Unix()
@@ -136,6 +143,11 @@ func runDreamingPhase(manager *PromotionManager, phase DreamingPhase, limit int,
 			}
 			out.Promoted += promoted
 		}
+		// Candidates enter this phase with promoted_at IS NULL (FindCandidates
+		// filters on that), so any candidate now carrying a promotion marker was
+		// promoted during THIS phase. This yields the exact promoted-record IDs
+		// without threading them back through promoteGroup.
+		out.PromotedIDs = manager.promotedIDsAmong(candidateIDs)
 	}
 	if cfg.Narratives {
 		narrative := ""

@@ -119,6 +119,13 @@ var exactMethodScopes = map[string]string{
 	MethodDoctorMemoryRepairDreamingArtifacts: protocol.MethodScopeOperatorAdmin,
 	MethodDoctorMemoryDedupeDreamDiary:        protocol.MethodScopeOperatorAdmin,
 	MethodDoctorMemoryRemHarness:              protocol.MethodScopeOperatorAdmin,
+	// Persisted dream-diary + grounded-short-term (swarmstr-qc53). dreamDiary is
+	// a read view (operator.read); backfill writes retroactive entries and the
+	// two reset ops are destructive/demoting — all admin-gated.
+	MethodDoctorMemoryDreamDiary:             protocol.MethodScopeOperatorRead,
+	MethodDoctorMemoryBackfillDreamDiary:     protocol.MethodScopeOperatorAdmin,
+	MethodDoctorMemoryResetDreamDiary:        protocol.MethodScopeOperatorAdmin,
+	MethodDoctorMemoryResetGroundedShortTerm: protocol.MethodScopeOperatorAdmin,
 	MethodLogsTail:                            protocol.MethodScopeOperatorRead,
 	MethodRuntimeObserve:                      protocol.MethodScopeOperatorRead,
 	MethodRelayPolicyGet:                      protocol.MethodScopeOperatorRead,

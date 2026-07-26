@@ -692,6 +692,44 @@ func (m *PromotionManager) markPromoted(memoryID, promotedTo string, timestamp i
 	return err
 }
 
+// promotedIDsAmong returns the subset of the given memory IDs that currently
+// carry a promotion marker in recall_tracking. Used by the dreaming phase to
+// record the exact promoted-record IDs for the persisted dream diary.
+func (m *PromotionManager) promotedIDsAmong(ids []string) []string {
+	if len(ids) == 0 {
+		return []string{}
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := m.db.Query(`
+		SELECT memory_id FROM recall_tracking
+		WHERE promoted_at IS NOT NULL AND memory_id IN (`+strings.Join(placeholders, ",")+`)
+	`, args...)
+	if err != nil {
+		return []string{}
+	}
+	defer rows.Close()
+	promoted := make(map[string]struct{}, len(ids))
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			promoted[id] = struct{}{}
+		}
+	}
+	// Preserve the input ordering for deterministic diary output.
+	out := make([]string, 0, len(promoted))
+	for _, id := range ids {
+		if _, ok := promoted[id]; ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // GetPromotionStats returns statistics about memory promotion.
 func (m *PromotionManager) GetPromotionStats() (map[string]any, error) {
 	stats := make(map[string]any)

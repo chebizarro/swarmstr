@@ -409,6 +409,14 @@ var adminDispatchRegistry = []struct {
 		MethodDoctorMemoryRemHarness,
 		MethodMigrationsMemoryPlan,
 		MethodMigrationsMemoryApply,
+		// Persisted dream-diary + grounded-short-term subsystem (swarmstr-qc53):
+		// real implementations backed by the durable dream_diary table, the
+		// encrypted memory outbox, and the grounded-short-term view over the
+		// promotion tier. Served over handleMemoryMaintenanceRPC.
+		MethodDoctorMemoryDreamDiary,
+		MethodDoctorMemoryBackfillDreamDiary,
+		MethodDoctorMemoryResetDreamDiary,
+		MethodDoctorMemoryResetGroundedShortTerm,
 		// Gateway introspection long tail (swarmstr-wapc). system.info (daemon
 		// identity/health), diagnostics.stability (runtime stability snapshot),
 		// commands.list (Web UI command catalog), update.status (self-update

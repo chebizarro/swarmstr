@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 302,
+    "implemented": 306,
     "partial": 0,
-    "missing": 22,
+    "missing": 18,
     "triage_category_counts": {
       "implement": 308,
       "accepted-deviation": 16
@@ -50,32 +50,36 @@
     },
     {
       "method": "doctor.memory.dreamDiary",
-      "status": "missing",
-      "notes": "UNAVAILABLE (accepted deviation, stays missing): swarmstr has no persisted dream-diary artifact store; dreaming narratives are ephemeral. Follow-up swarmstr-qc53.",
+      "status": "implemented",
+      "metiq_method": "doctor.memory.dreamDiary",
+      "notes": "Reads/lists the durable, structured dream-diary store (dated {phase, candidates-considered, promoted-record-ids, counts, narrative} entries) persisted per consolidation cycle and mirrored NIP-44 encrypted through the memory outbox. swarmstr-qc53.1/.4.",
       "triage": "implement",
       "triage_group": "memory-health",
       "workstream": "WS-C"
     },
     {
       "method": "doctor.memory.backfillDreamDiary",
-      "status": "missing",
-      "notes": "UNAVAILABLE (accepted deviation, stays missing): no persisted dream-diary store to backfill. Follow-up swarmstr-qc53.",
+      "status": "implemented",
+      "metiq_method": "doctor.memory.backfillDreamDiary",
+      "notes": "Replays consolidation over existing memories (promotion tier), bucketing activity by UTC day, to synthesize retroactive dated diary entries for the trailing 30 days. Idempotent via a partial unique index on synthetic (scope,date,phase). swarmstr-qc53.4.",
       "triage": "implement",
       "triage_group": "memory-health",
       "workstream": "WS-C"
     },
     {
       "method": "doctor.memory.resetDreamDiary",
-      "status": "missing",
-      "notes": "UNAVAILABLE (accepted deviation, stays missing): no persisted dream-diary store to reset. Follow-up swarmstr-qc53.",
+      "status": "implemented",
+      "metiq_method": "doctor.memory.resetDreamDiary",
+      "notes": "Clears the diary store for a scope. Per-scope + confirmation-token gated (tokenless call previews the required token; mismatch rejected). Runs under the store maintenance lock. Does not touch underlying memory records. swarmstr-qc53.4.",
       "triage": "implement",
       "triage_group": "memory-health",
       "workstream": "WS-C"
     },
     {
       "method": "doctor.memory.resetGroundedShortTerm",
-      "status": "missing",
-      "notes": "UNAVAILABLE (accepted deviation, stays missing): swarmstr has no grounded-short-term memory tier. Follow-up swarmstr-qc53.",
+      "status": "implemented",
+      "metiq_method": "doctor.memory.resetGroundedShortTerm",
+      "notes": "Demotes/unpromotes the grounded-short-term buffer (recency-bounded, source-cited view over the promotion tier) by clearing promotion markers — reversible, never deletes. Per-scope + confirmation-token gated. swarmstr-qc53.3/.4.",
       "triage": "implement",
       "triage_group": "memory-health",
       "workstream": "WS-C"
