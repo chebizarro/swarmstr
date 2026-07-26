@@ -213,6 +213,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 	if result, handled, err := h.handleIntrospectionRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
+	if result, handled, err := h.handleOpenclawRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
 	if result, handled, err := h.handleModelsRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}

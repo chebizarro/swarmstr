@@ -29,6 +29,7 @@ const (
 	AdminDispatchSkills      AdminDispatchGroup = "skills"
 	AdminDispatchTalk        AdminDispatchGroup = "talk"
 	AdminDispatchUsers       AdminDispatchGroup = "users"
+	AdminDispatchOpenclaw    AdminDispatchGroup = "openclaw"
 )
 
 var adminDispatchRegistry = []struct {
@@ -437,6 +438,20 @@ var adminDispatchRegistry = []struct {
 		MethodACPManagerStatus,
 	}},
 	{AdminDispatchSoulFactory, SoulFactoryMethods()},
+	// OpenClaw-branded control-surface compat aliases (swarmstr-i413). Thin
+	// aliases that re-dispatch to native Metiq methods (chat.send / chat.history
+	// / sessions.files.list / approval.list) and return the native, OpenClaw-
+	// modeled response shape. Registering them here flips their parity status to
+	// "implemented"; their triage stays accepted-deviation (prefix-locked to the
+	// openclaw-branded-control-ui group). The five openclaw.setup.* onboarding
+	// methods are deliberately NOT registered — they onboard/activate an OpenClaw
+	// install and stay an honest UNAVAILABLE accepted deviation (swarmstr-nuqy).
+	{AdminDispatchOpenclaw, []string{
+		MethodOpenclawChat,
+		MethodOpenclawChatHistory,
+		MethodOpenclawChangesList,
+		MethodOpenclawApprovalList,
+	}},
 	{AdminDispatchWorkspace, []string{
 		MethodTerminalOpen,
 		MethodTerminalInput,

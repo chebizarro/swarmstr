@@ -161,6 +161,15 @@ var exactMethodScopes = map[string]string{
 	MethodAgentsWorkspaceGet:   protocol.MethodScopeOperatorRead,
 	MethodApprovalHistory:      protocol.MethodScopeOperatorApprovals,
 	MethodUICommand:            protocol.MethodScopeOperatorAdmin,
+	// OpenClaw-branded control-surface compat aliases (swarmstr-i413). Each alias
+	// carries the same scope as the native method it re-dispatches to:
+	// openclaw.chat -> chat.send (operator.write), openclaw.chat.history ->
+	// chat.history (operator.read), openclaw.changes.list -> sessions.files.list
+	// (operator.read), openclaw.approval.list -> approval.list (operator.approvals).
+	MethodOpenclawChat:         protocol.MethodScopeOperatorWrite,
+	MethodOpenclawChatHistory:  protocol.MethodScopeOperatorRead,
+	MethodOpenclawChangesList:  protocol.MethodScopeOperatorRead,
+	MethodOpenclawApprovalList: protocol.MethodScopeOperatorApprovals,
 	MethodToolsCatalog:                        protocol.MethodScopeOperatorRead,
 	MethodToolsProfileGet:                     protocol.MethodScopeOperatorRead,
 	MethodSkillsStatus:                        protocol.MethodScopeOperatorRead,

@@ -487,3 +487,34 @@ const (
 	// gateway method the embedded Web UI would invoke for that slash command.
 	MethodUICommand = "ui.command"
 )
+
+// OpenClaw-branded control-surface compat aliases (swarmstr-i413). These are
+// OpenClaw's own names for data-plane functionality Metiq already implements
+// under its native method names. Each is a thin alias that re-dispatches to the
+// native handler (Internal=true) and returns the native, OpenClaw-modeled
+// response shape — real functionality, no fabricated stub.
+//
+// The five openclaw.setup.* onboarding/activation methods (setup.detect /
+// activate / auth.start / prepare.start / verify) are NOT defined here: they
+// onboard/activate an OpenClaw application install, which has no meaningful
+// equivalent for a nostr-key-native daemon that is not OpenClaw. They remain an
+// accepted deviation (honest UNAVAILABLE, unregistered) — see the parity matrix
+// notes and follow-up swarmstr-nuqy.
+const (
+	// openclaw.chat — OpenClaw's Control-UI chat send. Alias of chat.send: posts
+	// a message to a peer over the native DM transport.
+	MethodOpenclawChat = "openclaw.chat"
+
+	// openclaw.chat.history — OpenClaw's Control-UI transcript history. Alias of
+	// chat.history: the durable docs/transcript window for a session.
+	MethodOpenclawChatHistory = "openclaw.chat.history"
+
+	// openclaw.changes.list — OpenClaw's Control-UI "changes" review surface.
+	// Alias of sessions.files.list: the session's touched/changed workspace
+	// files (files the session's transcript recorded as written/edited).
+	MethodOpenclawChangesList = "openclaw.changes.list"
+
+	// openclaw.approval.list — OpenClaw's Control-UI approval queue. Alias of
+	// approval.list: pending/resolved records from the durable approval ledger.
+	MethodOpenclawApprovalList = "openclaw.approval.list"
+)
