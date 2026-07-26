@@ -21,7 +21,11 @@ import (
 
 // SchemaVersion is the current manifest schema version.
 // Increment this when making breaking changes to the manifest structure.
-const SchemaVersion = 3
+//
+// v4 adds the optional plugin UI-surface contribution block (Surfaces):
+// board-widget descriptors, data bindings, action verbs, and session-action
+// verbs. Every v4 field is optional, so v3 manifests keep loading unchanged.
+const SchemaVersion = 4
 
 // MinSupportedVersion is the minimum manifest version the runtime supports.
 const MinSupportedVersion = 1
@@ -30,6 +34,7 @@ const MinSupportedVersion = 1
 
 // Manifest is the top-level plugin manifest structure.
 // Version 3 adds explicit plugin API and host build compatibility contracts.
+// Version 4 adds the optional Surfaces UI-contribution block.
 type Manifest struct {
 	// SchemaVersion is the manifest schema version (required, must be >= 1).
 	SchemaVersion int `json:"schema_version"`
@@ -112,6 +117,13 @@ type Manifest struct {
 	// Trust records the resolved trust classification for this installed plugin.
 	// Empty means the loader should derive trust from install source metadata.
 	Trust string `json:"trust,omitempty"`
+
+	// ─── UI-Surface Contributions (schema v4) ────────────────────────────────
+
+	// Surfaces declares optional plugin UI-surface contributions (board widgets,
+	// data bindings, action verbs, session-action verbs). Optional: nil for v3
+	// manifests. Validated only when present.
+	Surfaces *SurfaceContributions `json:"surfaces,omitempty"`
 }
 
 // ─── Supporting Types ────────────────────────────────────────────────────────
@@ -475,6 +487,16 @@ type ConfigSpec struct {
 var pluginIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$`)
 var semverPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$`)
 
+// IsValidPluginID reports whether id is a canonical plugin identifier
+// (lowercase alphanumeric with hyphens, no dots). Surface-contribution
+// ownership relies on this: because a plugin id contains no dots, the id
+// segment before the first dot of a namespaced contribution id uniquely
+// identifies its declaring plugin, so no plugin can claim another plugin's
+// namespace.
+func IsValidPluginID(id string) bool {
+	return pluginIDPattern.MatchString(id)
+}
+
 // ValidationError represents a manifest validation failure.
 type ValidationError struct {
 	Field         string   `json:"field"`
@@ -586,6 +608,9 @@ func Validate(m *Manifest) error {
 
 	// Validate capabilities
 	errs = append(errs, validateCapabilities(&m.Capabilities)...)
+
+	// Validate optional schema-v4 UI-surface contributions (no-op when nil).
+	errs = append(errs, ValidateSurfaceContributions(m.ID, m.Surfaces)...)
 
 	if len(errs) > 0 {
 		return errs

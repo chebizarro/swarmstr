@@ -134,9 +134,19 @@ func TestBoardMcpAppWidgetLifecycle(t *testing.T) {
 		t.Fatalf("expected expired source view, got %v", err)
 	}
 
-	// canvas-doc remains a rejected deferred source.
-	if _, err := workspaceSurfaceCall(t, h, methods.MethodBoardWidgetPut, `{"sessionKey":"sess","name":"doc","content":{"kind":"canvas-doc","docId":"d1"}}`); err == nil || !strings.Contains(err.Error(), "not supported") {
-		t.Fatalf("expected canvas-doc rejection, got %v", err)
+	// canvas-doc is now an accepted content source (swarmstr-5p0v item 1): the
+	// widget pins the referenced docId and stores it read-only.
+	if _, err := workspaceSurfaceCall(t, h, methods.MethodBoardWidgetPut, `{"sessionKey":"sess","name":"doc","content":{"kind":"canvas-doc","docId":"d1"}}`); err != nil {
+		t.Fatalf("expected canvas-doc acceptance, got %v", err)
+	}
+	if store, err := h.boardStore(); err != nil {
+		t.Fatalf("boardStore: %v", err)
+	} else if view, ok := store.ReadWidgetCanvasDoc("sess", "doc"); !ok || view.DocID != "d1" {
+		t.Fatalf("canvas-doc not stored: ok=%v view=%+v", ok, view)
+	}
+	// A canvas-doc without a docId is rejected.
+	if _, err := workspaceSurfaceCall(t, h, methods.MethodBoardWidgetPut, `{"sessionKey":"sess","name":"doc2","content":{"kind":"canvas-doc"}}`); err == nil || !strings.Contains(err.Error(), "docId") {
+		t.Fatalf("expected canvas-doc docId requirement, got %v", err)
 	}
 }
 

@@ -52,10 +52,31 @@ type McpAppView struct {
 	Declared    *Declared
 }
 
+// CanvasDocDescriptor pins the referenced canvas document id for a canvas-doc
+// widget (swarmstr-5p0v item 1).
+type CanvasDocDescriptor struct {
+	DocID string
+}
+
+// canvasDocument is the stored source for a canvas-doc widget.
+type canvasDocument struct {
+	DocID      string
+	Revision   int
+	GrantState string
+}
+
+// CanvasDocView is the read-back of a pinned canvas-doc widget document.
+type CanvasDocView struct {
+	DocID      string
+	Revision   int
+	GrantState string
+}
+
 type storedBoard struct {
-	snapshot     Snapshot
-	documents    map[string]*htmlDocument
-	appDocuments map[string]*mcpAppDocument
+	snapshot        Snapshot
+	documents       map[string]*htmlDocument
+	appDocuments    map[string]*mcpAppDocument
+	canvasDocuments map[string]*canvasDocument
 }
 
 // Store is the in-memory per-sessionKey board store. All methods are safe for
@@ -135,6 +156,7 @@ func (s *Store) ApplyOps(sessionKey string, ops []Op) (Snapshot, error) {
 	}
 	documents := map[string]*htmlDocument{}
 	appDocuments := map[string]*mcpAppDocument{}
+	canvasDocuments := map[string]*canvasDocument{}
 	if current != nil {
 		for name, doc := range current.documents {
 			if remaining[name] {
@@ -146,11 +168,16 @@ func (s *Store) ApplyOps(sessionKey string, ops []Op) (Snapshot, error) {
 				appDocuments[name] = doc
 			}
 		}
+		for name, doc := range current.canvasDocuments {
+			if remaining[name] {
+				canvasDocuments[name] = doc
+			}
+		}
 	}
 	if len(next.Tabs) == 0 && len(next.Widgets) == 0 {
 		delete(s.boards, sessionKey)
 	} else {
-		s.boards[sessionKey] = &storedBoard{snapshot: next, documents: documents, appDocuments: appDocuments}
+		s.boards[sessionKey] = &storedBoard{snapshot: next, documents: documents, appDocuments: appDocuments, canvasDocuments: canvasDocuments}
 	}
 	return CloneSnapshot(next), nil
 }
@@ -165,6 +192,8 @@ type PutContent struct {
 	// active MCP-App view by the handler before the store sees it).
 	McpApp      *McpAppDescriptor
 	Interactive bool
+	// CanvasDoc pins the referenced canvas document for canvas-doc content.
+	CanvasDoc *CanvasDocDescriptor
 }
 
 // PutPlacement optionally targets a tab, size preset, and anchor widget.
@@ -209,6 +238,13 @@ func (s *Store) PutWidget(params PutParams) (Snapshot, error) {
 		if params.Content.McpApp == nil || params.Content.McpApp.ServerName == "" ||
 			params.Content.McpApp.ToolName == "" || params.Content.McpApp.UIResourceURI == "" {
 			return Snapshot{}, errInvalid("board mcp-app widget requires a resolved view descriptor")
+		}
+	case ContentKindCanvasDoc:
+		if params.Declared != nil {
+			return Snapshot{}, errInvalid("canvas-doc widgets do not accept sandbox capability declarations")
+		}
+		if params.Content.CanvasDoc == nil || !canvasDocIDPattern.MatchString(params.Content.CanvasDoc.DocID) {
+			return Snapshot{}, errInvalid("board canvas-doc widget requires a valid docId")
 		}
 	case ContentKindPlugin:
 		if params.Declared != nil {
@@ -281,7 +317,7 @@ func (s *Store) PutWidget(params PutParams) (Snapshot, error) {
 	}
 
 	var declared *Declared
-	if params.Content.Kind != ContentKindPlugin {
+	if params.Content.Kind != ContentKindPlugin && params.Content.Kind != ContentKindCanvasDoc {
 		declared = normalizeDeclaredCapabilities(params.Declared)
 	}
 	summary := declaredSummaryLines(declared)
@@ -390,12 +426,16 @@ func (s *Store) PutWidget(params PutParams) (Snapshot, error) {
 	next := Snapshot{SessionKey: params.SessionKey, Revision: prior.Revision + 1, Tabs: l.Tabs, Widgets: l.Widgets}
 	documents := map[string]*htmlDocument{}
 	appDocuments := map[string]*mcpAppDocument{}
+	canvasDocuments := map[string]*canvasDocument{}
 	if current != nil {
 		for name, doc := range current.documents {
 			documents[name] = doc
 		}
 		for name, doc := range current.appDocuments {
 			appDocuments[name] = doc
+		}
+		for name, doc := range current.canvasDocuments {
+			canvasDocuments[name] = doc
 		}
 	}
 	switch params.Content.Kind {
@@ -420,12 +460,37 @@ func (s *Store) PutWidget(params PutParams) (Snapshot, error) {
 			Declared:    cloneDeclared(declared),
 		}
 		delete(documents, params.Name)
+		delete(canvasDocuments, params.Name)
+	case ContentKindCanvasDoc:
+		canvasDocuments[params.Name] = &canvasDocument{
+			DocID:      params.Content.CanvasDoc.DocID,
+			Revision:   widgetRevision,
+			GrantState: grantState,
+		}
+		delete(documents, params.Name)
+		delete(appDocuments, params.Name)
 	default:
 		delete(documents, params.Name)
 		delete(appDocuments, params.Name)
+		delete(canvasDocuments, params.Name)
 	}
-	s.boards[params.SessionKey] = &storedBoard{snapshot: next, documents: documents, appDocuments: appDocuments}
+	s.boards[params.SessionKey] = &storedBoard{snapshot: next, documents: documents, appDocuments: appDocuments, canvasDocuments: canvasDocuments}
 	return CloneSnapshot(next), nil
+}
+
+// ReadWidgetCanvasDoc returns the pinned canvas-doc document for a widget.
+func (s *Store) ReadWidgetCanvasDoc(sessionKey, name string) (CanvasDocView, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.boards[sessionKey]
+	if !ok {
+		return CanvasDocView{}, false
+	}
+	doc, ok := b.canvasDocuments[name]
+	if !ok {
+		return CanvasDocView{}, false
+	}
+	return CanvasDocView{DocID: doc.DocID, Revision: doc.Revision, GrantState: doc.GrantState}, true
 }
 
 // ReadWidgetMcpApp returns the pinned mcp-app document for a widget.
@@ -490,6 +555,9 @@ func (s *Store) Grant(sessionKey, name, decision string, revision int, instanceI
 		doc.GrantState = decision
 	}
 	if doc, ok := current.appDocuments[name]; ok {
+		doc.GrantState = decision
+	}
+	if doc, ok := current.canvasDocuments[name]; ok {
 		doc.GrantState = decision
 	}
 	current.snapshot = snapshot

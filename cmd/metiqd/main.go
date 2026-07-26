@@ -65,6 +65,7 @@ import (
 	pluginregistry "metiq/internal/plugins/registry"
 	pluginruntime "metiq/internal/plugins/runtime"
 	pluginservice "metiq/internal/plugins/service"
+	pluginsurface "metiq/internal/plugins/surface"
 	"metiq/internal/policy"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/security/commandanalysis"
@@ -162,6 +163,11 @@ var (
 	controlTalkRouting = talkpkg.NewRoutingStore()
 	// controlBoardStore holds per-session board tabs/widgets (WS-A/A7.4).
 	controlBoardStore = boardpkg.NewStore()
+	// controlPluginSurface aggregates plugin schema-v4 UI-surface contributions
+	// (swarmstr-qmxu.2). Assigned once the plugin manager loads; nil disables
+	// the plugins.uiDescriptors / sessionAction / plugin.surface.refresh surface
+	// and any plugin board data-binding / action-verb extension.
+	controlPluginSurface *pluginsurface.Registry
 	// controlBoardNotices dedupes board.event notices per widget (WS-A/A7.4).
 	controlBoardNotices = boardpkg.NewNoticeDeduper()
 	// controlMcpAppViews holds process-local MCP-App views minted from agent
@@ -1425,6 +1431,14 @@ func main() {
 		log.Printf("plugin manager load warning: %v", loadErr)
 	}
 	pluginMgr.RegisterTools(tools)
+	// Host-side plugin UI-surface registry (swarmstr-qmxu.2): aggregates the
+	// schema-v4 UI-surface contributions of every loaded plugin for
+	// plugins.uiDescriptors / sessionAction / plugin.surface.refresh and the
+	// board data-binding / action-verb extension seam.
+	controlPluginSurface = pluginsurface.New(pluginMgr)
+	// Reserve the core board-binding ids so no plugin contribution can alias a
+	// host-dispatched core binding (security: swarmstr-qmxu.3).
+	controlPluginSurface.SetReservedIDs(boardCoreDataBindingIDs())
 
 	// OpenClaw plugin host + service registry (Phase 6: background services).
 	var pluginServiceMgr *pluginservice.ServiceManager
@@ -7731,6 +7745,8 @@ func handleControlRPCRequest(
 		configState:       configState,
 		tools:             tools,
 		pluginMgr:         pluginMgr,
+		pluginSurface:     controlPluginSurface,
+		surfaceDispatch:   pluginMgr,
 		startedAt:         startedAt,
 		bootstrapPath:     svc.handlers.bootstrapPath,
 

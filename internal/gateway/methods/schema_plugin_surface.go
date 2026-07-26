@@ -156,6 +156,73 @@ func (r PluginApprovalResolveRequest) Normalize() (PluginApprovalResolveRequest,
 	return r, nil
 }
 
+// PluginsUIDescriptorsRequest aggregates the plugin UI-surface descriptors.
+// An optional pluginId filters to a single plugin's descriptors.
+type PluginsUIDescriptorsRequest struct {
+	PluginID string `json:"pluginId,omitempty"`
+}
+
+func (r PluginsUIDescriptorsRequest) Normalize() (PluginsUIDescriptorsRequest, error) {
+	r.PluginID = strings.TrimSpace(r.PluginID)
+	return r, nil
+}
+
+// maxPluginSessionActionParamBytes bounds a sessionAction params payload.
+const maxPluginSessionActionParamBytes = 16 * 1024
+
+// PluginsSessionActionRequest dispatches a plugin-declared session-action verb
+// into the owning plugin runtime. The board view ticket proves an operator
+// grant (board.widget.grant) authorizing the verb; the verb may mutate the
+// session bound to the ticket. Exactly one verb per call.
+type PluginsSessionActionRequest struct {
+	// Ticket is the board view ticket that must resolve to a granted widget
+	// whose declared tools include Verb.
+	Ticket string `json:"ticket"`
+	// Verb is the session-action verb id declared by a loaded plugin.
+	Verb string `json:"verb"`
+	// Params is the verb argument map passed into the plugin runtime.
+	Params map[string]any `json:"params,omitempty"`
+}
+
+func (r PluginsSessionActionRequest) Normalize() (PluginsSessionActionRequest, error) {
+	r.Ticket = strings.TrimSpace(r.Ticket)
+	r.Verb = strings.TrimSpace(r.Verb)
+	if r.Ticket == "" {
+		return r, fmt.Errorf("invalid plugins.sessionAction params: ticket is required")
+	}
+	if len(r.Ticket) > maxBoardTicketLength {
+		return r, fmt.Errorf("invalid plugins.sessionAction params: ticket exceeds %d characters", maxBoardTicketLength)
+	}
+	if r.Verb == "" {
+		return r, fmt.Errorf("invalid plugins.sessionAction params: verb is required")
+	}
+	if len(r.Verb) > 64 {
+		return r, fmt.Errorf("invalid plugins.sessionAction params: verb exceeds 64 characters")
+	}
+	if len(r.Params) > 0 {
+		raw, err := json.Marshal(r.Params)
+		if err != nil {
+			return r, fmt.Errorf("invalid plugins.sessionAction params: params must be JSON serializable")
+		}
+		if len(raw) > maxPluginSessionActionParamBytes {
+			return r, fmt.Errorf("invalid plugins.sessionAction params: params exceed %d UTF-8 bytes", maxPluginSessionActionParamBytes)
+		}
+	}
+	return r, nil
+}
+
+// PluginSurfaceRefreshRequest re-scans + re-aggregates the plugin UI-surface
+// registry. An optional pluginId scopes the refresh to one plugin; empty is
+// an all-plugins refresh that also reloads the plugin manager.
+type PluginSurfaceRefreshRequest struct {
+	PluginID string `json:"pluginId,omitempty"`
+}
+
+func (r PluginSurfaceRefreshRequest) Normalize() (PluginSurfaceRefreshRequest, error) {
+	r.PluginID = strings.TrimSpace(r.PluginID)
+	return r, nil
+}
+
 func DecodePluginsListParams(params json.RawMessage) (PluginsListRequest, error) {
 	return decodeMethodParams[PluginsListRequest](params)
 }
@@ -170,6 +237,18 @@ func DecodePluginsSetEnabledParams(params json.RawMessage) (PluginsSetEnabledReq
 
 func DecodePluginsRefreshParams(params json.RawMessage) (PluginsRefreshRequest, error) {
 	return decodeMethodParams[PluginsRefreshRequest](params)
+}
+
+func DecodePluginsUIDescriptorsParams(params json.RawMessage) (PluginsUIDescriptorsRequest, error) {
+	return decodeMethodParams[PluginsUIDescriptorsRequest](params)
+}
+
+func DecodePluginsSessionActionParams(params json.RawMessage) (PluginsSessionActionRequest, error) {
+	return decodeMethodParams[PluginsSessionActionRequest](params)
+}
+
+func DecodePluginSurfaceRefreshParams(params json.RawMessage) (PluginSurfaceRefreshRequest, error) {
+	return decodeMethodParams[PluginSurfaceRefreshRequest](params)
 }
 
 func DecodePluginApprovalListParams(params json.RawMessage) (PluginApprovalListRequest, error) {

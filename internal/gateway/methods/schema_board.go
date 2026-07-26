@@ -8,8 +8,8 @@ import (
 
 // Board method schemas. Params mirror the OpenClaw board.* wire contract;
 // board state is backed by internal/gateway/board. Widget content sources are
-// limited to "html" and "plugin": "mcp-app" and "canvas-doc" sources depend
-// on deferred surfaces and are rejected here. The ticket-authorized view
+// "html", "plugin", "mcp-app", and "canvas-doc" (the latter references an
+// agent-written canvas document by id, swarmstr-5p0v item 1). The ticket-authorized view
 // methods (board.prompt.authorize, board.data.read, board.action, the ticket
 // variant of board.event) authenticate via short-lived view tickets minted by
 // board.get.
@@ -288,9 +288,9 @@ func (r BoardWidgetPutRequest) Normalize() (BoardWidgetPutRequest, error) {
 			return r, fmt.Errorf("invalid board.widget.put params: viewId is required for mcp-app content")
 		}
 	case "canvas-doc":
-		// Metiq deviation: Canvas documents are a deferred board source;
-		// reject explicitly instead of decoding to html.
-		return r, fmt.Errorf("board widget content kind %q is not supported yet", r.Content.Kind)
+		if strings.TrimSpace(r.Content.DocID) == "" {
+			return r, fmt.Errorf("invalid board.widget.put params: docId is required for canvas-doc content")
+		}
 	default:
 		return r, fmt.Errorf("invalid board.widget.put params: unknown content kind %q", r.Content.Kind)
 	}

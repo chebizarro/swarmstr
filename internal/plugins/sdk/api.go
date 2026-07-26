@@ -218,12 +218,17 @@ func (p Permissions) APIInfo() HostAPIInfo {
 // ─── Plugin manifest & invocation ────────────────────────────────────────────
 
 // Manifest describes a Goja plugin (read from exports.manifest in the script).
+//
+// Surfaces carries the optional schema-v4 UI-surface contribution block
+// (board widgets, data bindings, action verbs, session-action verbs). It is
+// nil for plugins that declare no UI surfaces, preserving back-compat.
 type Manifest struct {
-	ID          string       `json:"id"`
-	Version     string       `json:"version"`
-	Description string       `json:"description,omitempty"`
-	Tools       []ToolSchema `json:"tools,omitempty"`
-	Permissions Permissions  `json:"permissions,omitempty"`
+	ID          string                               `json:"id"`
+	Version     string                               `json:"version"`
+	Description string                               `json:"description,omitempty"`
+	Tools       []ToolSchema                         `json:"tools,omitempty"`
+	Permissions Permissions                          `json:"permissions,omitempty"`
+	Surfaces    *pluginmanifest.SurfaceContributions `json:"surfaces,omitempty"`
 }
 
 // Permissions declares which sensitive SDK host namespaces a plugin may use.
@@ -383,6 +388,10 @@ func ValidateManifest(m Manifest) error {
 		if err := ValidateToolSchema(tool); err != nil {
 			return fmt.Errorf("manifest.tools[%d]: %w", i, err)
 		}
+	}
+	// Validate optional schema-v4 UI-surface contributions (no-op when nil).
+	if surfErrs := pluginmanifest.ValidateSurfaceContributions(m.ID, m.Surfaces); len(surfErrs) > 0 {
+		return fmt.Errorf("manifest.surfaces: %w", surfErrs)
 	}
 	return nil
 }

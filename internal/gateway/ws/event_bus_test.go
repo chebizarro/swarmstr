@@ -355,3 +355,45 @@ func TestTurnResultPayload(t *testing.T) {
 		t.Fatalf("unexpected turn result payload: %+v", tp)
 	}
 }
+
+// TestPluginSurfaceChangedEventSubscribeAndDeliver guards the catalog entry
+// for the plugin.surface.changed event (swarmstr-qmxu.2): events.subscribe
+// must accept it and Broadcast must deliver it, so plugin.surface.refresh can
+// prompt clients to re-fetch plugins.uiDescriptors.
+func TestPluginSurfaceChangedEventSubscribeAndDeliver(t *testing.T) {
+	c := &client{
+		id:            "c1",
+		subscriptions: map[string]struct{}{},
+		eventQueue:    make(chan any, 4),
+		eventDone:     make(chan struct{}),
+	}
+	r := &Runtime{
+		opts:         RuntimeOptions{Events: AllPushEvents},
+		clients:      map[string]*client{"c1": c},
+		chatCoalesce: map[string]*chatChunkCoalescer{},
+	}
+	params, err := json.Marshal(map[string]any{"events": []string{EventPluginSurfaceChanged}})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	handled, _, shape := r.handleInternalRequest(c, protocol.RequestFrame{Method: MethodEventsSubscribe, Params: params})
+	if !handled || shape != nil {
+		t.Fatalf("events.subscribe rejected plugin.surface.changed: handled=%v shape=%+v", handled, shape)
+	}
+	if !c.isSubscribed(EventPluginSurfaceChanged) {
+		t.Fatal("client not subscribed to plugin.surface.changed")
+	}
+	r.Broadcast(EventPluginSurfaceChanged, map[string]any{"scope": "all", "count": 2})
+	select {
+	case frame := <-c.eventQueue:
+		m, ok := frame.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map frame, got %T", frame)
+		}
+		if m["event"] != EventPluginSurfaceChanged {
+			t.Errorf("delivered event = %v, want %q", m["event"], EventPluginSurfaceChanged)
+		}
+	default:
+		t.Error("expected plugin.surface.changed broadcast delivered to subscribed client")
+	}
+}

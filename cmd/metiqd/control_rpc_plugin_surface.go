@@ -23,6 +23,7 @@ import (
 
 	"metiq/internal/gateway/methods"
 	pluginapprovalpkg "metiq/internal/gateway/pluginapproval"
+	gatewayws "metiq/internal/gateway/ws"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
 )
@@ -314,6 +315,132 @@ func (h controlRPCHandler) handlePluginSurfaceRPC(ctx context.Context, in nostru
 			"reloaded": reloaded,
 			"plugins":  plugins,
 			"count":    len(plugins),
+		}}, true, nil
+
+	case methods.MethodPluginsUIDescriptors:
+		req, err := methods.DecodePluginsUIDescriptorsParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		descriptors := []map[string]any{}
+		if h.deps.pluginSurface != nil {
+			descriptors = h.deps.pluginSurface.Descriptors()
+		}
+		if req.PluginID != "" {
+			filtered := make([]map[string]any, 0, len(descriptors))
+			for _, d := range descriptors {
+				if d["pluginId"] == req.PluginID {
+					filtered = append(filtered, d)
+				}
+			}
+			descriptors = filtered
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"descriptors": descriptors,
+			"count":       len(descriptors),
+		}}, true, nil
+
+	case methods.MethodPluginsSessionAction:
+		req, err := methods.DecodePluginsSessionActionParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if h.deps.pluginSurface == nil || h.deps.surfaceDispatch == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("plugin surface is not available")
+		}
+		store, err := h.boardStore()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		// Grant gate: the board view ticket must resolve to a granted widget
+		// whose declared tools include the verb (board.widget.grant). This routes
+		// the session action through the same operator-approval boundary as the
+		// board surface — fail-closed for untrusted plugins.
+		view, err := store.ResolveViewTicket(req.Ticket)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if !view.HasGrantedTool(req.Verb) {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("plugin session action verb is not granted: %s", req.Verb)
+		}
+		verb, ok := h.deps.pluginSurface.LookupSessionAction(req.Verb)
+		if !ok {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("plugin session action verb is not allowed: %s", req.Verb)
+		}
+		params := req.Params
+		if params == nil {
+			params = map[string]any{}
+		}
+		result, err := h.deps.surfaceDispatch.InvokeSurface(ctx, verb.PluginID, verb.ID, params, map[string]any{
+			"sessionKey":   view.SessionKey,
+			"session_id":   view.SessionKey,
+			"widget":       view.Name,
+			"surface_kind": "session_action",
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok":             true,
+			"pluginId":       verb.PluginID,
+			"verb":           verb.ID,
+			"sessionKey":     view.SessionKey,
+			"mutatesSession": verb.MutatesSession,
+			"result":         result,
+		}}, true, nil
+
+	case methods.MethodPluginSurfaceRefresh:
+		req, err := methods.DecodePluginSurfaceRefreshParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req, err = req.Normalize(); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if h.deps.pluginSurface == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("plugin surface is not available")
+		}
+		scope := "all"
+		reloaded := false
+		if req.PluginID != "" {
+			// Single-plugin scope: re-aggregate only; validate the plugin exists.
+			scope = req.PluginID
+			if !h.deps.pluginSurface.RefreshScope(req.PluginID) {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("plugin %q is not loaded", req.PluginID)
+			}
+		} else {
+			// All-plugins scope: reload plugin code then re-aggregate.
+			if h.deps.pluginMgr != nil {
+				if err := h.deps.pluginMgr.Load(ctx, cfg); err != nil {
+					return nostruntime.ControlRPCResult{}, true, fmt.Errorf("plugin surface refresh failed: %w", err)
+				}
+				reloaded = true
+			}
+			h.deps.pluginSurface.Refresh()
+		}
+		widgets, bindings, verbs, sessions := h.deps.pluginSurface.Counts()
+		emitControlWSEvent(gatewayws.EventPluginSurfaceChanged, map[string]any{
+			"scope":          scope,
+			"widgets":        widgets,
+			"bindings":       bindings,
+			"verbs":          verbs,
+			"sessionActions": sessions,
+		})
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok":             true,
+			"scope":          scope,
+			"reloaded":       reloaded,
+			"descriptors":    h.deps.pluginSurface.Descriptors(),
+			"widgets":        widgets,
+			"bindings":       bindings,
+			"verbs":          verbs,
+			"sessionActions": sessions,
 		}}, true, nil
 
 	case methods.MethodPluginApprovalList:

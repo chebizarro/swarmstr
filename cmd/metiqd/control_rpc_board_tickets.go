@@ -10,6 +10,7 @@ import (
 	"metiq/internal/gateway/mcpapp"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
+	pluginsurface "metiq/internal/plugins/surface"
 )
 
 // Ticket-authorized board view methods (defer-bucket slice swarmstr-fokh.5).
@@ -25,8 +26,10 @@ const maxBoardCapabilityParamBytes = 8 * 1024
 
 // boardCoreDataBindings is the closed allowlist of read-only gateway methods
 // a widget may be granted as data bindings, mirroring OpenClaw
-// CORE_BOARD_DATA_BINDING_IDS. Plugin dashboard data bindings are a Metiq
-// deviation: not supported until a plugin dashboard registry exists.
+// CORE_BOARD_DATA_BINDING_IDS. Plugin dashboard data bindings extend this set
+// at runtime through the plugin-surface registry (swarmstr-qmxu.3): a granted
+// binding id owned by a loaded plugin dispatches read-only into that plugin's
+// sandboxed runtime instead of a host method.
 var boardCoreDataBindings = map[string]string{
 	methods.MethodSessionsList: methods.MethodSessionsList,
 	methods.MethodUsageStatus:  methods.MethodUsageStatus,
@@ -35,6 +38,18 @@ var boardCoreDataBindings = map[string]string{
 	methods.MethodCronStatus:   methods.MethodCronStatus,
 	methods.MethodAgentsList:   methods.MethodAgentsList,
 	methods.MethodHealth:       methods.MethodHealth,
+}
+
+// boardCoreDataBindingIDs returns the reserved core board-binding ids that no
+// plugin contribution may claim (they dispatch to host methods, not into a
+// plugin runtime). Fed into the plugin-surface registry so a plugin whose id
+// is a prefix of a core binding cannot alias it.
+func boardCoreDataBindingIDs() []string {
+	ids := make([]string, 0, len(boardCoreDataBindings))
+	for id := range boardCoreDataBindings {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // dispatchBoardHostMethod re-enters the control RPC dispatch for a
@@ -167,22 +182,41 @@ func (h controlRPCHandler) handleBoardDataRead(ctx context.Context, in nostrunti
 	if err != nil {
 		return nostruntime.ControlRPCResult{}, true, err
 	}
+	// Grant gate first: the binding must be declared by the widget AND granted
+	// by the operator, whether it resolves to a core method or a plugin.
 	if !view.HasGrantedTool(req.BindingID) {
 		return nostruntime.ControlRPCResult{}, true, fmt.Errorf("board widget tool is not granted: %s", req.BindingID)
-	}
-	method, ok := boardCoreDataBindings[req.BindingID]
-	if !ok {
-		return nostruntime.ControlRPCResult{}, true, fmt.Errorf("board widget data binding is not allowed: %s", req.BindingID)
 	}
 	params := req.Params
 	if params == nil {
 		params = map[string]any{}
 	}
-	result, err := h.dispatchBoardHostMethod(ctx, method, params)
-	if err != nil {
-		return nostruntime.ControlRPCResult{}, true, err
+	if method, ok := boardCoreDataBindings[req.BindingID]; ok {
+		result, err := h.dispatchBoardHostMethod(ctx, method, params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	}
-	return nostruntime.ControlRPCResult{Result: result}, true, nil
+	// Plugin data-binding extension (swarmstr-qmxu.3). The registry resolves the
+	// granted binding id to its owning plugin (fail-closed on unknown/colliding
+	// ids); dispatch runs read-only inside the plugin's own sandboxed VM.
+	if binding, ok := h.pluginSurfaceBinding(req.BindingID); ok {
+		result, err := h.deps.surfaceDispatch.InvokeSurface(ctx, binding.PluginID, binding.ID, params, map[string]any{
+			"sessionKey":   view.SessionKey,
+			"widget":       view.Name,
+			"surface_kind": "data_binding",
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"pluginId":  binding.PluginID,
+			"bindingId": binding.ID,
+			"result":    result,
+		}}, true, nil
+	}
+	return nostruntime.ControlRPCResult{}, true, fmt.Errorf("board widget data binding is not allowed: %s", req.BindingID)
 }
 
 func (h controlRPCHandler) handleBoardAction(ctx context.Context, in nostruntime.ControlRPCInbound) (nostruntime.ControlRPCResult, bool, error) {
@@ -219,7 +253,54 @@ func (h controlRPCHandler) handleBoardAction(ctx context.Context, in nostruntime
 	if err := assertBoardCapabilityParamsSize(req.Params, "action"); err != nil {
 		return nostruntime.ControlRPCResult{}, true, err
 	}
-	// Metiq deviation: plugin dashboard action verbs require a plugin verb
-	// registry that has not landed; only cron.trigger actions are executable.
+	// Plugin action-verb extension (swarmstr-qmxu.3). The registry resolves the
+	// granted verb id to its owning plugin (fail-closed on unknown/colliding
+	// ids); dispatch runs inside the plugin's own sandboxed VM and may have
+	// plugin-scoped side effects.
+	if verb, ok := h.pluginSurfaceActionVerb(req.Action); ok {
+		params := req.Params
+		if params == nil {
+			params = map[string]any{}
+		}
+		result, err := h.deps.surfaceDispatch.InvokeSurface(ctx, verb.PluginID, verb.ID, params, map[string]any{
+			"sessionKey":   view.SessionKey,
+			"widget":       view.Name,
+			"surface_kind": "action_verb",
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"pluginId": verb.PluginID,
+			"action":   verb.ID,
+			"result":   result,
+		}}, true, nil
+	}
 	return nostruntime.ControlRPCResult{}, true, fmt.Errorf("board widget action verb is not allowed: %s", req.Action)
+}
+
+// pluginSurfaceDispatcher invokes a resolved plugin surface verb inside the
+// owning plugin's sandboxed runtime. *pluginmanager.GojaPluginManager
+// satisfies it in production; tests inject a fake.
+type pluginSurfaceDispatcher interface {
+	InvokeSurface(ctx context.Context, pluginID, verb string, args, meta map[string]any) (any, error)
+}
+
+// pluginSurfaceBinding resolves a granted board data-binding id to its owning
+// plugin via the plugin-surface registry. Returns false (fail-closed) when the
+// registry or dispatcher is unavailable, or the id does not resolve.
+func (h controlRPCHandler) pluginSurfaceBinding(id string) (pluginsurface.Binding, bool) {
+	if h.deps.pluginSurface == nil || h.deps.surfaceDispatch == nil {
+		return pluginsurface.Binding{}, false
+	}
+	return h.deps.pluginSurface.LookupBinding(id)
+}
+
+// pluginSurfaceActionVerb resolves a granted board action-verb id to its owning
+// plugin via the plugin-surface registry. Fail-closed like pluginSurfaceBinding.
+func (h controlRPCHandler) pluginSurfaceActionVerb(id string) (pluginsurface.Verb, bool) {
+	if h.deps.pluginSurface == nil || h.deps.surfaceDispatch == nil {
+		return pluginsurface.Verb{}, false
+	}
+	return h.deps.pluginSurface.LookupActionVerb(id)
 }

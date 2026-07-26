@@ -37,6 +37,7 @@
     "terminal.exit",
     "board.changed",
     "mcp.app.viewCreated",
+    "plugin.surface.changed",
     "question.requested",
     "question.resolved",
     "task.suggestion"

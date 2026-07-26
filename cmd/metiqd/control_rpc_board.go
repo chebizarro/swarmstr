@@ -131,6 +131,11 @@ func (h controlRPCHandler) handleBoardWidgetPut(_ context.Context, in nostruntim
 			Tools:      req.Declared.Tools,
 		}
 	}
+	if req.Content.Kind == boardpkg.ContentKindCanvasDoc {
+		// Pin the referenced canvas document id (swarmstr-5p0v item 1). The
+		// document is host content; the widget renders it read-only.
+		params.Content.CanvasDoc = &boardpkg.CanvasDocDescriptor{DocID: req.Content.DocID}
+	}
 	if req.Content.Kind == boardpkg.ContentKindMcpApp {
 		// Pin the descriptor from the active MCP-App view. Interactivity is
 		// derived from the source view and gated behind the standard grant

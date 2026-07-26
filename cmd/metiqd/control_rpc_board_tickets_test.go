@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"metiq/internal/autoreply"
 	boardpkg "metiq/internal/gateway/board"
 	"metiq/internal/gateway/methods"
+	pluginmanifest "metiq/internal/plugins/manifest"
+	"metiq/internal/plugins/sdk"
+	pluginsurface "metiq/internal/plugins/surface"
 	"metiq/internal/store/state"
 )
 
@@ -156,5 +161,149 @@ func TestBoardActionPluginVerbNotAllowed(t *testing.T) {
 	// jobId without cron.trigger action is a params error.
 	if _, err := workspaceSurfaceCall(t, h, methods.MethodBoardAction, `{"ticket":"`+ticket+`","action":"custom.verb","jobId":"x"}`); err == nil {
 		t.Fatal("expected jobId/action mismatch error")
+	}
+}
+
+// ── Plugin data-binding / action-verb board extension (swarmstr-qmxu.3) ──────
+
+type fakeManifestSource struct {
+	manifests map[string]sdk.Manifest
+}
+
+func (f *fakeManifestSource) PluginIDs() []string {
+	ids := make([]string, 0, len(f.manifests))
+	for id := range f.manifests {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (f *fakeManifestSource) PluginManifest(id string) (sdk.Manifest, error) {
+	mf, ok := f.manifests[id]
+	if !ok {
+		return sdk.Manifest{}, fmt.Errorf("not found: %s", id)
+	}
+	return mf, nil
+}
+
+// recordingDispatcher captures InvokeSurface calls and returns a canned value.
+type recordingDispatcher struct {
+	calls  []dispatchCall
+	result any
+	err    error
+}
+
+type dispatchCall struct {
+	pluginID string
+	verb     string
+	args     map[string]any
+	meta     map[string]any
+}
+
+func (d *recordingDispatcher) InvokeSurface(_ context.Context, pluginID, verb string, args, meta map[string]any) (any, error) {
+	d.calls = append(d.calls, dispatchCall{pluginID: pluginID, verb: verb, args: args, meta: meta})
+	if d.err != nil {
+		return nil, d.err
+	}
+	return d.result, nil
+}
+
+// newBoardPluginSurfaceHandler builds a board ticket handler wired with a
+// plugin-surface registry (one plugin "dash" declaring a data binding and an
+// action verb) and a recording dispatcher.
+func newBoardPluginSurfaceHandler(t *testing.T) (controlRPCHandler, *recordingDispatcher) {
+	t.Helper()
+	src := &fakeManifestSource{manifests: map[string]sdk.Manifest{
+		"dash": {ID: "dash", Version: "1.0.0", Surfaces: &pluginmanifest.SurfaceContributions{
+			DataBindings: []pluginmanifest.DataBindingSurface{{ID: "dash.stats"}},
+			ActionVerbs:  []pluginmanifest.ActionVerbSurface{{ID: "dash.refresh"}},
+		}},
+	}}
+	registry := pluginsurface.New(src)
+	dispatch := &recordingDispatcher{result: map[string]any{"value": 42}}
+	h := newControlRPCHandler(controlRPCDeps{
+		boardStore:        boardpkg.NewStore(),
+		boardNotices:      boardpkg.NewNoticeDeduper(),
+		steeringMailboxes: autoreply.NewSteeringMailboxRegistry(10, autoreply.QueueDropSummarize),
+		configState:       newRuntimeConfigStore(state.ConfigDoc{}),
+		pluginSurface:     registry,
+		surfaceDispatch:   dispatch,
+	})
+	return h, dispatch
+}
+
+// TestBoardDataReadPluginBindingGranted proves a granted plugin data binding
+// dispatches into the owning plugin runtime and returns its result.
+func TestBoardDataReadPluginBindingGranted(t *testing.T) {
+	h, dispatch := newBoardPluginSurfaceHandler(t)
+	ticket := mintGrantedTicket(t, h, "chart", `{"tools":["dash.stats"]}`)
+
+	result, err := workspaceSurfaceCall(t, h, methods.MethodBoardDataRead, `{"ticket":"`+ticket+`","bindingId":"dash.stats","params":{"range":"7d"}}`)
+	if err != nil {
+		t.Fatalf("board.data.read plugin binding: %v", err)
+	}
+	payload := result.Result.(map[string]any)
+	if payload["pluginId"] != "dash" || payload["bindingId"] != "dash.stats" {
+		t.Fatalf("unexpected binding result: %#v", payload)
+	}
+	if len(dispatch.calls) != 1 || dispatch.calls[0].pluginID != "dash" || dispatch.calls[0].verb != "dash.stats" {
+		t.Fatalf("dispatch not routed to plugin: %#v", dispatch.calls)
+	}
+	if dispatch.calls[0].args["range"] != "7d" {
+		t.Fatalf("params not forwarded: %#v", dispatch.calls[0].args)
+	}
+}
+
+// TestBoardActionPluginVerbGranted proves a granted plugin action verb
+// dispatches into the plugin runtime (may mutate).
+func TestBoardActionPluginVerbGranted(t *testing.T) {
+	h, dispatch := newBoardPluginSurfaceHandler(t)
+	ticket := mintGrantedTicket(t, h, "chart", `{"tools":["dash.refresh"]}`)
+
+	result, err := workspaceSurfaceCall(t, h, methods.MethodBoardAction, `{"ticket":"`+ticket+`","action":"dash.refresh"}`)
+	if err != nil {
+		t.Fatalf("board.action plugin verb: %v", err)
+	}
+	if payload := result.Result.(map[string]any); payload["pluginId"] != "dash" || payload["action"] != "dash.refresh" {
+		t.Fatalf("unexpected action result: %#v", payload)
+	}
+	if len(dispatch.calls) != 1 || dispatch.calls[0].verb != "dash.refresh" {
+		t.Fatalf("dispatch not routed to plugin: %#v", dispatch.calls)
+	}
+}
+
+// TestBoardPluginBindingUngrantedFailsClosed proves a plugin binding that the
+// widget did NOT declare/grant is rejected before any dispatch.
+func TestBoardPluginBindingUngrantedFailsClosed(t *testing.T) {
+	h, dispatch := newBoardPluginSurfaceHandler(t)
+	// Widget grants a different tool, not the plugin binding.
+	ticket := mintGrantedTicket(t, h, "chart", `{"tools":["health"]}`)
+
+	if _, err := workspaceSurfaceCall(t, h, methods.MethodBoardDataRead, `{"ticket":"`+ticket+`","bindingId":"dash.stats"}`); err == nil || !strings.Contains(err.Error(), "not granted") {
+		t.Fatalf("expected not-granted for ungranted plugin binding, got %v", err)
+	}
+	if _, err := workspaceSurfaceCall(t, h, methods.MethodBoardAction, `{"ticket":"`+ticket+`","action":"dash.refresh"}`); err == nil || !strings.Contains(err.Error(), "not granted") {
+		t.Fatalf("expected not-granted for ungranted plugin verb, got %v", err)
+	}
+	if len(dispatch.calls) != 0 {
+		t.Fatalf("dispatch must not run for ungranted ids: %#v", dispatch.calls)
+	}
+}
+
+// TestBoardPluginUnknownIDFailsClosed proves that even a GRANTED id that no
+// plugin declares never dispatches (registry fails closed).
+func TestBoardPluginUnknownIDFailsClosed(t *testing.T) {
+	h, dispatch := newBoardPluginSurfaceHandler(t)
+	// Widget declares+grants an id no plugin owns.
+	ticket := mintGrantedTicket(t, h, "chart", `{"tools":["ghost.binding","ghost.verb"]}`)
+
+	if _, err := workspaceSurfaceCall(t, h, methods.MethodBoardDataRead, `{"ticket":"`+ticket+`","bindingId":"ghost.binding"}`); err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected not-allowed for unknown granted binding, got %v", err)
+	}
+	if _, err := workspaceSurfaceCall(t, h, methods.MethodBoardAction, `{"ticket":"`+ticket+`","action":"ghost.verb"}`); err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected not-allowed for unknown granted verb, got %v", err)
+	}
+	if len(dispatch.calls) != 0 {
+		t.Fatalf("dispatch must not run for unknown ids: %#v", dispatch.calls)
 	}
 }

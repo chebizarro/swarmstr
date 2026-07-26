@@ -42,7 +42,7 @@ func TestDecodeBoardWidgetPutParamsRejectsDeferredSources(t *testing.T) {
 	if req.Content.Kind != "html" || req.Placement.Size != "lg" || len(req.Declared.Tools) != 1 {
 		t.Fatalf("unexpected: %+v", req)
 	}
-	for _, kind := range []string{"canvas-doc", "bogus"} {
+	for _, kind := range []string{"bogus"} {
 		req, err := DecodeBoardWidgetPutParams(json.RawMessage(`{"sessionKey":"sess","name":"w","content":{"kind":"` + kind + `","viewId":"v","docId":"d"}}`))
 		if err != nil {
 			t.Fatalf("decode %s: %v", kind, err)
@@ -50,6 +50,21 @@ func TestDecodeBoardWidgetPutParamsRejectsDeferredSources(t *testing.T) {
 		if _, err := req.Normalize(); err == nil {
 			t.Fatalf("expected rejection for content kind %s", kind)
 		}
+	}
+	// canvas-doc is an accepted source (swarmstr-5p0v item 1) but requires a docId.
+	docReq, err := DecodeBoardWidgetPutParams(json.RawMessage(`{"sessionKey":"sess","name":"w","content":{"kind":"canvas-doc","docId":"doc-1"}}`))
+	if err != nil {
+		t.Fatalf("decode canvas-doc: %v", err)
+	}
+	if _, err := docReq.Normalize(); err != nil {
+		t.Fatalf("canvas-doc with docId rejected: %v", err)
+	}
+	noDoc, err := DecodeBoardWidgetPutParams(json.RawMessage(`{"sessionKey":"sess","name":"w","content":{"kind":"canvas-doc"}}`))
+	if err != nil {
+		t.Fatalf("decode canvas-doc no docId: %v", err)
+	}
+	if _, err := noDoc.Normalize(); err == nil {
+		t.Fatalf("expected canvas-doc without docId to be rejected")
 	}
 	// mcp-app is an accepted source but requires the originating viewId.
 	appReq, err := DecodeBoardWidgetPutParams(json.RawMessage(`{"sessionKey":"sess","name":"w","content":{"kind":"mcp-app","viewId":"view_1"}}`))

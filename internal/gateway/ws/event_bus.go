@@ -118,6 +118,11 @@ const (
 	// MCP-App view so clients can render it via mcp.app.view.
 	EventMcpAppViewCreated = "mcp.app.viewCreated"
 
+	// EventPluginSurfaceChanged is broadcast when the aggregated plugin
+	// UI-surface registry is refreshed (plugin.surface.refresh) so clients
+	// re-fetch descriptors via plugins.uiDescriptors.
+	EventPluginSurfaceChanged = "plugin.surface.changed"
+
 	// EventQuestionRequested is broadcast when an agent posts a structured
 	// question set for an operator (payload: the full question record).
 	EventQuestionRequested = "question.requested"
@@ -195,6 +200,7 @@ var AllPushEvents = []string{
 	EventTerminalExit,
 	EventBoardChanged,
 	EventMcpAppViewCreated,
+	EventPluginSurfaceChanged,
 	EventQuestionRequested,
 	EventQuestionResolved,
 	EventTaskSuggestion,

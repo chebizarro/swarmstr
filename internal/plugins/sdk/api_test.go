@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	pluginmanifest "metiq/internal/plugins/manifest"
 )
 
 // ─── WithChannelReplyTarget / ChannelReplyTarget ──────────────────────────────
@@ -320,5 +322,60 @@ func TestInboundChannelMessage_Fields(t *testing.T) {
 	}
 	if msg.MediaURL == "" || msg.MediaMIME == "" {
 		t.Error("media fields should be set")
+	}
+}
+
+// ─── schema-v4 UI-surface contributions ───────────────────────────────────────
+
+// TestValidateManifest_SurfacesRoundTrip proves a JS-style manifest carrying a
+// surfaces block decodes into sdk.Manifest and validates.
+func TestValidateManifest_SurfacesRoundTrip(t *testing.T) {
+	raw := []byte(`{
+		"id": "dash-plugin",
+		"version": "1.0.0",
+		"tools": [{"name": "t", "description": "d"}],
+		"surfaces": {
+			"data_bindings": [{"id": "dash-plugin.stats"}],
+			"action_verbs": [{"id": "dash-plugin.refresh"}],
+			"session_actions": [{"id": "dash-plugin.pin", "mutates_session": true}],
+			"board_widgets": [{"id": "dash-plugin.overview", "data_bindings": ["dash-plugin.stats"]}]
+		}
+	}`)
+	var m Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if m.Surfaces == nil || len(m.Surfaces.DataBindings) != 1 {
+		t.Fatalf("surfaces not decoded: %+v", m.Surfaces)
+	}
+	if err := ValidateManifest(m); err != nil {
+		t.Fatalf("valid surfaces rejected: %v", err)
+	}
+}
+
+// TestValidateManifest_NoSurfacesBackCompat proves a manifest without a
+// surfaces block (v3-style) still validates and reports nil Surfaces.
+func TestValidateManifest_NoSurfacesBackCompat(t *testing.T) {
+	m := Manifest{ID: "legacy", Version: "1.0.0", Tools: []ToolSchema{{Name: "t"}}}
+	if m.Surfaces != nil {
+		t.Fatalf("expected nil Surfaces")
+	}
+	if err := ValidateManifest(m); err != nil {
+		t.Fatalf("legacy manifest rejected: %v", err)
+	}
+}
+
+// TestValidateManifest_RejectsBadSurface proves surface validation is wired
+// into ValidateManifest and fails closed on a malformed contribution id.
+func TestValidateManifest_RejectsBadSurface(t *testing.T) {
+	m := Manifest{
+		ID:      "p",
+		Version: "1.0.0",
+		Surfaces: &pluginmanifest.SurfaceContributions{
+			ActionVerbs: []pluginmanifest.ActionVerbSurface{{ID: "BAD ID"}},
+		},
+	}
+	if err := ValidateManifest(m); err == nil {
+		t.Fatal("expected ValidateManifest to reject a bad surface id")
 	}
 }

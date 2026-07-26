@@ -14,13 +14,15 @@ import (
 	"sort"
 )
 
-// Content kinds accepted by the board store. OpenClaw additionally supports
-// "canvas-doc" sources, which depend on the canvas-document surface Metiq
-// has not implemented yet and stay rejected at decode time.
+// Content kinds accepted by the board store. "canvas-doc" widgets reference an
+// agent-written canvas document by id (swarmstr-5p0v item 1); the referenced
+// document is host content (not untrusted plugin code), so canvas-doc widgets
+// carry no sandbox capability declaration and render read-only.
 const (
-	ContentKindHTML   = "html"
-	ContentKindPlugin = "plugin"
-	ContentKindMcpApp = "mcp-app"
+	ContentKindHTML      = "html"
+	ContentKindPlugin    = "plugin"
+	ContentKindMcpApp    = "mcp-app"
+	ContentKindCanvasDoc = "canvas-doc"
 )
 
 // McpAppInteractCapability is the single declared capability gating MCP-App
@@ -45,9 +47,10 @@ const (
 )
 
 var (
-	tabIDPattern      = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
-	widgetNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	pluginKindPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}:[a-z0-9][a-z0-9._-]{0,63}$`)
+	tabIDPattern       = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	widgetNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	pluginKindPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}:[a-z0-9][a-z0-9._-]{0,63}$`)
+	canvasDocIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$`)
 )
 
 var chatDocks = map[string]bool{"left": true, "right": true, "bottom": true, "hidden": true}

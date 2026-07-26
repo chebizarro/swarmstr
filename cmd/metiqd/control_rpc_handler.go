@@ -27,7 +27,6 @@ import (
 	pluginapprovalpkg "metiq/internal/gateway/pluginapproval"
 	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
-	"metiq/internal/permissions"
 	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
@@ -37,7 +36,9 @@ import (
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/permissions"
 	pluginmanager "metiq/internal/plugins/manager"
+	pluginsurface "metiq/internal/plugins/surface"
 	"metiq/internal/policy"
 	"metiq/internal/store/state"
 	taskspkg "metiq/internal/tasks"
@@ -58,8 +59,12 @@ type controlRPCDeps struct {
 	configState       *runtimeConfigStore
 	tools             *agent.ToolRegistry
 	pluginMgr         *pluginmanager.GojaPluginManager
-	startedAt         time.Time
-	bootstrapPath     string
+	pluginSurface     *pluginsurface.Registry
+	// surfaceDispatch invokes resolved plugin surface verbs in the owning
+	// plugin's sandboxed runtime (production: pluginMgr; tests inject a fake).
+	surfaceDispatch pluginSurfaceDispatcher
+	startedAt       time.Time
+	bootstrapPath   string
 
 	sessionStore       *state.SessionStore
 	sessionCoordinator *sessioncoord.Service

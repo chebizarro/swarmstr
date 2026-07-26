@@ -262,6 +262,10 @@ var adminDispatchRegistry = []struct {
 		MethodPluginsSearch,
 		MethodPluginsSetEnabled,
 		MethodPluginsRefresh,
+		// Plugin UI-surface contribution model (swarmstr-qmxu).
+		MethodPluginsUIDescriptors,
+		MethodPluginsSessionAction,
+		MethodPluginSurfaceRefresh,
 		MethodPluginApprovalList,
 		MethodPluginApprovalRequest,
 		MethodPluginApprovalWaitDecision,

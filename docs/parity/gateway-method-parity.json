@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 307,
+    "implemented": 310,
     "partial": 0,
-    "missing": 17,
+    "missing": 14,
     "triage_category_counts": {
       "implement": 308,
       "accepted-deviation": 16
@@ -473,16 +473,18 @@
     },
     {
       "method": "plugins.uiDescriptors",
-      "status": "missing",
-      "notes": "Deferred: no plugin UI-surface/descriptor registry in swarmstr (SDK Manifest exposes no UI fields). Tracked by swarmstr-5p0v (plugin dashboard binding/verb registries).",
+      "status": "implemented",
+      "metiq_method": "plugins.uiDescriptors",
+      "notes": "Aggregates the plugin UI-surface registry's board-widget descriptors (SDK manifest v4 Surfaces block) across all loaded plugins; metiq-native shape. OperatorRead. Delivered by swarmstr-qmxu.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
     },
     {
       "method": "plugins.sessionAction",
-      "status": "missing",
-      "notes": "Deferred: no plugin session-action/verb registry in swarmstr. Tracked by swarmstr-5p0v.",
+      "status": "implemented",
+      "metiq_method": "plugins.sessionAction",
+      "notes": "Dispatches a plugin-declared session-action verb into the owning plugin's sandboxed runtime (may mutate session). Gated by a board.widget.grant view ticket + OperatorAdmin; fail-closed for untrusted plugins. Delivered by swarmstr-qmxu.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
@@ -2756,8 +2758,9 @@
     },
     {
       "method": "plugin.surface.refresh",
-      "status": "missing",
-      "notes": "Deferred: depends on the plugin UI-surface registry (plugins.uiDescriptors). Tracked by swarmstr-5p0v.",
+      "status": "implemented",
+      "metiq_method": "plugin.surface.refresh",
+      "notes": "Re-scans + re-aggregates the plugin UI-surface registry (all-plugins scope also reloads the plugin manager; single-plugin scope re-aggregates) and emits the plugin.surface.changed push event. OperatorAdmin. Delivered by swarmstr-qmxu.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"

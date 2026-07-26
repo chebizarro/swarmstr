@@ -376,6 +376,37 @@ func (m *GojaPluginManager) PluginIDs() []string {
 	return ids
 }
 
+// InvokeSurface dispatches a plugin UI-surface contribution (a data-binding,
+// action-verb, or session-action id) into the owning plugin's sandboxed
+// runtime via its exports.invoke entry point. The verb id is passed as the
+// tool name so the plugin's invoke function dispatches it exactly like a tool
+// call; meta carries caller context (session_id, ticket-derived scope). It
+// returns the plugin's raw return value.
+//
+// SECURITY: this runs the plugin's own code in its own VM. Callers MUST have
+// already verified an operator grant (board.widget.grant) authorizing the id
+// before calling this; the registry only resolves id → pluginID.
+func (m *GojaPluginManager) InvokeSurface(ctx context.Context, pluginID, verb string, args, meta map[string]any) (any, error) {
+	m.mu.RLock()
+	p, ok := m.plugins[pluginID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("plugin %q not loaded", pluginID)
+	}
+	callMeta := map[string]any{"plugin_id": pluginID, "surface_verb": verb}
+	for k, v := range meta {
+		callMeta[k] = v
+	}
+	res, err := p.Invoke(ctx, sdk.InvokeRequest{Tool: verb, Args: args, Meta: callMeta})
+	if err != nil {
+		return nil, err
+	}
+	if res.Error != "" {
+		return nil, fmt.Errorf("plugin surface error: %s", res.Error)
+	}
+	return res.Value, nil
+}
+
 // PluginManifest returns the manifest for a specific plugin, or error if not found.
 func (m *GojaPluginManager) PluginManifest(pluginID string) (sdk.Manifest, error) {
 	m.mu.RLock()

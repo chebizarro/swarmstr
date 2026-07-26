@@ -196,6 +196,12 @@ var exactMethodScopes = map[string]string{
 	MethodPluginsList:        protocol.MethodScopeOperatorRead,
 	MethodPluginsSearch:      protocol.MethodScopeOperatorRead,
 	MethodPluginApprovalList: protocol.MethodScopeOperatorRead,
+	// Plugin UI-surface contribution model (swarmstr-qmxu): uiDescriptors is a
+	// read; sessionAction + plugin.surface.refresh mutate and require
+	// operator.admin (they also require a board.widget.grant at execution).
+	MethodPluginsUIDescriptors: protocol.MethodScopeOperatorRead,
+	MethodPluginsSessionAction: protocol.MethodScopeOperatorAdmin,
+	MethodPluginSurfaceRefresh: protocol.MethodScopeOperatorAdmin,
 	// Users durable-profile surface (swarmstr-5lln): reads enumerate/self,
 	// mutations (linkEmail/setDisplayName/setAvatar) require operator.admin.
 	MethodUsersList:           protocol.MethodScopeOperatorRead,
