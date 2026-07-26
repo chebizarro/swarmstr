@@ -194,7 +194,16 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 			Hub:          h.deps.nostrHub,
 			Keyer:        h.deps.keyer,
 			OnMessage: func(msg channels.InboundMessage) {
-				emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: msg.ChannelID})
+				// Same loop-control gate as auto-join so a manually-joined room is
+				// gated identically (swarmstr-nfl4). An ad-hoc join has no
+				// configured room policy, so defaults apply (requireMention,
+				// allowBots="mentions"). Returns the room-scoped session key.
+				roomCfg := state.NostrChannelConfig{Kind: state.NostrChannelKindNIP29, GroupAddress: req.GroupAddress}
+				sessionID, admitted := controlNostrLoopControl.gate(msg, roomCfg, configState.Get().DM.AllowFrom)
+				if !admitted {
+					return
+				}
+				emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID})
 				controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),
 					ChannelID: msg.ChannelID,
@@ -206,15 +215,15 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 					EventID:   msg.EventID,
 				})
 				activeAgentID, rt := resolveInboundChannelRuntime("", msg.ChannelID)
-				turnCtx, release := chatCancels.Begin(msg.ChannelID, ctx)
-				go func() {
+				if !controlNostrLoopControl.enqueue(sessionID, msg.EventID, func() {
+					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					defer release()
 					sessionStore := h.deps.sessionStore
-					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, msg.ChannelID, activeAgentID, rt, tools, turnToolConstraints{})
-					scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, msg.ChannelID, activeAgentID, "")
+					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
+					scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 					turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 					result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
-						SessionID:           msg.ChannelID,
+						SessionID:           sessionID,
 						UserText:            msg.Text,
 						Tools:               turnTools,
 						Executor:            turnExecutor,
@@ -225,16 +234,16 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 						log.Printf("channel agent turn error channel=%s err=%v", msg.ChannelID, turnErr)
 						return
 					}
-					replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: msg.ChannelID, AgentID: activeAgentID})
+					replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
 					if !sendOK {
 						return
 					}
 					if err := msg.Reply(turnCtx, replyText); err != nil {
-						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: msg.ChannelID, AgentID: activeAgentID, Success: false, Error: err.Error()})
+						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
 						log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
 						return
 					}
-					emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: msg.ChannelID, AgentID: activeAgentID, Success: true})
+					emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
 					controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 						TS:        time.Now().UnixMilli(),
 						ChannelID: msg.ChannelID,
@@ -243,7 +252,9 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 						Direction: "outbound",
 						Text:      replyText,
 					})
-				}()
+				}) {
+					return
+				}
 			},
 			OnError: func(err error) {
 				log.Printf("nip29 channel error channel=%s err=%v", req.GroupAddress, err)

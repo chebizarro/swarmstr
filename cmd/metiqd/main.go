@@ -288,6 +288,11 @@ var (
 	// relay are deduplicated across the entire runtime.
 	controlHub *nostruntime.NostrHub
 
+	// controlNostrLoopControl is the shared NIP-29 loop-control bundle (preflight
+	// gate + bot-loop guard + per-room dispatch queue + record-first session
+	// identity), used by both auto-join and the channels.join RPC path.
+	controlNostrLoopControl *nostrGroupLoopControl
+
 	// watchRegistry is the global watch subscription registry, promoted to
 	// package level so relay policy update functions can rebind active watches.
 	watchRegistry *toolbuiltin.WatchRegistry
@@ -2260,6 +2265,16 @@ func main() {
 				ov.RoomKey, ov.Depth, channels.DefaultRoomDispatchQueueDepth, ov.EventKind, extra)
 		},
 	})
+	// Shared loop-control bundle used by BOTH auto-join and the channels.join RPC
+	// so a room is gated identically regardless of how it was joined (swarmstr-nfl4).
+	nostrLoopControl := &nostrGroupLoopControl{
+		ownPubkey:   nostrOwnPubkey,
+		peerIndex:   nostrPeerIndex,
+		guard:       nostrBotLoopGuard,
+		queue:       nostrRoomQueue,
+		establisher: nostrSessionEstablisher,
+	}
+	controlNostrLoopControl = nostrLoopControl
 
 	// Auto-join any NostrChannels declared in the config with enabled: true.
 	// This provides OpenClaw parity: channels configured in the config file are
@@ -2296,71 +2311,17 @@ func main() {
 						return
 					}
 
-					// Loop-control preflight: mention / allowBots / ambient /
-					// backfill gating, against current config.
-					senderVerdict := nostruntime.VerdictUnknown
-					if nostrPeerIndex != nil {
-						senderVerdict = nostrPeerIndex.IsPeerAgent(msg.FromPubKey)
-					}
-					knownBot := senderVerdict == nostruntime.VerdictBot
-					roomPolicy := channels.ResolveNostrRoomPolicy(curCfg.Config)
-					preflight := channels.ResolveNostrGroupPreflight(channels.NostrPreflightInput{
-						BotPubkey:            nostrOwnPubkey,
-						ChannelName:          localChanName,
-						GroupID:              msg.GroupID,
-						GroupAddress:         curCfg.GroupAddress,
-						SenderPubkey:         msg.FromPubKey,
-						Text:                 msg.Text,
-						AgentID:              curCfg.AgentID,
-						Meta:                 msg.Meta,
-						RoomAllowFrom:        curCfg.AllowFrom,
-						AccountAllowFrom:     cfg.DM.AllowFrom,
-						RequireMention:       roomPolicy.RequireMention,
-						AllowTextCommands:    true,
-						UnmentionedRoomEvent: roomPolicy.UnmentionedRoomEvent,
-						AllowBots:            roomPolicy.AllowBots,
-						SenderIsPeer:         knownBot,
-						SenderIsKnownBot:     knownBot,
-					})
-					if preflight.ShouldDrop {
-						log.Printf("nip29 preflight drop from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, preflight.DropReason)
+					// Loop-control gate (preflight + bot-loop guard), shared with
+					// the channels.join RPC path; returns the room-scoped session
+					// key. Turns are serialized per room and identity is
+					// established record-first inside the queued run.
+					sessionID, admitted := nostrLoopControl.gate(msg, curCfg, cfg.DM.AllowFrom)
+					if !admitted {
 						return
 					}
-
-					// Bot-loop pair guard: recorded ONCE, only for an admitted
-					// known-bot turn (humans/unknowns never enter it, so they
-					// never consume a pair budget). Idempotent per event id, and
-					// keyed on the ROOM (preflight.RoomKey) so the pair budget is
-					// room-scoped independent of the transcript session key below.
-					if knownBot {
-						if res := nostrBotLoopGuard.RecordAndCheck(channels.BotLoopProtectionFacts{
-							ScopeID:        nostrOwnPubkey,
-							ConversationID: preflight.RoomKey,
-							SenderID:       msg.FromPubKey,
-							ReceiverID:     nostrOwnPubkey,
-							Config:         roomPolicy.PairLoop,
-							DefaultEnabled: true,
-							EventID:        msg.EventID,
-						}); res.Suppressed {
-							log.Printf("nip29 bot-loop suppressed from=%s channel=%s room=%s", msg.FromPubKey, msg.ChannelID, preflight.RoomKey)
-							return
-						}
-					}
-
-					// Room-scoped session identity: all members of a room share
-					// ONE conversation. Turns are serialized per room by
-					// nostrRoomQueue (depth 32, load-shed newest), so concurrent
-					// senders cannot race on history/persistence; identity is
-					// established record-first inside the serialized run.
-					sessionID := preflight.RoomKey
 					activeAgentID, rt := resolveInboundChannelRuntime(curCfg.AgentID, msg.ChannelID)
 					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
-					if !nostrRoomQueue.Enqueue(preflight.RoomKey, 9, func() {
-						// Record-first: establish transcript identity atomically
-						// before the turn runs.
-						if _, _, err := nostrSessionEstablisher.Establish(sessionID); err != nil {
-							log.Printf("nip29 session identity error room=%s err=%v", sessionID, err)
-						}
+					if !nostrLoopControl.enqueue(sessionID, msg.EventID, func() {
 						turnCtx, release := chatCancels.Begin(sessionID, ctx)
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
