@@ -90,6 +90,36 @@ type SkillsProposalsIDRequest struct {
 	Reason     string `json:"reason,omitempty"`
 }
 
+// SkillsProposalsHistoryStatusRequest reports whether a workspace skill-change
+// history scan is available (swarmstr-xfny.5).
+type SkillsProposalsHistoryStatusRequest struct {
+	AgentID string `json:"agent_id,omitempty"`
+}
+
+// SkillsProposalsHistoryScanRequest pages the workspace skill-change history
+// (swarmstr-xfny.5). direction is "older" (default) or "newer"; cursor is a
+// commit id from a prior page; limit is bounded server-side.
+type SkillsProposalsHistoryScanRequest struct {
+	AgentID   string `json:"agent_id,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Cursor    string `json:"cursor,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// SkillsProposalsRequestRevisionRequest asks an agent to revise a pending
+// proposal draft (swarmstr-xfny.5). Mirrors OpenClaw's
+// forwardSkillWorkshopRevisionToChatSend, mapped to metiq's managed-run
+// machinery: instructions become the agent prompt, targetAgentId selects the
+// runtime, and idempotencyKey makes replays return the same run.
+type SkillsProposalsRequestRevisionRequest struct {
+	AgentID        string `json:"agent_id,omitempty"`
+	ProposalID     string `json:"proposalId"`
+	Instructions   string `json:"instructions"`
+	SessionKey     string `json:"sessionKey,omitempty"`
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	TargetAgentID  string `json:"targetAgentId,omitempty"`
+}
+
 func (r SkillsProposalsListRequest) Normalize() (SkillsProposalsListRequest, error) {
 	r.AgentID = strings.TrimSpace(r.AgentID)
 	return r, nil
@@ -170,6 +200,45 @@ func (r SkillsProposalsIDRequest) Normalize() (SkillsProposalsIDRequest, error) 
 	return r, nil
 }
 
+const maxRevisionInstructionsBytes = 8 * 1024
+
+func (r SkillsProposalsHistoryStatusRequest) Normalize() (SkillsProposalsHistoryStatusRequest, error) {
+	r.AgentID = strings.TrimSpace(r.AgentID)
+	return r, nil
+}
+
+func (r SkillsProposalsHistoryScanRequest) Normalize() (SkillsProposalsHistoryScanRequest, error) {
+	r.AgentID = strings.TrimSpace(r.AgentID)
+	r.Direction = strings.ToLower(strings.TrimSpace(r.Direction))
+	r.Cursor = strings.TrimSpace(r.Cursor)
+	if r.Direction != "" && r.Direction != "older" && r.Direction != "newer" {
+		return r, fmt.Errorf("invalid skills.proposals.historyScan params: direction must be \"older\" or \"newer\"")
+	}
+	if r.Limit < 0 {
+		return r, fmt.Errorf("invalid skills.proposals.historyScan params: limit must be >= 0")
+	}
+	return r, nil
+}
+
+func (r SkillsProposalsRequestRevisionRequest) Normalize() (SkillsProposalsRequestRevisionRequest, error) {
+	r.AgentID = strings.TrimSpace(r.AgentID)
+	r.ProposalID = strings.TrimSpace(r.ProposalID)
+	r.Instructions = strings.TrimSpace(r.Instructions)
+	r.SessionKey = strings.TrimSpace(r.SessionKey)
+	r.IdempotencyKey = strings.TrimSpace(r.IdempotencyKey)
+	r.TargetAgentID = strings.TrimSpace(r.TargetAgentID)
+	if r.ProposalID == "" {
+		return r, fmt.Errorf("invalid skills.proposals.requestRevision params: proposalId is required")
+	}
+	if r.Instructions == "" {
+		return r, fmt.Errorf("invalid skills.proposals.requestRevision params: instructions is required")
+	}
+	if len(r.Instructions) > maxRevisionInstructionsBytes {
+		return r, fmt.Errorf("invalid skills.proposals.requestRevision params: instructions exceeds %d bytes", maxRevisionInstructionsBytes)
+	}
+	return r, nil
+}
+
 // ── decoders ─────────────────────────────────────────────────────────────────
 
 func DecodeSkillsCuratorStatusParams(params json.RawMessage) (SkillsCuratorStatusRequest, error) {
@@ -198,4 +267,16 @@ func DecodeSkillsProposalsReviseParams(params json.RawMessage) (SkillsProposalsR
 
 func DecodeSkillsProposalsIDParams(params json.RawMessage) (SkillsProposalsIDRequest, error) {
 	return decodeMethodParams[SkillsProposalsIDRequest](params)
+}
+
+func DecodeSkillsProposalsHistoryStatusParams(params json.RawMessage) (SkillsProposalsHistoryStatusRequest, error) {
+	return decodeMethodParams[SkillsProposalsHistoryStatusRequest](params)
+}
+
+func DecodeSkillsProposalsHistoryScanParams(params json.RawMessage) (SkillsProposalsHistoryScanRequest, error) {
+	return decodeMethodParams[SkillsProposalsHistoryScanRequest](params)
+}
+
+func DecodeSkillsProposalsRequestRevisionParams(params json.RawMessage) (SkillsProposalsRequestRevisionRequest, error) {
+	return decodeMethodParams[SkillsProposalsRequestRevisionRequest](params)
 }

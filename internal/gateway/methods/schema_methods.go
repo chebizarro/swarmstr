@@ -177,23 +177,25 @@ const (
 	MethodSkillsCuratorUnpin   = "skills.curator.unpin"
 	MethodSkillsCuratorRestore = "skills.curator.restore"
 
-	// skills.proposals.* — skill-workshop proposals core (WS-G, swarmstr-xfny.4).
-	// NOTE: historyStatus/historyScan/requestRevision (swarmstr-xfny.5) are
-	// intentionally deferred; see that issue.
-	MethodSkillsProposalsList       = "skills.proposals.list"
-	MethodSkillsProposalsInspect    = "skills.proposals.inspect"
-	MethodSkillsProposalsCreate     = "skills.proposals.create"
-	MethodSkillsProposalsUpdate     = "skills.proposals.update"
-	MethodSkillsProposalsRevise     = "skills.proposals.revise"
-	MethodSkillsProposalsApply      = "skills.proposals.apply"
-	MethodSkillsProposalsReject     = "skills.proposals.reject"
-	MethodSkillsProposalsQuarantine = "skills.proposals.quarantine"
-	MethodPluginsInstall            = "plugins.install"
-	MethodPluginsUninstall          = "plugins.uninstall"
-	MethodPluginsUpdate             = "plugins.update"
-	MethodPluginsRegistryList       = "plugins.registry.list"
-	MethodPluginsRegistryGet        = "plugins.registry.get"
-	MethodPluginsRegistrySearch     = "plugins.registry.search"
+	// skills.proposals.* — skill-workshop proposals core (WS-G, swarmstr-xfny.4)
+	// plus the history-scan + revision-request follow-ups (swarmstr-xfny.5).
+	MethodSkillsProposalsList            = "skills.proposals.list"
+	MethodSkillsProposalsInspect         = "skills.proposals.inspect"
+	MethodSkillsProposalsHistoryStatus   = "skills.proposals.historyStatus"
+	MethodSkillsProposalsHistoryScan     = "skills.proposals.historyScan"
+	MethodSkillsProposalsCreate          = "skills.proposals.create"
+	MethodSkillsProposalsUpdate          = "skills.proposals.update"
+	MethodSkillsProposalsRevise          = "skills.proposals.revise"
+	MethodSkillsProposalsRequestRevision = "skills.proposals.requestRevision"
+	MethodSkillsProposalsApply           = "skills.proposals.apply"
+	MethodSkillsProposalsReject          = "skills.proposals.reject"
+	MethodSkillsProposalsQuarantine      = "skills.proposals.quarantine"
+	MethodPluginsInstall                 = "plugins.install"
+	MethodPluginsUninstall               = "plugins.uninstall"
+	MethodPluginsUpdate                  = "plugins.update"
+	MethodPluginsRegistryList            = "plugins.registry.list"
+	MethodPluginsRegistryGet             = "plugins.registry.get"
+	MethodPluginsRegistrySearch          = "plugins.registry.search"
 	// Plugin-surface long tail (swarmstr-zzin, WS-G). Control-RPC tooling
 	// surface, mirroring the skills discovery wiring.
 	MethodPluginsList       = "plugins.list"

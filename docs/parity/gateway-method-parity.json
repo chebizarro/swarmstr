@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 313,
+    "implemented": 316,
     "partial": 0,
-    "missing": 11,
+    "missing": 8,
     "triage_category_counts": {
       "implement": 308,
       "accepted-deviation": 16
@@ -1436,7 +1436,8 @@
     },
     {
       "method": "skills.proposals.historyStatus",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.historyStatus",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1444,7 +1445,8 @@
     },
     {
       "method": "skills.proposals.historyScan",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.historyScan",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
@@ -1479,7 +1481,8 @@
     },
     {
       "method": "skills.proposals.requestRevision",
-      "status": "missing",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.requestRevision",
       "notes": "",
       "triage": "implement",
       "triage_group": "plugin-skill-security",

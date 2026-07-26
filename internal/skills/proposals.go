@@ -404,6 +404,28 @@ func (s *ProposalStore) loadRecord(id string) (ProposalRecord, error) {
 	return rec, nil
 }
 
+// Load returns the proposal record for id (metadata only; no draft/support
+// bodies). Returns state.ErrNotFound when the proposal does not exist.
+func (s *ProposalStore) Load(id string) (ProposalRecord, error) {
+	return s.loadRecord(id)
+}
+
+// DraftContent returns the staged SKILL.md draft body for a proposal.
+func (s *ProposalStore) DraftContent(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("proposalId is required")
+	}
+	raw, err := os.ReadFile(s.draftPath(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", state.ErrNotFound
+		}
+		return "", err
+	}
+	return string(raw), nil
+}
+
 // create stages a new proposal of the given kind.
 func (s *ProposalStore) create(kind string, in ProposalDraftInput) (ProposalRecord, error) {
 	title := strings.TrimSpace(in.Title)

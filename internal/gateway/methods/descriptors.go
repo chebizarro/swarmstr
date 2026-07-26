@@ -126,16 +126,16 @@ var exactMethodScopes = map[string]string{
 	MethodDoctorMemoryBackfillDreamDiary:     protocol.MethodScopeOperatorAdmin,
 	MethodDoctorMemoryResetDreamDiary:        protocol.MethodScopeOperatorAdmin,
 	MethodDoctorMemoryResetGroundedShortTerm: protocol.MethodScopeOperatorAdmin,
-	MethodLogsTail:                            protocol.MethodScopeOperatorRead,
-	MethodRuntimeObserve:                      protocol.MethodScopeOperatorRead,
-	MethodRelayPolicyGet:                      protocol.MethodScopeOperatorRead,
-	MethodSecurityAudit:                       protocol.MethodScopeOperatorRead,
-	MethodMemorySearch:                        protocol.MethodScopeOperatorRead,
-	MethodSystemPresence:                      protocol.MethodScopeOperatorRead,
-	MethodLastHeartbeat:                       protocol.MethodScopeOperatorRead,
-	MethodUsageStatus:                         protocol.MethodScopeOperatorRead,
-	MethodUsageCost:                           protocol.MethodScopeOperatorRead,
-	MethodModelsList:                          protocol.MethodScopeOperatorRead,
+	MethodLogsTail:                           protocol.MethodScopeOperatorRead,
+	MethodRuntimeObserve:                     protocol.MethodScopeOperatorRead,
+	MethodRelayPolicyGet:                     protocol.MethodScopeOperatorRead,
+	MethodSecurityAudit:                      protocol.MethodScopeOperatorRead,
+	MethodMemorySearch:                       protocol.MethodScopeOperatorRead,
+	MethodSystemPresence:                     protocol.MethodScopeOperatorRead,
+	MethodLastHeartbeat:                      protocol.MethodScopeOperatorRead,
+	MethodUsageStatus:                        protocol.MethodScopeOperatorRead,
+	MethodUsageCost:                          protocol.MethodScopeOperatorRead,
+	MethodModelsList:                         protocol.MethodScopeOperatorRead,
 	// models.* provider-auth surface (swarmstr-kmhu, BUCKET 1): status/probe are
 	// read-only (probe is a bounded reachability check that leaks no secrets);
 	// authLogout clears stored provider credentials → operator.admin.
@@ -173,23 +173,30 @@ var exactMethodScopes = map[string]string{
 	// openclaw.chat -> chat.send (operator.write), openclaw.chat.history ->
 	// chat.history (operator.read), openclaw.changes.list -> sessions.files.list
 	// (operator.read), openclaw.approval.list -> approval.list (operator.approvals).
-	MethodOpenclawChat:         protocol.MethodScopeOperatorWrite,
-	MethodOpenclawChatHistory:  protocol.MethodScopeOperatorRead,
-	MethodOpenclawChangesList:  protocol.MethodScopeOperatorRead,
-	MethodOpenclawApprovalList: protocol.MethodScopeOperatorApprovals,
-	MethodToolsCatalog:                        protocol.MethodScopeOperatorRead,
-	MethodToolsProfileGet:                     protocol.MethodScopeOperatorRead,
-	MethodSkillsStatus:                        protocol.MethodScopeOperatorRead,
-	MethodSkillsCuratorStatus:                 protocol.MethodScopeOperatorRead,
-	MethodSkillsProposalsList:                 protocol.MethodScopeOperatorRead,
-	MethodSkillsProposalsInspect:              protocol.MethodScopeOperatorRead,
-	MethodSkillsSearch:                        protocol.MethodScopeOperatorRead,
-	MethodSkillsDetail:                        protocol.MethodScopeOperatorRead,
-	MethodSkillsSecurityVerdicts:              protocol.MethodScopeOperatorRead,
-	MethodSkillsSkillCard:                     protocol.MethodScopeOperatorRead,
-	MethodSkillsUploadBegin:                   protocol.MethodScopeOperatorAdmin,
-	MethodSkillsUploadChunk:                   protocol.MethodScopeOperatorAdmin,
-	MethodSkillsUploadCommit:                  protocol.MethodScopeOperatorAdmin,
+	MethodOpenclawChat:           protocol.MethodScopeOperatorWrite,
+	MethodOpenclawChatHistory:    protocol.MethodScopeOperatorRead,
+	MethodOpenclawChangesList:    protocol.MethodScopeOperatorRead,
+	MethodOpenclawApprovalList:   protocol.MethodScopeOperatorApprovals,
+	MethodToolsCatalog:           protocol.MethodScopeOperatorRead,
+	MethodToolsProfileGet:        protocol.MethodScopeOperatorRead,
+	MethodSkillsStatus:           protocol.MethodScopeOperatorRead,
+	MethodSkillsCuratorStatus:    protocol.MethodScopeOperatorRead,
+	MethodSkillsProposalsList:    protocol.MethodScopeOperatorRead,
+	MethodSkillsProposalsInspect: protocol.MethodScopeOperatorRead,
+	// skills.proposals history scan (swarmstr-xfny.5): read-only git-history
+	// introspection over the workspace skill directories. requestRevision launches
+	// a managed agent run and stays OperatorAdmin (inherited default, listed for
+	// clarity).
+	MethodSkillsProposalsHistoryStatus:   protocol.MethodScopeOperatorRead,
+	MethodSkillsProposalsHistoryScan:     protocol.MethodScopeOperatorRead,
+	MethodSkillsProposalsRequestRevision: protocol.MethodScopeOperatorAdmin,
+	MethodSkillsSearch:                   protocol.MethodScopeOperatorRead,
+	MethodSkillsDetail:                   protocol.MethodScopeOperatorRead,
+	MethodSkillsSecurityVerdicts:         protocol.MethodScopeOperatorRead,
+	MethodSkillsSkillCard:                protocol.MethodScopeOperatorRead,
+	MethodSkillsUploadBegin:              protocol.MethodScopeOperatorAdmin,
+	MethodSkillsUploadChunk:              protocol.MethodScopeOperatorAdmin,
+	MethodSkillsUploadCommit:             protocol.MethodScopeOperatorAdmin,
 	// Plugin-surface long tail (swarmstr-zzin): reads for listing/search +
 	// pending-approval enumeration; setEnabled/refresh + approval
 	// request/waitDecision/resolve default to OperatorAdmin.
