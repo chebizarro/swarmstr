@@ -71,6 +71,7 @@ import (
 	"metiq/internal/policy"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/security/commandanalysis"
+	sessionidentity "metiq/internal/session/identity"
 	"metiq/internal/social"
 	"metiq/internal/store/state"
 	taskspkg "metiq/internal/tasks"
@@ -2241,6 +2242,24 @@ func main() {
 		nostrPeerIndex.Set(nostrOwnPubkey, nostruntime.PeerProfileFacts{IsBot: true})
 	}
 	nostrBotLoopGuard := channels.NewBotLoopProtection(channels.NewPairLoopGuard(channels.PairLoopGuardOptions{}), 0)
+	// Per-room dispatch queue: serializes turns per room (depth 32, load-shed the
+	// newest event) so room-scoped sessions cannot race, and a record-first
+	// session-identity establisher used inside each serialized run.
+	nostrSessionEstablisher := sessionidentity.NewEstablisher(sessionStore)
+	nostrRoomQueue := channels.NewRoomDispatchQueue(channels.RoomDispatchQueueOptions{
+		Closing: func() bool { return ctx.Err() != nil },
+		OnOverflow: func(ov channels.RoomOverflow) {
+			if !ov.Log {
+				return
+			}
+			extra := ""
+			if ov.Suppressed > 0 {
+				extra = fmt.Sprintf(" (%d more dropped in the previous 60s)", ov.Suppressed)
+			}
+			log.Printf("nip29 dispatch queue overflow room=%s at %d/%d — dropped newest (kind %d); stays seen, not retried%s",
+				ov.RoomKey, ov.Depth, channels.DefaultRoomDispatchQueueDepth, ov.EventKind, extra)
+		},
+	})
 
 	// Auto-join any NostrChannels declared in the config with enabled: true.
 	// This provides OpenClaw parity: channels configured in the config file are
@@ -2328,16 +2347,21 @@ func main() {
 						}
 					}
 
-					// Session key stays SENDER-SCOPED. Room-scoped transcript
-					// identity (record-first via identity.Establisher, primitive
-					// ready in swarmstr-f3g5) is deferred to swarmstr-rw37, which
-					// adds the per-room dispatch queue required to serialize
-					// concurrent senders on one session safely.
-					sessionID := "ch:" + msg.ChannelID + ":" + msg.FromPubKey
+					// Room-scoped session identity: all members of a room share
+					// ONE conversation. Turns are serialized per room by
+					// nostrRoomQueue (depth 32, load-shed newest), so concurrent
+					// senders cannot race on history/persistence; identity is
+					// established record-first inside the serialized run.
+					sessionID := preflight.RoomKey
 					activeAgentID, rt := resolveInboundChannelRuntime(curCfg.AgentID, msg.ChannelID)
 					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
-					turnCtx, release := chatCancels.Begin(sessionID, ctx)
-					go func() {
+					if !nostrRoomQueue.Enqueue(preflight.RoomKey, 9, func() {
+						// Record-first: establish transcript identity atomically
+						// before the turn runs.
+						if _, _, err := nostrSessionEstablisher.Establish(sessionID); err != nil {
+							log.Printf("nip29 session identity error room=%s err=%v", sessionID, err)
+						}
+						turnCtx, release := chatCancels.Begin(sessionID, ctx)
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
@@ -2370,7 +2394,12 @@ func main() {
 							return
 						}
 						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
-					}()
+					}) {
+						// Load-shed: room at capacity (metered/logged via the
+						// queue's OnOverflow). The event stays seen; the relay may
+						// redeliver but it is not auto-retried here.
+						return
+					}
 				},
 				OnError: func(err error) {
 					log.Printf("auto-join nip29 error name=%s group=%s err=%v", localChanName, localChanCfg.GroupAddress, err)
