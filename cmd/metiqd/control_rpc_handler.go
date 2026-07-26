@@ -26,6 +26,7 @@ import (
 	"metiq/internal/gateway/nodepending"
 	pluginapprovalpkg "metiq/internal/gateway/pluginapproval"
 	questionspkg "metiq/internal/gateway/questions"
+	suspendpkg "metiq/internal/gateway/suspend"
 	"metiq/internal/gateway/sessioncoord"
 	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
@@ -125,7 +126,12 @@ type controlRPCDeps struct {
 
 	// restartCh mirrors main()'s restart scheduler channel so gateway.restart.request
 	// can trigger the real restart path. nil in unit tests that do not exercise it.
-	restartCh       chan int
+	restartCh chan int
+	// suspendCoordinator owns the cooperative daemon suspend/resume lifecycle
+	// backing gateway.suspend.prepare/status/resume (swarmstr-ngrd). nil in unit
+	// tests that do not exercise the suspend surface (handlers report the surface
+	// unavailable rather than nil-deref).
+	suspendCoordinator *suspendpkg.Coordinator
 	taskSuggestions *tasksuggestionspkg.Registry
 	environments    *environmentspkg.Manager
 

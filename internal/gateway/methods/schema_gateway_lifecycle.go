@@ -56,3 +56,50 @@ func DecodeGatewayRestartPreflightParams(params json.RawMessage) (GatewayRestart
 func DecodeGatewayRestartRequestParams(params json.RawMessage) (GatewayRestartRequestRequest, error) {
 	return decodeMethodParams[GatewayRestartRequestRequest](params)
 }
+
+// maxSuspendReasonLength bounds the operator-visible suspend reason.
+const maxSuspendReasonLength = 200
+
+// GatewaySuspendPrepareRequest begins (or returns the active) daemon suspension.
+// Reason is operator-visible log context.
+type GatewaySuspendPrepareRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// GatewaySuspendStatusRequest takes no parameters.
+type GatewaySuspendStatusRequest struct{}
+
+// GatewaySuspendResumeRequest resumes the active suspension. SuspensionID, when
+// provided, must match the active suspension (empty resumes it unconditionally).
+type GatewaySuspendResumeRequest struct {
+	SuspensionID string `json:"suspensionId,omitempty"`
+}
+
+func (r GatewaySuspendPrepareRequest) Normalize() (GatewaySuspendPrepareRequest, error) {
+	r.Reason = strings.TrimSpace(r.Reason)
+	if len([]rune(r.Reason)) > maxSuspendReasonLength {
+		r.Reason = string([]rune(r.Reason)[:maxSuspendReasonLength])
+	}
+	return r, nil
+}
+
+func (r GatewaySuspendStatusRequest) Normalize() (GatewaySuspendStatusRequest, error) {
+	return r, nil
+}
+
+func (r GatewaySuspendResumeRequest) Normalize() (GatewaySuspendResumeRequest, error) {
+	r.SuspensionID = strings.TrimSpace(r.SuspensionID)
+	return r, nil
+}
+
+func DecodeGatewaySuspendPrepareParams(params json.RawMessage) (GatewaySuspendPrepareRequest, error) {
+	return decodeMethodParams[GatewaySuspendPrepareRequest](params)
+}
+
+func DecodeGatewaySuspendStatusParams(params json.RawMessage) (GatewaySuspendStatusRequest, error) {
+	return decodeMethodParams[GatewaySuspendStatusRequest](params)
+}
+
+func DecodeGatewaySuspendResumeParams(params json.RawMessage) (GatewaySuspendResumeRequest, error) {
+	return decodeMethodParams[GatewaySuspendResumeRequest](params)
+}

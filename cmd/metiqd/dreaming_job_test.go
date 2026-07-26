@@ -85,7 +85,7 @@ func TestStartDreamingJob_WritesDiaryAndStops(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	startDreamingJob(ctx, store, func() state.ConfigDoc { return cfgDoc })
+	startDreamingJob(ctx, store, func() state.ConfigDoc { return cfgDoc }, nil)
 
 	ds := any(store).(memory.DreamDiaryStore)
 	got := false
@@ -125,5 +125,5 @@ func TestStartDreamingJob_NoOpForNonDiaryStore(t *testing.T) {
 	// nil store is the simplest non-supporting case and must return cleanly.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	startDreamingJob(ctx, nil, func() state.ConfigDoc { return state.ConfigDoc{} })
+	startDreamingJob(ctx, nil, func() state.ConfigDoc { return state.ConfigDoc{} }, nil)
 }

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,6 +40,7 @@ import (
 	gatewayprotocol "metiq/internal/gateway/protocol"
 	questionspkg "metiq/internal/gateway/questions"
 	"metiq/internal/gateway/sessioncoord"
+	suspendpkg "metiq/internal/gateway/suspend"
 	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
@@ -187,6 +189,11 @@ var (
 	// controlUserProfiles owns the durable users.* profile ledger
 	// (swarmstr-5lln). Set at startup once the ledger path is known.
 	controlUserProfiles *userprofilespkg.Manager
+	// controlSuspendCoordinator owns the cooperative daemon suspend/resume
+	// lifecycle backing gateway.suspend.* (swarmstr-ngrd). Set at startup once the
+	// ledger path is known; a suspension persisted by a prior process stays gated
+	// (workers paused) until an explicit resume.
+	controlSuspendCoordinator *suspendpkg.Coordinator
 	// controlTaskSuggestions tracks ephemeral model-proposed follow-up tasks
 	// (taskSuggestions.*, WS-A/A7). Suggestion ids intentionally vanish on
 	// restart.
@@ -1384,7 +1391,15 @@ func main() {
 			}
 		}
 	}
-	startMemoryMaintenance(ctx, memoryIndex, configState.Get)
+	// suspendGate publishes the suspend coordinator to the background memory
+	// workers, which start here — before the coordinator's durable-ledger path
+	// (configFilePath) is even resolved. The coordinator is Store()d into it once
+	// constructed below; using an atomic pointer gives race-free publication
+	// (workers only Load it on their minute-scale ticks, well after startup). A
+	// nil Load (pre-construction) is nil-safe and accepts work; by the first tick
+	// the recovered/idle coordinator is always installed.
+	var suspendGate atomic.Pointer[suspendpkg.Coordinator]
+	startMemoryMaintenance(ctx, memoryIndex, configState.Get, func() bool { return suspendGate.Load().AcceptingWork() })
 
 	var contextEngineName string
 	// Initialise pluggable context engine from config (Extra["context_engine"]).
@@ -1735,6 +1750,28 @@ func main() {
 		log.Fatalf("load user profile ledger: %v", err)
 	}
 	controlUserProfiles = userProfileLedger
+	// Cooperative daemon suspend coordinator (swarmstr-ngrd). Durable suspension
+	// ledger under the managed dir; a suspension persisted by a prior process
+	// recovers gated (workers paused) until an explicit gateway.suspend.resume.
+	suspendCoordinator, err := suspendpkg.NewCoordinatorAt(filepath.Join(filepath.Dir(configFilePath), "suspend-ledger.json"))
+	if err != nil {
+		log.Fatalf("load suspend ledger: %v", err)
+	}
+	// Register the cooperative dispatchers that consult the accepting-work gate so
+	// gateway.suspend.status can honestly report which workers pause while
+	// suspended. These are timer-driven "skip the tick" seams (recover naturally
+	// on the next tick after resume). NOT gated (reported as in-flight instead):
+	// interactive agent runs / DM turns / task-runner queued runs, which are
+	// user-facing and quiesced-by-drain rather than paused.
+	suspendCoordinator.RegisterPausableWorker("cron-scheduler")
+	suspendCoordinator.RegisterPausableWorker("dreaming-promotion-job")
+	suspendCoordinator.RegisterPausableWorker("memory-compaction")
+	controlSuspendCoordinator = suspendCoordinator
+	// Publish to the already-running background memory workers (race-free).
+	suspendGate.Store(suspendCoordinator)
+	if suspendCoordinator.Suspended() {
+		log.Printf("suspend coordinator: recovered active suspension id=%s; background dispatchers paused until gateway.suspend.resume", suspendCoordinator.State().SuspensionID)
+	}
 	controlWizards = wizards
 	controlSubagents = subagents
 	controlOps = ops
@@ -7258,6 +7295,13 @@ func main() {
 			case <-time.After(time.Until(next)):
 			}
 			tickTime := time.Now().Truncate(time.Minute)
+			// Cooperative suspend gate (swarmstr-ngrd): while the daemon is
+			// suspended, stop dispatching NEW cron jobs. This is a clean skip-
+			// the-tick pause — the next tick after gateway.suspend.resume fires
+			// due jobs again. In-flight jobs are never hard-killed.
+			if controlSuspendCoordinator != nil && !controlSuspendCoordinator.AcceptingWork() {
+				continue
+			}
 			jobs := controlServices.session.cronJobs.List(1000)
 			for _, job := range jobs {
 				if !job.Enabled {
@@ -7795,9 +7839,10 @@ func handleControlRPCRequest(
 		questions:       controlQuestions,
 		pluginApprovals: controlPluginApprovals,
 		userProfiles:    controlUserProfiles,
-		permEngine:      controlPermEngine,
-		restartCh:       restartChForDeps,
-		taskSuggestions: controlTaskSuggestions,
+		permEngine:         controlPermEngine,
+		restartCh:          restartChForDeps,
+		suspendCoordinator: controlSuspendCoordinator,
+		taskSuggestions:    controlTaskSuggestions,
 		environments:    controlEnvironments,
 		talkSessions:    controlTalkSessions,
 		talkClients:     controlTalkClients,

@@ -394,12 +394,17 @@ var adminDispatchRegistry = []struct {
 		MethodHooksDisable,
 		MethodHooksInfo,
 		MethodHooksCheck,
-		// Gateway lifecycle (swarmstr-iiot). gateway prefix -> core-runtime triage.
-		// restart.preflight = readiness snapshot; restart.request triggers the
-		// real restart scheduler. gateway.suspend.* is intentionally NOT wired
-		// (honest UNAVAILABLE — no cooperative suspend machinery in the daemon).
+		// Gateway lifecycle (swarmstr-iiot / swarmstr-ngrd). gateway prefix ->
+		// core-runtime triage. restart.preflight = readiness snapshot;
+		// restart.request triggers the real restart scheduler. suspend.prepare/
+		// status/resume drive the cooperative suspend coordinator
+		// (internal/gateway/suspend) — durable suspension-id lifecycle that gates
+		// the background dispatchers while quiescing in-flight work.
 		MethodGatewayRestartPreflight,
 		MethodGatewayRestartRequest,
+		MethodGatewaySuspendPrepare,
+		MethodGatewaySuspendStatus,
+		MethodGatewaySuspendResume,
 		// Memory-maintenance long tail (swarmstr-wvwk). doctor prefix -> memory-
 		// health triage; migrations prefix -> memory-health triage. Backed by
 		// internal/memory diagnostics (RepairMemoryHealth/CompactMemoryRecords),

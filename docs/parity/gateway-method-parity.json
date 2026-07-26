@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 310,
+    "implemented": 313,
     "partial": 0,
-    "missing": 14,
+    "missing": 11,
     "triage_category_counts": {
       "implement": 308,
       "accepted-deviation": 16
@@ -2555,24 +2555,27 @@
     },
     {
       "method": "gateway.suspend.prepare",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "gateway.suspend.prepare",
+      "notes": "Cooperative suspend coordinator (swarmstr-ngrd, internal/gateway/suspend): durable suspension-id lifecycle idle->preparing->suspended->resuming->idle persisted to an atomic JSON ledger. Prepare quiesces by closing a shared accepting-work gate consulted by the cron scheduler, dreaming/promotion job, and memory-compaction worker; in-flight agent runs + sessions are reported (restart.preflight inspector), not killed. Idempotent when already suspended.",
       "triage": "implement",
       "triage_group": "core-runtime",
       "workstream": "WS-A/core"
     },
     {
       "method": "gateway.suspend.status",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "gateway.suspend.status",
+      "notes": "Returns the coordinator record {state, suspensionId?, since, inFlight:{agentRuns,sessions}, quiesced, pausedWorkers[]}. State survives a crash/restart mid-suspension via the durable ledger (swarmstr-ngrd).",
       "triage": "implement",
       "triage_group": "core-runtime",
       "workstream": "WS-A/core"
     },
     {
       "method": "gateway.suspend.resume",
-      "status": "missing",
-      "notes": "",
+      "status": "implemented",
+      "metiq_method": "gateway.suspend.resume",
+      "notes": "Resumes the active suspension (validates suspensionId when provided), re-opens the accepting-work gate so background dispatchers resume, and flips to idle. Rejects when no suspension is active (swarmstr-ngrd).",
       "triage": "implement",
       "triage_group": "core-runtime",
       "workstream": "WS-A/core"

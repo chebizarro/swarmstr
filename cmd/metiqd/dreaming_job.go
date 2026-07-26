@@ -104,12 +104,15 @@ func dreamingJobConfigFromMemoryExtra(extra map[string]any) dreamingJobConfig {
 // startDreamingJob launches the background dreaming worker. It is a no-op when
 // the store cannot persist a dream diary (only the SQLite-backed hybrid store
 // can), so a non-supporting backend never spins a doomed goroutine.
-func startDreamingJob(ctx context.Context, store memory.Store, currentConfig func() state.ConfigDoc) {
+func startDreamingJob(ctx context.Context, store memory.Store, currentConfig func() state.ConfigDoc, acceptWork func() bool) {
 	if store == nil || currentConfig == nil {
 		return
 	}
 	if _, ok := any(store).(memory.DreamDiaryStore); !ok {
 		return
+	}
+	if acceptWork == nil {
+		acceptWork = func() bool { return true }
 	}
 	go func() {
 		cfg := dreamingJobConfigFromMemoryExtra(memoryExtraConfig(currentConfig()))
@@ -127,6 +130,11 @@ func startDreamingJob(ctx context.Context, store memory.Store, currentConfig fun
 					ticker.Reset(interval)
 				}
 				if !cfg.Enabled {
+					continue
+				}
+				// Cooperative suspend gate (swarmstr-ngrd): skip dispatching a new
+				// dreaming/promotion cycle while the daemon is suspended.
+				if !acceptWork() {
 					continue
 				}
 				runDreamingCycle(ctx, store, cfg)

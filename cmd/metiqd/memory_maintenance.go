@@ -9,14 +9,22 @@ import (
 	"metiq/internal/store/state"
 )
 
-func startMemoryMaintenance(ctx context.Context, store memory.Store, currentConfig func() state.ConfigDoc) {
+// startMemoryMaintenance launches the background memory workers. acceptWork is
+// the cooperative suspend gate (swarmstr-ngrd): when it returns false the daemon
+// is suspended, so the compaction + dreaming workers skip dispatching a new
+// cycle (clean skip-the-tick pause; the next tick after resume runs normally).
+// A nil acceptWork means always-accepting.
+func startMemoryMaintenance(ctx context.Context, store memory.Store, currentConfig func() state.ConfigDoc, acceptWork func() bool) {
 	if store == nil || currentConfig == nil {
 		return
+	}
+	if acceptWork == nil {
+		acceptWork = func() bool { return true }
 	}
 	runMemoryStartupMaintenance(ctx, store, currentConfig())
 	// Background dreaming/consolidation job (swarmstr-qc53.2). Config-gated,
 	// default OFF; writes a dream-diary entry per phase per cycle.
-	startDreamingJob(ctx, store, currentConfig)
+	startDreamingJob(ctx, store, currentConfig, acceptWork)
 	go func() {
 		policy := memory.MemoryCompactionPolicyFromMap(memoryExtraConfig(currentConfig()))
 		policy = memory.NormalizeMemoryCompactionPolicy(policy)
@@ -27,6 +35,12 @@ func startMemoryMaintenance(ctx context.Context, store memory.Store, currentConf
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Cooperative suspend gate: stop dispatching new compaction sweeps
+				// while suspended. This check runs BEFORE acquiring the store
+				// maintenance gate, so it never interacts with that lock.
+				if !acceptWork() {
+					continue
+				}
 				policy = memory.MemoryCompactionPolicyFromMap(memoryExtraConfig(currentConfig()))
 				decision, result, ran, err := memory.CompactMemoryIfDue(ctx, store, policy, false)
 				if err != nil {

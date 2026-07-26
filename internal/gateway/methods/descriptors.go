@@ -213,6 +213,11 @@ var exactMethodScopes = map[string]string{
 	// snapshot (OpenClaw scopes it operator.read); request triggers a restart.
 	MethodGatewayRestartPreflight: protocol.MethodScopeOperatorRead,
 	MethodGatewayRestartRequest:   protocol.MethodScopeOperatorAdmin,
+	// Gateway suspend coordinator (swarmstr-ngrd): all three mutate/inspect the
+	// daemon suspension lifecycle; OperatorAdmin (OpenClaw scopes suspend.* admin).
+	MethodGatewaySuspendPrepare: protocol.MethodScopeOperatorAdmin,
+	MethodGatewaySuspendStatus:  protocol.MethodScopeOperatorAdmin,
+	MethodGatewaySuspendResume:  protocol.MethodScopeOperatorAdmin,
 	// Chat control-UI surface (swarmstr-viqq): read-only bootstrap/metadata/
 	// message lookup + deterministic tool titles.
 	MethodChatStartup:    protocol.MethodScopeOperatorRead,

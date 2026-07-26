@@ -219,16 +219,19 @@ const (
 	MethodUsersLinkEmail      = "users.linkEmail"
 	MethodUsersSetDisplayName = "users.setDisplayName"
 	MethodUsersSetAvatar      = "users.setAvatar"
-	// Gateway lifecycle (swarmstr-iiot). restart.preflight reports restart
-	// readiness (in-flight agent runs + active sessions); restart.request
-	// triggers the real restart scheduler (restartCh). gateway.suspend.* is
-	// intentionally NOT registered — the daemon has no cooperative suspend/
-	// resume machinery, so it stays an honest UNAVAILABLE gap (follow-up
-	// swarmstr issue); the shared `gateway` triage prefix is locked to the
-	// core-runtime/implement category so per-method accepted-deviation is not
-	// expressible in the parity matrix.
+	// Gateway lifecycle (swarmstr-iiot / swarmstr-ngrd). restart.preflight
+	// reports restart readiness (in-flight agent runs + active sessions);
+	// restart.request triggers the real restart scheduler (restartCh).
+	// suspend.prepare/status/resume drive the cooperative daemon suspend
+	// coordinator (internal/gateway/suspend): a durable suspension-id lifecycle
+	// (idle→preparing→suspended→resuming→idle) that gates the cooperative
+	// background dispatchers (cron scheduler, dreaming/promotion job, memory
+	// compaction) while quiescing in-flight agent runs + sessions.
 	MethodGatewayRestartPreflight = "gateway.restart.preflight"
 	MethodGatewayRestartRequest   = "gateway.restart.request"
+	MethodGatewaySuspendPrepare   = "gateway.suspend.prepare"
+	MethodGatewaySuspendStatus    = "gateway.suspend.status"
+	MethodGatewaySuspendResume    = "gateway.suspend.resume"
 	// Chat control-UI surface (swarmstr-viqq). Backed by the existing
 	// docs/transcript session subsystem. startup returns bootstrap state;
 	// metadata returns per-session chat metadata; message.get fetches one
