@@ -2223,6 +2223,25 @@ func main() {
 		loadInitialRepoBookmarks(ctx, controlKeyer, configState.Get())
 	}
 
+	// Loop-control (shared across all NIP-29 group channels): a peer-agent index
+	// (kind:0 bot verdicts, fail-open), a bot-loop pair guard, and an atomic
+	// record-first session-identity establisher. The bot flag / peer verdict are
+	// loop-control ONLY and never influence allow_from / command authorization.
+	nostrOwnPubkey := controlHub.PublicKey()
+	nostrPeerIndex, nostrPeerIndexErr := nostruntime.NewPeerAgentIndex(nostruntime.PeerAgentIndexOptions{
+		FetchProfile: nostruntime.NewRelayProfileFetcher(controlHub.Pool(), controlHub.ReadRelays(), 0),
+		OnError: func(err error, pubkey string) {
+			log.Printf("peer-agent index fetch error pubkey=%s err=%v", pubkey, err)
+		},
+	})
+	if nostrPeerIndexErr != nil {
+		log.Printf("peer-agent index init failed (loop control degraded): %v", nostrPeerIndexErr)
+	} else {
+		// Seed our own identity as a bot so peers can damp loops with us.
+		nostrPeerIndex.Set(nostrOwnPubkey, nostruntime.PeerProfileFacts{IsBot: true})
+	}
+	nostrBotLoopGuard := channels.NewBotLoopProtection(channels.NewPairLoopGuard(channels.PairLoopGuardOptions{}), 0)
+
 	// Auto-join any NostrChannels declared in the config with enabled: true.
 	// This provides OpenClaw parity: channels configured in the config file are
 	// active immediately at startup without a manual channels.join RPC call.
@@ -2243,14 +2262,79 @@ func main() {
 				Hub:          controlHub,
 				Keyer:        controlKeyer,
 				OnMessage: func(msg channels.InboundMessage) {
-					// Per-channel allow-from check.
-					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, localChanCfg.AllowFrom, configState.Get()); !dec.Allowed {
+					// Resolve CURRENT config so a policy change since startup
+					// (requireMention / allowBots / allow_from) applies now.
+					cfg := configState.Get()
+					curCfg, ok := cfg.NostrChannels[localChanName]
+					if !ok || !curCfg.Enabled {
+						return
+					}
+
+					// Per-channel allow-from check (AUTHORIZATION — kept separate
+					// from loop control; the bot flag never affects this).
+					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, curCfg.AllowFrom, cfg); !dec.Allowed {
 						log.Printf("nip29 group message rejected from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, dec.Reason)
 						return
 					}
-					// Per-sender session: each group member gets their own conversation.
+
+					// Loop-control preflight: mention / allowBots / ambient /
+					// backfill gating, against current config.
+					senderVerdict := nostruntime.VerdictUnknown
+					if nostrPeerIndex != nil {
+						senderVerdict = nostrPeerIndex.IsPeerAgent(msg.FromPubKey)
+					}
+					knownBot := senderVerdict == nostruntime.VerdictBot
+					roomPolicy := channels.ResolveNostrRoomPolicy(curCfg.Config)
+					preflight := channels.ResolveNostrGroupPreflight(channels.NostrPreflightInput{
+						BotPubkey:            nostrOwnPubkey,
+						ChannelName:          localChanName,
+						GroupID:              msg.GroupID,
+						GroupAddress:         curCfg.GroupAddress,
+						SenderPubkey:         msg.FromPubKey,
+						Text:                 msg.Text,
+						AgentID:              curCfg.AgentID,
+						Meta:                 msg.Meta,
+						RoomAllowFrom:        curCfg.AllowFrom,
+						AccountAllowFrom:     cfg.DM.AllowFrom,
+						RequireMention:       roomPolicy.RequireMention,
+						AllowTextCommands:    true,
+						UnmentionedRoomEvent: roomPolicy.UnmentionedRoomEvent,
+						AllowBots:            roomPolicy.AllowBots,
+						SenderIsPeer:         knownBot,
+						SenderIsKnownBot:     knownBot,
+					})
+					if preflight.ShouldDrop {
+						log.Printf("nip29 preflight drop from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, preflight.DropReason)
+						return
+					}
+
+					// Bot-loop pair guard: recorded ONCE, only for an admitted
+					// known-bot turn (humans/unknowns never enter it, so they
+					// never consume a pair budget). Idempotent per event id, and
+					// keyed on the ROOM (preflight.RoomKey) so the pair budget is
+					// room-scoped independent of the transcript session key below.
+					if knownBot {
+						if res := nostrBotLoopGuard.RecordAndCheck(channels.BotLoopProtectionFacts{
+							ScopeID:        nostrOwnPubkey,
+							ConversationID: preflight.RoomKey,
+							SenderID:       msg.FromPubKey,
+							ReceiverID:     nostrOwnPubkey,
+							Config:         roomPolicy.PairLoop,
+							DefaultEnabled: true,
+							EventID:        msg.EventID,
+						}); res.Suppressed {
+							log.Printf("nip29 bot-loop suppressed from=%s channel=%s room=%s", msg.FromPubKey, msg.ChannelID, preflight.RoomKey)
+							return
+						}
+					}
+
+					// Session key stays SENDER-SCOPED. Room-scoped transcript
+					// identity (record-first via identity.Establisher, primitive
+					// ready in swarmstr-f3g5) is deferred to swarmstr-rw37, which
+					// adds the per-room dispatch queue required to serialize
+					// concurrent senders on one session safely.
 					sessionID := "ch:" + msg.ChannelID + ":" + msg.FromPubKey
-					activeAgentID, rt := resolveInboundChannelRuntime(localChanCfg.AgentID, msg.ChannelID)
+					activeAgentID, rt := resolveInboundChannelRuntime(curCfg.AgentID, msg.ChannelID)
 					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					go func() {
@@ -7827,26 +7911,26 @@ func handleControlRPCRequest(
 		approvePairing: func(approvalCtx context.Context, req channels.PairingRequest) error {
 			return applyChannelPairingAllow(approvalCtx, docsRepo, configState, req)
 		},
-		nostrHub:        svc.relay.hub,
-		keyer:           svc.relay.keyer,
-		terminalManager: controlTerminalManager,
-		attachGrants:    controlAttachGrants,
-		worktrees:       controlWorktrees,
-		boardStore:      controlBoardStore,
-		boardNotices:    controlBoardNotices,
-		mcpAppViews:     controlMcpAppViews,
-		conversations:   controlConversations,
-		questions:       controlQuestions,
-		pluginApprovals: controlPluginApprovals,
-		userProfiles:    controlUserProfiles,
+		nostrHub:           svc.relay.hub,
+		keyer:              svc.relay.keyer,
+		terminalManager:    controlTerminalManager,
+		attachGrants:       controlAttachGrants,
+		worktrees:          controlWorktrees,
+		boardStore:         controlBoardStore,
+		boardNotices:       controlBoardNotices,
+		mcpAppViews:        controlMcpAppViews,
+		conversations:      controlConversations,
+		questions:          controlQuestions,
+		pluginApprovals:    controlPluginApprovals,
+		userProfiles:       controlUserProfiles,
 		permEngine:         controlPermEngine,
 		restartCh:          restartChForDeps,
 		suspendCoordinator: controlSuspendCoordinator,
 		taskSuggestions:    controlTaskSuggestions,
-		environments:    controlEnvironments,
-		talkSessions:    controlTalkSessions,
-		talkClients:     controlTalkClients,
-		talkRouting:     controlTalkRouting,
+		environments:       controlEnvironments,
+		talkSessions:       controlTalkSessions,
+		talkClients:        controlTalkClients,
+		talkRouting:        controlTalkRouting,
 	}
 	if svc.handlers.hooksMgr != nil {
 		deps.hooksMgr = svc.handlers.hooksMgr
