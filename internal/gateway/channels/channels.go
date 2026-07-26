@@ -44,8 +44,64 @@ type InboundMessage struct {
 	Text       string
 	EventID    string
 	CreatedAt  int64
+	// Meta carries NIP-29 mention/thread facts extracted from the event tags,
+	// consumed by the preflight decision (mentions, reply/quote, backfill).
+	Meta NostrInboundMeta
 	// Reply sends a reply back to the channel/sender.
 	Reply func(ctx context.Context, text string) error
+}
+
+// extractNIP29Meta parses NIP-29 mention/thread facts from a kind:9 event's
+// tags. liveSince marks when this subscription went live; events older than it
+// are treated as backfill/replay (never trip loop guards — the preflight drops
+// them as ambient before any stateful record).
+func extractNIP29Meta(ev nostr.Event, eventID string, liveSince nostr.Timestamp) NostrInboundMeta {
+	meta := NostrInboundMeta{EventID: eventID, DeliveryPhase: "live"}
+	if liveSince > 0 && ev.CreatedAt < liveSince {
+		meta.DeliveryPhase = DeliveryPhaseBackfill
+	}
+	for _, tag := range ev.Tags {
+		if len(tag) < 2 || tag[1] == "" {
+			continue
+		}
+		switch tag[0] {
+		case "p":
+			meta.MentionedPubkeys = append(meta.MentionedPubkeys, tag[1])
+		case "e":
+			// ["e", <id>, <relay>, <marker>, <pubkey?>] (NIP-10/NIP-29).
+			marker := ""
+			if len(tag) >= 4 {
+				marker = tag[3]
+			}
+			author := ""
+			if len(tag) >= 5 {
+				author = tag[4]
+			}
+			switch marker {
+			case "root":
+				meta.ThreadRootEventID = tag[1]
+			case "reply", "":
+				if author != "" {
+					meta.ReplyToSenderPubkey = author
+				}
+				if marker == "reply" || meta.ThreadRootEventID == "" {
+					// A bare e-tag (no marker) is a reply target in NIP-10.
+					if meta.ThreadRootEventID == "" {
+						meta.ThreadRootEventID = tag[1]
+					}
+				}
+			}
+		case "q":
+			// ["q", <id>, <relay?>, <pubkey?>] — quote with optional author hint.
+			if len(tag) >= 4 && tag[3] != "" {
+				meta.QuoteSenderPubkey = tag[3]
+			}
+		}
+	}
+	if meta.ThreadRootEventID == "" {
+		meta.ThreadRootEventID = eventID
+	}
+	return meta
 }
 
 // ─── Channel interface ────────────────────────────────────────────────────────
@@ -199,6 +255,9 @@ type NIP29GroupChannel struct {
 	seen       *SeenCache
 	lastSeenMu sync.Mutex
 	lastSeen   nostr.Timestamp
+	// liveSince marks when this channel started subscribing; inbound events
+	// older than it are treated as backfill/replay by the preflight.
+	liveSince nostr.Timestamp
 }
 
 // NewNIP29GroupChannel creates and starts a NIP-29 group subscription.
@@ -255,6 +314,7 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 		onErr:     opts.OnError,
 		pubkey:    pk.Hex(),
 		seen:      NewSeenCache(),
+		liveSince: nostr.Now(),
 	}
 
 	go ch.subscribeLoop(ctx)
@@ -394,6 +454,7 @@ func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
 		Text:       ev.Content,
 		EventID:    evIDHex,
 		CreatedAt:  int64(ev.CreatedAt),
+		Meta:       extractNIP29Meta(ev.Event, evIDHex, c.liveSince),
 		Reply: func(ctx context.Context, text string) error {
 			return c.Send(ctx, text)
 		},
