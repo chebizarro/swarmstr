@@ -33,6 +33,7 @@ The `bootstrap.json` file contains startup configuration loaded **before** conne
   // === Identity ===
   "private_key": "hex-key-or-${NOSTR_NSEC}",
   "signer_url": "bunker://... or env://VAR or file:///path",
+  "nip46_client_key": "file:///run/secrets/metiq-nip46-client-key",
   
   // === Network ===
   "relays": [

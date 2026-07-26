@@ -4,7 +4,7 @@ go 1.25.10
 
 require (
 	fiatjaf.com/nostr v0.0.0-20260611214214-c4534c716026
-	git.sharegap.net/cascadia/cascadia-go v0.7.1
+	git.sharegap.net/cascadia/cascadia-go v1.0.2
 	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.31
