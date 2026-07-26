@@ -500,8 +500,37 @@ func (m *PromotionManager) fetchMemory(memoryID string) (*IndexedMemory, error) 
 	return &mem, nil
 }
 
-// Promote runs a promotion sweep, promoting eligible memories.
+// runUnderMaintenanceGate runs fn while holding the store-level maintenance gate
+// (level 1 in the lock order maintenanceMu → PromotionManager.mu → b.mu). A
+// production manager (NewPromotionManager) always has a backend; the nil-backend
+// fallback exists only for manually constructed test managers. Callers MUST NOT
+// already hold maintenanceMu — it is non-reentrant.
+func (m *PromotionManager) runUnderMaintenanceGate(fn func() error) error {
+	if m != nil && m.backend != nil {
+		return m.backend.WithMaintenanceLock(fn)
+	}
+	return fn()
+}
+
+// Promote runs a promotion sweep, promoting eligible memories. It is a store
+// mutating maintenance op, so it runs under the maintenance gate (swarmstr-r34j)
+// before acquiring PromotionManager.mu, respecting the documented lock order.
 func (m *PromotionManager) Promote() (*PromotionResult, error) {
+	var result *PromotionResult
+	var sweepErr error
+	gateErr := m.runUnderMaintenanceGate(func() error {
+		result, sweepErr = m.promoteSweep()
+		return sweepErr
+	})
+	if sweepErr != nil {
+		return result, sweepErr
+	}
+	return result, gateErr
+}
+
+// promoteSweep performs the promotion sweep. The caller (Promote) already holds
+// the maintenance gate; promoteSweep acquires PromotionManager.mu.
+func (m *PromotionManager) promoteSweep() (*PromotionResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -539,34 +568,51 @@ func (m *PromotionManager) Promote() (*PromotionResult, error) {
 		byTopic[topic] = append(byTopic[topic], c)
 	}
 
-	// Promote each group
+	// Promote each group. Iterate topics in deterministic order so PromotedIDs
+	// is stable across runs (Go map iteration order is randomized).
 	now := time.Now().Unix()
-	for topic, group := range byTopic {
-		promoted, err := m.promoteGroup(topic, group, now)
+	topics := make([]string, 0, len(byTopic))
+	for topic := range byTopic {
+		topics = append(topics, topic)
+	}
+	sort.Strings(topics)
+	for _, topic := range topics {
+		group := byTopic[topic]
+		// promoteGroup returns the IDs it actually committed (each revalidated
+		// and claimed atomically), so a group-level file-write error still
+		// contributes its committed promotions.
+		promotedIDs, err := m.promoteGroup(topic, group, now)
+		result.Promoted += len(promotedIDs)
+		result.PromotedIDs = append(result.PromotedIDs, promotedIDs...)
 		if err != nil {
 			result.Errors++
 			continue
 		}
-		result.Promoted += promoted
-		for _, c := range group[:promoted] {
-			result.PromotedIDs = append(result.PromotedIDs, c.Memory.MemoryID)
-		}
 	}
 
-	result.Skipped = result.Candidates - result.Promoted - result.Errors
+	result.Skipped = result.Candidates - result.Promoted
 	result.EndTime = time.Now().Unix()
 	result.DurationMs = (result.EndTime - result.StartTime) * 1000
 
 	return result, nil
 }
 
-// promoteGroup promotes a group of related memories.
-func (m *PromotionManager) promoteGroup(topic string, candidates []PromotionCandidate, timestamp int64) (int, error) {
+// promoteGroup promotes a group of related memories and returns the source
+// memory IDs it actually committed. Each candidate is revalidated and claimed
+// atomically (markPromoted only succeeds when promoted_at is still NULL), so a
+// candidate that was demoted, removed, or already promoted concurrently is
+// skipped rather than mis-attributed to this sweep (swarmstr-r34j). The caller
+// is expected to hold the maintenance gate and PromotionManager.mu.
+//
+// The returned IDs are authoritative: a non-nil error from the (best-effort,
+// non-transactional) promotion-file mirror still returns the IDs that were
+// committed to the database.
+func (m *PromotionManager) promoteGroup(topic string, candidates []PromotionCandidate, timestamp int64) ([]string, error) {
 	if len(candidates) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 
-	promoted := 0
+	var promotedIDs []string
 
 	// If summarization is enabled and we have a summarizer, generate summary
 	if m.cfg.EnableSummary && m.summarizer != nil && len(candidates) > 1 {
@@ -592,53 +638,56 @@ func (m *PromotionManager) promoteGroup(topic string, candidates []PromotionCand
 			// Add to database
 			m.backend.Add(memoryDocFromIndexed(consolidatedMem))
 
-			// Mark all source memories as promoted
+			// Claim each source memory. Only successfully claimed sources count.
 			for _, c := range candidates {
-				if err := m.markPromoted(c.Memory.MemoryID, consolidatedID, timestamp); err != nil {
+				claimed, err := m.markPromoted(c.Memory.MemoryID, consolidatedID, timestamp)
+				if err != nil || !claimed {
 					continue
 				}
-				promoted++
+				promotedIDs = append(promotedIDs, c.Memory.MemoryID)
 			}
-			if promoted > 0 {
+			if len(promotedIDs) > 0 {
 				if err := m.appendPromotionFile(topic, fmt.Sprintf("Consolidated %s", topic), summary, timestamp); err != nil {
-					return promoted, err
+					return promotedIDs, err
 				}
 			}
 
-			return promoted, nil
+			return promotedIDs, nil
 		}
 	}
 
-	// Without summarization, promote individual memories
+	// Without summarization, promote individual memories.
+	promotedCandidates := make([]PromotionCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		// Update topic and mark as promoted
 		promotedTopic := topic
 		if promotedTopic == "" {
 			promotedTopic = m.cfg.PromotedTopic
 		}
 
-		// Update the memory's topic if needed
-		if c.Memory.Topic != promotedTopic {
-			_, err := m.db.Exec(`UPDATE chunks SET topic = ? WHERE id = ?`, promotedTopic, c.Memory.MemoryID)
-			if err != nil {
-				continue
-			}
-		}
-
-		// Mark as promoted
-		if err := m.markPromoted(c.Memory.MemoryID, promotedTopic, timestamp); err != nil {
+		// Revalidate + claim atomically BEFORE mutating the topic, so a candidate
+		// removed/promoted concurrently is skipped and its topic is left untouched.
+		claimed, err := m.markPromoted(c.Memory.MemoryID, promotedTopic, timestamp)
+		if err != nil || !claimed {
 			continue
 		}
-		promoted++
+
+		// Topic update is best-effort; the promotion claim is authoritative and has
+		// already committed.
+		if c.Memory.Topic != promotedTopic {
+			_, _ = m.db.Exec(`UPDATE chunks SET topic = ? WHERE id = ?`, promotedTopic, c.Memory.MemoryID)
+		}
+
+		promotedIDs = append(promotedIDs, c.Memory.MemoryID)
+		promotedCandidates = append(promotedCandidates, c)
 	}
-	if promoted > 0 {
-		body := formatPromotedMemoryFileBody(candidates[:promoted])
+	if len(promotedCandidates) > 0 {
+		body := formatPromotedMemoryFileBody(promotedCandidates)
 		if err := m.appendPromotionFile(topic, fmt.Sprintf("Promoted %s memories", topic), body, timestamp); err != nil {
-			return promoted, err
+			return promotedIDs, err
 		}
 	}
 
-	return promoted, nil
+	return promotedIDs, nil
 }
 
 func (m *PromotionManager) appendPromotionFile(topic, title, body string, timestamp int64) error {
@@ -682,52 +731,23 @@ func formatPromotedMemoryFileBody(candidates []PromotionCandidate) string {
 	return strings.Join(lines, "\n")
 }
 
-// markPromoted updates the recall tracking to indicate a memory was promoted.
-func (m *PromotionManager) markPromoted(memoryID, promotedTo string, timestamp int64) error {
-	_, err := m.db.Exec(`
+// markPromoted atomically claims a memory for promotion, revalidating inside the
+// UPDATE that it has not already been promoted (or removed) concurrently. It
+// returns claimed=true only when THIS call set the promotion marker (the row
+// existed with promoted_at IS NULL); claimed=false means another sweep already
+// promoted it or the candidate is gone, and the caller must not attribute it to
+// this sweep. This is the in-transaction candidate revalidation for r34j.
+func (m *PromotionManager) markPromoted(memoryID, promotedTo string, timestamp int64) (bool, error) {
+	res, err := m.db.Exec(`
 		UPDATE recall_tracking
 		SET promoted_at = ?, promoted_to = ?
-		WHERE memory_id = ?
+		WHERE memory_id = ? AND promoted_at IS NULL
 	`, timestamp, promotedTo, memoryID)
-	return err
-}
-
-// promotedIDsAmong returns the subset of the given memory IDs that currently
-// carry a promotion marker in recall_tracking. Used by the dreaming phase to
-// record the exact promoted-record IDs for the persisted dream diary.
-func (m *PromotionManager) promotedIDsAmong(ids []string) []string {
-	if len(ids) == 0 {
-		return []string{}
-	}
-	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	rows, err := m.db.Query(`
-		SELECT memory_id FROM recall_tracking
-		WHERE promoted_at IS NOT NULL AND memory_id IN (`+strings.Join(placeholders, ",")+`)
-	`, args...)
 	if err != nil {
-		return []string{}
+		return false, err
 	}
-	defer rows.Close()
-	promoted := make(map[string]struct{}, len(ids))
-	for rows.Next() {
-		var id string
-		if rows.Scan(&id) == nil {
-			promoted[id] = struct{}{}
-		}
-	}
-	// Preserve the input ordering for deterministic diary output.
-	out := make([]string, 0, len(promoted))
-	for _, id := range ids {
-		if _, ok := promoted[id]; ok {
-			out = append(out, id)
-		}
-	}
-	return out
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // GetPromotionStats returns statistics about memory promotion.

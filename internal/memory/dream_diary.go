@@ -488,7 +488,9 @@ func RunDreamingCycleWithDiary(ctx context.Context, manager *PromotionManager, d
 	// operation and a concurrent backfill cannot observe promotions before their
 	// live diary entries exist.
 	lockErr := manager.backend.WithMaintenanceLock(func() error {
-		res, perr := RunDreamingPhases(manager, runCfg, nil)
+		// Already holding the maintenance gate; call the ungated core so we do not
+		// re-enter the non-reentrant maintenanceMu (swarmstr-r34j).
+		res, perr := runDreamingPhasesLocked(manager, runCfg, nil)
 		if perr != nil {
 			return perr
 		}

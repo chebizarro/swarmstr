@@ -106,7 +106,38 @@ func (b *SQLiteBackend) MemoryMigrationPlan(ctx context.Context) (MemoryMigratio
 // backfill run only when the plan reports pending work (or the corresponding
 // option forces them). Embedding reindex is intentionally left to the lazy
 // idle-reindex path and is only reported, never forced here.
+//
+// A non-dry-run apply is a store-mutating maintenance op: it runs under the
+// store maintenance gate (swarmstr-r34j) so it cannot interleave with
+// compaction / promotion / repair. A dry run mutates nothing and is left
+// ungated so a planning preview is never serialized behind live maintenance.
 func (b *SQLiteBackend) MemoryMigrationApply(ctx context.Context, opts MemoryMigrationApplyOptions) (MemoryMigrationApplyReport, error) {
+	if opts.DryRun {
+		return b.memoryMigrationApply(ctx, opts)
+	}
+	if err := ctx.Err(); err != nil {
+		return MemoryMigrationApplyReport{}, err
+	}
+	var report MemoryMigrationApplyReport
+	var applyErr error
+	gateErr := b.WithMaintenanceLock(func() error {
+		report, applyErr = b.memoryMigrationApply(ctx, opts)
+		return applyErr
+	})
+	if applyErr != nil {
+		return report, applyErr
+	}
+	if gateErr != nil {
+		return MemoryMigrationApplyReport{}, gateErr
+	}
+	return report, nil
+}
+
+// memoryMigrationApply is the ungated core. For a non-dry run the caller holds
+// the maintenance gate. Ordering matters: data migration (backfill + FTS
+// rebuild) runs FIRST and schema_version is bumped LAST, and only when the data
+// migration succeeded, so CurrentVersion advances only on a fully-migrated store.
+func (b *SQLiteBackend) memoryMigrationApply(ctx context.Context, opts MemoryMigrationApplyOptions) (MemoryMigrationApplyReport, error) {
 	before, err := b.MemoryMigrationPlan(ctx)
 	if err != nil {
 		return MemoryMigrationApplyReport{}, err
@@ -116,18 +147,11 @@ func (b *SQLiteBackend) MemoryMigrationApply(ctx context.Context, opts MemoryMig
 	rebuildFTS := before.FTSDrift > 0 || opts.RebuildFTS
 	backfill := before.LegacyChunks > 0 || opts.Backfill
 
-	// Schema migration (idempotent): ensureUnifiedSchema already ran inside the
-	// plan; record the target version so CurrentVersion advances.
-	schemaStep := MemoryMigrationStep{ID: "schema_upgrade", Kind: "schema", Description: fmt.Sprintf("ensure unified schema at v%d", before.TargetVersion), Pending: before.SchemaPending}
-	if !opts.DryRun {
-		if _, err := b.db.Exec(`INSERT OR REPLACE INTO schema_version (version) VALUES (?)`, sqliteSchemaVersion); err != nil {
-			schemaStep.Detail = err.Error()
-		} else {
-			schemaStep.Applied = true
-		}
-	}
-	report.Actions = append(report.Actions, schemaStep)
+	// dataOK gates the schema_version bump: it flips false if any data-migration
+	// step fails, so a partial migration never advances the recorded version.
+	dataOK := true
 
+	var backfillStep *MemoryMigrationStep
 	if backfill {
 		step := MemoryMigrationStep{ID: "backfill_chunks", Kind: "backfill", Description: "backfill unified memory_records from legacy chunks", Pending: true, Count: before.LegacyChunks}
 		if !opts.DryRun {
@@ -135,23 +159,49 @@ func (b *SQLiteBackend) MemoryMigrationApply(ctx context.Context, opts MemoryMig
 			step.Count = n
 			if err != nil {
 				step.Detail = err.Error()
+				dataOK = false
 			} else {
 				step.Applied = true
 			}
 		}
-		report.Actions = append(report.Actions, step)
+		backfillStep = &step
 	}
 
+	var ftsStep *MemoryMigrationStep
 	if rebuildFTS {
 		step := MemoryMigrationStep{ID: "fts_rebuild", Kind: "fts_rebuild", Description: "rebuild memory_fts index", Pending: before.FTSDrift > 0, Count: before.FTSDrift}
 		if !opts.DryRun {
-			if _, err := b.db.Exec(`INSERT INTO memory_fts(memory_fts) VALUES('rebuild')`); err != nil {
+			if !dataOK {
+				step.Detail = "skipped: prior data migration step failed"
+			} else if _, err := b.db.Exec(`INSERT INTO memory_fts(memory_fts) VALUES('rebuild')`); err != nil {
 				step.Detail = err.Error()
+				dataOK = false
 			} else {
 				step.Applied = true
 			}
 		}
-		report.Actions = append(report.Actions, step)
+		ftsStep = &step
+	}
+
+	// Schema version LAST, only after data migration + FTS rebuild succeeded.
+	schemaStep := MemoryMigrationStep{ID: "schema_upgrade", Kind: "schema", Description: fmt.Sprintf("ensure unified schema at v%d", before.TargetVersion), Pending: before.SchemaPending}
+	if !opts.DryRun {
+		if !dataOK {
+			schemaStep.Detail = "skipped schema_version bump: data migration/FTS rebuild failed"
+		} else if _, err := b.db.Exec(`INSERT OR REPLACE INTO schema_version (version) VALUES (?)`, sqliteSchemaVersion); err != nil {
+			schemaStep.Detail = err.Error()
+		} else {
+			schemaStep.Applied = true
+		}
+	}
+	// Report the schema action first for readability, then the data steps that
+	// actually ran before it.
+	report.Actions = append(report.Actions, schemaStep)
+	if backfillStep != nil {
+		report.Actions = append(report.Actions, *backfillStep)
+	}
+	if ftsStep != nil {
+		report.Actions = append(report.Actions, *ftsStep)
 	}
 
 	after, err := b.MemoryMigrationPlan(ctx)
@@ -195,7 +245,6 @@ type REMHarnessResult struct {
 // deterministic narrative, without promoting anything. Setting Apply=true runs
 // a real promotion sweep for the phase.
 func (b *SQLiteBackend) RunREMHarness(ctx context.Context, opts REMHarnessOptions) (REMHarnessResult, error) {
-	_ = ctx
 	if err := b.ensureUnifiedSchema(); err != nil {
 		return REMHarnessResult{}, err
 	}
@@ -211,45 +260,71 @@ func (b *SQLiteBackend) RunREMHarness(ctx context.Context, opts REMHarnessOption
 	cfg := DefaultPromotionConfig()
 	manager := NewPromotionManager(b, cfg)
 
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	if manager.tracker != nil {
-		if err := manager.tracker.Flush(); err != nil {
+	var result REMHarnessResult
+	// run performs candidate selection and (for apply) the promotion sweep under
+	// PromotionManager.mu. Selection happens INSIDE this closure so that on the
+	// apply path it runs while the maintenance gate is held (candidates cannot be
+	// demoted/removed between selection and promotion).
+	run := func() error {
+		manager.mu.Lock()
+		defer manager.mu.Unlock()
+		if manager.tracker != nil {
+			if err := manager.tracker.Flush(); err != nil {
+				return err
+			}
+		}
+		originalMax := manager.cfg.MaxBatchSize
+		if limit > 0 && (manager.cfg.MaxBatchSize <= 0 || limit < manager.cfg.MaxBatchSize) {
+			manager.cfg.MaxBatchSize = limit
+		}
+		candidates, err := manager.FindCandidates()
+		manager.cfg.MaxBatchSize = originalMax
+		if err != nil {
+			return err
+		}
+		candidates = filterDreamingCandidates(phase, candidates, limit)
+
+		result = REMHarnessResult{Phase: phase, Applied: opts.Apply, Candidates: len(candidates)}
+		if opts.Apply && len(candidates) > 0 {
+			byTopic := map[string][]PromotionCandidate{}
+			now := time.Now().UTC().Unix()
+			for _, candidate := range candidates {
+				topic := candidate.Memory.Topic
+				if topic == "" {
+					topic = manager.cfg.PromotedTopic
+				}
+				byTopic[topic] = append(byTopic[topic], candidate)
+			}
+			for topic, group := range byTopic {
+				// promoteGroup returns the IDs actually committed even on a
+				// file-mirror error, so count its length rather than dropping the
+				// group.
+				promotedIDs, _ := manager.promoteGroup(topic, group, now)
+				result.Promoted += len(promotedIDs)
+			}
+		}
+		// 0 => BuildDreamingNarrative applies its default cap (1200 chars).
+		result.Narrative = BuildDreamingNarrative(phase, candidates, result.Promoted, 0)
+		return nil
+	}
+
+	if opts.Apply {
+		// Mutating apply path: serialize behind the store maintenance gate before
+		// acquiring PromotionManager.mu (lock order maintenanceMu → manager.mu).
+		if err := ctx.Err(); err != nil {
+			return REMHarnessResult{}, err
+		}
+		if err := b.WithMaintenanceLock(run); err != nil {
+			return REMHarnessResult{}, err
+		}
+	} else {
+		// Dry run is read-only; do NOT take the maintenance gate so a preview is
+		// never serialized behind long-running maintenance.
+		if err := run(); err != nil {
 			return REMHarnessResult{}, err
 		}
 	}
-	originalMax := manager.cfg.MaxBatchSize
-	if limit > 0 && (manager.cfg.MaxBatchSize <= 0 || limit < manager.cfg.MaxBatchSize) {
-		manager.cfg.MaxBatchSize = limit
-	}
-	candidates, err := manager.FindCandidates()
-	manager.cfg.MaxBatchSize = originalMax
-	if err != nil {
-		return REMHarnessResult{}, err
-	}
-	candidates = filterDreamingCandidates(phase, candidates, limit)
 
-	result := REMHarnessResult{Phase: phase, Applied: opts.Apply, Candidates: len(candidates)}
-	if opts.Apply && len(candidates) > 0 {
-		byTopic := map[string][]PromotionCandidate{}
-		now := time.Now().UTC().Unix()
-		for _, candidate := range candidates {
-			topic := candidate.Memory.Topic
-			if topic == "" {
-				topic = manager.cfg.PromotedTopic
-			}
-			byTopic[topic] = append(byTopic[topic], candidate)
-		}
-		for topic, group := range byTopic {
-			promoted, err := manager.promoteGroup(topic, group, now)
-			if err != nil {
-				continue
-			}
-			result.Promoted += promoted
-		}
-	}
-	// 0 => BuildDreamingNarrative applies its default cap (1200 chars).
-	result.Narrative = BuildDreamingNarrative(phase, candidates, result.Promoted, 0)
 	result.DurationMS = time.Since(start).Milliseconds()
 	recordMemoryTelemetry("rem_harness", time.Time{}, map[string]any{"ok": true, "phase": string(phase), "apply": opts.Apply, "candidates": result.Candidates, "promoted": result.Promoted})
 	return result, nil

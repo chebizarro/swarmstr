@@ -52,7 +52,38 @@ type DreamingNarrativeBuilder func(phase DreamingPhase, candidates []PromotionCa
 // RunDreamingPhases executes light and REM promotion phases using the existing
 // PromotionManager. It is deterministic and event-free; schedulers can call it
 // from cron without changing hot search paths.
+//
+// It is a store-mutating promotion writer, so it self-gates on the store
+// maintenance mutex (swarmstr-r34j) before acquiring PromotionManager.mu,
+// respecting the lock order maintenanceMu → PromotionManager.mu → b.mu. Every
+// scheduled/background caller (PromotionJob.Run, cron.DreamingJob.Run,
+// RunModelAssistedDreaming) therefore runs serialized against other maintenance
+// without any extra wiring. The ONE caller that already owns the gate —
+// RunDreamingCycleWithDiary, which holds it across sweep + diary persistence —
+// must call the ungated core runDreamingPhasesLocked instead (this is
+// non-reentrant; calling RunDreamingPhases there would self-deadlock).
 func RunDreamingPhases(manager *PromotionManager, cfg DreamingConfig, builder DreamingNarrativeBuilder) (*DreamingResult, error) {
+	if manager == nil || !cfg.Enabled {
+		return &DreamingResult{}, nil
+	}
+	var result *DreamingResult
+	var runErr error
+	gateErr := manager.runUnderMaintenanceGate(func() error {
+		result, runErr = runDreamingPhasesLocked(manager, cfg, builder)
+		return runErr
+	})
+	if result == nil {
+		result = &DreamingResult{}
+	}
+	if runErr != nil {
+		return result, runErr
+	}
+	return result, gateErr
+}
+
+// runDreamingPhasesLocked is the ungated core of RunDreamingPhases. The caller
+// MUST already hold the store maintenance gate. It acquires PromotionManager.mu.
+func runDreamingPhasesLocked(manager *PromotionManager, cfg DreamingConfig, builder DreamingNarrativeBuilder) (*DreamingResult, error) {
 	start := time.Now()
 	result := &DreamingResult{}
 	if manager == nil || !cfg.Enabled {
@@ -136,18 +167,25 @@ func runDreamingPhase(manager *PromotionManager, phase DreamingPhase, limit int,
 			}
 			byTopic[topic] = append(byTopic[topic], candidate)
 		}
+		// promoteGroup returns exactly the IDs THIS sweep committed (each claimed
+		// atomically), so attribution no longer depends on re-querying
+		// recall_tracking — which could otherwise pick up a promotion made by a
+		// concurrent promotion path (swarmstr-r34j). Collect into a set, then emit
+		// in CandidateIDs order for deterministic diary output.
+		promotedSet := make(map[string]struct{}, len(candidates))
 		for topic, group := range byTopic {
-			promoted, err := manager.promoteGroup(topic, group, now)
-			if err != nil {
-				continue
+			promotedIDs, _ := manager.promoteGroup(topic, group, now)
+			for _, id := range promotedIDs {
+				promotedSet[id] = struct{}{}
 			}
-			out.Promoted += promoted
 		}
-		// Candidates enter this phase with promoted_at IS NULL (FindCandidates
-		// filters on that), so any candidate now carrying a promotion marker was
-		// promoted during THIS phase. This yields the exact promoted-record IDs
-		// without threading them back through promoteGroup.
-		out.PromotedIDs = manager.promotedIDsAmong(candidateIDs)
+		out.PromotedIDs = make([]string, 0, len(promotedSet))
+		for _, id := range candidateIDs {
+			if _, ok := promotedSet[id]; ok {
+				out.PromotedIDs = append(out.PromotedIDs, id)
+			}
+		}
+		out.Promoted = len(out.PromotedIDs)
 	}
 	if cfg.Narratives {
 		narrative := ""

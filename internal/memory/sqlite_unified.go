@@ -455,7 +455,34 @@ func (b *SQLiteBackend) ForgetMemoryRecord(ctx context.Context, id string, mode 
 	return true, err
 }
 
+// CompactMemoryRecords runs a compaction sweep under the store maintenance gate
+// (swarmstr-r34j) so it cannot interleave with promotion / migration / repair
+// and race relational invariants across memory_records / memory_fts /
+// memory_embeddings / legacy chunks.
 func (b *SQLiteBackend) CompactMemoryRecords(ctx context.Context, cfg CompactionConfig) (CompactionResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CompactionResult{}, err
+	}
+	var result CompactionResult
+	var compactErr error
+	gateErr := b.WithMaintenanceLock(func() error {
+		result, compactErr = b.compactMemoryRecords(ctx, cfg)
+		return compactErr
+	})
+	if compactErr != nil {
+		return result, compactErr
+	}
+	if gateErr != nil {
+		return CompactionResult{}, gateErr
+	}
+	return result, nil
+}
+
+// compactMemoryRecords is the ungated core of CompactMemoryRecords (it acquires
+// b.mu). The maintenance gate is held by the caller: either the public
+// CompactMemoryRecords wrapper, or RepairMemoryHealth, which calls this directly
+// so it does not re-enter the non-reentrant maintenanceMu (swarmstr-r34j).
+func (b *SQLiteBackend) compactMemoryRecords(ctx context.Context, cfg CompactionConfig) (CompactionResult, error) {
 	_ = ctx
 	start := time.Now()
 	if err := b.ensureUnifiedSchema(); err != nil {

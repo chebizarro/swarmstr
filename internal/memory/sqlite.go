@@ -67,11 +67,35 @@ type SQLiteBackend struct {
 	recoveryReport SQLiteRecoveryReport
 	ftsHealth      FTSHealth
 
-	// maintenanceMu serializes destructive store-level maintenance operations
-	// (dream-diary reset/backfill, grounded-short-term demotion, diary-writing
-	// dreaming cycles) so they cannot interleave and race relational invariants.
-	// See swarmstr-s4wl. Lock order: acquire maintenanceMu BEFORE PromotionManager.mu
-	// and BEFORE b.mu.
+	// ── Lock order (swarmstr-s4wl / swarmstr-r34j) ──────────────────────────
+	//
+	// The memory store has three levels of mutual exclusion. Every code path
+	// that acquires more than one MUST take them in this order to avoid
+	// deadlock:
+	//
+	//     maintenanceMu  →  PromotionManager.mu  →  SQLiteBackend.mu (b.mu)
+	//
+	//   1. maintenanceMu (below) — store-level maintenance gate. Serializes
+	//      destructive/mutating maintenance so no two can interleave and race
+	//      relational invariants spanning memory_records / memory_fts /
+	//      memory_embeddings / legacy chunks. Held by: dream-diary
+	//      reset/backfill, grounded-short-term demotion, diary-writing dreaming
+	//      cycles, migrations.memory.apply, doctor.memory.repairDreamingArtifacts,
+	//      doctor.memory.dedupeDreamDiary, apply-mode remHarness, periodic
+	//      compaction, and PromotionManager promotion sweeps. Acquire it at the
+	//      OUTERMOST op entrypoint only (never re-enter — it is a plain,
+	//      non-reentrant mutex; an inner helper already running under the gate
+	//      must NOT re-acquire it).
+	//   2. PromotionManager.mu — serializes candidate selection + promotion
+	//      within a single manager. Acquired only after maintenanceMu (when a
+	//      gated op drives a promotion sweep).
+	//   3. b.mu — protects backend caches, the payload encryptor, and SQL
+	//      mutations. Acquired last, e.g. by promoteGroup → backend.Add and by
+	//      the compaction/migration write bodies.
+	//
+	// Read-only ops (health, migration plan, dry-run remHarness, dream-diary
+	// list, grounded-short-term read, search) MUST NOT take maintenanceMu so
+	// reads are never serialized behind long-running maintenance.
 	maintenanceMu sync.Mutex
 
 	// payloadEncryptor optionally encrypts memory outbox payloads (NIP-44 self)
@@ -97,7 +121,10 @@ func (b *SQLiteBackend) SetMemoryPayloadEncryptor(enc MemoryPayloadEncryptor) {
 // WithMaintenanceLock runs fn while holding the store-level maintenance mutex.
 // It provides a single serialization point for destructive maintenance ops so
 // concurrent live writes / scheduled dreaming / periodic compaction cannot race
-// (swarmstr-s4wl).
+// (swarmstr-s4wl). It is the level-1 lock in the documented lock order
+// (maintenanceMu → PromotionManager.mu → b.mu). maintenanceMu is NOT reentrant:
+// callers must acquire it at the outermost op entrypoint and helpers running
+// under the gate must use ungated inner variants rather than re-acquiring it.
 func (b *SQLiteBackend) WithMaintenanceLock(fn func() error) error {
 	if b == nil {
 		return fmt.Errorf("sqlite backend is nil")

@@ -354,6 +354,13 @@ type ModelMemoryConsolidator interface {
 
 // ConfigureModelAssistedPromotion installs a model summarizer on the existing
 // promotion manager. Promotion thresholds and persistence remain unchanged.
+//
+// Concurrency contract (swarmstr-r34j): the summarizer runs inside promoteGroup
+// while BOTH the store maintenance gate (maintenanceMu) and PromotionManager.mu
+// are held. It MUST NOT re-enter any store maintenance operation on the same
+// backend (Promote, RunDreamingPhases, CompactMemoryRecords, RepairMemoryHealth,
+// MemoryMigrationApply, RunREMHarness) or it will self-deadlock on the
+// non-reentrant gate. A pure text/LLM summarizer (the intended use) is safe.
 func ConfigureModelAssistedPromotion(manager *PromotionManager, consolidator ModelMemoryConsolidator) {
 	if manager == nil || consolidator == nil {
 		return

@@ -328,7 +328,34 @@ func RepairMemoryHealth(ctx context.Context, store Store, opts MemoryHealthRepai
 	return MemoryHealthRepairReport{}, fmt.Errorf("memory health repairs are not supported by this backend")
 }
 
+// RepairMemoryHealth repairs record/index integrity store-wide. It mutates the
+// store (FTS rebuild + compaction), so it runs under the store maintenance gate
+// (swarmstr-r34j). It acquires the gate ONCE at this boundary and its inner
+// compaction uses the ungated compactMemoryRecords, so the two do not deadlock
+// on the non-reentrant maintenanceMu.
 func (b *SQLiteBackend) RepairMemoryHealth(ctx context.Context, opts MemoryHealthRepairOptions) (MemoryHealthRepairReport, error) {
+	if err := ctx.Err(); err != nil {
+		return MemoryHealthRepairReport{}, err
+	}
+	var report MemoryHealthRepairReport
+	var repairErr error
+	gateErr := b.WithMaintenanceLock(func() error {
+		report, repairErr = b.repairMemoryHealth(ctx, opts)
+		return repairErr
+	})
+	if repairErr != nil {
+		return report, repairErr
+	}
+	if gateErr != nil {
+		return MemoryHealthRepairReport{}, gateErr
+	}
+	return report, nil
+}
+
+// repairMemoryHealth is the ungated core of RepairMemoryHealth. The caller holds
+// the maintenance gate; this calls the ungated compactMemoryRecords to avoid
+// re-entering it.
+func (b *SQLiteBackend) repairMemoryHealth(ctx context.Context, opts MemoryHealthRepairOptions) (MemoryHealthRepairReport, error) {
 	if err := b.ensureUnifiedSchema(); err != nil {
 		return MemoryHealthRepairReport{}, err
 	}
@@ -350,7 +377,8 @@ func (b *SQLiteBackend) RepairMemoryHealth(ctx context.Context, opts MemoryHealt
 			now = time.Now().UTC()
 		}
 		cfg := CompactionConfig{Now: now, Reason: "health_repair", SkipExpireStale: !opts.FixAll && before.IssueCounts["expired_active"] == 0, SkipDedupe: before.IssueCounts["duplicate_hash"] == 0}
-		result, err := b.CompactMemoryRecords(ctx, cfg)
+		// Ungated inner: the maintenance gate is already held by RepairMemoryHealth.
+		result, err := b.compactMemoryRecords(ctx, cfg)
 		detail := fmt.Sprintf("expired=%d deduped=%d supersession_fix=%d stale=%d", result.Expired, result.Deduped, result.SupersessionFix, result.StaleFlagged)
 		if err != nil {
 			detail = err.Error()
