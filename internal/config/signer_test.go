@@ -264,7 +264,7 @@ func TestResolveSigner_Bunker_EntropyFailurePropagatesError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "generate bunker ephemeral key") {
+	if !strings.Contains(err.Error(), "resolve bunker client key") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -276,5 +276,31 @@ func TestResolveSigner_NostrConnectRequiresRetainedClientKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client-generated invitation") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveNIP46ClientKeyFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nip46-client-key")
+	if err := os.WriteFile(path, []byte(testHexKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveNIP46ClientKey(BootstrapConfig{
+		NIP46ClientKey: "file://" + path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Hex() != testHexKey {
+		t.Fatalf("unexpected client key: %s", got.Hex())
+	}
+}
+
+func TestResolveNIP46ClientKeyRejectsMissingFile(t *testing.T) {
+	_, err := resolveNIP46ClientKey(BootstrapConfig{
+		NIP46ClientKey: "file:///does/not/exist",
+	})
+	if err == nil {
+		t.Fatal("expected missing client key file to fail")
 	}
 }

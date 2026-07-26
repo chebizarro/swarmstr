@@ -7,6 +7,7 @@ type BootstrapConfig struct {
 	PrivateKey                      string   `json:"private_key"`
 	Relays                          []string `json:"relays"`
 	SignerURL                       string   `json:"signer_url,omitempty"`
+	NIP46ClientKey                  string   `json:"nip46_client_key,omitempty"`
 	ControlSignerURL                string   `json:"control_signer_url,omitempty"`
 	ControlTargetPubKey             string   `json:"control_target_pubkey,omitempty"`
 	ConfigAddress                   string   `json:"config_address,omitempty"`

@@ -143,11 +143,13 @@ func ResolveSigner(ctx context.Context, cfg BootstrapConfig, pool *nostr.Pool) (
 
 	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
 	case "bunker":
-		// The disposable client key authenticates only the NIP-46 channel. The
-		// user identity key remains exclusively in the remote signer.
-		clientSK, err := generateEphemeralKey()
+		// The client key authenticates only the NIP-46 channel. The user
+		// identity key remains exclusively in the remote signer. Production
+		// runtimes should configure a stable client key so an authorized
+		// session survives process restarts without consuming a new grant.
+		clientSK, err := resolveNIP46ClientKey(cfg)
 		if err != nil {
-			return nil, fmt.Errorf("generate bunker ephemeral key: %w", err)
+			return nil, fmt.Errorf("resolve bunker client key: %w", err)
 		}
 		permissions, err := internalnip46.ParsePermissions("sign_event,nip04_encrypt,nip04_decrypt,nip44_encrypt,nip44_decrypt")
 		if err != nil {
@@ -176,6 +178,21 @@ func ResolveSigner(ctx context.Context, cfg BootstrapConfig, pool *nostr.Pool) (
 		}
 		return keyer.New(ctx, pool, hexKey, nil)
 	}
+}
+
+func resolveNIP46ClientKey(cfg BootstrapConfig) (nostr.SecretKey, error) {
+	raw := strings.TrimSpace(cfg.NIP46ClientKey)
+	if raw == "" {
+		return generateEphemeralKey()
+	}
+
+	// Reuse signer source semantics so the channel key can live in a
+	// mode-0600 file or environment-backed secret rather than bootstrap JSON.
+	resolved, err := ResolvePrivateKey(BootstrapConfig{SignerURL: raw})
+	if err != nil {
+		return nostr.SecretKey{}, err
+	}
+	return parsePrivateKey(resolved)
 }
 
 // parsePrivateKey accepts a private key in multiple formats:
