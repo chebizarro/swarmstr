@@ -94,7 +94,9 @@ func (h controlRPCHandler) handleTalkRPC(ctx context.Context, in nostruntime.Con
 		})
 		return nostruntime.ControlRPCResult{Result: cat}, true, nil
 
-	case methods.MethodTalkSpeak:
+	case methods.MethodTalkSpeak, methods.MethodTTSSpeak:
+		// tts.speak is a compat alias (openclaw naming) for talk.speak — same
+		// params, same persona/voice-alias-aware synthesis through the tts manager.
 		req, err := methods.DecodeTalkSpeakParams(in.Params)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err

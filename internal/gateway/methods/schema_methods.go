@@ -329,6 +329,9 @@ const (
 	MethodTTSSetPersona               = "tts.setPersona"
 	MethodTalkCatalog                 = "talk.catalog"
 	MethodTalkSpeak                   = "talk.speak"
+	// tts.speak is a compat alias for talk.speak (openclaw naming): identical
+	// synthesis via the live tts manager with persona/voice-alias overrides.
+	MethodTTSSpeak                    = "tts.speak"
 	MethodVoicewakeRoutingGet         = "voicewake.routing.get"
 	MethodVoicewakeRoutingSet         = "voicewake.routing.set"
 	MethodTalkSessionCreate           = "talk.session.create"

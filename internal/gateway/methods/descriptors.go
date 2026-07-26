@@ -222,6 +222,7 @@ var exactMethodScopes = map[string]string{
 	MethodTTSSetPersona:               protocol.MethodScopeOperatorWrite,
 	MethodTalkCatalog:                 protocol.MethodScopeOperatorRead,
 	MethodTalkSpeak:                   protocol.MethodScopeOperatorWrite,
+	MethodTTSSpeak:                    protocol.MethodScopeOperatorWrite, // compat alias for talk.speak
 	MethodVoicewakeRoutingGet:         protocol.MethodScopeOperatorRead,
 	MethodVoicewakeRoutingSet:         protocol.MethodScopeOperatorWrite,
 	MethodTalkSessionCreate:           protocol.MethodScopeOperatorWrite,

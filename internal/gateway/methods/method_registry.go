@@ -107,6 +107,7 @@ var adminDispatchRegistry = []struct {
 		MethodTTSSetPersona,
 		MethodTalkCatalog,
 		MethodTalkSpeak,
+		MethodTTSSpeak, // compat alias for talk.speak
 		MethodVoicewakeRoutingGet,
 		MethodVoicewakeRoutingSet,
 		// Phase B: talk.session.* turn lifecycle over gateway-relay.
