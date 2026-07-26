@@ -243,6 +243,11 @@ const (
 	MethodChatMetadata                = "chat.metadata"
 	MethodChatMessageGet              = "chat.message.get"
 	MethodChatToolTitles              = "chat.toolTitles"
+	// message.action (swarmstr-ko2f): a single verb-dispatched mutation over one
+	// transcript entry (react / edit / delete / retry). Backed by the durable
+	// per-session transcript store (TranscriptRepository); operates on the LOCAL
+	// transcript (cross-protocol nostr propagation is out of scope for v1).
+	MethodMessageAction               = "message.action"
 	MethodNodePairRequest             = "node.pair.request"
 	MethodNodePairList                = "node.pair.list"
 	MethodNodePairApprove             = "node.pair.approve"

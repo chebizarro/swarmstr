@@ -12,9 +12,9 @@
     "openclaw_defined_count": 344,
     "openclaw_method_count": 324,
     "hidden_method_count": 20,
-    "implemented": 316,
+    "implemented": 317,
     "partial": 0,
-    "missing": 8,
+    "missing": 7,
     "triage_category_counts": {
       "implement": 308,
       "accepted-deviation": 16
@@ -2222,8 +2222,9 @@
     },
     {
       "method": "message.action",
-      "status": "missing",
-      "notes": "Honest UNAVAILABLE (unregistered \u2192 status missing). swarmstr has no durable per-message action runtime (no mutable chat-message store with react/edit/delete/retry); the conversations registry tracks turns, not message mutations. The implement-locked `message` triage prefix cannot express a per-method accepted-deviation, so the method is left unregistered per the gateway.suspend precedent. Follow-up: swarmstr-ko2f (human_input_required product decision).",
+      "status": "implemented",
+      "metiq_method": "message.action",
+      "notes": "Verb-dispatched mutation over one durable transcript entry (swarmstr-ko2f), backed by TranscriptRepository: delete tombstones the entry (DeleteEntry); edit overwrites text in place (ReplaceEntry) non-destructively, preserving prior text in meta.revisions and restricting to user-role entries; react stores an actor->reaction set in meta.reactions (add/remove); retry re-runs the associated agent turn via launchManagedRun with the same idempotent reserve+Begin pattern as skills.proposals.requestRevision. OperatorAdmin. v1 mutates the LOCAL transcript only; cross-protocol propagation (NIP-09 delete / NIP-25 reaction to a published nostr event) is out of scope for v1 (follow-up swarmstr-z80e).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"

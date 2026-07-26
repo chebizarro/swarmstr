@@ -341,6 +341,10 @@ var adminDispatchRegistry = []struct {
 		MethodChatMetadata,
 		MethodChatMessageGet,
 		MethodChatToolTitles,
+		// message.action (swarmstr-ko2f). message prefix -> media-and-messaging
+		// triage; grouped here because it mutates the same durable transcript
+		// entries the chat surface reads. Verb-dispatched react/edit/delete/retry.
+		MethodMessageAction,
 		// sessions.* operational long tail (swarmstr-kmhu, BUCKET 2). pluginPatch
 		// (plugin-namespaced session-meta mutation), cleanup (terminal/stale-session
 		// GC), diff (durable compaction-checkpoint snapshot diff).

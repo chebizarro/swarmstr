@@ -231,6 +231,11 @@ var exactMethodScopes = map[string]string{
 	MethodChatMetadata:   protocol.MethodScopeOperatorRead,
 	MethodChatMessageGet: protocol.MethodScopeOperatorRead,
 	MethodChatToolTitles: protocol.MethodScopeOperatorRead,
+	// message.action (swarmstr-ko2f): verb-dispatched transcript mutation
+	// (react/edit/delete/retry). Every verb mutates durable state or launches a
+	// run, so it is OperatorAdmin (set explicitly rather than relying on the
+	// message.* default inference).
+	MethodMessageAction: protocol.MethodScopeOperatorAdmin,
 	MethodVoicewakeGet:   protocol.MethodScopeOperatorRead,
 	MethodTTSStatus:      protocol.MethodScopeOperatorRead,
 	MethodTTSProviders:   protocol.MethodScopeOperatorRead,

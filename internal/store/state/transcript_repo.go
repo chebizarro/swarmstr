@@ -339,6 +339,17 @@ func (r *TranscriptRepository) DeleteEntry(ctx context.Context, sessionID, entry
 	return err
 }
 
+// ReplaceEntry overwrites an existing transcript entry in place at its durable
+// address (metiq:tx:<session>:<entry>), preserving graph topology (the EntryID +
+// ParentEntryID are kept exactly as supplied). Unlike PutEntry it never appends a
+// new branch leaf, and unlike PutDetachedEntry it does not reject a content
+// change — it is the mutate-in-place primitive backing message.action edit/react.
+// Callers supply the full, already-merged entry (typically read via GetEntry,
+// mutated, then written back) so the overwrite is total, not a partial patch.
+func (r *TranscriptRepository) ReplaceEntry(ctx context.Context, entry TranscriptEntryDoc) (Event, error) {
+	return r.putEntryRaw(ctx, entry)
+}
+
 func (r *TranscriptRepository) decodeTranscriptEvent(evt Event) (TranscriptEntryDoc, error) {
 	var doc TranscriptEntryDoc
 	if err := decodeEnvelopePayload(evt.Content, &doc, r.codec); err != nil {
