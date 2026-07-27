@@ -2299,9 +2299,10 @@ func main() {
 			localChanCfg := chanCfg // capture loop var
 			localChanName := chanName
 			ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
-				GroupAddress: localChanCfg.GroupAddress,
-				Hub:          controlHub,
-				Keyer:        controlKeyer,
+				GroupAddress:     localChanCfg.GroupAddress,
+				Hub:              controlHub,
+				Keyer:            controlKeyer,
+				PendingStorePath: nostrPendingStorePath(localChanCfg.GroupAddress),
 				OnMessage: func(msg channels.InboundMessage) {
 					// Resolve CURRENT config so a policy change since startup
 					// (requireMention / allowBots / allow_from) applies now.

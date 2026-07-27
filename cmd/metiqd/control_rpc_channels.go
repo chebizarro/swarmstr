@@ -190,9 +190,10 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel runtime not configured")
 		}
 		ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
-			GroupAddress: req.GroupAddress,
-			Hub:          h.deps.nostrHub,
-			Keyer:        h.deps.keyer,
+			GroupAddress:     req.GroupAddress,
+			Hub:              h.deps.nostrHub,
+			Keyer:            h.deps.keyer,
+			PendingStorePath: nostrPendingStorePath(req.GroupAddress),
 			OnMessage: func(msg channels.InboundMessage) {
 				// Same loop-control gate as auto-join so a manually-joined room is
 				// gated identically (swarmstr-nfl4). An ad-hoc join has no

@@ -240,6 +240,9 @@ type NIP29GroupChannelOptions struct {
 	OnMessage func(InboundMessage)
 	// OnError is called for subscription errors.
 	OnError func(error)
+	// PendingStorePath, when set, enables durable cross-restart replay of
+	// unsettled inbound events (persisted to this file). Empty disables it.
+	PendingStorePath string
 }
 
 // NIP29GroupChannel subscribes to a NIP-29 relay-based group (kind 9) and
@@ -276,6 +279,31 @@ type NIP29GroupChannel struct {
 	// stamp the NIP-29 `previous` tag on outbound messages.
 	recentMu  sync.Mutex
 	recentIDs []string
+	// pending durably records unsettled events for cross-restart replay (qye5);
+	// nil when durable replay is not configured.
+	pending *PendingEventStore
+}
+
+// replayPending re-dispatches events that were still unsettled when the process
+// last stopped, giving them fresh in-process retry attempts. Each is marked seen
+// first so a concurrent relay redelivery cannot double-dispatch it.
+func (c *NIP29GroupChannel) replayPending() {
+	if c.pending == nil || c.onMsg == nil {
+		return
+	}
+	for _, ev := range c.pending.Pending() {
+		if c.ctx != nil && c.ctx.Err() != nil {
+			return
+		}
+		id := ev.ID.Hex()
+		// Skip if the live subscription already redelivered this event this
+		// session (seen.Add reports it as a duplicate); otherwise mark it seen so
+		// a later relay redelivery is deduped, then replay it.
+		if c.seen.Add(id) {
+			continue
+		}
+		c.dispatchInbound(ev, id)
+	}
 }
 
 func (c *NIP29GroupChannel) recordRecentEvent(id string) {
@@ -376,6 +404,17 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 		liveSince:  nostr.Now(),
 		redispatch: NewRedispatchScheduler(RedispatchSchedulerOptions{}),
 		inflight:   map[string]struct{}{},
+	}
+
+	if opts.PendingStorePath != "" {
+		if ps, err := NewPendingEventStore(opts.PendingStorePath); err != nil {
+			if ch.onErr != nil {
+				ch.onErr(fmt.Errorf("nip29 pending store: %w", err))
+			}
+		} else {
+			ch.pending = ps
+			go ch.replayPending()
+		}
 	}
 
 	go ch.subscribeLoop(ctx)
@@ -524,14 +563,15 @@ func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
 	if c.onMsg == nil {
 		return true
 	}
-	c.dispatchInbound(ev, evIDHex)
+	c.dispatchInbound(ev.Event, evIDHex)
 	return true
 }
 
 // dispatchInbound builds the inbound context and invokes the handler. It is
-// called for the initial delivery and re-invoked by the bounded redispatch
-// scheduler on a delivery failure (delivery-confirmed seen-gating).
-func (c *NIP29GroupChannel) dispatchInbound(ev nostr.RelayEvent, evIDHex string) {
+// called for the initial delivery, re-invoked by the bounded redispatch
+// scheduler on a delivery failure, and by the durable pending-event replay on
+// startup. It takes a plain nostr.Event so a persisted event can be replayed.
+func (c *NIP29GroupChannel) dispatchInbound(ev nostr.Event, evIDHex string) {
 	gad := c.gad
 	senderHex := ev.PubKey.Hex()
 	c.onMsg(InboundMessage{
@@ -542,7 +582,7 @@ func (c *NIP29GroupChannel) dispatchInbound(ev nostr.RelayEvent, evIDHex string)
 		Text:       ev.Content,
 		EventID:    evIDHex,
 		CreatedAt:  int64(ev.CreatedAt),
-		Meta:       extractNIP29Meta(ev.Event, evIDHex, c.liveSince),
+		Meta:       extractNIP29Meta(ev, evIDHex, c.liveSince),
 		Reply: func(ctx context.Context, text string) error {
 			return c.Send(ctx, text)
 		},
@@ -559,21 +599,29 @@ func (c *NIP29GroupChannel) dispatchInbound(ev nostr.RelayEvent, evIDHex string)
 // cannot double-dispatch it. After give-up the event is marked GaveUp (checked
 // in handleEvent) which blocks reprocessing for the rest of this process; a
 // restart clears the in-memory state and retries best-effort within the relay
-// replay window.
-func (c *NIP29GroupChannel) settleDispatch(ev nostr.RelayEvent, evIDHex string, deliveredOK bool) {
+// replay window. A pending-event store, when configured, persists the unsettled
+// event so a crash/restart mid-retry replays it (durable at-least-once).
+func (c *NIP29GroupChannel) settleDispatch(ev nostr.Event, evIDHex string, deliveredOK bool) {
 	if c.redispatch == nil {
 		return
 	}
 	if deliveredOK {
 		c.unmarkInflight(evIDHex)
 		c.redispatch.Succeeded(evIDHex)
+		if c.pending != nil {
+			_ = c.pending.Remove(evIDHex)
+		}
 		return
 	}
-	// Retryable failure: protect the retry window (non-expiring) and schedule a
-	// bounded, backed-off re-dispatch. The event stays seen throughout so a
-	// relay redelivery cannot double-dispatch it. After give-up, redispatch
-	// marks the event GaveUp (checked in handleEvent), which blocks reprocessing
-	// for the rest of this process; a restart clears it and retries best-effort.
+	// Retryable failure: durably persist the unsettled event (survives restart),
+	// protect the retry window (non-expiring), and schedule a bounded, backed-off
+	// re-dispatch. The event stays seen throughout so a relay redelivery cannot
+	// double-dispatch it. After give-up, redispatch marks the event GaveUp
+	// (checked in handleEvent), which blocks reprocessing for the rest of this
+	// process; the event remains persisted so a restart retries it.
+	if c.pending != nil {
+		_ = c.pending.Add(evIDHex, ev)
+	}
 	c.markInflight(evIDHex)
 	if _, scheduled := c.redispatch.Schedule(evIDHex, func() {
 		if c.ctx == nil || c.ctx.Err() == nil {

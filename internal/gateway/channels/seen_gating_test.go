@@ -18,7 +18,7 @@ func TestSettleDispatch_SeenGating(t *testing.T) {
 		redispatch: NewRedispatchScheduler(RedispatchSchedulerOptions{Schedule: sched.schedule}),
 		ctx:        context.Background(),
 	}
-	var ev nostr.RelayEvent // only passed to the (unfired) retry closure
+	var ev nostr.Event // only passed to the (unfired) retry closure
 	const evID = "evt-1"
 	c.seen.Add(evID)
 
@@ -77,7 +77,7 @@ func TestSettleDispatch_RetryReinvokesHandler(t *testing.T) {
 			dispatched = append(dispatched, m.EventID)
 		},
 	}
-	var ev nostr.RelayEvent
+	var ev nostr.Event
 	const evID = "evt-9"
 	c.seen.Add(evID)
 

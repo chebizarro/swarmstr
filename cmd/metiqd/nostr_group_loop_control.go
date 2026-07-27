@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"path/filepath"
 	"time"
 
 	"metiq/internal/gateway/channels"
@@ -9,6 +10,13 @@ import (
 	sessionidentity "metiq/internal/session/identity"
 	"metiq/internal/store/state"
 )
+
+// nostrPendingStorePath derives the durable pending-event store path for a
+// NIP-29 group, under the daemon's state dir (~/.metiq/channels/<id>/pending.json).
+func nostrPendingStorePath(groupAddress string) string {
+	base := filepath.Dir(state.DefaultSessionStorePath())
+	return filepath.Join(base, "channels", channels.SanitizeChannelPathSegment(groupAddress), "pending.json")
+}
 
 // nostrInboundDispatchAbort is watchdog stage 2: a turn silent/running past this
 // is aborted so it frees the per-room dispatch lane (openclaw
