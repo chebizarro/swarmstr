@@ -49,6 +49,12 @@ type InboundMessage struct {
 	Meta NostrInboundMeta
 	// Reply sends a reply back to the channel/sender.
 	Reply func(ctx context.Context, text string) error
+	// Settle reports the dispatch outcome for delivery-confirmed seen-gating:
+	// true = processed/delivered (the event stays durably seen); false =
+	// retryable failure (model timeout / signer failure / unconfirmed send),
+	// which triggers bounded redispatch. Nil for channels without seen-gating;
+	// callers must nil-check. It should be called exactly once per dispatch.
+	Settle func(deliveredOK bool)
 }
 
 // extractNIP29Meta parses NIP-29 mention/thread facts from a kind:9 event's
@@ -258,6 +264,36 @@ type NIP29GroupChannel struct {
 	// liveSince marks when this channel started subscribing; inbound events
 	// older than it are treated as backfill/replay by the preflight.
 	liveSince nostr.Timestamp
+	// redispatch bounds retries for events whose dispatch failed delivery
+	// (seen-gating; ocn-zi7 / ocn-8kh).
+	redispatch *RedispatchScheduler
+	// inflight is a NON-EXPIRING guard for events currently in the retry
+	// lifecycle, so a relay redelivery cannot double-dispatch one even if its
+	// (TTL'd) seen entry expires mid-retry. Cleared on terminal settlement.
+	inflightMu sync.Mutex
+	inflight   map[string]struct{}
+}
+
+func (c *NIP29GroupChannel) markInflight(id string) {
+	c.inflightMu.Lock()
+	if c.inflight == nil {
+		c.inflight = map[string]struct{}{}
+	}
+	c.inflight[id] = struct{}{}
+	c.inflightMu.Unlock()
+}
+
+func (c *NIP29GroupChannel) unmarkInflight(id string) {
+	c.inflightMu.Lock()
+	delete(c.inflight, id)
+	c.inflightMu.Unlock()
+}
+
+func (c *NIP29GroupChannel) isInflight(id string) bool {
+	c.inflightMu.Lock()
+	defer c.inflightMu.Unlock()
+	_, ok := c.inflight[id]
+	return ok
 }
 
 // NewNIP29GroupChannel creates and starts a NIP-29 group subscription.
@@ -301,20 +337,22 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 	ctx, cancel := context.WithCancel(parent)
 
 	ch := &NIP29GroupChannel{
-		id:        opts.GroupAddress,
-		gad:       gad,
-		hub:       hub,
-		pool:      pool,
-		publisher: pool,
-		ownsPool:  ownsPool,
-		keyer:     keyer,
-		ctx:       ctx,
-		cancel:    cancel,
-		onMsg:     opts.OnMessage,
-		onErr:     opts.OnError,
-		pubkey:    pk.Hex(),
-		seen:      NewSeenCache(),
-		liveSince: nostr.Now(),
+		id:         opts.GroupAddress,
+		gad:        gad,
+		hub:        hub,
+		pool:       pool,
+		publisher:  pool,
+		ownsPool:   ownsPool,
+		keyer:      keyer,
+		ctx:        ctx,
+		cancel:     cancel,
+		onMsg:      opts.OnMessage,
+		onErr:      opts.OnError,
+		pubkey:     pk.Hex(),
+		seen:       NewSeenCache(),
+		liveSince:  nostr.Now(),
+		redispatch: NewRedispatchScheduler(RedispatchSchedulerOptions{}),
+		inflight:   map[string]struct{}{},
 	}
 
 	go ch.subscribeLoop(ctx)
@@ -434,8 +472,17 @@ func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
 		return false
 	}
 	evIDHex := ev.ID.Hex()
+	// Skip events that already exhausted their bounded retries this process, or
+	// are currently mid-retry (both process-local; a restart clears them and
+	// relay redelivery retries best-effort within its replay window).
+	if c.redispatch != nil && c.redispatch.GaveUp(evIDHex) {
+		return false
+	}
+	if c.isInflight(evIDHex) {
+		return false
+	}
 	if c.seen.Add(evIDHex) {
-		return false // duplicate
+		return false // recently seen
 	}
 	c.recordLastSeen(ev.CreatedAt)
 	if ev.PubKey.Hex() == c.pubkey {
@@ -444,6 +491,14 @@ func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
 	if c.onMsg == nil {
 		return true
 	}
+	c.dispatchInbound(ev, evIDHex)
+	return true
+}
+
+// dispatchInbound builds the inbound context and invokes the handler. It is
+// called for the initial delivery and re-invoked by the bounded redispatch
+// scheduler on a delivery failure (delivery-confirmed seen-gating).
+func (c *NIP29GroupChannel) dispatchInbound(ev nostr.RelayEvent, evIDHex string) {
 	gad := c.gad
 	senderHex := ev.PubKey.Hex()
 	c.onMsg(InboundMessage{
@@ -458,8 +513,42 @@ func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
 		Reply: func(ctx context.Context, text string) error {
 			return c.Send(ctx, text)
 		},
+		Settle: func(deliveredOK bool) {
+			c.settleDispatch(ev, evIDHex, deliveredOK)
+		},
 	})
-	return true
+}
+
+// settleDispatch applies delivery-confirmed seen-gating. On success the event
+// stays seen and its in-flight/retry state is cleared. On a retryable failure
+// the event is actively re-dispatched on a bounded backoff (30s/2m/5m, 3
+// attempts); it stays seen AND in-flight across retries so a relay redelivery
+// cannot double-dispatch it. After give-up the event is marked GaveUp (checked
+// in handleEvent) which blocks reprocessing for the rest of this process; a
+// restart clears the in-memory state and retries best-effort within the relay
+// replay window.
+func (c *NIP29GroupChannel) settleDispatch(ev nostr.RelayEvent, evIDHex string, deliveredOK bool) {
+	if c.redispatch == nil {
+		return
+	}
+	if deliveredOK {
+		c.unmarkInflight(evIDHex)
+		c.redispatch.Succeeded(evIDHex)
+		return
+	}
+	// Retryable failure: protect the retry window (non-expiring) and schedule a
+	// bounded, backed-off re-dispatch. The event stays seen throughout so a
+	// relay redelivery cannot double-dispatch it. After give-up, redispatch
+	// marks the event GaveUp (checked in handleEvent), which blocks reprocessing
+	// for the rest of this process; a restart clears it and retries best-effort.
+	c.markInflight(evIDHex)
+	if _, scheduled := c.redispatch.Schedule(evIDHex, func() {
+		if c.ctx == nil || c.ctx.Err() == nil {
+			c.dispatchInbound(ev, evIDHex)
+		}
+	}); !scheduled {
+		c.unmarkInflight(evIDHex)
+	}
 }
 
 func (c *NIP29GroupChannel) subscribeSince() nostr.Timestamp {

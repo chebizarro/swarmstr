@@ -201,6 +201,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				roomCfg := state.NostrChannelConfig{Kind: state.NostrChannelKindNIP29, GroupAddress: req.GroupAddress}
 				decision, admitted := controlNostrLoopControl.gate(msg, roomCfg, configState.Get().DM.AllowFrom)
 				if !admitted {
+					settleNostrDispatch(msg, true) // deliberate gate drop; terminal
 					return
 				}
 				sessionID := decision.SessionID
@@ -217,8 +218,13 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				})
 				activeAgentID, rt := resolveInboundChannelRuntime("", msg.ChannelID)
 				if !controlNostrLoopControl.enqueue(sessionID, msg.EventID, func() {
+					delivered := false
+					defer func() { settleNostrDispatch(msg, delivered) }()
 					turnCtx, release := chatCancels.Begin(sessionID, ctx)
 					defer release()
+					// Watchdog stage 2: abort a hung turn so it frees the room lane.
+					turnCtx, abortCancel := context.WithTimeout(turnCtx, nostrInboundDispatchAbort)
+					defer abortCancel()
 					sessionStore := h.deps.sessionStore
 					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 					scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
@@ -237,10 +243,12 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 					}
 					replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
 					if !sendOK {
+						delivered = true // deliberate no-send, not a failure
 						return
 					}
 					if decision.EchoSuppress && controlNostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
 						log.Printf("nip29 echo suppressed reply room=%s", sessionID)
+						delivered = true // deliberate suppression, not a failure
 						return
 					}
 					controlNostrLoopControl.observeEcho(sessionID, replyText)
@@ -258,7 +266,10 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 						Direction: "outbound",
 						Text:      replyText,
 					})
+					delivered = true
 				}) {
+					// Load-shed: room at capacity; event stays seen, not retried.
+					settleNostrDispatch(msg, true)
 					return
 				}
 			},

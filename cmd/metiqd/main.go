@@ -2308,6 +2308,7 @@ func main() {
 					cfg := configState.Get()
 					curCfg, ok := cfg.NostrChannels[localChanName]
 					if !ok || !curCfg.Enabled {
+						settleNostrDispatch(msg, true) // deliberate drop; terminal
 						return
 					}
 
@@ -2315,6 +2316,7 @@ func main() {
 					// from loop control; the bot flag never affects this).
 					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, curCfg.AllowFrom, cfg); !dec.Allowed {
 						log.Printf("nip29 group message rejected from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, dec.Reason)
+						settleNostrDispatch(msg, true) // deliberate drop; terminal
 						return
 					}
 
@@ -2324,14 +2326,23 @@ func main() {
 					// established record-first inside the queued run.
 					decision, admitted := nostrLoopControl.gate(msg, curCfg, cfg.DM.AllowFrom)
 					if !admitted {
+						settleNostrDispatch(msg, true) // deliberate gate drop; terminal
 						return
 					}
 					sessionID := decision.SessionID
 					activeAgentID, rt := resolveInboundChannelRuntime(curCfg.AgentID, msg.ChannelID)
 					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
 					if !nostrLoopControl.enqueue(sessionID, msg.EventID, func() {
+						// Delivery-confirmed seen-gating: default to "not delivered"
+						// (retryable); set true only on success or a deliberate
+						// no-send. A retryable failure triggers bounded redispatch.
+						delivered := false
+						defer func() { settleNostrDispatch(msg, delivered) }()
 						turnCtx, release := chatCancels.Begin(sessionID, ctx)
 						defer release()
+						// Watchdog stage 2: abort a hung turn so it frees the room lane.
+						turnCtx, abortCancel := context.WithTimeout(turnCtx, nostrInboundDispatchAbort)
+						defer abortCancel()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor)
 						result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
@@ -2355,6 +2366,7 @@ func main() {
 						})
 						replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
 						if !sendOK {
+							delivered = true // deliberate no-send, not a failure
 							return
 						}
 						// Echo suppression (opt-in): drop a reply that restates
@@ -2362,6 +2374,7 @@ func main() {
 						// of it are caught.
 						if decision.EchoSuppress && nostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
 							log.Printf("nip29 echo suppressed reply room=%s", sessionID)
+							delivered = true // deliberate suppression, not a failure
 							return
 						}
 						nostrLoopControl.observeEcho(sessionID, replyText)
@@ -2371,10 +2384,12 @@ func main() {
 							return
 						}
 						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
+						delivered = true
 					}) {
 						// Load-shed: room at capacity (metered/logged via the
 						// queue's OnOverflow). The event stays seen; the relay may
 						// redeliver but it is not auto-retried here.
+						settleNostrDispatch(msg, true)
 						return
 					}
 				},

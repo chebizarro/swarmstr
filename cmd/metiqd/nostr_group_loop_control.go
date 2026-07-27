@@ -2,12 +2,26 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"metiq/internal/gateway/channels"
 	nostruntime "metiq/internal/nostr/runtime"
 	sessionidentity "metiq/internal/session/identity"
 	"metiq/internal/store/state"
 )
+
+// nostrInboundDispatchAbort is watchdog stage 2: a turn silent/running past this
+// is aborted so it frees the per-room dispatch lane (openclaw
+// inboundDispatchAbortSeconds default).
+const nostrInboundDispatchAbort = 1800 * time.Second
+
+// settleNostrDispatch reports a NIP-29 dispatch outcome for delivery-confirmed
+// seen-gating (no-op when the transport did not supply a Settle callback).
+func settleNostrDispatch(msg channels.InboundMessage, deliveredOK bool) {
+	if msg.Settle != nil {
+		msg.Settle(deliveredOK)
+	}
+}
 
 // nostrGroupLoopControl bundles the shared NIP-29 loop-control components so the
 // SAME gating (allowBots / mention / backfill preflight + bot-loop pair guard),
