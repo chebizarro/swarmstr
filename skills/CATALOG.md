@@ -32,6 +32,7 @@ These were reviewed and are still not imported as-is:
 - Swarmstr also does **not** implement `src`-style dynamic or conditional skill generation.
 - This is intentional for now: skill discovery remains explicit and filesystem-backed so prompt injection stays predictable, inspectable, and workspace-mirrorable.
 - If a plugin needs a companion skill, ship that skill through bundled skills, `extra.skills.extra_dirs`, the managed skills directory, or an agent workspace.
+- `nostr-workroom` was ported from the `openclaw-nostr` plugin's companion skill as a static disk skill and **adapted to the Metiq harness**: config paths (`nostr_channels.<room>.config`), the trusted-body surfacing of SenderIsBot / the ambient scan wrapper / mentions-another-participant, the `allowBots` gate + bot-loop pair guard + echo-suppression behavior, and Metiq's coordination targets (the `taskflow` skill, the `bd`/beads tracker, ContextVM). It maps to real swarmstr runtime behavior per the rule below.
 
 ### Possible V2 follow-on
 A plausible V2 would add **opt-in** plugin-derived or conditionally activated skills, but only if swarmstr can preserve the same guarantees the current catalog has today: explicit source reporting, deterministic precedence, bounded prompt injection, and a workspace-safe readable representation of any injected skill content.
