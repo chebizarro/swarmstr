@@ -199,10 +199,11 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				// configured room policy, so defaults apply (requireMention,
 				// allowBots="mentions"). Returns the room-scoped session key.
 				roomCfg := state.NostrChannelConfig{Kind: state.NostrChannelKindNIP29, GroupAddress: req.GroupAddress}
-				sessionID, admitted := controlNostrLoopControl.gate(msg, roomCfg, configState.Get().DM.AllowFrom)
+				decision, admitted := controlNostrLoopControl.gate(msg, roomCfg, configState.Get().DM.AllowFrom)
 				if !admitted {
 					return
 				}
+				sessionID := decision.SessionID
 				emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID})
 				controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),
@@ -224,7 +225,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 					turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 					result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
 						SessionID:           sessionID,
-						UserText:            msg.Text,
+						UserText:            decision.BodyForAgent,
 						Tools:               turnTools,
 						Executor:            turnExecutor,
 						ContextWindowTokens: maxContextTokensForAgent(configState.Get(), activeAgentID),

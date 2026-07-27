@@ -23,14 +23,27 @@ type nostrGroupLoopControl struct {
 	establisher *sessionidentity.Establisher
 }
 
+// nostrGateDecision is the admitted-turn payload from gate.
+type nostrGateDecision struct {
+	// SessionID is the room-scoped transcript key.
+	SessionID string
+	// BodyForAgent is the message wrapped per ambientPolicy (scan/respond) and
+	// prefixed with a trusted note when the sender is a definitive bot.
+	BodyForAgent string
+	// SenderIsBot is the definitive known-bot verdict (loop-control info only).
+	SenderIsBot bool
+}
+
 // gate runs the loop-control preflight + bot-loop pair guard for an inbound
-// group message. It returns the room-scoped session key and whether the turn is
-// admitted. Callers own the separate allow_from AUTHORIZATION check; accountAllowFrom
-// is passed only so control-command authorization matches (never the bot gate).
-func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state.NostrChannelConfig, accountAllowFrom []string) (roomKey string, admitted bool) {
+// group message. It returns the room-scoped session key + agent-ready body and
+// whether the turn is admitted. Callers own the separate allow_from
+// AUTHORIZATION check; accountAllowFrom is passed only so control-command
+// authorization matches (never the bot gate).
+func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state.NostrChannelConfig, accountAllowFrom []string) (nostrGateDecision, bool) {
 	if lc == nil {
-		// No loop control configured (e.g. tests): admit with a sender-scoped key.
-		return "ch:" + msg.ChannelID + ":" + msg.FromPubKey, true
+		// No loop control configured (e.g. tests): admit with a sender-scoped key
+		// and the raw body.
+		return nostrGateDecision{SessionID: "ch:" + msg.ChannelID + ":" + msg.FromPubKey, BodyForAgent: msg.Text}, true
 	}
 
 	verdict := nostruntime.VerdictUnknown
@@ -58,7 +71,7 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 	})
 	if preflight.ShouldDrop {
 		log.Printf("nip29 preflight drop from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, preflight.DropReason)
-		return "", false
+		return nostrGateDecision{}, false
 	}
 	if knownBot && lc.guard != nil {
 		if res := lc.guard.RecordAndCheck(channels.BotLoopProtectionFacts{
@@ -71,10 +84,18 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 			EventID:        msg.EventID,
 		}); res.Suppressed {
 			log.Printf("nip29 bot-loop suppressed from=%s channel=%s room=%s", msg.FromPubKey, msg.ChannelID, preflight.RoomKey)
-			return "", false
+			return nostrGateDecision{}, false
 		}
 	}
-	return preflight.RoomKey, true
+
+	// Present the message per ambientPolicy (scan wraps non-mention bodies with
+	// cautionary guidance; respond passes raw) and surface a trusted bot marker
+	// so the agent can treat automated senders differently.
+	body := channels.BuildNostrGroupBodyForAgent(msg.Text, preflight, roomPolicy.AmbientRespond)
+	if knownBot {
+		body = channels.NostrSenderIsBotNote + "\n\n" + body
+	}
+	return nostrGateDecision{SessionID: preflight.RoomKey, BodyForAgent: body, SenderIsBot: knownBot}, true
 }
 
 // enqueue serializes run for roomKey through the per-room dispatch queue and

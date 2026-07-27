@@ -2315,17 +2315,18 @@ func main() {
 					// the channels.join RPC path; returns the room-scoped session
 					// key. Turns are serialized per room and identity is
 					// established record-first inside the queued run.
-					sessionID, admitted := nostrLoopControl.gate(msg, curCfg, cfg.DM.AllowFrom)
+					decision, admitted := nostrLoopControl.gate(msg, curCfg, cfg.DM.AllowFrom)
 					if !admitted {
 						return
 					}
+					sessionID := decision.SessionID
 					activeAgentID, rt := resolveInboundChannelRuntime(curCfg.AgentID, msg.ChannelID)
 					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
 					if !nostrLoopControl.enqueue(sessionID, msg.EventID, func() {
 						turnCtx, release := chatCancels.Begin(sessionID, ctx)
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
+						prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor)
 						result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
 						if turnErr != nil {
 							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
