@@ -7,6 +7,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
@@ -32,6 +33,7 @@ func ValidateConfigDoc(doc state.ConfigDoc) []error {
 	errs = append(errs, validateHeartbeat(doc.Heartbeat)...)
 	errs = append(errs, validateTTS(doc.TTS)...)
 	errs = append(errs, validateFIPS(doc.FIPS)...)
+	errs = append(errs, validateFleetTasks(doc.FleetTasks)...)
 	errs = append(errs, validateGRPCConfigDocExtra(doc.Extra)...)
 	errs = append(errs, validateLightningConfigDocExtra(doc.Extra)...)
 
@@ -90,6 +92,55 @@ func validateRelayURL(raw string) error {
 		return fmt.Errorf("missing host")
 	}
 	return nil
+}
+
+// ── Fleet tasks ────────────────────────────────────────────────────────────────
+
+func validateFleetTasks(cfg state.FleetTasksConfig) []error {
+	var errs []error
+	if cfg.MaxFutureSkewSeconds < 0 {
+		errs = append(errs, fmt.Errorf("fleet_tasks.max_future_skew_seconds cannot be negative"))
+	}
+	validateKeys := func(path string, keys []string) {
+		seen := map[string]struct{}{}
+		for i, key := range keys {
+			key = strings.ToLower(strings.TrimSpace(key))
+			decoded, err := hex.DecodeString(key)
+			if err != nil || len(decoded) != 32 {
+				errs = append(errs, fmt.Errorf("%s[%d] must be a 64-character hex pubkey", path, i))
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				errs = append(errs, fmt.Errorf("%s[%d] duplicates pubkey %s", path, i, key))
+			}
+			seen[key] = struct{}{}
+		}
+	}
+	validateKeys("fleet_tasks.trusted_pubkeys", cfg.TrustedPubKeys)
+	validateKeys("fleet_tasks.trusted_collection_pubkeys", cfg.TrustedCollectionPubKeys)
+	seenRelays := map[string]struct{}{}
+	for i, relay := range cfg.Relays {
+		if err := validateRelayURL(relay); err != nil {
+			errs = append(errs, fmt.Errorf("fleet_tasks.relays[%d] %q: %w", i, relay, err))
+		}
+		trimmed := strings.TrimSpace(relay)
+		if _, ok := seenRelays[trimmed]; ok {
+			errs = append(errs, fmt.Errorf("fleet_tasks.relays[%d] duplicates %q", i, trimmed))
+		}
+		seenRelays[trimmed] = struct{}{}
+	}
+	if cfg.Enabled {
+		if len(cfg.TrustedPubKeys) == 0 {
+			errs = append(errs, fmt.Errorf("fleet_tasks.trusted_pubkeys is required when enabled"))
+		}
+		if len(cfg.TrustedCollectionPubKeys) == 0 {
+			errs = append(errs, fmt.Errorf("fleet_tasks.trusted_collection_pubkeys is required when enabled"))
+		}
+		if len(cfg.Relays) == 0 {
+			errs = append(errs, fmt.Errorf("fleet_tasks.relays is required when enabled"))
+		}
+	}
+	return errs
 }
 
 // ── Agent Policy ──────────────────────────────────────────────────────────────

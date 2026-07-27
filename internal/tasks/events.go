@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"metiq/internal/store/state"
@@ -44,6 +45,7 @@ type Event struct {
 
 // EventEmitter broadcasts task events to registered handlers.
 type EventEmitter struct {
+	mu       sync.RWMutex
 	handlers []EventHandler
 }
 
@@ -57,7 +59,12 @@ func NewEventEmitter() *EventEmitter {
 
 // AddHandler registers an event handler.
 func (e *EventEmitter) AddHandler(h EventHandler) {
+	if e == nil || h == nil {
+		return
+	}
+	e.mu.Lock()
 	e.handlers = append(e.handlers, h)
+	e.mu.Unlock()
 }
 
 // Emit broadcasts an event to all handlers.
@@ -65,7 +72,10 @@ func (e *EventEmitter) Emit(ctx context.Context, event Event) {
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().Unix()
 	}
-	for _, h := range e.handlers {
+	e.mu.RLock()
+	handlers := append([]EventHandler(nil), e.handlers...)
+	e.mu.RUnlock()
+	for _, h := range handlers {
 		h(ctx, event)
 	}
 }

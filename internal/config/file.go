@@ -295,6 +295,14 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 		}
 	}
 
+	// ── fleet_tasks (NIP-CAS-0006 peer task state) ───────────────────────
+	if fleetRaw, ok := raw["fleet_tasks"].(map[string]any); ok {
+		var fleet state.FleetTasksConfig
+		if decodeMapIntoStruct(fleetRaw, &fleet) {
+			doc.FleetTasks = fleet
+		}
+	}
+
 	// ── native Metiq agent policy ──────────────────────────────────────────
 	if agentRaw, ok := raw["agent"].(map[string]any); ok {
 		if model, ok := agentRaw["default_model"].(string); ok && model != "" {
@@ -934,7 +942,7 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 	allowedTop := []string{
 		"version", "dm", "relays", "agent", "control", "acp", "agents", "nostr_channels",
 		"providers", "session", "storage", "heartbeat", "tts", "secrets", "cron",
-		"hooks", "timeouts", "agent_list", "fips", "extra", "channels", "plugins", "grpc",
+		"hooks", "timeouts", "agent_list", "fleet_tasks", "fips", "extra", "channels", "plugins", "grpc",
 		"skills", "memory", "update", "wizard", "pairing", "logging", "permissions", "managed_settings",
 	}
 	for key, value := range raw {
@@ -965,6 +973,8 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 			errs = append(errs, detectUnknownMapKeys("cron", value, []string{"enabled", "job_timeout_secs"})...)
 		case "agent_list":
 			errs = append(errs, detectUnknownMapKeys("agent_list", value, []string{"d", "relay", "auto_sync"})...)
+		case "fleet_tasks":
+			errs = append(errs, detectUnknownMapKeys("fleet_tasks", value, []string{"enabled", "trusted_pubkeys", "trusted_collection_pubkeys", "relays", "max_future_skew_seconds"})...)
 		case "fips":
 			errs = append(errs, detectUnknownMapKeys("fips", value, []string{"enabled", "control_socket", "agent_port", "control_port", "transport_pref", "peers", "conn_timeout", "reach_cache_ttl"})...)
 		case "grpc":

@@ -70,6 +70,7 @@ type taskRuntimeServices struct {
 	events               *taskspkg.EventEmitter
 	runner               *taskRunner
 	lifecyclePublisher   *taskspkg.LifecyclePublisher
+	fleetTaskBridge      *taskspkg.FleetTaskBridge
 	workflowStore        taskspkg.WorkflowStore
 	workflowExecutor     *workflowExecutor
 	workflowOrchestrator *taskspkg.WorkflowOrchestrator
@@ -127,22 +128,22 @@ type relayPublishDebounce struct {
 
 // sessionServices groups session-related runtime dependencies.
 type sessionServices struct {
-	sessionTurns      *autoreply.SessionTurns
-	chatCancels       *chatAbortRegistry
-	dmQueues          *autoreply.SessionQueueRegistry
-	steeringMailboxes *autoreply.SteeringMailboxRegistry
-	agentRuntime      agent.Runtime
-	agentRegistry     *agent.AgentRuntimeRegistry
-	sessionMemRuntime *sessionMemoryRuntime
-	sessionRouter     *agent.AgentSessionRouter
-	toolRegistry      *agent.ToolRegistry
-	memoryStore       memory.Store
-	contextEngine     ctxengine.Engine
-	contextEngineName string
+	sessionTurns       *autoreply.SessionTurns
+	chatCancels        *chatAbortRegistry
+	dmQueues           *autoreply.SessionQueueRegistry
+	steeringMailboxes  *autoreply.SteeringMailboxRegistry
+	agentRuntime       agent.Runtime
+	agentRegistry      *agent.AgentRuntimeRegistry
+	sessionMemRuntime  *sessionMemoryRuntime
+	sessionRouter      *agent.AgentSessionRouter
+	toolRegistry       *agent.ToolRegistry
+	memoryStore        memory.Store
+	contextEngine      ctxengine.Engine
+	contextEngineName  string
 	sessionStore       *state.SessionStore
 	sessionCoordinator *sessioncoord.Service
 	agentJobs          *agentJobRegistry
-	subagents         *SubagentRegistry
+	subagents          *SubagentRegistry
 
 	// Operation registries
 	ops             *operationsRegistry

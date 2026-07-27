@@ -40,6 +40,9 @@ const (
 	// Addressable (d=<domain>:<entity>:<id>). Latest-wins semantics.
 	CAS_CP_STATE Kind = Kind(cascadia.CAS_CP_STATE)
 
+	// NIP51_TASK_COLLECTION is the NIP-51 named queue/epic list kind.
+	NIP51_TASK_COLLECTION Kind = Kind(cascadia.NIP51_TASK_COLLECTION)
+
 	// ─────────────────────────────────────────────────────────────────────────
 	// NIP-38 User Status
 	// ─────────────────────────────────────────────────────────────────────────

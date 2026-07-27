@@ -27,9 +27,19 @@ type ConfigDoc struct {
 	Hooks         HooksConfig         `json:"hooks,omitempty"`
 	Timeouts      TimeoutsConfig      `json:"timeouts,omitempty"`
 	AgentList     *AgentListConfig    `json:"agent_list,omitempty"`
+	FleetTasks    FleetTasksConfig    `json:"fleet_tasks,omitempty"`
 	FIPS          FIPSConfig          `json:"fips,omitempty"`
 	Permissions   PermissionsConfig   `json:"permissions,omitempty"`
 	Extra         map[string]any      `json:"extra,omitempty"`
+}
+
+// FleetTasksConfig enables NIP-CAS-0006 peer-to-peer task state.
+type FleetTasksConfig struct {
+	Enabled                  bool     `json:"enabled,omitempty"`
+	TrustedPubKeys           []string `json:"trusted_pubkeys,omitempty"`
+	TrustedCollectionPubKeys []string `json:"trusted_collection_pubkeys,omitempty"`
+	Relays                   []string `json:"relays,omitempty"`
+	MaxFutureSkewSeconds     int64    `json:"max_future_skew_seconds,omitempty"`
 }
 
 // AgentListConfig controls Strand's own NIP-51 kind:30000 agent list publishing.

@@ -33,6 +33,7 @@ const (
 	TaskSourceDVM      TaskSource = "dvm"
 	TaskSourceApproval TaskSource = "approval"
 	TaskSourceSandbox  TaskSource = "sandbox"
+	TaskSourceFleet    TaskSource = "fleet"
 )
 
 // LedgerEntry wraps a TaskSpec with ledger-specific metadata.
@@ -222,6 +223,20 @@ func (l *Ledger) GetTask(ctx context.Context, taskID string) (*LedgerEntry, erro
 	}
 
 	return nil, fmt.Errorf("task %q not found", taskID)
+}
+
+// SnapshotTask returns a defensive copy of the current ledger entry.
+func (l *Ledger) SnapshotTask(ctx context.Context, taskID string) (*LedgerEntry, error) {
+	entry, err := l.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if current, ok := l.tasks[taskID]; ok {
+		return cloneLedgerEntry(current), nil
+	}
+	return cloneLedgerEntry(entry), nil
 }
 
 // SaveTaskState persists a non-transition task snapshot through the ledger store

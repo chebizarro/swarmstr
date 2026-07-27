@@ -5359,6 +5359,31 @@ func main() {
 			}
 		}
 
+		if liveCfg.FleetTasks.Enabled && controlServices.relay.keyer != nil && controlServices.tasks.ledger != nil {
+			fleetPool := nip51Pool
+			if controlServices.relay.hub != nil {
+				fleetPool = controlServices.relay.hub.Pool()
+			}
+			fleetBridge, fleetErr := taskspkg.NewFleetTaskBridge(ctx, taskspkg.FleetTaskBridgeOptions{
+				Keyer:                    controlServices.relay.keyer,
+				Pool:                     fleetPool,
+				Ledger:                   controlServices.tasks.ledger,
+				Emitter:                  controlServices.tasks.events,
+				ReadRelays:               liveCfg.FleetTasks.Relays,
+				WriteRelays:              liveCfg.FleetTasks.Relays,
+				TrustedTaskAuthors:       liveCfg.FleetTasks.TrustedPubKeys,
+				TrustedCollectionAuthors: liveCfg.FleetTasks.TrustedCollectionPubKeys,
+				MaxFutureSkew:            time.Duration(liveCfg.FleetTasks.MaxFutureSkewSeconds) * time.Second,
+			})
+			if fleetErr != nil {
+				log.Printf("fleet task bridge init failed: %v", fleetErr)
+			} else {
+				controlServices.tasks.fleetTaskBridge = fleetBridge
+				defer fleetBridge.Stop()
+				log.Printf("fleet task bridge active (kinds=30900,30000)")
+			}
+		}
+
 		if controlServices.tasks.events != nil && controlServices.relay.keyer != nil {
 			lifecyclePublisher, lifecycleErr := taskspkg.NewLifecyclePublisher(ctx, taskspkg.LifecyclePublisherOptions{
 				Keyer: controlServices.relay.keyer,
