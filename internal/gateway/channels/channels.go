@@ -446,22 +446,53 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		Tags:      tags,
 	}
-	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
-		return fmt.Errorf("sign group message: %w", err)
-	}
+	return c.signAndPublish(ctx, evt)
+}
 
+// signAndPublish signs evt and publishes it to the group relay, bounding the
+// wait so a wedged relay cannot hang the send (PublishToAny returns on the first
+// relay OK). Shared by Send, SendReaction, and DeleteEvent.
+func (c *NIP29GroupChannel) signAndPublish(ctx context.Context, evt nostr.Event) error {
+	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
+		return fmt.Errorf("sign group event: %w", err)
+	}
 	publisher := c.publisher
 	if publisher == nil {
 		publisher = c.pool
 	}
-	// Publish confirmation: bound the wait so a wedged relay cannot hang the
-	// send indefinitely. PublishToAny returns on the first relay OK.
 	pubCtx, cancel := context.WithTimeout(ctx, nip29PublishTimeout)
 	defer cancel()
 	if _, err := okpublish.PublishToAny(pubCtx, publisher, []string{c.gad.Relay}, evt); err != nil {
-		return fmt.Errorf("nip29 send to group %s: %w", c.gad, err)
+		return fmt.Errorf("nip29 publish to group %s: %w", c.gad, err)
 	}
 	return nil
+}
+
+// SendReaction publishes a NIP-29 room reaction (kind:7) to targetEventID.
+// targetPubkey (the target event's author) is required by NIP-25; targetKind is
+// optional (0 to omit). Reactions are immutable — to undo one, delete the
+// reaction event via DeleteEvent rather than "un-reacting".
+func (c *NIP29GroupChannel) SendReaction(ctx context.Context, emoji, targetEventID, targetPubkey string, targetKind int) error {
+	evt, err := BuildNIP29ReactionEvent(c.gad.ID, emoji, targetEventID, targetPubkey, targetKind, c.snapshotRecentIDs())
+	if err != nil {
+		return err
+	}
+	return c.signAndPublish(ctx, evt)
+}
+
+// DeleteEvent publishes a NIP-29 delete-event (kind:9005) for targetEventID with
+// an optional reason (the "unsend" capability).
+func (c *NIP29GroupChannel) DeleteEvent(ctx context.Context, targetEventID, reason string) error {
+	evt, err := BuildNIP29DeletionEvent(c.gad.ID, targetEventID, reason, c.snapshotRecentIDs())
+	if err != nil {
+		return err
+	}
+	return c.signAndPublish(ctx, evt)
+}
+
+// Capabilities advertises the outbound features this channel supports.
+func (c *NIP29GroupChannel) Capabilities() []string {
+	return []string{"reactions", "reply", "threads", "unsend"}
 }
 
 // Close shuts down the subscription.  Only closes the pool if we own it.

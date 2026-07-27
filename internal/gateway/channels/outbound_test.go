@@ -1,6 +1,98 @@
 package channels
 
-import "testing"
+import (
+	"testing"
+
+	nostr "fiatjaf.com/nostr"
+)
+
+func outHasTag(evt nostr.Event, name, val string) bool {
+	for _, tg := range evt.Tags {
+		if len(tg) >= 2 && tg[0] == name && tg[1] == val {
+			return true
+		}
+	}
+	return false
+}
+
+func outHasTagName(evt nostr.Event, name string) bool {
+	for _, tg := range evt.Tags {
+		if len(tg) >= 1 && tg[0] == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBuildNIP29ReactionEvent(t *testing.T) {
+	ev, err := BuildNIP29ReactionEvent("group1", "🔥", "targetid", "authorpub", 9, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != nostr.KindReaction {
+		t.Errorf("kind = %d, want reaction", ev.Kind)
+	}
+	if ev.Content != "🔥" {
+		t.Errorf("content = %q, want 🔥", ev.Content)
+	}
+	for _, want := range [][2]string{{"h", "group1"}, {"e", "targetid"}, {"p", "authorpub"}, {"k", "9"}} {
+		if !outHasTag(ev, want[0], want[1]) {
+			t.Errorf("missing tag [%s %s]", want[0], want[1])
+		}
+	}
+
+	// Empty emoji defaults to "+", targetKind 0 omits the k tag.
+	ev2, _ := BuildNIP29ReactionEvent("g", "", "t", "p", 0, nil)
+	if ev2.Content != "+" {
+		t.Errorf("default content = %q, want +", ev2.Content)
+	}
+	if outHasTagName(ev2, "k") {
+		t.Error("targetKind 0 must omit the k tag")
+	}
+
+	if _, err := BuildNIP29ReactionEvent("g", "x", "", "p", 0, nil); err == nil {
+		t.Error("missing target event id must error")
+	}
+	if _, err := BuildNIP29ReactionEvent("g", "x", "t", "", 0, nil); err == nil {
+		t.Error("missing target author pubkey must error (NIP-25 p tag)")
+	}
+}
+
+func TestBuildNIP29DeletionEvent(t *testing.T) {
+	ev, err := BuildNIP29DeletionEvent("group1", "targetid", "spam", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != NIP29RoomDeletionKind {
+		t.Errorf("kind = %d, want 9005", ev.Kind)
+	}
+	if ev.Content != "spam" {
+		t.Errorf("content = %q, want spam", ev.Content)
+	}
+	if !outHasTag(ev, "h", "group1") || !outHasTag(ev, "e", "targetid") {
+		t.Errorf("missing h/e tags: %v", ev.Tags)
+	}
+	if _, err := BuildNIP29DeletionEvent("g", "", "", nil); err == nil {
+		t.Error("missing target event id must error")
+	}
+}
+
+func TestNIP29Capabilities(t *testing.T) {
+	caps := (&NIP29GroupChannel{}).Capabilities()
+	want := map[string]bool{"reactions": true, "reply": true, "threads": true, "unsend": true}
+	if len(caps) != len(want) {
+		t.Fatalf("capabilities = %v, want %v", caps, want)
+	}
+	for _, c := range caps {
+		if !want[c] {
+			t.Errorf("unexpected capability %q", c)
+		}
+		delete(want, c)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing capabilities: %v", want)
+	}
+}
 
 func TestBuildPreviousEventTag(t *testing.T) {
 	// Fewer than a full window: all referenced, 8-char prefixes.
