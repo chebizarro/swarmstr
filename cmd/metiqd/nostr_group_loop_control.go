@@ -67,6 +67,11 @@ type nostrGateDecision struct {
 	// turn body can drop a reply that restates recent traffic before sending.
 	EchoSuppress  bool
 	EchoThreshold float64
+	// InboundEventKind is the classified inbound kind ("user_request" |
+	// "room_event"); a generated-failure reply is suppressed for room_event
+	// (ambient) traffic so the agent does not spew errors into rooms it was not
+	// directly addressed in.
+	InboundEventKind string
 }
 
 // gate runs the loop-control preflight + bot-loop pair guard for an inbound
@@ -136,11 +141,12 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 		lc.observeEcho(preflight.RoomKey, msg.Text)
 	}
 	return nostrGateDecision{
-		SessionID:     preflight.RoomKey,
-		BodyForAgent:  body,
-		SenderIsBot:   knownBot,
-		EchoSuppress:  roomPolicy.EchoSuppression,
-		EchoThreshold: roomPolicy.EchoThreshold,
+		SessionID:        preflight.RoomKey,
+		BodyForAgent:     body,
+		SenderIsBot:      knownBot,
+		EchoSuppress:     roomPolicy.EchoSuppression,
+		EchoThreshold:    roomPolicy.EchoThreshold,
+		InboundEventKind: preflight.InboundEventKind,
 	}, true
 }
 

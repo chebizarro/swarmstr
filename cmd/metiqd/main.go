@@ -2369,6 +2369,13 @@ func main() {
 							delivered = true // deliberate no-send, not a failure
 							return
 						}
+						// Don't spew a generated failure reply into a room we were
+						// not directly addressed in (ambient room_event).
+						if decision.InboundEventKind == channels.InboundEventRoomEvent && channels.IsGeneratedFailureReplyPayload(replyText) {
+							log.Printf("nip29 suppressed failure reply for ambient room_event room=%s", sessionID)
+							delivered = true
+							return
+						}
 						// Echo suppression (opt-in): drop a reply that restates
 						// recent room traffic; otherwise record it so future echoes
 						// of it are caught.

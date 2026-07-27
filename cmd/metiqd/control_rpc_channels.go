@@ -246,6 +246,11 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 						delivered = true // deliberate no-send, not a failure
 						return
 					}
+					if decision.InboundEventKind == channels.InboundEventRoomEvent && channels.IsGeneratedFailureReplyPayload(replyText) {
+						log.Printf("nip29 suppressed failure reply for ambient room_event room=%s", sessionID)
+						delivered = true
+						return
+					}
 					if decision.EchoSuppress && controlNostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
 						log.Printf("nip29 echo suppressed reply room=%s", sessionID)
 						delivered = true // deliberate suppression, not a failure

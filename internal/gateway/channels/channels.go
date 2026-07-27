@@ -272,6 +272,29 @@ type NIP29GroupChannel struct {
 	// (TTL'd) seen entry expires mid-retry. Cleared on terminal settlement.
 	inflightMu sync.Mutex
 	inflight   map[string]struct{}
+	// recentIDs is a bounded ring of recent NON-OWN room event ids, used to
+	// stamp the NIP-29 `previous` tag on outbound messages.
+	recentMu  sync.Mutex
+	recentIDs []string
+}
+
+func (c *NIP29GroupChannel) recordRecentEvent(id string) {
+	c.recentMu.Lock()
+	c.recentIDs = append(c.recentIDs, id)
+	if len(c.recentIDs) > NIP29MaxPreviousRefs {
+		trimmed := make([]string, NIP29MaxPreviousRefs)
+		copy(trimmed, c.recentIDs[len(c.recentIDs)-NIP29MaxPreviousRefs:])
+		c.recentIDs = trimmed
+	}
+	c.recentMu.Unlock()
+}
+
+func (c *NIP29GroupChannel) snapshotRecentIDs() []string {
+	c.recentMu.Lock()
+	defer c.recentMu.Unlock()
+	out := make([]string, len(c.recentIDs))
+	copy(out, c.recentIDs)
+	return out
 }
 
 func (c *NIP29GroupChannel) markInflight(id string) {
@@ -372,13 +395,17 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 		return fmt.Errorf("text must not be empty")
 	}
 
+	tags := nostr.Tags{{"h", c.gad.ID}}
+	// Anchor the message to recent room events (NIP-29 `previous`, best-effort,
+	// excludes the bot's own events).
+	if prev := BuildPreviousEventTag(c.snapshotRecentIDs()); prev != nil {
+		tags = append(tags, prev)
+	}
 	evt := nostr.Event{
 		Kind:      nostr.KindSimpleGroupChatMessage,
 		Content:   text,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
-		Tags: nostr.Tags{
-			{"h", c.gad.ID},
-		},
+		Tags:      tags,
 	}
 	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
 		return fmt.Errorf("sign group message: %w", err)
@@ -388,7 +415,11 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 	if publisher == nil {
 		publisher = c.pool
 	}
-	if _, err := okpublish.PublishToAny(ctx, publisher, []string{c.gad.Relay}, evt); err != nil {
+	// Publish confirmation: bound the wait so a wedged relay cannot hang the
+	// send indefinitely. PublishToAny returns on the first relay OK.
+	pubCtx, cancel := context.WithTimeout(ctx, nip29PublishTimeout)
+	defer cancel()
+	if _, err := okpublish.PublishToAny(pubCtx, publisher, []string{c.gad.Relay}, evt); err != nil {
 		return fmt.Errorf("nip29 send to group %s: %w", c.gad, err)
 	}
 	return nil
@@ -488,6 +519,8 @@ func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
 	if ev.PubKey.Hex() == c.pubkey {
 		return true
 	}
+	// Track non-own room events for the outbound `previous` tag.
+	c.recordRecentEvent(evIDHex)
 	if c.onMsg == nil {
 		return true
 	}
