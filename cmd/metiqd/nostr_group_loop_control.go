@@ -21,6 +21,23 @@ type nostrGroupLoopControl struct {
 	guard       *channels.BotLoopProtection
 	queue       *channels.RoomDispatchQueue
 	establisher *sessionidentity.Establisher
+	echo        *channels.EchoSuppressor
+}
+
+// observeEcho records room text (peer or own) into the echo ring.
+func (lc *nostrGroupLoopControl) observeEcho(roomKey, text string) {
+	if lc != nil && lc.echo != nil {
+		lc.echo.Observe(roomKey, text)
+	}
+}
+
+// isEchoReply reports whether a candidate reply substantially restates recent
+// room traffic (only meaningful when the room opted into echo suppression).
+func (lc *nostrGroupLoopControl) isEchoReply(roomKey, text string, threshold float64) bool {
+	if lc == nil || lc.echo == nil {
+		return false
+	}
+	return lc.echo.IsEcho(roomKey, text, threshold)
 }
 
 // nostrGateDecision is the admitted-turn payload from gate.
@@ -32,6 +49,10 @@ type nostrGateDecision struct {
 	BodyForAgent string
 	// SenderIsBot is the definitive known-bot verdict (loop-control info only).
 	SenderIsBot bool
+	// EchoSuppress and EchoThreshold carry the room's opt-in echo policy so the
+	// turn body can drop a reply that restates recent traffic before sending.
+	EchoSuppress  bool
+	EchoThreshold float64
 }
 
 // gate runs the loop-control preflight + bot-loop pair guard for an inbound
@@ -95,7 +116,18 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 	if knownBot {
 		body = channels.NostrSenderIsBotNote + "\n\n" + body
 	}
-	return nostrGateDecision{SessionID: preflight.RoomKey, BodyForAgent: body, SenderIsBot: knownBot}, true
+	// Feed the inbound message into the echo ring so a reply that merely
+	// restates it can be suppressed (opt-in per room).
+	if roomPolicy.EchoSuppression {
+		lc.observeEcho(preflight.RoomKey, msg.Text)
+	}
+	return nostrGateDecision{
+		SessionID:     preflight.RoomKey,
+		BodyForAgent:  body,
+		SenderIsBot:   knownBot,
+		EchoSuppress:  roomPolicy.EchoSuppression,
+		EchoThreshold: roomPolicy.EchoThreshold,
+	}, true
 }
 
 // enqueue serializes run for roomKey through the per-room dispatch queue and

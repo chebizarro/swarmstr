@@ -2265,6 +2265,12 @@ func main() {
 				ov.RoomKey, ov.Depth, channels.DefaultRoomDispatchQueueDepth, ov.EventKind, extra)
 		},
 	})
+	// Echo suppressor (Layer-3, opt-in per room): drops a reply that restates
+	// recent room traffic. Per-room threshold is applied at check time.
+	nostrEchoSuppressor, nostrEchoErr := channels.NewEchoSuppressor(channels.EchoSuppressorOptions{})
+	if nostrEchoErr != nil {
+		log.Printf("echo suppressor init failed (echo suppression disabled): %v", nostrEchoErr)
+	}
 	// Shared loop-control bundle used by BOTH auto-join and the channels.join RPC
 	// so a room is gated identically regardless of how it was joined (swarmstr-nfl4).
 	nostrLoopControl := &nostrGroupLoopControl{
@@ -2273,6 +2279,7 @@ func main() {
 		guard:       nostrBotLoopGuard,
 		queue:       nostrRoomQueue,
 		establisher: nostrSessionEstablisher,
+		echo:        nostrEchoSuppressor,
 	}
 	controlNostrLoopControl = nostrLoopControl
 
@@ -2350,6 +2357,14 @@ func main() {
 						if !sendOK {
 							return
 						}
+						// Echo suppression (opt-in): drop a reply that restates
+						// recent room traffic; otherwise record it so future echoes
+						// of it are caught.
+						if decision.EchoSuppress && nostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
+							log.Printf("nip29 echo suppressed reply room=%s", sessionID)
+							return
+						}
+						nostrLoopControl.observeEcho(sessionID, replyText)
 						if err := msg.Reply(turnCtx, replyText); err != nil {
 							emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
 							log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)

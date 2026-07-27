@@ -75,6 +75,21 @@ func TestResolveNostrRoomPolicy_PairLoopOverride(t *testing.T) {
 	}
 }
 
+func TestResolveNostrRoomPolicy_EchoThreshold(t *testing.T) {
+	p := ResolveNostrRoomPolicy(map[string]any{"echoSuppression": true, "echoSimilarityThreshold": float64(0.7)})
+	if !p.EchoSuppression {
+		t.Error("echoSuppression should be true")
+	}
+	if p.EchoThreshold != 0.7 {
+		t.Errorf("EchoThreshold = %v, want 0.7", p.EchoThreshold)
+	}
+	// Out-of-range threshold is ignored (stays 0 -> suppressor default).
+	p = ResolveNostrRoomPolicy(map[string]any{"echoSimilarityThreshold": float64(2)})
+	if p.EchoThreshold != 0 {
+		t.Errorf("out-of-range threshold must be ignored, got %v", p.EchoThreshold)
+	}
+}
+
 func TestResolveNostrRoomPolicy_AllowBotsBoolCoercion(t *testing.T) {
 	if ResolveNostrRoomPolicy(map[string]any{"allowBots": true}).AllowBots != AllowBotsAll {
 		t.Error("allowBots true -> all")

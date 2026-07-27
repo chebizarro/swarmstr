@@ -21,6 +21,9 @@ type NostrRoomPolicy struct {
 	PairLoop *PairLoopGuardConfig
 	// EchoSuppression / CommitmentGuard opt-ins (secondary defenses).
 	EchoSuppression bool
+	// EchoThreshold is the per-room echo similarity bar (0..1); 0 means use the
+	// suppressor default.
+	EchoThreshold   float64
 	CommitmentGuard bool
 }
 
@@ -53,6 +56,9 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	if v, ok := boolFromAny(config["echoSuppression"]); ok {
 		p.EchoSuppression = v
 	}
+	if f, ok := floatFromAny(config["echoSimilarityThreshold"]); ok && f > 0 && f <= 1 {
+		p.EchoThreshold = f
+	}
 	if v, ok := boolFromAny(config["commitmentGuard"]); ok {
 		p.CommitmentGuard = v
 	}
@@ -66,6 +72,19 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 func boolFromAny(v any) (bool, bool) {
 	b, ok := v.(bool)
 	return b, ok
+}
+
+// floatFromAny coerces a JSON-decoded numeric to a float64.
+func floatFromAny(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 // intFromAny coerces a JSON-decoded numeric (float64/int) to a positive int.
