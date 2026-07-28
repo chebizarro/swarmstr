@@ -403,11 +403,76 @@ func (m *TaskMerger) EffectiveTask(taskID string) (TaskEventHead, bool) {
 	return cloneTaskHead(head), ok
 }
 
+// EffectiveTasks returns defensive copies of every merged effective task,
+// sorted by task ID.
+func (m *TaskMerger) EffectiveTasks() []TaskEventHead {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]TaskEventHead, 0, len(m.effective))
+	for _, head := range m.effective {
+		out = append(out, cloneTaskHead(head))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Task.ID < out[j].Task.ID })
+	return out
+}
+
+// TaskHeads returns defensive copies of all retained per-author heads for one
+// task, sorted by author pubkey. Empty when the task is unknown.
+func (m *TaskMerger) TaskHeads(taskID string) []TaskEventHead {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	byAuthor := m.heads[strings.TrimSpace(taskID)]
+	out := make([]TaskEventHead, 0, len(byAuthor))
+	for _, head := range byAuthor {
+		out = append(out, cloneTaskHead(head))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Event.PubKey.Hex()) < strings.ToLower(out[j].Event.PubKey.Hex())
+	})
+	return out
+}
+
+// HasTask reports whether any trusted head is retained for the task ID, even
+// when no effective merged state exists.
+func (m *TaskMerger) HasTask(taskID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.heads[strings.TrimSpace(taskID)]) > 0
+}
+
+// TaskState returns the effective head and all retained author heads for one
+// task under a single read lock, so callers see a consistent snapshot.
+func (m *TaskMerger) TaskState(taskID string) (TaskEventHead, []TaskEventHead, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	taskID = strings.TrimSpace(taskID)
+	effective, ok := m.effective[taskID]
+	if !ok {
+		return TaskEventHead{}, nil, false
+	}
+	byAuthor := m.heads[taskID]
+	heads := make([]TaskEventHead, 0, len(byAuthor))
+	for _, head := range byAuthor {
+		heads = append(heads, cloneTaskHead(head))
+	}
+	sort.Slice(heads, func(i, j int) bool {
+		return strings.ToLower(heads[i].Event.PubKey.Hex()) < strings.ToLower(heads[j].Event.PubKey.Hex())
+	})
+	return cloneTaskHead(effective), heads, true
+}
+
 func cloneTaskHead(head TaskEventHead) TaskEventHead {
 	out := head
 	if head.Claim != nil {
 		claim := *head.Claim
 		out.Claim = &claim
+	}
+	if len(head.Event.Tags) > 0 {
+		tags := make(nostr.Tags, len(head.Event.Tags))
+		for i, tag := range head.Event.Tags {
+			tags[i] = append(nostr.Tag(nil), tag...)
+		}
+		out.Event.Tags = tags
 	}
 	raw, err := EncodeTaskDocument(head.Task)
 	if err == nil {

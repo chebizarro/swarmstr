@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
@@ -52,12 +53,13 @@ type FleetTaskBridge struct {
 	now            func() time.Time
 	merger         *TaskMerger
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	taskCh chan string
-	ready  chan struct{}
-	once   sync.Once
-	wg     sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+	taskCh     chan string
+	ready      chan struct{}
+	once       sync.Once
+	wg         sync.WaitGroup
+	correcting atomic.Bool
 }
 
 const defaultTaskStatePublishTimeout = 30 * time.Second
@@ -390,6 +392,13 @@ func (b *FleetTaskBridge) correctLostLocalClaim(effective TaskEventHead) {
 	if effective.Claim == nil || b.keyer == nil {
 		return
 	}
+	// Reentrancy guard: publishing a correction re-enters the ingest path,
+	// which calls back into this function. Without the guard a correction
+	// that loses eventWins against a newer local head recurses unboundedly.
+	if !b.correcting.CompareAndSwap(false, true) {
+		return
+	}
+	defer b.correcting.Store(false)
 	pubkey, err := b.keyer.GetPublicKey(b.ctx)
 	if err != nil {
 		b.logf("fleet tasks: resolve local pubkey for claim correction: %v", err)
@@ -397,6 +406,21 @@ func (b *FleetTaskBridge) correctLostLocalClaim(effective TaskEventHead) {
 	}
 	local, ok := b.merger.AuthorHead(effective.Task.ID, pubkey.Hex())
 	if !ok || local.Claim == nil || sameClaim(*local.Claim, *effective.Claim) {
+		return
+	}
+	// The correction must strictly supersede the retained local head or it is
+	// discarded by the per-author eventWins replacement (a future-dated local
+	// head would otherwise defeat every correction).
+	correctionAt := b.now().UTC().Truncate(time.Second)
+	if floor := time.Unix(int64(local.Event.CreatedAt), 0).UTC(); !correctionAt.After(floor) {
+		correctionAt = floor.Add(time.Second)
+	}
+	skew := b.merger.policy.MaxFutureSkew
+	if skew <= 0 {
+		skew = 5 * time.Minute
+	}
+	if correctionAt.After(b.now().Add(skew)) {
+		b.logf("fleet tasks: defer lost-claim correction task=%s: local head too far in the future", effective.Task.ID)
 		return
 	}
 	correction := effective.Task
@@ -407,8 +431,8 @@ func (b *FleetTaskBridge) correctLostLocalClaim(effective TaskEventHead) {
 	correction.ClaimedAt = time.Unix(effective.Claim.CreatedAt, 0).UTC().Format(time.RFC3339)
 	correction.Metadata[ClaimOriginIDMetaKey] = effective.Claim.EventID
 	correction.Metadata[ClaimOriginPubkeyMetaKey] = effective.Claim.Pubkey
-	correction.UpdatedAt = b.now().UTC().Format(time.RFC3339Nano)
-	if _, err := b.PublishTaskDocument(b.ctx, correction, b.now()); err != nil {
+	correction.UpdatedAt = correctionAt.Format(time.RFC3339Nano)
+	if _, err := b.PublishTaskDocument(b.ctx, correction, correctionAt); err != nil {
 		b.logf("fleet tasks: correct lost claim task=%s winner=%s: %v", effective.Task.ID, effective.Claim.EventID, err)
 	}
 }

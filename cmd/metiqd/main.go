@@ -1176,6 +1176,16 @@ func main() {
 	tools.RegisterWithDef("task_list", toolbuiltin.TaskListTool, toolbuiltin.TaskListDef)
 	tools.RegisterWithDef("task_update", toolbuiltin.TaskUpdateTool, toolbuiltin.TaskUpdateDef)
 	tools.RegisterWithDef("task_remove", toolbuiltin.TaskRemoveTool, toolbuiltin.TaskRemoveDef)
+	// fleet_tasks: merge-aware NIP-CAS-0006 fleet task lifecycle (list/inspect/
+	// create/claim/checkpoint/block/handoff/close). Late-bound to the fleet
+	// task bridge, which is created only when fleet_tasks is enabled in config;
+	// the tool degrades to a clear error on nodes where the bridge is inactive.
+	tools.RegisterWithDef("fleet_tasks", toolbuiltin.FleetTasksTool(func() *taskspkg.FleetTaskBridge {
+		if controlServices == nil {
+			return nil
+		}
+		return controlServices.tasks.fleetTaskBridge
+	}), toolbuiltin.FleetTasksDef)
 
 	agentRuntime, err := agent.NewRuntimeFromEnv(tools)
 	if err != nil {
