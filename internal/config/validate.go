@@ -101,6 +101,9 @@ func validateFleetTasks(cfg state.FleetTasksConfig) []error {
 	if cfg.MaxFutureSkewSeconds < 0 {
 		errs = append(errs, fmt.Errorf("fleet_tasks.max_future_skew_seconds cannot be negative"))
 	}
+	if cfg.ClaimSettlementSeconds < 0 {
+		errs = append(errs, fmt.Errorf("fleet_tasks.claim_settlement_seconds cannot be negative"))
+	}
 	validateKeys := func(path string, keys []string) {
 		seen := map[string]struct{}{}
 		for i, key := range keys {
@@ -118,6 +121,33 @@ func validateFleetTasks(cfg state.FleetTasksConfig) []error {
 	}
 	validateKeys("fleet_tasks.trusted_pubkeys", cfg.TrustedPubKeys)
 	validateKeys("fleet_tasks.trusted_collection_pubkeys", cfg.TrustedCollectionPubKeys)
+	trustedCollections := map[string]struct{}{}
+	for _, key := range cfg.TrustedCollectionPubKeys {
+		trustedCollections[strings.ToLower(strings.TrimSpace(key))] = struct{}{}
+	}
+	seenSources := map[string]struct{}{}
+	for i, source := range cfg.CollectionSources {
+		author := strings.ToLower(strings.TrimSpace(source.Author))
+		decoded, err := hex.DecodeString(author)
+		if err != nil || len(decoded) != 32 {
+			errs = append(errs, fmt.Errorf("fleet_tasks.collection_sources[%d].author must be a 64-character hex pubkey", i))
+		} else if _, ok := trustedCollections[author]; !ok {
+			errs = append(errs, fmt.Errorf("fleet_tasks.collection_sources[%d].author is not in trusted_collection_pubkeys", i))
+		}
+		collectionType := strings.ToLower(strings.TrimSpace(source.Type))
+		if collectionType != "queue" && collectionType != "epic" {
+			errs = append(errs, fmt.Errorf("fleet_tasks.collection_sources[%d].type must be queue or epic", i))
+		}
+		id := strings.TrimSpace(source.ID)
+		if id == "" {
+			errs = append(errs, fmt.Errorf("fleet_tasks.collection_sources[%d].id is required", i))
+		}
+		key := author + "|" + collectionType + ":" + id
+		if _, ok := seenSources[key]; ok {
+			errs = append(errs, fmt.Errorf("fleet_tasks.collection_sources[%d] duplicates %s", i, key))
+		}
+		seenSources[key] = struct{}{}
+	}
 	seenRelays := map[string]struct{}{}
 	for i, relay := range cfg.Relays {
 		if err := validateRelayURL(relay); err != nil {

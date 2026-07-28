@@ -72,14 +72,15 @@ type FleetTaskClaimView struct {
 // FleetTaskView is one merged task in agent-facing form: the effective
 // snapshot plus claim resolution and any contending author heads.
 type FleetTaskView struct {
-	Task                 TaskDocument        `json:"task"`
-	EffectiveEventID     string              `json:"effective_event_id"`
-	EffectiveAuthor      string              `json:"effective_author"`
-	EffectiveCreatedAt   int64               `json:"effective_created_at"`
-	Claim                *FleetTaskClaimView `json:"winning_claim,omitempty"`
-	Resolution           string              `json:"resolution"`
-	ContendingEventIDs   []string            `json:"contending_event_ids,omitempty"`
-	IncompatibleEventIDs []string            `json:"incompatible_event_ids,omitempty"`
+	Task                 TaskDocument         `json:"task"`
+	EffectiveEventID     string               `json:"effective_event_id"`
+	EffectiveAuthor      string               `json:"effective_author"`
+	EffectiveCreatedAt   int64                `json:"effective_created_at"`
+	Claim                *FleetTaskClaimView  `json:"winning_claim,omitempty"`
+	ClaimContenders      []FleetTaskClaimView `json:"claim_contenders,omitempty"`
+	Resolution           string               `json:"resolution"`
+	ContendingEventIDs   []string             `json:"contending_event_ids,omitempty"`
+	IncompatibleEventIDs []string             `json:"incompatible_event_ids,omitempty"`
 }
 
 func (b *FleetTaskBridge) buildTaskView(effective TaskEventHead, heads []TaskEventHead) FleetTaskView {
@@ -101,6 +102,14 @@ func (b *FleetTaskBridge) buildTaskView(effective TaskEventHead, heads []TaskEve
 	}
 	for _, head := range heads {
 		id := strings.ToLower(head.Event.ID.Hex())
+		if head.Claim != nil {
+			view.ClaimContenders = append(view.ClaimContenders, FleetTaskClaimView{
+				OriginEventID: head.Claim.EventID,
+				OriginPubkey:  head.Claim.Pubkey,
+				Assignee:      head.Claim.Assignee,
+				ClaimedAt:     head.Claim.CreatedAt,
+			})
+		}
 		if id == view.EffectiveEventID {
 			continue
 		}
@@ -113,6 +122,12 @@ func (b *FleetTaskBridge) buildTaskView(effective TaskEventHead, heads []TaskEve
 	}
 	sort.Strings(view.ContendingEventIDs)
 	sort.Strings(view.IncompatibleEventIDs)
+	sort.Slice(view.ClaimContenders, func(i, j int) bool {
+		if view.ClaimContenders[i].ClaimedAt != view.ClaimContenders[j].ClaimedAt {
+			return view.ClaimContenders[i].ClaimedAt < view.ClaimContenders[j].ClaimedAt
+		}
+		return view.ClaimContenders[i].OriginEventID < view.ClaimContenders[j].OriginEventID
+	})
 	return view
 }
 
@@ -364,6 +379,15 @@ func (b *FleetTaskBridge) AdvanceFleetTask(ctx context.Context, in AdvanceFleetT
 	}
 	if head.Task.Status == "closed" {
 		return FleetTaskView{}, fmt.Errorf("fleet task %s is closed; fleet_tasks does not support reopening", in.TaskID)
+	}
+	if head.InitialClaim && head.Claim != nil {
+		settleAt := time.Unix(head.Claim.CreatedAt, 0).Add(b.claimSettlement)
+		if now := b.now(); now.Before(settleAt) {
+			return FleetTaskView{}, fmt.Errorf(
+				"fleet task %s claim is still settling until %s; inspect after the settlement window and verify winning_claim before publishing a successor",
+				in.TaskID, settleAt.UTC().Format(time.RFC3339),
+			)
+		}
 	}
 	now, err := b.successorCreatedAt(ctx, in.TaskID, head)
 	if err != nil {

@@ -35,11 +35,21 @@ type ConfigDoc struct {
 
 // FleetTasksConfig enables NIP-CAS-0006 peer-to-peer task state.
 type FleetTasksConfig struct {
-	Enabled                  bool     `json:"enabled,omitempty"`
-	TrustedPubKeys           []string `json:"trusted_pubkeys,omitempty"`
-	TrustedCollectionPubKeys []string `json:"trusted_collection_pubkeys,omitempty"`
-	Relays                   []string `json:"relays,omitempty"`
-	MaxFutureSkewSeconds     int64    `json:"max_future_skew_seconds,omitempty"`
+	Enabled                  bool                        `json:"enabled,omitempty"`
+	TrustedPubKeys           []string                    `json:"trusted_pubkeys,omitempty"`
+	TrustedCollectionPubKeys []string                    `json:"trusted_collection_pubkeys,omitempty"`
+	CollectionSources        []FleetTaskCollectionSource `json:"collection_sources,omitempty"`
+	Relays                   []string                    `json:"relays,omitempty"`
+	MaxFutureSkewSeconds     int64                       `json:"max_future_skew_seconds,omitempty"`
+	ClaimSettlementSeconds   int64                       `json:"claim_settlement_seconds,omitempty"`
+}
+
+// FleetTaskCollectionSource scopes one NIP-51 kind-30000 subscription to an
+// exact trusted queue or epic coordinate.
+type FleetTaskCollectionSource struct {
+	Author string `json:"author"`
+	Type   string `json:"type"`
+	ID     string `json:"id"`
 }
 
 // AgentListConfig controls Strand's own NIP-51 kind:30000 agent list publishing.

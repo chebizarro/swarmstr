@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,11 +17,15 @@ func testOpsBridge(t *testing.T, signer nostr.Keyer, extraTrusted ...string) (*F
 	eoseCh := make(chan struct{}, 1)
 	eoseCh <- struct{}{}
 	published := &[]nostr.Event{}
+	now := time.Unix(500, 0)
 	bridge, err := NewFleetTaskBridge(context.Background(), FleetTaskBridgeOptions{
 		Keyer: signer, Ledger: NewLedger(nil),
 		ReadRelays: []string{"wss://read.example"}, WriteRelays: []string{"wss://write.example"},
 		TrustedTaskAuthors: trusted, TrustedCollectionAuthors: trusted,
-		Now: func() time.Time { return time.Unix(500, 0) },
+		Now: func() time.Time {
+			now = now.Add(20 * time.Second)
+			return now
+		},
 		PublishFunc: func(_ context.Context, _ []string, event nostr.Event) error {
 			*published = append(*published, event)
 			return nil
@@ -278,5 +283,50 @@ func TestFleetTaskOpsWaitReadyGatesMutations(t *testing.T) {
 
 	if _, err := bridge.CreateFleetTask(context.Background(), CreateFleetTaskInput{ID: "ops-5", Title: "Too early"}); err == nil {
 		t.Fatal("create succeeded before EOSE")
+	}
+}
+
+func TestFleetTaskOpsSettlementGatesFirstSuccessor(t *testing.T) {
+	signer := testTaskSigner()
+	pubkey := signerPubkey(t, signer)
+	eventsCh := make(chan nostr.RelayEvent)
+	eoseCh := make(chan struct{}, 1)
+	eoseCh <- struct{}{}
+	now := time.Unix(500, 0)
+	bridge, err := NewFleetTaskBridge(context.Background(), FleetTaskBridgeOptions{
+		Keyer: signer, Ledger: NewLedger(nil),
+		ReadRelays: []string{"wss://read.example"}, WriteRelays: []string{"wss://write.example"},
+		TrustedTaskAuthors: []string{pubkey}, TrustedCollectionAuthors: []string{pubkey},
+		ClaimSettlement: 10 * time.Second,
+		Now:             func() time.Time { return now },
+		PublishFunc:     func(context.Context, []string, nostr.Event) error { return nil },
+		SubscribeFunc: func(context.Context, []string, nostr.Filter) (<-chan nostr.RelayEvent, <-chan struct{}) {
+			return eventsCh, eoseCh
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Stop()
+
+	created, err := bridge.CreateFleetTask(context.Background(), CreateFleetTaskInput{ID: "settlement", Title: "Settlement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := bridge.ClaimFleetTask(context.Background(), "settlement", created.EffectiveEventID, "agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = bridge.AdvanceFleetTask(context.Background(), AdvanceFleetTaskInput{
+		Op: FleetTaskOpCheckpoint, TaskID: "settlement", BaseEventID: claimed.EffectiveEventID, Note: "too early",
+	})
+	if err == nil || !strings.Contains(err.Error(), "still settling") {
+		t.Fatalf("early successor error=%v", err)
+	}
+	now = time.Unix(claimed.Claim.ClaimedAt, 0).Add(10 * time.Second)
+	if _, err := bridge.AdvanceFleetTask(context.Background(), AdvanceFleetTaskInput{
+		Op: FleetTaskOpCheckpoint, TaskID: "settlement", BaseEventID: claimed.EffectiveEventID, Note: "settled",
+	}); err != nil {
+		t.Fatalf("settled successor: %v", err)
 	}
 }

@@ -1164,18 +1164,23 @@ func main() {
 	tools.RegisterWithDef("chain_define", toolbuiltin.ChainDefineTool(chainReg), toolbuiltin.ChainDefineDef)
 	tools.RegisterWithDef("chain_run", toolbuiltin.ChainRunTool(chainReg, tools), toolbuiltin.ChainRunDef)
 	tools.RegisterWithDef("chain_list", toolbuiltin.ChainListTool(chainReg), toolbuiltin.ChainListDef)
-	// task queue: persistent structured work-item management.
-	{
+	// Local task queue: retain it only when peer fleet mode is disabled. The
+	// generic JSON queue is not NIP-CAS state and must not look like a second
+	// mutation path when fleet_tasks is authoritative.
+	fleetTasksEnabled := configState != nil && configState.Get().FleetTasks.Enabled
+	if !fleetTasksEnabled {
 		home, _ := os.UserHomeDir()
 		taskPath := filepath.Join(home, ".metiq", "tasks.json")
 		if err := toolbuiltin.InitTaskStore(taskPath); err != nil {
 			log.Printf("task store init (non-fatal): %v", err)
 		}
+		tools.RegisterWithDef("task_add", toolbuiltin.TaskAddTool, toolbuiltin.TaskAddDef)
+		tools.RegisterWithDef("task_list", toolbuiltin.TaskListTool, toolbuiltin.TaskListDef)
+		tools.RegisterWithDef("task_update", toolbuiltin.TaskUpdateTool, toolbuiltin.TaskUpdateDef)
+		tools.RegisterWithDef("task_remove", toolbuiltin.TaskRemoveTool, toolbuiltin.TaskRemoveDef)
+	} else {
+		log.Printf("local task queue tools suppressed: fleet_tasks peer mode is enabled")
 	}
-	tools.RegisterWithDef("task_add", toolbuiltin.TaskAddTool, toolbuiltin.TaskAddDef)
-	tools.RegisterWithDef("task_list", toolbuiltin.TaskListTool, toolbuiltin.TaskListDef)
-	tools.RegisterWithDef("task_update", toolbuiltin.TaskUpdateTool, toolbuiltin.TaskUpdateDef)
-	tools.RegisterWithDef("task_remove", toolbuiltin.TaskRemoveTool, toolbuiltin.TaskRemoveDef)
 	// fleet_tasks: merge-aware NIP-CAS-0006 fleet task lifecycle (list/inspect/
 	// create/claim/checkpoint/block/handoff/close). Late-bound to the fleet
 	// task bridge, which is created only when fleet_tasks is enabled in config;
@@ -5374,6 +5379,14 @@ func main() {
 			if controlServices.relay.hub != nil {
 				fleetPool = controlServices.relay.hub.Pool()
 			}
+			collectionSources := make([]taskspkg.TaskCollectionSource, 0, len(liveCfg.FleetTasks.CollectionSources))
+			for _, source := range liveCfg.FleetTasks.CollectionSources {
+				collectionSources = append(collectionSources, taskspkg.TaskCollectionSource{
+					Author: source.Author,
+					Type:   source.Type,
+					ID:     source.ID,
+				})
+			}
 			fleetBridge, fleetErr := taskspkg.NewFleetTaskBridge(ctx, taskspkg.FleetTaskBridgeOptions{
 				Keyer:                    controlServices.relay.keyer,
 				Pool:                     fleetPool,
@@ -5383,7 +5396,9 @@ func main() {
 				WriteRelays:              liveCfg.FleetTasks.Relays,
 				TrustedTaskAuthors:       liveCfg.FleetTasks.TrustedPubKeys,
 				TrustedCollectionAuthors: liveCfg.FleetTasks.TrustedCollectionPubKeys,
+				CollectionSources:        collectionSources,
 				MaxFutureSkew:            time.Duration(liveCfg.FleetTasks.MaxFutureSkewSeconds) * time.Second,
+				ClaimSettlement:          time.Duration(liveCfg.FleetTasks.ClaimSettlementSeconds) * time.Second,
 			})
 			if fleetErr != nil {
 				log.Printf("fleet task bridge init failed: %v", fleetErr)

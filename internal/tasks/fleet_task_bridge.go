@@ -29,7 +29,9 @@ type FleetTaskBridgeOptions struct {
 	WriteRelays              []string
 	TrustedTaskAuthors       []string
 	TrustedCollectionAuthors []string
+	CollectionSources        []TaskCollectionSource
 	MaxFutureSkew            time.Duration
+	ClaimSettlement          time.Duration
 	PublishTimeout           time.Duration
 	PublishFunc              TaskStatePublishFunc
 	SubscribeFunc            TaskStateSubscribeFunc
@@ -37,21 +39,30 @@ type FleetTaskBridgeOptions struct {
 	Now                      func() time.Time
 }
 
+// TaskCollectionSource identifies one exact trusted NIP-51 queue or epic.
+type TaskCollectionSource struct {
+	Author string
+	Type   string
+	ID     string
+}
+
 // FleetTaskBridge connects the existing ledger/event emitter to NIP-CAS-0006.
 // It owns no daemon protocol and has no ContextVM dependency.
 type FleetTaskBridge struct {
-	keyer          nostr.Keyer
-	pool           *nostr.Pool
-	ledger         *Ledger
-	emitter        *EventEmitter
-	readRelays     []string
-	writeRelays    []string
-	publishTimeout time.Duration
-	publish        TaskStatePublishFunc
-	subscribe      TaskStateSubscribeFunc
-	logf           func(string, ...any)
-	now            func() time.Time
-	merger         *TaskMerger
+	keyer             nostr.Keyer
+	pool              *nostr.Pool
+	ledger            *Ledger
+	emitter           *EventEmitter
+	readRelays        []string
+	writeRelays       []string
+	publishTimeout    time.Duration
+	claimSettlement   time.Duration
+	collectionSources []TaskCollectionSource
+	publish           TaskStatePublishFunc
+	subscribe         TaskStateSubscribeFunc
+	logf              func(string, ...any)
+	now               func() time.Time
+	merger            *TaskMerger
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -63,6 +74,7 @@ type FleetTaskBridge struct {
 }
 
 const defaultTaskStatePublishTimeout = 30 * time.Second
+const defaultClaimSettlement = 10 * time.Second
 
 // NewFleetTaskBridge starts publication and stored+live subscription workers.
 func NewFleetTaskBridge(parent context.Context, opts FleetTaskBridgeOptions) (*FleetTaskBridge, error) {
@@ -89,7 +101,6 @@ func NewFleetTaskBridge(parent context.Context, opts FleetTaskBridgeOptions) (*F
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithCancel(parent)
 	logf := opts.Logf
 	if logf == nil {
 		logf = log.Printf
@@ -102,6 +113,31 @@ func NewFleetTaskBridge(parent context.Context, opts FleetTaskBridgeOptions) (*F
 	if timeout <= 0 {
 		timeout = defaultTaskStatePublishTimeout
 	}
+	settlement := opts.ClaimSettlement
+	if settlement <= 0 {
+		settlement = defaultClaimSettlement
+	}
+	collectionTrust := normalizedPubkeySet(opts.TrustedCollectionAuthors)
+	sources := make([]TaskCollectionSource, 0, len(opts.CollectionSources))
+	seenSources := map[string]struct{}{}
+	for _, source := range opts.CollectionSources {
+		author := strings.ToLower(strings.TrimSpace(source.Author))
+		collectionType := strings.ToLower(strings.TrimSpace(source.Type))
+		id := strings.TrimSpace(source.ID)
+		if _, ok := collectionTrust[author]; !ok {
+			return nil, fmt.Errorf("fleet task bridge: collection source author %s is not trusted", author)
+		}
+		if (collectionType != "queue" && collectionType != "epic") || id == "" {
+			return nil, fmt.Errorf("fleet task bridge: collection source must name queue:<id> or epic:<id>")
+		}
+		key := author + "|" + collectionType + ":" + id
+		if _, ok := seenSources[key]; ok {
+			continue
+		}
+		seenSources[key] = struct{}{}
+		sources = append(sources, TaskCollectionSource{Author: author, Type: collectionType, ID: id})
+	}
+	ctx, cancel := context.WithCancel(parent)
 	policy := TaskValidationPolicy{
 		TrustedTaskAuthors:       append([]string(nil), opts.TrustedTaskAuthors...),
 		TrustedCollectionAuthors: append([]string(nil), opts.TrustedCollectionAuthors...),
@@ -111,7 +147,8 @@ func NewFleetTaskBridge(parent context.Context, opts FleetTaskBridgeOptions) (*F
 	bridge := &FleetTaskBridge{
 		keyer: opts.Keyer, pool: opts.Pool, ledger: opts.Ledger, emitter: opts.Emitter,
 		readRelays: readRelays, writeRelays: writeRelays,
-		publishTimeout: timeout, publish: opts.PublishFunc, subscribe: opts.SubscribeFunc,
+		publishTimeout: timeout, claimSettlement: settlement, collectionSources: sources,
+		publish: opts.PublishFunc, subscribe: opts.SubscribeFunc,
 		logf: logf, now: now, merger: NewTaskMerger(policy),
 		ctx: ctx, cancel: cancel, taskCh: make(chan string, 128), ready: make(chan struct{}),
 	}
@@ -301,50 +338,108 @@ func (b *FleetTaskBridge) subscribeWithPool(ctx context.Context, relays []string
 	return b.pool.SubscribeManyNotifyEOSE(ctx, relays, filter, nostr.SubscriptionOptions{})
 }
 
-func (b *FleetTaskBridge) subscribeLoop() {
-	defer b.wg.Done()
-	authors := normalizedPubkeySet(append(
-		append([]string(nil), b.merger.policy.TrustedTaskAuthors...),
-		b.merger.policy.TrustedCollectionAuthors...,
-	))
-	pubkeys := make([]nostr.PubKey, 0, len(authors))
-	for value := range authors {
+func (b *FleetTaskBridge) subscriptionFilters() []nostr.Filter {
+	taskAuthors := normalizedPubkeySet(b.merger.policy.TrustedTaskAuthors)
+	taskPubkeys := make([]nostr.PubKey, 0, len(taskAuthors))
+	for value := range taskAuthors {
 		pubkey, err := nostr.PubKeyFromHex(value)
 		if err != nil {
-			b.logf("fleet tasks: invalid configured pubkey %q: %v", value, err)
+			b.logf("fleet tasks: invalid configured task pubkey %q: %v", value, err)
 			continue
 		}
-		pubkeys = append(pubkeys, pubkey)
+		taskPubkeys = append(taskPubkeys, pubkey)
 	}
-	sort.Slice(pubkeys, func(i, j int) bool { return pubkeys[i].Hex() < pubkeys[j].Hex() })
-	filter := nostr.Filter{
-		Kinds:   []nostr.Kind{nostr.Kind(30900), nostr.Kind(TaskCollectionKind)},
-		Authors: pubkeys,
+	sort.Slice(taskPubkeys, func(i, j int) bool { return taskPubkeys[i].Hex() < taskPubkeys[j].Hex() })
+	filters := []nostr.Filter{{
+		Kinds:   []nostr.Kind{nostr.Kind(30900)},
+		Authors: taskPubkeys,
+		Tags:    nostr.TagMap{"schema": {TaskStateSchemaV2}},
+	}}
+	for _, source := range b.collectionSources {
+		pubkey, err := nostr.PubKeyFromHex(source.Author)
+		if err != nil {
+			b.logf("fleet tasks: invalid collection source pubkey %q: %v", source.Author, err)
+			continue
+		}
+		filters = append(filters, nostr.Filter{
+			Kinds:   []nostr.Kind{nostr.Kind(TaskCollectionKind)},
+			Authors: []nostr.PubKey{pubkey},
+			Tags:    nostr.TagMap{"d": {source.Type + ":" + source.ID}},
+		})
 	}
+	return filters
+}
+
+func (b *FleetTaskBridge) subscribeLoop() {
+	defer b.wg.Done()
 	for {
 		if b.ctx.Err() != nil {
 			return
 		}
-		eventsCh, eoseCh := b.subscribe(b.ctx, b.readRelays, filter)
+		subCtx, cancel := context.WithCancel(b.ctx)
+		filters := b.subscriptionFilters()
+		eventsCh := make(chan nostr.RelayEvent)
+		eoseCh := make(chan struct{}, len(filters))
+		closedCh := make(chan struct{}, len(filters))
+		for _, filter := range filters {
+			sourceEvents, sourceEOSE := b.subscribe(subCtx, b.readRelays, filter)
+			go func() {
+				for {
+					select {
+					case <-subCtx.Done():
+						return
+					case relayEvent, ok := <-sourceEvents:
+						if !ok {
+							select {
+							case closedCh <- struct{}{}:
+							case <-subCtx.Done():
+							}
+							return
+						}
+						select {
+						case eventsCh <- relayEvent:
+						case <-subCtx.Done():
+							return
+						}
+					}
+				}
+			}()
+			go func() {
+				select {
+				case <-subCtx.Done():
+				case <-sourceEOSE:
+					select {
+					case eoseCh <- struct{}{}:
+					case <-subCtx.Done():
+					}
+				}
+			}()
+		}
+		eoseRemaining := len(filters)
 		for {
 			select {
 			case <-b.ctx.Done():
+				cancel()
 				return
 			case <-eoseCh:
-				eoseCh = nil
-				b.once.Do(func() { close(b.ready) })
-				b.logf("fleet tasks: EOSE — live task-state subscription active")
-			case relayEvent, ok := <-eventsCh:
-				if !ok {
-					timer := time.NewTimer(500 * time.Millisecond)
-					select {
-					case <-b.ctx.Done():
-						timer.Stop()
-						return
-					case <-timer.C:
+				if eoseRemaining > 0 {
+					eoseRemaining--
+					if eoseRemaining == 0 {
+						b.once.Do(func() { close(b.ready) })
+						b.logf("fleet tasks: EOSE — live task-state subscriptions active")
 					}
-					goto resubscribe
 				}
+			case <-closedCh:
+				cancel()
+				timer := time.NewTimer(500 * time.Millisecond)
+				select {
+				case <-b.ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				goto resubscribe
+			case relayEvent := <-eventsCh:
 				if relayEvent.Event.Kind == nostr.Kind(30900) {
 					if err := b.ingestTask(relayEvent.Event); err != nil {
 						b.logf("fleet tasks: ignored task event %s: %v", relayEvent.Event.ID.Hex(), err)

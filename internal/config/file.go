@@ -974,7 +974,11 @@ func detectUnknownConfigKeys(raw map[string]any) []string {
 		case "agent_list":
 			errs = append(errs, detectUnknownMapKeys("agent_list", value, []string{"d", "relay", "auto_sync"})...)
 		case "fleet_tasks":
-			errs = append(errs, detectUnknownMapKeys("fleet_tasks", value, []string{"enabled", "trusted_pubkeys", "trusted_collection_pubkeys", "relays", "max_future_skew_seconds"})...)
+			errs = append(errs, detectUnknownMapKeys("fleet_tasks", value, []string{
+				"enabled", "trusted_pubkeys", "trusted_collection_pubkeys",
+				"collection_sources", "relays", "max_future_skew_seconds",
+				"claim_settlement_seconds",
+			})...)
 		case "fips":
 			errs = append(errs, detectUnknownMapKeys("fips", value, []string{"enabled", "control_socket", "agent_port", "control_port", "transport_pref", "peers", "conn_timeout", "reach_cache_ttl"})...)
 		case "grpc":

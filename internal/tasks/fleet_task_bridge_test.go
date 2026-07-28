@@ -67,6 +67,46 @@ func TestFleetTaskBridgeCorrectsLostLocalClaim(t *testing.T) {
 	}
 }
 
+func TestFleetTaskBridgeSubscriptionFiltersAreSchemaAndCoordinateScoped(t *testing.T) {
+	taskSigner, collectionSigner := testTaskSigner(), testTaskSigner()
+	taskPub, collectionPub := signerPubkey(t, taskSigner), signerPubkey(t, collectionSigner)
+	eventsCh := make(chan nostr.RelayEvent)
+	eoseCh := make(chan struct{}, 2)
+	eoseCh <- struct{}{}
+	eoseCh <- struct{}{}
+	bridge, err := NewFleetTaskBridge(context.Background(), FleetTaskBridgeOptions{
+		Keyer: taskSigner, Ledger: NewLedger(nil),
+		ReadRelays: []string{"wss://read.example"}, WriteRelays: []string{"wss://write.example"},
+		TrustedTaskAuthors: []string{taskPub}, TrustedCollectionAuthors: []string{collectionPub},
+		CollectionSources: []TaskCollectionSource{{Author: collectionPub, Type: "queue", ID: "fleet"}},
+		PublishFunc:       func(context.Context, []string, nostr.Event) error { return nil },
+		SubscribeFunc: func(context.Context, []string, nostr.Filter) (<-chan nostr.RelayEvent, <-chan struct{}) {
+			return eventsCh, eoseCh
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Stop()
+
+	filters := bridge.subscriptionFilters()
+	if len(filters) != 2 {
+		t.Fatalf("filters=%d want=2", len(filters))
+	}
+	taskFilter := filters[0]
+	if len(taskFilter.Kinds) != 1 || taskFilter.Kinds[0] != 30900 ||
+		len(taskFilter.Authors) != 1 || taskFilter.Authors[0].Hex() != taskPub ||
+		len(taskFilter.Tags["schema"]) != 1 || taskFilter.Tags["schema"][0] != TaskStateSchemaV2 {
+		t.Fatalf("task filter=%#v", taskFilter)
+	}
+	collectionFilter := filters[1]
+	if len(collectionFilter.Kinds) != 1 || int(collectionFilter.Kinds[0]) != TaskCollectionKind ||
+		len(collectionFilter.Authors) != 1 || collectionFilter.Authors[0].Hex() != collectionPub ||
+		len(collectionFilter.Tags["d"]) != 1 || collectionFilter.Tags["d"][0] != "queue:fleet" {
+		t.Fatalf("collection filter=%#v", collectionFilter)
+	}
+}
+
 func TestFleetTaskBridgePublishesLedgerClaimAndPreservesOrigin(t *testing.T) {
 	signer := testTaskSigner()
 	pubkey := signerPubkey(t, signer)
