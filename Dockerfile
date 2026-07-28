@@ -35,7 +35,7 @@ ARG VERSION=dev
 ARG METIQ_TASK_VERSION=v3.50.0
 
 # Base images (unpinned for latest updates)
-ARG GOLANG_IMAGE="golang:1.25-bookworm"
+ARG GOLANG_IMAGE="golang:1.25.10-bookworm"
 ARG DEBIAN_BOOKWORM_IMAGE="debian:bookworm"
 ARG DEBIAN_BOOKWORM_SLIM_IMAGE="debian:bookworm-slim"
 ARG NODE_IMAGE="node:24-bookworm-slim"
@@ -69,7 +69,8 @@ RUN --mount=type=secret,id=gitauth,target=/root/.netrc \
 COPY . .
 
 # Compile daemon and CLI as static binaries (no CGO required).
-RUN --mount=type=cache,id=metiq-gobuild,target=/root/.cache/go-build,sharing=locked \
+RUN --mount=type=secret,id=gitauth,target=/root/.netrc \
+    --mount=type=cache,id=metiq-gobuild,target=/root/.cache/go-build,sharing=locked \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
