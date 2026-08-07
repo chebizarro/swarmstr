@@ -33,6 +33,7 @@ const (
 	DropBotRequiresMention         = "bot_requires_mention"
 	DropNoMention                  = "no_mention"
 	DropBackfillAmbient            = "backfill_ambient"
+	DropShouldReplyGate            = "should_reply_gate"
 )
 
 // NostrAllowBots is the per-room known-bot gate.
@@ -110,6 +111,15 @@ type NostrPreflightInput struct {
 	// SenderIsKnownBot drives the allowBots hard gate — set ONLY for a
 	// definitive known bot (peer index verdict == true). Never for humans/unknown.
 	SenderIsKnownBot bool
+
+	// ShouldReplyGate enables the cheap ambient relevance gate. Runtime callers
+	// pass the per-room policy (default true); false preserves legacy dispatch.
+	ShouldReplyGate bool
+	// ShouldReplyAliases names this routed agent/account. AgentID is included
+	// automatically; callers may add profile/deployment aliases.
+	ShouldReplyAliases []string
+	// ShouldReplyCapabilities are locally declared capability/tool terms.
+	ShouldReplyCapabilities []string
 }
 
 // NostrPreflightResult is the decision.
@@ -129,6 +139,9 @@ type NostrPreflightResult struct {
 	ShouldDrop                  bool
 	DropReason                  string
 	InboundEventKind            string
+	// ShouldReplyGateDecision is populated only for otherwise-admitted ambient
+	// traffic. Mentions, replies-to-bot, commands, aborts, and trust drops bypass it.
+	ShouldReplyGateDecision *ShouldReplyGateDecision
 }
 
 // NormalizeNostrRoomSessionKey mirrors normalizeNostrRoomSessionKey: strips all
@@ -418,6 +431,26 @@ func ResolveNostrGroupPreflight(in NostrPreflightInput) NostrPreflightResult {
 		dropReason = DropBackfillAmbient
 	}
 
+	var shouldReplyDecision *ShouldReplyGateDecision
+	// Relevance is strictly downstream of trust/command/mention decisions. It
+	// may shed only otherwise-admitted ambient traffic; it can never turn a
+	// rejection into an admission or alter DMs (which do not use this preflight).
+	if dropReason == "" && !md.effectiveWasMentioned && !hasCommand && !hasAbort {
+		aliases := append([]string(nil), in.ShouldReplyAliases...)
+		aliases = append(aliases, in.AgentID)
+		decision := ResolveShouldReplyGate(ShouldReplyGateInput{
+			Text:             in.Text,
+			Aliases:          aliases,
+			Capabilities:     in.ShouldReplyCapabilities,
+			SenderIsKnownBot: in.SenderIsKnownBot,
+			Enabled:          in.ShouldReplyGate,
+		}, nil)
+		shouldReplyDecision = &decision
+		if decision.Outcome != ShouldReplyPass {
+			dropReason = DropShouldReplyGate
+		}
+	}
+
 	return NostrPreflightResult{
 		RoomKey:                     roomKey,
 		RequireMention:              requireMention,
@@ -434,6 +467,7 @@ func ResolveNostrGroupPreflight(in NostrPreflightInput) NostrPreflightResult {
 		ShouldDrop:                  dropReason != "",
 		DropReason:                  dropReason,
 		InboundEventKind:            inboundEventKind,
+		ShouldReplyGateDecision:     shouldReplyDecision,
 	}
 }
 

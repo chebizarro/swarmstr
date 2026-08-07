@@ -17,18 +17,31 @@ import (
 
 // Registry holds a set of named counters and gauges.
 type Registry struct {
-	mu       sync.RWMutex
-	counters map[string]*Counter
-	gauges   map[string]*Gauge
-	help     map[string]string // optional HELP lines
+	mu              sync.RWMutex
+	counters        map[string]*Counter
+	labeledCounters map[string]*labeledCounterSeries
+	gauges          map[string]*Gauge
+	help            map[string]string // optional HELP lines
+}
+
+type metricLabel struct {
+	name  string
+	value string
+}
+
+type labeledCounterSeries struct {
+	name    string
+	labels  []metricLabel
+	counter *Counter
 }
 
 // NewRegistry creates an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		counters: map[string]*Counter{},
-		gauges:   map[string]*Gauge{},
-		help:     map[string]string{},
+		counters:        map[string]*Counter{},
+		labeledCounters: map[string]*labeledCounterSeries{},
+		gauges:          map[string]*Gauge{},
+		help:            map[string]string{},
 	}
 }
 
@@ -94,6 +107,38 @@ func (r *Registry) Counter(name, help string) *Counter {
 	return c
 }
 
+// CounterWithLabels registers (or retrieves) one labeled counter series.
+func (r *Registry) CounterWithLabels(name, help string, labels map[string]string) *Counter {
+	labelNames := make([]string, 0, len(labels))
+	for label := range labels {
+		labelNames = append(labelNames, label)
+	}
+	sort.Strings(labelNames)
+	seriesLabels := make([]metricLabel, 0, len(labelNames))
+	var key strings.Builder
+	key.WriteString(name)
+	for _, label := range labelNames {
+		value := labels[label]
+		seriesLabels = append(seriesLabels, metricLabel{name: label, value: value})
+		key.WriteByte(0)
+		key.WriteString(label)
+		key.WriteByte('=')
+		key.WriteString(value)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if series, ok := r.labeledCounters[key.String()]; ok {
+		return series.counter
+	}
+	counter := &Counter{}
+	r.labeledCounters[key.String()] = &labeledCounterSeries{name: name, labels: seriesLabels, counter: counter}
+	if help != "" {
+		r.help[name] = help
+	}
+	return counter
+}
+
 // Gauge registers (or retrieves) a gauge with the given name and optional help string.
 func (r *Registry) Gauge(name, help string) *Gauge {
 	r.mu.Lock()
@@ -121,9 +166,19 @@ func (r *Registry) Exposition() string {
 	for n := range r.gauges {
 		gaugeNames = append(gaugeNames, n)
 	}
+	labeledCounters := make([]*labeledCounterSeries, 0, len(r.labeledCounters))
+	for _, series := range r.labeledCounters {
+		labeledCounters = append(labeledCounters, series)
+	}
 	r.mu.RUnlock()
 
 	sort.Strings(counterNames)
+	sort.Slice(labeledCounters, func(i, j int) bool {
+		if labeledCounters[i].name != labeledCounters[j].name {
+			return labeledCounters[i].name < labeledCounters[j].name
+		}
+		return formatMetricLabels(labeledCounters[i].labels) < formatMetricLabels(labeledCounters[j].labels)
+	})
 	sort.Strings(gaugeNames)
 
 	var sb strings.Builder
@@ -138,6 +193,23 @@ func (r *Registry) Exposition() string {
 		}
 		fmt.Fprintf(&sb, "# TYPE %s counter\n", name)
 		fmt.Fprintf(&sb, "%s %d\n", name, c.Value())
+	}
+	emittedCounterFamily := make(map[string]struct{}, len(counterNames)+len(labeledCounters))
+	for _, name := range counterNames {
+		emittedCounterFamily[name] = struct{}{}
+	}
+	for _, series := range labeledCounters {
+		if _, emitted := emittedCounterFamily[series.name]; !emitted {
+			r.mu.RLock()
+			h := r.help[series.name]
+			r.mu.RUnlock()
+			if h != "" {
+				fmt.Fprintf(&sb, "# HELP %s %s\n", series.name, h)
+			}
+			fmt.Fprintf(&sb, "# TYPE %s counter\n", series.name)
+			emittedCounterFamily[series.name] = struct{}{}
+		}
+		fmt.Fprintf(&sb, "%s%s %d\n", series.name, formatMetricLabels(series.labels), series.counter.Value())
 	}
 	for _, name := range gaugeNames {
 		r.mu.RLock()
@@ -157,6 +229,50 @@ func (r *Registry) Exposition() string {
 		}
 	}
 	return sb.String()
+}
+
+func formatMetricLabels(labels []metricLabel) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, label := range labels {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(label.name)
+		b.WriteString("=\"")
+		value := strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\"", "\\\"").Replace(label.value)
+		b.WriteString(value)
+		b.WriteByte('"')
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+const shouldReplyGateMetricHelp = "Total ambient should-reply gate decisions by reason"
+
+// RecordShouldReplyGate records one pass/drop decision with its stable reason.
+func (r *Registry) RecordShouldReplyGate(outcome, reason string) {
+	var name string
+	switch outcome {
+	case "pass":
+		name = "metiq_should_reply_gate_pass_total"
+	case "drop":
+		name = "metiq_should_reply_gate_drop_total"
+	default:
+		return
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "unknown"
+	}
+	r.CounterWithLabels(name, shouldReplyGateMetricHelp, map[string]string{"reason": reason}).Inc()
+}
+
+// RecordShouldReplyGate records on the process-wide registry.
+func RecordShouldReplyGate(outcome, reason string) {
+	Default.RecordShouldReplyGate(outcome, reason)
 }
 
 // Default is the process-wide default registry.

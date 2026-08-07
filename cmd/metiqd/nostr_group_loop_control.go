@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"metiq/internal/gateway/channels"
+	metricspkg "metiq/internal/metrics"
 	nostruntime "metiq/internal/nostr/runtime"
 	sessionidentity "metiq/internal/session/identity"
 	"metiq/internal/store/state"
@@ -38,12 +39,13 @@ func settleNostrDispatch(msg channels.InboundMessage, deliveredOK bool) {
 // RPC). The bot verdict is loop-control ONLY and never affects allow_from /
 // command authorization.
 type nostrGroupLoopControl struct {
-	ownPubkey   string
-	peerIndex   *nostruntime.PeerAgentIndex
-	guard       *channels.BotLoopProtection
-	queue       *channels.RoomDispatchQueue
-	establisher *sessionidentity.Establisher
-	echo        *channels.EchoSuppressor
+	ownPubkey               string
+	peerIndex               *nostruntime.PeerAgentIndex
+	guard                   *channels.BotLoopProtection
+	queue                   *channels.RoomDispatchQueue
+	establisher             *sessionidentity.Establisher
+	echo                    *channels.EchoSuppressor
+	shouldReplyCapabilities []string
 }
 
 // observeEcho records room text (peer or own) into the echo ring.
@@ -101,22 +103,30 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 	knownBot := verdict == nostruntime.VerdictBot
 	roomPolicy := channels.ResolveNostrRoomPolicy(roomCfg.Config)
 	preflight := channels.ResolveNostrGroupPreflight(channels.NostrPreflightInput{
-		BotPubkey:            lc.ownPubkey,
-		GroupID:              msg.GroupID,
-		GroupAddress:         roomCfg.GroupAddress,
-		SenderPubkey:         msg.FromPubKey,
-		Text:                 msg.Text,
-		AgentID:              roomCfg.AgentID,
-		Meta:                 msg.Meta,
-		RoomAllowFrom:        roomCfg.AllowFrom,
-		AccountAllowFrom:     accountAllowFrom,
-		RequireMention:       roomPolicy.RequireMention,
-		AllowTextCommands:    true,
-		UnmentionedRoomEvent: roomPolicy.UnmentionedRoomEvent,
-		AllowBots:            roomPolicy.AllowBots,
-		SenderIsPeer:         knownBot,
-		SenderIsKnownBot:     knownBot,
+		BotPubkey:               lc.ownPubkey,
+		GroupID:                 msg.GroupID,
+		GroupAddress:            roomCfg.GroupAddress,
+		SenderPubkey:            msg.FromPubKey,
+		Text:                    msg.Text,
+		AgentID:                 roomCfg.AgentID,
+		Meta:                    msg.Meta,
+		RoomAllowFrom:           roomCfg.AllowFrom,
+		AccountAllowFrom:        accountAllowFrom,
+		RequireMention:          roomPolicy.RequireMention,
+		AllowTextCommands:       true,
+		UnmentionedRoomEvent:    roomPolicy.UnmentionedRoomEvent,
+		AllowBots:               roomPolicy.AllowBots,
+		SenderIsPeer:            knownBot,
+		SenderIsKnownBot:        knownBot,
+		ShouldReplyGate:         roomPolicy.ShouldReplyGate,
+		ShouldReplyAliases:      []string{"metiq"},
+		ShouldReplyCapabilities: lc.shouldReplyCapabilities,
 	})
+	if decision := preflight.ShouldReplyGateDecision; decision != nil {
+		metricspkg.RecordShouldReplyGate(string(decision.Outcome), string(decision.Reason))
+		log.Printf("nip29 should-reply gate from=%s channel=%s outcome=%s reason=%s score=%d",
+			msg.FromPubKey, msg.ChannelID, decision.Outcome, decision.Reason, decision.Score)
+	}
 	if preflight.ShouldDrop {
 		log.Printf("nip29 preflight drop from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, preflight.DropReason)
 		return nostrGateDecision{}, false

@@ -19,6 +19,7 @@ package channels
 //   17          -> TestParityMatrix_QueueOverflow (RoomDispatchQueue)
 //   18          -> TestParityMatrix_SeenGatingRetry (RedispatchScheduler) +
 //                  TestSettleDispatch_SeenGating
+//   R1 should-reply gate, reference: ocn-e2f -> TestParityMatrix_ShouldReplyGate
 //   R3 ACK conversion, reference: ocn-te2 (default-on; false opts out) -> TestParityMatrix_ACKConversion
 //   R4 commitment enforcement, reference: ocn-krf (pending) -> TestParityMatrix_CommitmentEnforcement
 //      (asserts Metiq's independently implemented room-policy behavior)
@@ -107,6 +108,42 @@ func TestParityMatrix_PreflightRows(t *testing.T) {
 	peer.Meta.ReplyToSenderPubkey = bot
 	if r := ResolveNostrGroupPreflight(peer); !r.ShouldDrop || r.DropReason != DropNoMention {
 		t.Errorf("row 11 peer: reply-to-bot from peer should drop no_mention, got drop=%v reason=%q", r.ShouldDrop, r.DropReason)
+	}
+}
+
+// R1 dedicated should-reply admission gate, reference: openclaw-nostr ocn-e2f.
+// Being named as the addressee passes, being discussed in third person drops,
+// capability-matched questions pass, and the room off-switch preserves legacy admission.
+func TestParityMatrix_ShouldReplyGate(t *testing.T) {
+	base := ShouldReplyGateInput{
+		Aliases:      []string{"Ada"},
+		Capabilities: []string{"code-review"},
+		Enabled:      true,
+	}
+	cases := []struct {
+		name    string
+		text    string
+		outcome ShouldReplyGateOutcome
+		reason  ShouldReplyGateReason
+	}{
+		{"named addressee", "Ada, can you review this?", ShouldReplyPass, ShouldReplyReasonDirectlyAddressed},
+		{"talked about", "Is Ada reviewing this?", ShouldReplyDrop, ShouldReplyReasonTalkedAbout},
+		{"capability question", "Could someone review this code?", ShouldReplyPass, ShouldReplyReasonCapabilityMatch},
+		{"generic question fails quiet", "What do people think?", ShouldReplyDrop, ShouldReplyReasonAmbiguousNoModel},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base
+			in.Text = tc.text
+			got := ResolveShouldReplyGate(in, nil)
+			if got.Outcome != tc.outcome || got.Reason != tc.reason {
+				t.Fatalf("R1 decision = %+v, want outcome=%s reason=%s", got, tc.outcome, tc.reason)
+			}
+		})
+	}
+	policy := ResolveNostrRoomPolicy(map[string]any{"shouldReplyGate": false})
+	if policy.ShouldReplyGate {
+		t.Fatal("R1 shouldReplyGate=false did not preserve legacy admission")
 	}
 }
 

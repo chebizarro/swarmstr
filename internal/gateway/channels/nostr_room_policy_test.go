@@ -16,6 +16,9 @@ func TestResolveNostrRoomPolicy_Defaults(t *testing.T) {
 	if !p.AckAsReaction {
 		t.Error("ackAsReaction should default true")
 	}
+	if !p.ShouldReplyGate {
+		t.Error("shouldReplyGate should default true")
+	}
 	if p.AmbientRespond || p.UnmentionedRoomEvent || p.EchoSuppression || p.CommitmentGuard || p.CommitmentEnforcement {
 		t.Error("opt-in boolean knobs should default false")
 	}
@@ -30,6 +33,7 @@ func TestResolveNostrRoomPolicy_Typed(t *testing.T) {
 		"allowBots":             "off",
 		"ambientPolicy":         "respond",
 		"unmentionedInbound":    "room_event",
+		"shouldReplyGate":       false,
 		"ackAsReaction":         false,
 		"echoSuppression":       true,
 		"commitmentGuard":       true,
@@ -50,6 +54,9 @@ func TestResolveNostrRoomPolicy_Typed(t *testing.T) {
 	}
 	if p.AckAsReaction {
 		t.Error("ackAsReaction false should opt out")
+	}
+	if p.ShouldReplyGate {
+		t.Error("shouldReplyGate false should opt out")
 	}
 	if !p.EchoSuppression || !p.CommitmentGuard || !p.CommitmentEnforcement {
 		t.Error("echoSuppression/commitmentGuard/commitmentEnforcement should be true")

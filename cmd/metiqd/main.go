@@ -2288,13 +2288,17 @@ func main() {
 	}
 	// Shared loop-control bundle used by BOTH auto-join and the channels.join RPC
 	// so a room is gated identically regardless of how it was joined (swarmstr-nfl4).
+	// The should-reply gate matches ambient requests against the same local tool
+	// names advertised in our kind:30317 capability descriptor.
+	localCapabilities := buildLocalCapabilityAnnouncement(context.Background(), configState.Get(), docsRepo)
 	nostrLoopControl := &nostrGroupLoopControl{
-		ownPubkey:   nostrOwnPubkey,
-		peerIndex:   nostrPeerIndex,
-		guard:       nostrBotLoopGuard,
-		queue:       nostrRoomQueue,
-		establisher: nostrSessionEstablisher,
-		echo:        nostrEchoSuppressor,
+		ownPubkey:               nostrOwnPubkey,
+		peerIndex:               nostrPeerIndex,
+		guard:                   nostrBotLoopGuard,
+		queue:                   nostrRoomQueue,
+		establisher:             nostrSessionEstablisher,
+		echo:                    nostrEchoSuppressor,
+		shouldReplyCapabilities: append([]string(nil), localCapabilities.Tools...),
 	}
 	controlNostrLoopControl = nostrLoopControl
 

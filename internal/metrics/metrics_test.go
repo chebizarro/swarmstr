@@ -91,3 +91,23 @@ func TestDefaultRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordShouldReplyGateLabelsOutcomeAndReason(t *testing.T) {
+	r := NewRegistry()
+	r.RecordShouldReplyGate("pass", "capability_match")
+	r.RecordShouldReplyGate("drop", "talked_about")
+	r.RecordShouldReplyGate("drop", "talked_about")
+
+	out := r.Exposition()
+	for _, want := range []string{
+		`metiq_should_reply_gate_pass_total{reason="capability_match"} 1`,
+		`metiq_should_reply_gate_drop_total{reason="talked_about"} 2`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing labeled should-reply metric %q in:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "# TYPE metiq_should_reply_gate_drop_total counter") != 1 {
+		t.Errorf("drop metric family metadata should appear once:\n%s", out)
+	}
+}

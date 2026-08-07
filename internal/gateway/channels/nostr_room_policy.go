@@ -17,6 +17,9 @@ type NostrRoomPolicy struct {
 	AmbientRespond bool
 	// UnmentionedRoomEvent is true when unmentionedInbound == "room_event".
 	UnmentionedRoomEvent bool
+	// ShouldReplyGate runs the cheap deterministic relevance gate for ambient,
+	// non-mention room traffic. It defaults on; false preserves legacy dispatch.
+	ShouldReplyGate bool
 	// PairLoop is the room-level bot-loop-protection override (nil when unset).
 	PairLoop *PairLoopGuardConfig
 	// AckAsReaction converts pure acknowledgements into NIP-25 reactions on
@@ -39,7 +42,7 @@ type NostrRoomPolicy struct {
 // mutated. The bot/loop-control knobs here never influence allow_from or command
 // authorization (trust boundary).
 func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
-	p := NostrRoomPolicy{AllowBots: AllowBotsMentions, AckAsReaction: true}
+	p := NostrRoomPolicy{AllowBots: AllowBotsMentions, ShouldReplyGate: true, AckAsReaction: true}
 	if config == nil {
 		return p
 	}
@@ -58,6 +61,9 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 
 	if s, ok := config["unmentionedInbound"].(string); ok {
 		p.UnmentionedRoomEvent = strings.EqualFold(strings.TrimSpace(s), "room_event")
+	}
+	if v, ok := boolFromAny(config["shouldReplyGate"]); ok {
+		p.ShouldReplyGate = v
 	}
 
 	if v, ok := boolFromAny(config["ackAsReaction"]); ok {
