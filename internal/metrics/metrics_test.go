@@ -136,3 +136,24 @@ func TestRecordResponderElection(t *testing.T) {
 		t.Fatal("invalid outcome must not register a series")
 	}
 }
+
+func TestRecordProgressLedger(t *testing.T) {
+	r := NewRegistry()
+	r.RecordProgressLedger("run")
+	r.RecordProgressLedger("run")
+	r.RecordProgressLedger("post")
+	r.RecordProgressLedger("bogus") // ignored
+
+	exposition := r.Exposition()
+	for _, want := range []string{
+		"metiq_progress_ledger_runs_total 2",
+		"metiq_progress_ledger_posts_total 1",
+	} {
+		if !strings.Contains(exposition, want) {
+			t.Fatalf("exposition missing %q:\n%s", want, exposition)
+		}
+	}
+	if strings.Contains(exposition, "bogus") {
+		t.Fatal("invalid outcome must not register a series")
+	}
+}

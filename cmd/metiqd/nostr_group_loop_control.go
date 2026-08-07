@@ -56,6 +56,27 @@ type nostrGroupLoopControl struct {
 	// takeovers arms the R2 successor takeover timers (off-dispatch: no queue
 	// slot is held while waiting for the elected responder).
 	takeovers *channels.TakeoverCoordinator[nostrResponderTakeoverPayload]
+	// ledgerRecorder keeps the bounded per-room event window the R5 progress
+	// ledger reviews (recorded for EVERY inbound room message, admitted or
+	// dropped — unanswered ambient mentions are exactly the traffic the gate
+	// drops). Nil leaves the ledger inert.
+	ledgerRecorder *channels.ProgressLedgerRecorder
+}
+
+// recordProgressLedgerEvent records one inbound room event into the R5 review
+// window. Takeover redeliveries are skipped (the original delivery recorded).
+func (lc *nostrGroupLoopControl) recordProgressLedgerEvent(roomKey string, msg channels.InboundMessage) {
+	if lc == nil || lc.ledgerRecorder == nil || roomKey == "" || msg.ResponderTakeover {
+		return
+	}
+	lc.ledgerRecorder.Record(roomKey, channels.ProgressLedgerEvent{
+		EventID:          msg.EventID,
+		Author:           msg.FromPubKey,
+		CreatedAt:        time.Unix(msg.CreatedAt, 0).UTC(),
+		Content:          msg.Text,
+		MentionedPubkeys: append([]string(nil), msg.Meta.MentionedPubkeys...),
+		ReplyToEventID:   msg.Meta.ReplyToEventID,
+	})
 }
 
 // nostrResponderTakeoverPayload is the armed takeover context: the original
@@ -263,6 +284,10 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 			ThreadRootEventID: msg.Meta.ThreadRootEventID,
 		})
 	}
+	// R5: every live inbound room message lands in the progress-ledger window
+	// (even ones the gate drops below — those are the unanswered mentions the
+	// moderator review is for).
+	lc.recordProgressLedgerEvent(preflight.RoomKey, msg)
 	if decision := preflight.ShouldReplyGateDecision; decision != nil {
 		metricspkg.RecordShouldReplyGate(string(decision.Outcome), string(decision.Reason))
 		log.Printf("nip29 should-reply gate from=%s channel=%s outcome=%s reason=%s score=%d",

@@ -302,6 +302,29 @@ func RecordResponderElection(outcome string) {
 	Default.RecordResponderElection(outcome)
 }
 
+const progressLedgerMetricHelp = "Total scheduled progress-ledger moderator reviews and summary posts (R5)"
+
+// RecordProgressLedger records one progress-ledger scheduler outcome: "run"
+// (a review executed) or "post" (an actionable summary was posted to the
+// room). Silence — a run with no post — is the expected steady state.
+func (r *Registry) RecordProgressLedger(outcome string) {
+	var name string
+	switch outcome {
+	case "run":
+		name = "metiq_progress_ledger_runs_total"
+	case "post":
+		name = "metiq_progress_ledger_posts_total"
+	default:
+		return
+	}
+	r.Counter(name, progressLedgerMetricHelp).Inc()
+}
+
+// RecordProgressLedger records on the process-wide registry.
+func RecordProgressLedger(outcome string) {
+	Default.RecordProgressLedger(outcome)
+}
+
 // Default is the process-wide default registry.
 var Default = NewRegistry()
 

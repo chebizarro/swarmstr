@@ -27,6 +27,11 @@ package channels
 //      TestParityMatrix_TaskEchoSuppression (asserts Metiq's independently
 //      implemented behavior: a chat message restating a same-author kind-30900
 //      transition is dropped after one compact throttled announcement)
+//   R5 progress ledger (scheduled moderator review), reference: ocn-d3u
+//      (pending; asserts Metiq's own behavior) -> TestParityMatrix_ProgressLedger
+//      (explicit opt-in, single designated moderator, deterministic checks,
+//      one compact post only when actionable, silence + throttle defaults).
+//      Full decision coverage in progress_ledger_test.go.
 //   R2 deterministic single-responder election, reference: ocn-myl ->
 //      TestParityMatrix_ResponderElection (identical winner/order on every
 //      instance, capability ranking above the hash tie-break, mention bypass,
@@ -39,6 +44,7 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -387,6 +393,78 @@ func TestParityMatrix_ResponderTakeover(t *testing.T) {
 	h.timers[0].fn()
 	if len(h.fired) != 0 {
 		t.Fatal("R2: another agent's claim reaction must stand the takeover down")
+	}
+}
+
+// R5 progress ledger, reference: openclaw-nostr ocn-d3u (pending; this asserts
+// Metiq's own behavior until the counterpart lands). A scheduled review turn
+// answers the Progress Ledger questions deterministically — stale agent
+// mentions, open commitments without a backing task, duplicate task claims,
+// looping bot pairs — and the ONE designated moderator posts a single compact
+// summary only when something is actionable. Silence is the default and posts
+// are throttled to one per interval.
+func TestParityMatrix_ProgressLedger(t *testing.T) {
+	if ResolveNostrRoomPolicy(nil).ProgressLedger {
+		t.Fatal("R5: progress ledger must be explicit opt-in (default off)")
+	}
+	self := hexKey()
+	policy := ResolveNostrRoomPolicy(map[string]any{
+		"progressLedger":                    true,
+		"progressLedgerModerator":           self,
+		"progressLedgerIntervalSeconds":     300,
+		"progressLedgerPostIntervalSeconds": 900,
+	})
+	if !policy.ProgressLedgerModeratorFor(self) || policy.ProgressLedgerModeratorFor(hexKey()) {
+		t.Fatal("R5: exactly the designated instance moderates the room")
+	}
+
+	agent := hexKey()
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	sched := &ProgressLedgerScheduler{Now: func() time.Time { return now }}
+	var posts []string
+	run := func(input ProgressLedgerInput) ProgressLedgerRunResult {
+		return sched.Run(ProgressLedgerRunParams{
+			RoomKey:    "room",
+			Policy:     policy,
+			SelfPubkey: self,
+			Collect:    func() ProgressLedgerInput { return input },
+			Post:       func(text string) error { posts = append(posts, text); return nil },
+		})
+	}
+
+	// Nothing actionable -> the moderator stays silent.
+	if r := run(ProgressLedgerInput{}); !r.Ran || r.Posted || len(posts) != 0 {
+		t.Fatalf("R5: silence is the default, got %+v", r)
+	}
+
+	// Actionable facts across all four deterministic questions -> ONE compact post.
+	now = now.Add(policy.ProgressLedgerInterval)
+	input := ProgressLedgerInput{
+		AgentPubkeys: []string{agent},
+		Events: []ProgressLedgerEvent{{
+			EventID: "evt-1", Author: hexKey(), CreatedAt: now.Add(-time.Hour),
+			MentionedPubkeys: []string{agent},
+		}},
+		Commitments: []ProgressLedgerCommitment{{ID: "c-1", Text: "I'll migrate the database"}},
+		Tasks: []ProgressLedgerTask{
+			{TaskID: "fleet-1", Status: "in_progress", Claimants: []string{hexKey()}},
+			{TaskID: "fleet-1", Status: "in_progress", Claimants: []string{hexKey()}},
+		},
+		PairGuard: []PairLoopGuardSnapshotEntry{{Key: "acct|room|a|b", RecentCount: 21, CooldownUntil: now.Add(time.Minute)}},
+	}
+	r := run(input)
+	if !r.Posted || len(posts) != 1 || !strings.HasPrefix(posts[0], "\U0001F4CB Progress ledger: ") || strings.Contains(posts[0], "\n") {
+		t.Fatalf("R5: actionable review must post one compact summary, got %+v posts=%v", r, posts)
+	}
+	if len(r.Findings.StaleMentions) != 1 || len(r.Findings.UnbackedCommitments) != 1 ||
+		len(r.Findings.DuplicateClaims) != 1 || len(r.Findings.LoopSignals) != 1 {
+		t.Fatalf("R5: all four ledger questions must be answered deterministically: %+v", r.Findings)
+	}
+
+	// Still-actionable findings inside the post interval are withheld.
+	now = now.Add(policy.ProgressLedgerInterval)
+	if r := run(input); !r.Ran || r.Posted || !r.Throttled || len(posts) != 1 {
+		t.Fatalf("R5: at most one ledger post per interval, got %+v posts=%v", r, posts)
 	}
 }
 

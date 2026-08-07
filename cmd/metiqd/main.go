@@ -2299,6 +2299,10 @@ func main() {
 	if nostrTakeoverErr != nil {
 		log.Printf("responder takeover coordinator init failed (takeovers disabled): %v", nostrTakeoverErr)
 	}
+	// R5 progress ledger: bounded per-room event window + the per-room
+	// review/post throttle state, shared across every joined room.
+	nostrProgressLedgerRecorder := channels.NewProgressLedgerRecorder(0)
+	nostrProgressLedgerScheduler := &channels.ProgressLedgerScheduler{}
 	nostrLoopControl := &nostrGroupLoopControl{
 		ownPubkey:               nostrOwnPubkey,
 		peerIndex:               nostrPeerIndex,
@@ -2325,7 +2329,8 @@ func main() {
 		isMutedPeer: func(pubkey string) bool {
 			return listStore.IsMuted(nostrOwnPubkey, pubkey)
 		},
-		takeovers: nostrResponderTakeovers,
+		takeovers:      nostrResponderTakeovers,
+		ledgerRecorder: nostrProgressLedgerRecorder,
 	}
 	controlNostrLoopControl = nostrLoopControl
 
@@ -2532,6 +2537,36 @@ func main() {
 				continue
 			}
 			log.Printf("auto-join %s channel joined name=%s address=%s id=%s", localChanCfg.Kind, localChanName, channelAddress, ch.ID())
+			// R5: start the scheduled moderator review loop when THIS instance
+			// is the room's designated progress-ledger moderator (opt-in).
+			if roomPolicy.ProgressLedgerModeratorFor(nostrOwnPubkey) {
+				// The room key must match the gate's recorder key: NIP-29 keys
+				// on the configured group address; Communikey rooms key on the
+				// canonical channel ID the transport reports.
+				ledgerRoomAddress := func(cfg state.NostrChannelConfig) string {
+					if cfg.Kind == state.NostrChannelKindCommunikey {
+						return ch.ID()
+					}
+					return cfg.GroupAddress
+				}
+				startNostrProgressLedgerLoop(ctx, nostrProgressLedgerLoopOptions{
+					roomKey:    channels.NormalizeNostrRoomSessionKey(ledgerRoomAddress(localChanCfg)),
+					selfPubkey: nostrOwnPubkey,
+					scheduler:  nostrProgressLedgerScheduler,
+					recorder:   nostrProgressLedgerRecorder,
+					guard:      nostrBotLoopGuard,
+					taskLedger: taskLedger,
+					policy: func() (channels.NostrRoomPolicy, bool) {
+						cur, ok := configState.Get().NostrChannels[localChanName]
+						if !ok || !cur.Enabled {
+							return channels.NostrRoomPolicy{}, false
+						}
+						return channels.ResolveNostrRoomPolicy(cur.Config), true
+					},
+					post: ch.Send,
+				})
+				log.Printf("progress ledger moderator loop started name=%s address=%s", localChanName, channelAddress)
+			}
 		case state.NostrChannelKindNIP28:
 			if chanCfg.ChannelID == "" {
 				log.Printf("auto-join skip: nostr_channels.%s has no channel_id", chanName)

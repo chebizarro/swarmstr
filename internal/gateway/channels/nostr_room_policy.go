@@ -63,6 +63,40 @@ type NostrRoomPolicy struct {
 	// CommitmentEnforcement blocks/rephrases unbacked outbound work promises.
 	// It is explicit opt-in because rooms do not expose a separate taskflow flag.
 	CommitmentEnforcement bool
+	// ProgressLedger enables the R5 scheduled moderator review turn (Progress
+	// Ledger). Explicit opt-in: defaults off.
+	ProgressLedger bool
+	// ProgressLedgerInterval is the review cadence (config key
+	// progressLedgerIntervalSeconds, >= 60, default 15m).
+	ProgressLedgerInterval time.Duration
+	// ProgressLedgerPostInterval throttles summary posts to at most one per
+	// window (config key progressLedgerPostIntervalSeconds, >= 60; defaults to
+	// the review interval).
+	ProgressLedgerPostInterval time.Duration
+	// ProgressLedgerStaleMentionAge is how old an unanswered agent @mention
+	// must be before it is actionable (config key
+	// progressLedgerStaleMentionSeconds, >= 60, default 10m).
+	ProgressLedgerStaleMentionAge time.Duration
+	// ProgressLedgerModeratorSelf / ProgressLedgerModeratorPubkey designate
+	// the ONE moderator instance per room (config key progressLedgerModerator:
+	// bool true on the moderator's own instance config, or a hex pubkey every
+	// instance compares against). Without a designation nobody moderates —
+	// this keeps a shared room config from turning every fleet member into a
+	// ledger poster.
+	ProgressLedgerModeratorSelf   bool
+	ProgressLedgerModeratorPubkey string
+}
+
+// ProgressLedgerModeratorFor reports whether the instance owning selfPubkey is
+// this room's designated progress-ledger moderator (R5).
+func (p NostrRoomPolicy) ProgressLedgerModeratorFor(selfPubkey string) bool {
+	if !p.ProgressLedger {
+		return false
+	}
+	if pk := strings.TrimSpace(p.ProgressLedgerModeratorPubkey); pk != "" {
+		return strings.EqualFold(pk, strings.TrimSpace(selfPubkey))
+	}
+	return p.ProgressLedgerModeratorSelf
 }
 
 // ResolveNostrRoomPolicy reads typed preflight knobs from a room's free-form
@@ -76,6 +110,11 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 		AckAsReaction:             true,
 		ResponderElection:         true,
 		ResponderElectionTakeover: DefaultResponderElectionTakeover,
+		// R5: off by default; interval knobs carry defaults so the scheduler
+		// never sees zero values when the room opts in.
+		ProgressLedgerInterval:        DefaultProgressLedgerInterval,
+		ProgressLedgerPostInterval:    DefaultProgressLedgerInterval,
+		ProgressLedgerStaleMentionAge: DefaultProgressLedgerStaleMentionAge,
 	}
 	if config == nil {
 		return p
@@ -131,6 +170,32 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	}
 	if v, ok := boolFromAny(config["commitmentEnforcement"]); ok {
 		p.CommitmentEnforcement = v
+	}
+
+	// R5 progress ledger (explicit opt-in; sub-minute intervals are ignored).
+	if v, ok := boolFromAny(config["progressLedger"]); ok {
+		p.ProgressLedger = v
+	}
+	if f, ok := floatFromAny(config["progressLedgerIntervalSeconds"]); ok &&
+		!math.IsNaN(f) && !math.IsInf(f, 0) && f >= MinProgressLedgerIntervalSeconds {
+		p.ProgressLedgerInterval = time.Duration(math.Round(f)) * time.Second
+	}
+	if f, ok := floatFromAny(config["progressLedgerPostIntervalSeconds"]); ok &&
+		!math.IsNaN(f) && !math.IsInf(f, 0) && f >= MinProgressLedgerIntervalSeconds {
+		p.ProgressLedgerPostInterval = time.Duration(math.Round(f)) * time.Second
+	}
+	if f, ok := floatFromAny(config["progressLedgerStaleMentionSeconds"]); ok &&
+		!math.IsNaN(f) && !math.IsInf(f, 0) && f >= MinProgressLedgerStaleMentionSeconds {
+		p.ProgressLedgerStaleMentionAge = time.Duration(math.Round(f)) * time.Second
+	}
+	switch mod := config["progressLedgerModerator"].(type) {
+	case bool:
+		p.ProgressLedgerModeratorSelf = mod
+	case string:
+		p.ProgressLedgerModeratorPubkey = strings.ToLower(strings.TrimSpace(mod))
+	}
+	if p.ProgressLedgerPostInterval <= 0 {
+		p.ProgressLedgerPostInterval = p.ProgressLedgerInterval
 	}
 
 	p.PairLoop = resolveRoomPairLoopConfig(config["botLoopProtection"])
