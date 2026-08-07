@@ -23,6 +23,10 @@ package channels
 //   R3 ACK conversion, reference: ocn-te2 (default-on; false opts out) -> TestParityMatrix_ACKConversion
 //   R4 commitment enforcement, reference: ocn-krf (pending) -> TestParityMatrix_CommitmentEnforcement
 //      (asserts Metiq's independently implemented room-policy behavior)
+//   R6 task chat-shadow suppression, reference: ocn-rb3 (pending) ->
+//      TestParityMatrix_TaskEchoSuppression (asserts Metiq's independently
+//      implemented behavior: a chat message restating a same-author kind-30900
+//      transition is dropped after one compact throttled announcement)
 
 import (
 	"context"
@@ -194,6 +198,41 @@ func TestParityMatrix_Echo(t *testing.T) {
 	}
 	if s.IsEcho("room", "Starting an entirely unrelated new job now", 0) {
 		t.Error("row 13: a distinct reply must not be suppressed")
+	}
+}
+
+// R6 task chat-shadow suppression, reference: openclaw-nostr ocn-rb3 (pending;
+// this asserts Metiq's own behavior until the counterpart lands). The typed
+// kind-30900 transition is the source of truth: a chat restatement by the SAME
+// author gets exactly one compact throttled announcement per room, further
+// restatements are suppressed, other authors and unrelated text pass, and
+// taskEchoSuppression follows the room's echoSuppression opt-in by default.
+func TestParityMatrix_TaskEchoSuppression(t *testing.T) {
+	policy := ResolveNostrRoomPolicy(map[string]any{"echoSuppression": true})
+	if !policy.TaskEchoSuppression {
+		t.Fatal("R6: echoSuppression=true must default taskEchoSuppression on")
+	}
+	if ResolveNostrRoomPolicy(map[string]any{"echoSuppression": true, "taskEchoSuppression": false}).TaskEchoSuppression {
+		t.Fatal("R6: taskEchoSuppression=false must opt out")
+	}
+
+	s, _ := NewEchoSuppressor(EchoSuppressorOptions{})
+	author := hexKey()
+	s.ObserveTaskTransition(TaskTransitionSummary{
+		Author: author, TaskID: "fleet-042", Status: "done", Title: "Rotate the relay credentials",
+	})
+	shadow := "fleet-042 is done — rotate the relay credentials task finished!"
+	if v := s.CheckTaskEcho("room", author, shadow, policy.TaskEchoThreshold); !v.Announce || v.Suppress {
+		t.Fatalf("R6: first shadow is the one allowed compact announcement, got %+v", v)
+	}
+	if v := s.CheckTaskEcho("room", author, shadow, policy.TaskEchoThreshold); !v.Suppress {
+		t.Fatalf("R6: repeated shadow must be suppressed, got %+v", v)
+	}
+	if v := s.CheckTaskEcho("room", hexKey(), shadow, policy.TaskEchoThreshold); v.Suppress || v.Announce {
+		t.Fatalf("R6: another author's message is not this transition's shadow, got %+v", v)
+	}
+	if v := s.CheckTaskEcho("room", author, "Anything else I can pick up from the queue?", policy.TaskEchoThreshold); v.Suppress || v.Announce {
+		t.Fatalf("R6: unrelated chat must pass, got %+v", v)
 	}
 }
 

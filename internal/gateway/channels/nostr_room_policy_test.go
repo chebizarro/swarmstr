@@ -136,3 +136,28 @@ func TestResolveNostrRoomPolicy_IgnoresGarbageTypes(t *testing.T) {
 		t.Error("non-map botLoopProtection must stay nil")
 	}
 }
+
+// R6: taskEchoSuppression defaults to the room's echoSuppression opt-in, can be
+// explicitly opted out (or on alone), and taskEchoSimilarityThreshold applies
+// only inside (0, 1].
+func TestResolveNostrRoomPolicy_TaskEchoSuppression(t *testing.T) {
+	if p := ResolveNostrRoomPolicy(nil); p.TaskEchoSuppression || p.TaskEchoThreshold != 0 {
+		t.Errorf("nil config: task echo must default off, got %+v", p)
+	}
+	if p := ResolveNostrRoomPolicy(map[string]any{"echoSuppression": true}); !p.TaskEchoSuppression {
+		t.Error("echoSuppression=true must default taskEchoSuppression on")
+	}
+	if p := ResolveNostrRoomPolicy(map[string]any{"echoSuppression": true, "taskEchoSuppression": false}); p.TaskEchoSuppression {
+		t.Error("explicit taskEchoSuppression=false must opt out")
+	}
+	if p := ResolveNostrRoomPolicy(map[string]any{"taskEchoSuppression": true}); !p.TaskEchoSuppression || p.EchoSuppression {
+		t.Error("taskEchoSuppression=true must work without general echoSuppression")
+	}
+	p := ResolveNostrRoomPolicy(map[string]any{"echoSuppression": true, "taskEchoSimilarityThreshold": float64(0.6)})
+	if p.TaskEchoThreshold != 0.6 {
+		t.Errorf("taskEchoSimilarityThreshold=0.6 not resolved: %+v", p)
+	}
+	if p := ResolveNostrRoomPolicy(map[string]any{"taskEchoSimilarityThreshold": float64(1.5)}); p.TaskEchoThreshold != 0 {
+		t.Errorf("out-of-range threshold must be ignored: %+v", p)
+	}
+}

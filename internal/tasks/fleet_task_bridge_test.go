@@ -160,3 +160,56 @@ func TestFleetTaskBridgePublishesLedgerClaimAndPreservesOrigin(t *testing.T) {
 		t.Fatalf("claim origin not preserved: %#v", doc.Metadata)
 	}
 }
+
+// R6 (swarmstr-31jn): every VALIDATED kind-30900 transition that changes the
+// effective head fires OnTaskTransition with the signing author + task summary
+// (feeding the gateway echo suppressor's task corpus); an unchanged redelivery
+// does not re-fire.
+func TestFleetTaskBridgeEmitsTaskTransitions(t *testing.T) {
+	signer := testTaskSigner()
+	pubkey := signerPubkey(t, signer)
+	eventsCh := make(chan nostr.RelayEvent)
+	eoseCh := make(chan struct{}, 1)
+	eoseCh <- struct{}{}
+	type transition struct{ author, taskID, status, title string }
+	var got []transition
+	bridge, err := NewFleetTaskBridge(context.Background(), FleetTaskBridgeOptions{
+		Keyer: signer, Ledger: NewLedger(nil),
+		ReadRelays: []string{"wss://read.example"}, WriteRelays: []string{"wss://write.example"},
+		TrustedTaskAuthors:       []string{pubkey},
+		TrustedCollectionAuthors: []string{pubkey},
+		Now:                      func() time.Time { return time.Unix(500, 0) },
+		PublishFunc:              func(context.Context, []string, nostr.Event) error { return nil },
+		SubscribeFunc: func(context.Context, []string, nostr.Filter) (<-chan nostr.RelayEvent, <-chan struct{}) {
+			return eventsCh, eoseCh
+		},
+		OnTaskTransition: func(author, taskID, status, title string) {
+			got = append(got, transition{author, taskID, status, title})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Stop()
+
+	doc := baseTaskDoc("shadow-task")
+	doc.Title = "Suppress chat shadow"
+	event := signedTaskEvent(t, signer, doc, 100)
+	if err := bridge.ingestTask(event); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("transitions=%d want=1 (%+v)", len(got), got)
+	}
+	want := transition{author: pubkey, taskID: "shadow-task", status: doc.Status, title: "Suppress chat shadow"}
+	if got[0] != want {
+		t.Fatalf("transition=%+v want=%+v", got[0], want)
+	}
+	// Redelivery of the same event does not change the head: no re-fire.
+	if err := bridge.ingestTask(event); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("redelivery re-fired the transition hook: %+v", got)
+	}
+}

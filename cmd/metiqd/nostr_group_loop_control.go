@@ -64,6 +64,24 @@ func (lc *nostrGroupLoopControl) isEchoReply(roomKey, text string, threshold flo
 	return lc.echo.IsEcho(roomKey, text, threshold)
 }
 
+// observeTaskTransition feeds one validated kind-30900 fleet-task transition
+// into the suppressor's task corpus (R6 chat-shadow suppression).
+func (lc *nostrGroupLoopControl) observeTaskTransition(author, taskID, status, title string) {
+	if lc != nil && lc.echo != nil {
+		lc.echo.ObserveTaskTransition(channels.TaskTransitionSummary{Author: author, TaskID: taskID, Status: status, Title: title})
+	}
+}
+
+// checkTaskEcho reports whether a candidate reply is the chat shadow of a
+// recent task transition WE authored (same-author rule: lc.ownPubkey signs
+// both our kind-30900 events and our chat messages).
+func (lc *nostrGroupLoopControl) checkTaskEcho(roomKey, text string, threshold float64) channels.TaskEchoVerdict {
+	if lc == nil || lc.echo == nil {
+		return channels.TaskEchoVerdict{}
+	}
+	return lc.echo.CheckTaskEcho(roomKey, lc.ownPubkey, text, threshold)
+}
+
 // nostrGateDecision is the admitted-turn payload from gate.
 type nostrGateDecision struct {
 	// SessionID is the room-scoped transcript key.
@@ -77,6 +95,11 @@ type nostrGateDecision struct {
 	// turn body can drop a reply that restates recent traffic before sending.
 	EchoSuppress  bool
 	EchoThreshold float64
+	// TaskEchoSuppress and TaskEchoThreshold carry the room's task chat-shadow
+	// policy (R6): drop a reply restating a recent same-author kind-30900
+	// transition, allowing one compact throttled announcement.
+	TaskEchoSuppress  bool
+	TaskEchoThreshold float64
 	// InboundEventKind is the classified inbound kind ("user_request" |
 	// "room_event"); a generated-failure reply is suppressed for room_event
 	// (ambient) traffic so the agent does not spew errors into rooms it was not
@@ -159,12 +182,14 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 		lc.observeEcho(preflight.RoomKey, msg.Text)
 	}
 	return nostrGateDecision{
-		SessionID:        preflight.RoomKey,
-		BodyForAgent:     body,
-		SenderIsBot:      knownBot,
-		EchoSuppress:     roomPolicy.EchoSuppression,
-		EchoThreshold:    roomPolicy.EchoThreshold,
-		InboundEventKind: preflight.InboundEventKind,
+		SessionID:         preflight.RoomKey,
+		BodyForAgent:      body,
+		SenderIsBot:       knownBot,
+		EchoSuppress:      roomPolicy.EchoSuppression,
+		EchoThreshold:     roomPolicy.EchoThreshold,
+		TaskEchoSuppress:  roomPolicy.TaskEchoSuppression,
+		TaskEchoThreshold: roomPolicy.TaskEchoThreshold,
+		InboundEventKind:  preflight.InboundEventKind,
 	}, true
 }
 

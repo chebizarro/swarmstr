@@ -30,8 +30,17 @@ type NostrRoomPolicy struct {
 	EchoSuppression bool
 	// EchoThreshold is the per-room echo similarity bar (0..1); 0 means use the
 	// suppressor default.
-	EchoThreshold   float64
-	CommitmentGuard bool
+	EchoThreshold float64
+	// TaskEchoSuppression suppresses the "chat shadow" of kind-30900 fleet-task
+	// transitions (R6): a chat message by the same author substantially
+	// restating a recent transition is dropped (one compact throttled
+	// announcement is allowed). Defaults ON when echoSuppression is on;
+	// taskEchoSuppression=false opts out (or true forces it on alone).
+	TaskEchoSuppression bool
+	// TaskEchoThreshold is the per-room task-shadow coverage bar (0..1); 0
+	// means use the suppressor's task default.
+	TaskEchoThreshold float64
+	CommitmentGuard   bool
 	// CommitmentEnforcement blocks/rephrases unbacked outbound work promises.
 	// It is explicit opt-in because rooms do not expose a separate taskflow flag.
 	CommitmentEnforcement bool
@@ -74,6 +83,14 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	}
 	if f, ok := floatFromAny(config["echoSimilarityThreshold"]); ok && f > 0 && f <= 1 {
 		p.EchoThreshold = f
+	}
+	// taskEchoSuppression follows echoSuppression unless set explicitly.
+	p.TaskEchoSuppression = p.EchoSuppression
+	if v, ok := boolFromAny(config["taskEchoSuppression"]); ok {
+		p.TaskEchoSuppression = v
+	}
+	if f, ok := floatFromAny(config["taskEchoSimilarityThreshold"]); ok && f > 0 && f <= 1 {
+		p.TaskEchoThreshold = f
 	}
 	if v, ok := boolFromAny(config["commitmentGuard"]); ok {
 		p.CommitmentGuard = v

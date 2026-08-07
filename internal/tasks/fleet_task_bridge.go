@@ -35,8 +35,14 @@ type FleetTaskBridgeOptions struct {
 	PublishTimeout           time.Duration
 	PublishFunc              TaskStatePublishFunc
 	SubscribeFunc            TaskStateSubscribeFunc
-	Logf                     func(string, ...any)
-	Now                      func() time.Time
+	// OnTaskTransition is invoked (synchronously, after the ledger accepted the
+	// new effective head) for every VALIDATED kind-30900 state transition —
+	// locally published and relay-delivered alike — with the signing author's
+	// hex pubkey and the task's id/status/title. Used to feed the gateway echo
+	// suppressor's task-transition corpus (R6 chat-shadow suppression).
+	OnTaskTransition func(author, taskID, status, title string)
+	Logf             func(string, ...any)
+	Now              func() time.Time
 }
 
 // TaskCollectionSource identifies one exact trusted NIP-51 queue or epic.
@@ -60,6 +66,7 @@ type FleetTaskBridge struct {
 	collectionSources []TaskCollectionSource
 	publish           TaskStatePublishFunc
 	subscribe         TaskStateSubscribeFunc
+	onTaskTransition  func(author, taskID, status, title string)
 	logf              func(string, ...any)
 	now               func() time.Time
 	merger            *TaskMerger
@@ -149,6 +156,7 @@ func NewFleetTaskBridge(parent context.Context, opts FleetTaskBridgeOptions) (*F
 		readRelays: readRelays, writeRelays: writeRelays,
 		publishTimeout: timeout, claimSettlement: settlement, collectionSources: sources,
 		publish: opts.PublishFunc, subscribe: opts.SubscribeFunc,
+		onTaskTransition: opts.OnTaskTransition,
 		logf: logf, now: now, merger: NewTaskMerger(policy),
 		ctx: ctx, cancel: cancel, taskCh: make(chan string, 128), ready: make(chan struct{}),
 	}
@@ -478,6 +486,9 @@ func (b *FleetTaskBridge) ingestTask(event nostr.Event) error {
 	}
 	_, err = b.ledger.SaveTaskState(b.ctx, task, TaskSourceFleet, head.Event.ID.Hex())
 	if err == nil {
+		if b.onTaskTransition != nil {
+			b.onTaskTransition(head.Event.PubKey.Hex(), doc.ID, doc.Status, doc.Title)
+		}
 		b.correctLostLocalClaim(head)
 	}
 	return err

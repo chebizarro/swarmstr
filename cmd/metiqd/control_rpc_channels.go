@@ -11,6 +11,7 @@ import (
 	"metiq/internal/gateway/channels"
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
+	metricspkg "metiq/internal/metrics"
 	nostruntime "metiq/internal/nostr/runtime"
 	pluginhooks "metiq/internal/plugins/hooks"
 	"metiq/internal/store/state"
@@ -252,6 +253,18 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 					log.Printf("nip29 suppressed failure reply for ambient room_event room=%s", sessionID)
 					delivered = true
 					return
+				}
+				// Task chat-shadow suppression (R6): the typed kind-30900 event
+				// is the source of truth; one compact throttled announcement.
+				if decision.TaskEchoSuppress {
+					if v := controlNostrLoopControl.checkTaskEcho(sessionID, replyText, decision.TaskEchoThreshold); v.Suppress {
+						metricspkg.TaskEchoSuppressed.Inc()
+						log.Printf("nip29 task-echo suppressed reply room=%s task=%s status=%s", sessionID, v.TaskID, v.Status)
+						delivered = true // deliberate suppression, not a failure
+						return
+					} else if v.Announce {
+						log.Printf("nip29 task announcement allowed room=%s task=%s status=%s", sessionID, v.TaskID, v.Status)
+					}
 				}
 				if decision.EchoSuppress && controlNostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
 					log.Printf("nip29 echo suppressed reply room=%s", sessionID)

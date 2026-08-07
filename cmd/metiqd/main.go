@@ -2405,6 +2405,20 @@ func main() {
 						delivered = true
 						return
 					}
+					// Task chat-shadow suppression (R6): a reply restating a
+					// recent kind-30900 transition we authored is dropped — the
+					// typed event is the source of truth — except the one compact
+					// throttled announcement per (room, task).
+					if decision.TaskEchoSuppress {
+						if v := nostrLoopControl.checkTaskEcho(sessionID, replyText, decision.TaskEchoThreshold); v.Suppress {
+							metricspkg.TaskEchoSuppressed.Inc()
+							log.Printf("nip29 task-echo suppressed reply room=%s task=%s status=%s", sessionID, v.TaskID, v.Status)
+							delivered = true // deliberate suppression, not a failure
+							return
+						} else if v.Announce {
+							log.Printf("nip29 task announcement allowed room=%s task=%s status=%s", sessionID, v.TaskID, v.Status)
+						}
+					}
 					// Echo suppression (opt-in): drop a reply that restates
 					// recent room traffic; otherwise record it so future echoes
 					// of it are caught.
@@ -5444,6 +5458,13 @@ func main() {
 				CollectionSources:        collectionSources,
 				MaxFutureSkew:            time.Duration(liveCfg.FleetTasks.MaxFutureSkewSeconds) * time.Second,
 				ClaimSettlement:          time.Duration(liveCfg.FleetTasks.ClaimSettlementSeconds) * time.Second,
+				// Feed every validated kind-30900 transition into the gateway
+				// echo suppressor's task corpus so a chat message restating it
+				// can be suppressed (R6). Late-bound closure: reads the package
+				// var at delivery time (nil-safe when nostr chat is disabled).
+				OnTaskTransition: func(author, taskID, status, title string) {
+					controlNostrLoopControl.observeTaskTransition(author, taskID, status, title)
+				},
 			})
 			if fleetErr != nil {
 				log.Printf("fleet task bridge init failed: %v", fleetErr)

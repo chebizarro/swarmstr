@@ -283,6 +283,7 @@ var (
 	MessagesInbound      = Default.Counter("metiq_messages_inbound_total", "Total inbound messages processed")
 	MessagesOutbound     = Default.Counter("metiq_messages_outbound_total", "Total outbound messages sent")
 	OutboundACKReactions = Default.Counter("metiq_outbound_ack_reactions_total", "Total pure-ACK outbound room messages converted to reactions")
+	TaskEchoSuppressed   = Default.Counter("metiq_task_echo_suppressed_total", "Total outbound room replies dropped as chat shadows of kind-30900 task transitions")
 	ToolCalls            = Default.Counter("metiq_tool_calls_total", "Total agent tool calls executed")
 	ToolDenied           = Default.Counter("metiq_tool_denied_total", "Total agent tool calls denied by approval gate")
 	TokensIn             = Default.Counter("metiq_tokens_in_total", "Total input tokens processed")
