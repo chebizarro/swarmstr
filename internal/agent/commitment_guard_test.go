@@ -171,32 +171,32 @@ func TestHasUnbackedReminderCommitment(t *testing.T) {
 
 func TestApplyCommitmentGuard(t *testing.T) {
 	tests := []struct {
-		name            string
-		text            string
-		state           CommitmentState
-		expectModified  bool
-		expectContains  string
+		name           string
+		text           string
+		state          CommitmentState
+		expectModified bool
+		expectContains string
 	}{
 		{
-			name:            "adds warning for unbacked reminder",
-			text:            "I'll remind you tomorrow morning.",
-			state:           CommitmentState{SuccessfulCronAdds: 0},
-			expectModified:  true,
-			expectContains:  UnscheduledReminderNote,
+			name:           "adds warning for unbacked reminder",
+			text:           "I'll remind you tomorrow morning.",
+			state:          CommitmentState{SuccessfulCronAdds: 0},
+			expectModified: true,
+			expectContains: UnscheduledReminderNote,
 		},
 		{
-			name:            "no change when cron succeeded",
-			text:            "I'll remind you tomorrow morning.",
-			state:           CommitmentState{SuccessfulCronAdds: 1},
-			expectModified:  false,
-			expectContains:  "",
+			name:           "no change when cron succeeded",
+			text:           "I'll remind you tomorrow morning.",
+			state:          CommitmentState{SuccessfulCronAdds: 1},
+			expectModified: false,
+			expectContains: "",
 		},
 		{
-			name:            "no change for normal response",
-			text:            "The file has been updated successfully.",
-			state:           CommitmentState{SuccessfulCronAdds: 0},
-			expectModified:  false,
-			expectContains:  "",
+			name:           "no change for normal response",
+			text:           "The file has been updated successfully.",
+			state:          CommitmentState{SuccessfulCronAdds: 0},
+			expectModified: false,
+			expectContains: "",
 		},
 	}
 
@@ -231,6 +231,41 @@ func TestBuildCommitmentStateFromTraces(t *testing.T) {
 	}
 	if !state.HadMutatingAction {
 		t.Error("HadMutatingAction should be true (cron_add succeeded)")
+	}
+}
+
+func TestHasUnbackedTaskCommitment(t *testing.T) {
+	tests := []struct {
+		name  string
+		text  string
+		state CommitmentState
+		want  bool
+	}{
+		{name: "handle unbacked", text: "I'll handle the deployment.", want: true},
+		{name: "take care unbacked", text: "I'll take care of the incident.", want: true},
+		{name: "task opened", text: "I'll handle the deployment.", state: CommitmentState{SuccessfulTaskFlowActions: 1}, want: false},
+		{name: "reminder backed by cron", text: "I'll remind you tomorrow.", state: CommitmentState{SuccessfulCronAdds: 1}, want: false},
+		{name: "completed report", text: "I fixed the deployment and verified it.", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasUnbackedTaskCommitment(tt.text, tt.state); got != tt.want {
+				t.Fatalf("HasUnbackedTaskCommitment(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildCommitmentStateRecognizesTaskFlowBacking(t *testing.T) {
+	traces := []ToolTrace{
+		{Call: ToolCall{Name: "fleet_tasks", Args: map[string]any{"action": "create"}}},
+		{Call: ToolCall{Name: "fleet_tasks", Args: map[string]any{"action": "list"}}},
+		{Call: ToolCall{Name: "task_add"}},
+		{Call: ToolCall{Name: "acp.pipeline"}, Error: "failed"},
+	}
+	state := BuildCommitmentStateFromTraces(traces)
+	if state.SuccessfulTaskFlowActions != 2 {
+		t.Fatalf("SuccessfulTaskFlowActions = %d, want 2", state.SuccessfulTaskFlowActions)
 	}
 }
 

@@ -2321,6 +2321,7 @@ func main() {
 			if localChanCfg.Kind == state.NostrChannelKindCommunikey {
 				channelAddress = localChanCfg.CommunityAddress
 			}
+			roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
 			onMessage := func(msg channels.InboundMessage) {
 				// Resolve CURRENT config so a policy change since startup
 				// (requireMention / allowBots / allow_from) applies now.
@@ -2409,7 +2410,10 @@ func main() {
 						return
 					}
 					nostrLoopControl.observeEcho(sessionID, replyText)
-					if err := msg.Reply(turnCtx, replyText); err != nil {
+					commitmentState := agent.BuildCommitmentStateFromTraces(result.ToolTraces)
+					commitmentCtx := channels.ContextWithCommitmentBacking(turnCtx, channels.CommitmentBacking{SuccessfulCronAdds: commitmentState.SuccessfulCronAdds, SuccessfulTaskFlowActions: commitmentState.SuccessfulTaskFlowActions})
+					replyText, _ = channels.EnforceOutboundCommitment(commitmentCtx, replyText, roomPolicy.CommitmentEnforcement)
+					if err := msg.Reply(commitmentCtx, replyText); err != nil {
 						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
 						log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
 						return
@@ -2427,7 +2431,6 @@ func main() {
 			onError := func(err error) {
 				log.Printf("auto-join %s error name=%s address=%s err=%v", localChanCfg.Kind, localChanName, channelAddress, err)
 			}
-			roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
 			var ch channels.Channel
 			var chErr error
 			if localChanCfg.Kind == state.NostrChannelKindCommunikey {
@@ -2436,24 +2439,26 @@ func main() {
 					relays = configState.Get().Relays.Read
 				}
 				ch, chErr = channels.NewCommunikeyChannel(ctx, channels.CommunikeyChannelOptions{
-					CommunityAddress: localChanCfg.CommunityAddress,
-					Relays:           relays,
-					Hub:              controlHub,
-					Keyer:            controlKeyer,
-					PendingStorePath: nostrPendingStorePath(localChanCfg.CommunityAddress),
-					AckAsReaction:    &roomPolicy.AckAsReaction,
-					OnMessage:        onMessage,
-					OnError:          onError,
+					CommunityAddress:      localChanCfg.CommunityAddress,
+					Relays:                relays,
+					Hub:                   controlHub,
+					Keyer:                 controlKeyer,
+					PendingStorePath:      nostrPendingStorePath(localChanCfg.CommunityAddress),
+					AckAsReaction:         &roomPolicy.AckAsReaction,
+					CommitmentEnforcement: roomPolicy.CommitmentEnforcement,
+					OnMessage:             onMessage,
+					OnError:               onError,
 				})
 			} else {
 				ch, chErr = channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
-					GroupAddress:     localChanCfg.GroupAddress,
-					Hub:              controlHub,
-					Keyer:            controlKeyer,
-					PendingStorePath: nostrPendingStorePath(localChanCfg.GroupAddress),
-					AckAsReaction:    &roomPolicy.AckAsReaction,
-					OnMessage:        onMessage,
-					OnError:          onError,
+					GroupAddress:          localChanCfg.GroupAddress,
+					Hub:                   controlHub,
+					Keyer:                 controlKeyer,
+					PendingStorePath:      nostrPendingStorePath(localChanCfg.GroupAddress),
+					AckAsReaction:         &roomPolicy.AckAsReaction,
+					CommitmentEnforcement: roomPolicy.CommitmentEnforcement,
+					OnMessage:             onMessage,
+					OnError:               onError,
 				})
 			}
 			if chErr != nil {

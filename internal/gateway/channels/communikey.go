@@ -461,15 +461,16 @@ func parseCommunikeyTarget(ev nostr.Event, community string) (CommunikeyTarget, 
 
 // CommunikeyChannelOptions configure a Communikeys community subscription.
 type CommunikeyChannelOptions struct {
-	CommunityAddress string
-	Relays           []string
-	Hub              *nostruntime.NostrHub
-	Keyer            nostr.Keyer
-	OnMessage        func(InboundMessage)
-	OnTarget         func(CommunikeyTarget)
-	OnError          func(error)
-	PendingStorePath string
-	AckAsReaction    *bool
+	CommunityAddress      string
+	Relays                []string
+	Hub                   *nostruntime.NostrHub
+	Keyer                 nostr.Keyer
+	OnMessage             func(InboundMessage)
+	OnTarget              func(CommunikeyTarget)
+	OnError               func(error)
+	PendingStorePath      string
+	AckAsReaction         *bool
+	CommitmentEnforcement bool
 }
 
 // CommunikeyChannel keeps NIP-29 kind-9 transport while adding the client-side
@@ -553,11 +554,12 @@ func NewCommunikeyChannel(parent context.Context, opts CommunikeyChannelOptions)
 	}
 
 	chat, err := NewNIP29GroupChannel(ctx, NIP29GroupChannelOptions{
-		GroupAddress:     relays[0] + "'" + address.PubKey,
-		Hub:              opts.Hub,
-		Keyer:            keyer,
-		PendingStorePath: opts.PendingStorePath,
-		AckAsReaction:    opts.AckAsReaction,
+		GroupAddress:          relays[0] + "'" + address.PubKey,
+		Hub:                   opts.Hub,
+		Keyer:                 keyer,
+		PendingStorePath:      opts.PendingStorePath,
+		AckAsReaction:         opts.AckAsReaction,
+		CommitmentEnforcement: opts.CommitmentEnforcement,
 		OnMessage: func(msg InboundMessage) {
 			c.handleChatMessage(msg, opts.OnMessage)
 		},

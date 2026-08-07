@@ -16,7 +16,7 @@ func TestResolveNostrRoomPolicy_Defaults(t *testing.T) {
 	if !p.AckAsReaction {
 		t.Error("ackAsReaction should default true")
 	}
-	if p.AmbientRespond || p.UnmentionedRoomEvent || p.EchoSuppression || p.CommitmentGuard {
+	if p.AmbientRespond || p.UnmentionedRoomEvent || p.EchoSuppression || p.CommitmentGuard || p.CommitmentEnforcement {
 		t.Error("opt-in boolean knobs should default false")
 	}
 	if p.PairLoop != nil {
@@ -26,13 +26,14 @@ func TestResolveNostrRoomPolicy_Defaults(t *testing.T) {
 
 func TestResolveNostrRoomPolicy_Typed(t *testing.T) {
 	cfg := map[string]any{
-		"requireMention":     false,
-		"allowBots":          "off",
-		"ambientPolicy":      "respond",
-		"unmentionedInbound": "room_event",
-		"ackAsReaction":      false,
-		"echoSuppression":    true,
-		"commitmentGuard":    true,
+		"requireMention":        false,
+		"allowBots":             "off",
+		"ambientPolicy":         "respond",
+		"unmentionedInbound":    "room_event",
+		"ackAsReaction":         false,
+		"echoSuppression":       true,
+		"commitmentGuard":       true,
+		"commitmentEnforcement": true,
 	}
 	p := ResolveNostrRoomPolicy(cfg)
 	if p.RequireMention == nil || *p.RequireMention != false {
@@ -50,8 +51,8 @@ func TestResolveNostrRoomPolicy_Typed(t *testing.T) {
 	if p.AckAsReaction {
 		t.Error("ackAsReaction false should opt out")
 	}
-	if !p.EchoSuppression || !p.CommitmentGuard {
-		t.Error("echoSuppression/commitmentGuard should be true")
+	if !p.EchoSuppression || !p.CommitmentGuard || !p.CommitmentEnforcement {
+		t.Error("echoSuppression/commitmentGuard/commitmentEnforcement should be true")
 	}
 }
 

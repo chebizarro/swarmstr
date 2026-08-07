@@ -54,6 +54,7 @@ type Commitment struct {
 	LastAttemptAt     time.Time `json:"last_attempt_at,omitempty"`
 	NextAttemptAt     time.Time `json:"next_attempt_at,omitempty"`
 	SentAt            time.Time `json:"sent_at,omitempty"`
+	DroppedNoticeAt   time.Time `json:"dropped_notice_at,omitempty"`
 }
 
 // SessionMessage is a minimal representation of a conversation turn used by
@@ -100,7 +101,16 @@ var regexPatterns = []struct {
 	{KindOpenLoop, regexp.MustCompile(`(?is)\b(?:i(?:'ll| will)|let me)\s+(?:look into|investigate|check|verify|research)\b[^.!?\n]*(?:later|next|soon|afterwards|tomorrow|tonight)\b[^.!?\n]*`)},
 }
 
-var dueDateRE = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2}|tomorrow|tonight)\b`)
+var (
+	dueDateRE        = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2}|tomorrow|tonight)\b`)
+	taskCommitmentRE = regexp.MustCompile(`(?i)\b(?:i\s*['’]?ll|i will|let me|i(?:'m| am)\s+going to|i can)\s+(?:handle|take care of|work on|look into|investigate|check|verify|research|fix|update|implement|follow up|follow-up|check back|circle back|remind|ping|schedule|create|open)\b`)
+)
+
+// HasTaskCommitment detects an affirmative promise to take ownership of future
+// work. It intentionally requires an action verb to avoid completion summaries.
+func HasTaskCommitment(text string) bool {
+	return taskCommitmentRE.MatchString(text)
+}
 
 // Extract detects commitments in an agent response using regexes and, when
 // configured, LLM-extracted structured candidates.

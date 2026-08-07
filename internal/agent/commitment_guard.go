@@ -3,6 +3,8 @@ package agent
 import (
 	"regexp"
 	"strings"
+
+	"metiq/internal/commitments"
 )
 
 // ─── Commitment Accountability Guard ──────────────────────────────────────────
@@ -64,6 +66,10 @@ type CommitmentState struct {
 
 	// HadMutatingAction tracks whether any side-effectful tool was called.
 	HadMutatingAction bool
+
+	// SuccessfulTaskFlowActions counts successful task/flow opening or claiming
+	// actions. Taskflow rooms use this as concrete backing for work promises.
+	SuccessfulTaskFlowActions int
 }
 
 // RecordToolCall updates the commitment state when a tool completes.
@@ -156,6 +162,19 @@ func HasUnbackedReminderCommitment(text string, state CommitmentState) bool {
 	return reminderCommitmentRE.MatchString(text) || scheduleCommitmentRE.MatchString(text)
 }
 
+// HasUnbackedTaskCommitment reports an ownership promise that was not backed
+// by opening or claiming a task/flow in the same turn. Reminder promises remain
+// valid when backed by cron_add.
+func HasUnbackedTaskCommitment(text string, state CommitmentState) bool {
+	if state.SuccessfulTaskFlowActions > 0 {
+		return false
+	}
+	if state.SuccessfulCronAdds > 0 && HasUnbackedReminderCommitment(text, CommitmentState{}) {
+		return false
+	}
+	return commitments.HasTaskCommitment(text)
+}
+
 // HasUnbackedDeferredAction returns true if the text promises to do something
 // "later" or "next" without scheduling it. Less strict than reminder detection.
 func HasUnbackedDeferredAction(text string, state CommitmentState) bool {
@@ -207,8 +226,28 @@ func BuildCommitmentStateFromTraces(traces []ToolTrace) CommitmentState {
 	for _, trace := range traces {
 		isError := trace.Error != ""
 		state.RecordToolCall(trace.Call.Name, isError)
+		if traceBacksTaskFlow(trace) {
+			state.SuccessfulTaskFlowActions++
+		}
 	}
 	return state
+}
+
+func traceBacksTaskFlow(trace ToolTrace) bool {
+	if trace.Error != "" {
+		return false
+	}
+	switch trace.Call.Name {
+	case "task_add", "tasks.create", "acp.dispatch", "acp.pipeline", "sessions.spawn", "workflow.create", "workflow.run":
+		return true
+	case "fleet_tasks":
+		action, _ := trace.Call.Args["action"].(string)
+		switch strings.ToLower(strings.TrimSpace(action)) {
+		case "create", "claim", "handoff":
+			return true
+		}
+	}
+	return false
 }
 
 // CountSuccessfulCronAdds counts cron_add calls that succeeded in tool traces.

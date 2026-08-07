@@ -29,6 +29,9 @@ type NostrRoomPolicy struct {
 	// suppressor default.
 	EchoThreshold   float64
 	CommitmentGuard bool
+	// CommitmentEnforcement blocks/rephrases unbacked outbound work promises.
+	// It is explicit opt-in because rooms do not expose a separate taskflow flag.
+	CommitmentEnforcement bool
 }
 
 // ResolveNostrRoomPolicy reads typed preflight knobs from a room's free-form
@@ -68,6 +71,9 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	}
 	if v, ok := boolFromAny(config["commitmentGuard"]); ok {
 		p.CommitmentGuard = v
+	}
+	if v, ok := boolFromAny(config["commitmentEnforcement"]); ok {
+		p.CommitmentEnforcement = v
 	}
 
 	p.PairLoop = resolveRoomPairLoopConfig(config["botLoopProtection"])

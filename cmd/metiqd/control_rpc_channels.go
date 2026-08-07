@@ -259,7 +259,9 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 					return
 				}
 				controlNostrLoopControl.observeEcho(sessionID, replyText)
-				if err := msg.Reply(turnCtx, replyText); err != nil {
+				commitmentState := agent.BuildCommitmentStateFromTraces(result.ToolTraces)
+				commitmentCtx := channels.ContextWithCommitmentBacking(turnCtx, channels.CommitmentBacking{SuccessfulCronAdds: commitmentState.SuccessfulCronAdds, SuccessfulTaskFlowActions: commitmentState.SuccessfulTaskFlowActions})
+				if err := msg.Reply(commitmentCtx, replyText); err != nil {
 					emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
 					log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
 					return

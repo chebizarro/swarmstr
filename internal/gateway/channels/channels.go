@@ -249,24 +249,28 @@ type NIP29GroupChannelOptions struct {
 	// reactions instead of posting another kind-9 room message. Nil enables the
 	// default; an explicit false opts the room out.
 	AckAsReaction *bool
+	// CommitmentEnforcement rewrites unbacked work promises before publish.
+	// It is an explicit per-room taskflow opt-in.
+	CommitmentEnforcement bool
 }
 
 // NIP29GroupChannel subscribes to a NIP-29 relay-based group (kind 9) and
 // allows the agent to send messages back.
 type NIP29GroupChannel struct {
-	id            string
-	gad           nip29.GroupAddress
-	hub           *nostruntime.NostrHub // non-nil when using shared hub
-	pool          *nostr.Pool           // non-nil only in legacy (no-hub) mode
-	publisher     okpublish.Publisher   // publish path; defaults to pool
-	ownsPool      bool                  // true when we created the pool ourselves
-	keyer         nostr.Keyer
-	ctx           context.Context
-	cancel        context.CancelFunc
-	onMsg         func(InboundMessage)
-	onErr         func(error)
-	pubkey        string
-	ackAsReaction bool
+	id                    string
+	gad                   nip29.GroupAddress
+	hub                   *nostruntime.NostrHub // non-nil when using shared hub
+	pool                  *nostr.Pool           // non-nil only in legacy (no-hub) mode
+	publisher             okpublish.Publisher   // publish path; defaults to pool
+	ownsPool              bool                  // true when we created the pool ourselves
+	keyer                 nostr.Keyer
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	onMsg                 func(InboundMessage)
+	onErr                 func(error)
+	pubkey                string
+	ackAsReaction         bool
+	commitmentEnforcement bool
 
 	seen       *SeenCache
 	lastSeenMu sync.Mutex
@@ -399,23 +403,24 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 	ctx, cancel := context.WithCancel(parent)
 
 	ch := &NIP29GroupChannel{
-		id:            opts.GroupAddress,
-		gad:           gad,
-		hub:           hub,
-		pool:          pool,
-		publisher:     pool,
-		ownsPool:      ownsPool,
-		keyer:         keyer,
-		ctx:           ctx,
-		cancel:        cancel,
-		onMsg:         opts.OnMessage,
-		onErr:         opts.OnError,
-		pubkey:        pk.Hex(),
-		ackAsReaction: resolveNIP29ACKAsReaction(opts.AckAsReaction),
-		seen:          NewSeenCache(),
-		liveSince:     nostr.Now(),
-		redispatch:    NewRedispatchScheduler(RedispatchSchedulerOptions{}),
-		inflight:      map[string]struct{}{},
+		id:                    opts.GroupAddress,
+		gad:                   gad,
+		hub:                   hub,
+		pool:                  pool,
+		publisher:             pool,
+		ownsPool:              ownsPool,
+		keyer:                 keyer,
+		ctx:                   ctx,
+		cancel:                cancel,
+		onMsg:                 opts.OnMessage,
+		onErr:                 opts.OnError,
+		pubkey:                pk.Hex(),
+		ackAsReaction:         resolveNIP29ACKAsReaction(opts.AckAsReaction),
+		commitmentEnforcement: opts.CommitmentEnforcement,
+		seen:                  NewSeenCache(),
+		liveSince:             nostr.Now(),
+		redispatch:            NewRedispatchScheduler(RedispatchSchedulerOptions{}),
+		inflight:              map[string]struct{}{},
 	}
 
 	if opts.PendingStorePath != "" {
@@ -442,6 +447,7 @@ func (c *NIP29GroupChannel) Type() string { return "nip29-group" }
 // Send posts a kind-9 message to the group relay.
 func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 	text = strings.TrimSpace(text)
+	text, _ = EnforceOutboundCommitment(ctx, text, c.commitmentEnforcement)
 	if text == "" {
 		return fmt.Errorf("text must not be empty")
 	}

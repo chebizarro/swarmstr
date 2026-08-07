@@ -136,6 +136,90 @@ func TestHeartbeatSchedulingDueLimitsAndBackoff(t *testing.T) {
 	}
 }
 
+func TestHeartbeatDroppedCommitmentNotices(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	store := NewStore()
+	store.Add(
+		Commitment{ID: "expired-window", SessionID: "s", Text: "I'll handle the migration", Status: StatusPending, DueAt: now.Add(-2 * time.Hour), CreatedAt: now.Add(-3 * time.Hour), Channel: "nostr", To: "room"},
+		Commitment{ID: "attempts", SessionID: "s", Text: "I'll take care of the rollout", Status: StatusPending, Attempts: 3, CreatedAt: now.Add(-2 * time.Hour), Channel: "nostr", To: "room"},
+		Commitment{ID: "already-expired", SessionID: "s", Text: "I'll verify the release", Status: StatusExpired, BrokenReason: "due time elapsed without fulfillment evidence", CreatedAt: now.Add(-time.Hour), Channel: "nostr", To: "room"},
+	)
+	hb := HeartbeatScheduler{
+		Store: store,
+		Config: Config{
+			DroppedCommitmentNotices: true,
+			MaxDeliveryAttempts:      3,
+			MaxPerHeartbeat:          5,
+			DueWindow:                time.Hour,
+		},
+		Now: func() time.Time { return now },
+	}
+	due := hb.Due("s")
+	if len(due) != 3 {
+		t.Fatalf("dropped deliveries = %d, want 3: %+v", len(due), due)
+	}
+	for _, delivery := range due {
+		if delivery.Kind != DeliveryDroppedCommitment {
+			t.Fatalf("delivery kind = %q, want dropped commitment", delivery.Kind)
+		}
+		if strings.Contains(delivery.Text, "\n") || !strings.HasPrefix(delivery.Text, "Dropped commitment: ") {
+			t.Fatalf("notice must be visible one line, got %q", delivery.Text)
+		}
+	}
+	if err := hb.MarkDelivered(due[0]); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := store.Get(due[0].Commitment.ID)
+	if updated.Status != StatusExpired || updated.DroppedNoticeAt.IsZero() {
+		t.Fatalf("dropped delivery was not persisted: %+v", updated)
+	}
+	for _, redelivery := range hb.Due("s") {
+		if redelivery.Commitment.ID == updated.ID {
+			t.Fatalf("successfully delivered notice repeated: %+v", redelivery)
+		}
+	}
+}
+
+func TestHeartbeatDroppedNoticePersistsAcknowledgement(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	path := t.TempDir() + "/commitments.json"
+	store, err := NewFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Add(Commitment{ID: "expired", SessionID: "s", Text: "I'll handle it", Status: StatusExpired, CreatedAt: now, Channel: "nostr", To: "room"})
+	hb := HeartbeatScheduler{Store: store, Config: Config{DroppedCommitmentNotices: true}, Now: func() time.Time { return now }}
+	due := hb.Due("s")
+	if len(due) != 1 || due[0].Channel != "nostr" || due[0].To != "room" {
+		t.Fatalf("unexpected routed dropped notice: %+v", due)
+	}
+	if err := hb.MarkDelivered(due[0]); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok := reloaded.Get("expired")
+	if !ok || loaded.DroppedNoticeAt.IsZero() {
+		t.Fatalf("dropped notice acknowledgement was not persisted: %+v", loaded)
+	}
+	reloadedHB := HeartbeatScheduler{Store: reloaded, Config: Config{DroppedCommitmentNotices: true}, Now: func() time.Time { return now.Add(time.Minute) }}
+	if got := reloadedHB.Due("s"); len(got) != 0 {
+		t.Fatalf("persisted dropped notice repeated after restart: %+v", got)
+	}
+}
+
+func TestHeartbeatDroppedNoticeKnobDefaultsOff(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	store := NewStore()
+	store.Add(Commitment{ID: "expired", SessionID: "s", Text: "I'll handle it", Status: StatusExpired, CreatedAt: now})
+	hb := HeartbeatScheduler{Store: store, Config: Config{}, Now: func() time.Time { return now }}
+	if got := hb.Due("s"); len(got) != 0 {
+		t.Fatalf("drop notices should be explicit opt-in, got %+v", got)
+	}
+}
+
 func TestHeartbeatDailyLimit(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	store := NewStore()

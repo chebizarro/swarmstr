@@ -8,17 +8,20 @@ const (
 	DefaultMaxPerHeartbeat     = 3
 	DefaultDueWindow           = time.Hour
 	DefaultBackoff             = 15 * time.Minute
+	DefaultMaxDeliveryAttempts = 3
 )
 
 // Config controls commitment extraction, persistence, and heartbeat delivery.
 type Config struct {
-	Enabled             bool
-	ConfidenceThreshold float64
-	DailyLimit          int
-	MaxPerHeartbeat     int
-	DueWindow           time.Duration
-	AttemptBackoff      time.Duration
-	StorePath           string
+	Enabled                  bool
+	ConfidenceThreshold      float64
+	DailyLimit               int
+	MaxPerHeartbeat          int
+	DueWindow                time.Duration
+	AttemptBackoff           time.Duration
+	MaxDeliveryAttempts      int
+	DroppedCommitmentNotices bool
+	StorePath                string
 }
 
 // DefaultConfig returns conservative defaults. Enabled defaults to true to keep
@@ -31,6 +34,7 @@ func DefaultConfig() Config {
 		MaxPerHeartbeat:     DefaultMaxPerHeartbeat,
 		DueWindow:           DefaultDueWindow,
 		AttemptBackoff:      DefaultBackoff,
+		MaxDeliveryAttempts: DefaultMaxDeliveryAttempts,
 	}
 }
 
@@ -54,6 +58,10 @@ func (c Config) withDefaults() Config {
 	if c.AttemptBackoff > 0 {
 		d.AttemptBackoff = c.AttemptBackoff
 	}
+	if c.MaxDeliveryAttempts > 0 {
+		d.MaxDeliveryAttempts = c.MaxDeliveryAttempts
+	}
+	d.DroppedCommitmentNotices = c.DroppedCommitmentNotices
 	d.StorePath = c.StorePath
 	return d
 }

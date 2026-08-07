@@ -20,6 +20,8 @@ package channels
 //   18          -> TestParityMatrix_SeenGatingRetry (RedispatchScheduler) +
 //                  TestSettleDispatch_SeenGating
 //   R3 ACK conversion, reference: ocn-te2 (default-on; false opts out) -> TestParityMatrix_ACKConversion
+//   R4 commitment enforcement, reference: ocn-krf (pending) -> TestParityMatrix_CommitmentEnforcement
+//      (asserts Metiq's independently implemented room-policy behavior)
 
 import (
 	"context"
@@ -187,6 +189,33 @@ func TestParityMatrix_ACKConversion(t *testing.T) {
 	}
 	if publisher.event.Kind != nostr.KindSimpleGroupChatMessage {
 		t.Fatalf("R3: explicit false did not opt out: %#v", publisher.event)
+	}
+}
+
+// R4 commitment enforcement. openclaw-nostr ocn-krf is still pending, so
+// this asserts Metiq's own explicit taskflow-room policy: an unbacked promise
+// is rewritten while a same-turn task open preserves the response.
+func TestParityMatrix_CommitmentEnforcement(t *testing.T) {
+	publisher := &channelFakePublisher{results: []nostr.PublishResult{{RelayURL: "wss://relay.test"}}}
+	ch := &NIP29GroupChannel{
+		gad:                   nip29.GroupAddress{Relay: "wss://relay.test", ID: "room"},
+		keyer:                 testKeyer(t),
+		publisher:             publisher,
+		commitmentEnforcement: ResolveNostrRoomPolicy(map[string]any{"commitmentEnforcement": true}).CommitmentEnforcement,
+	}
+	if err := ch.Send(context.Background(), "I'll handle the incident."); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.event.Content != CommitmentEnforcementRewrite {
+		t.Fatalf("R4: unbacked commitment posted as-is: %q", publisher.event.Content)
+	}
+	ctx := ContextWithCommitmentBacking(context.Background(), CommitmentBacking{SuccessfulTaskFlowActions: 1})
+	const backed = "I'll handle the incident."
+	if err := ch.Send(ctx, backed); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.event.Content != backed {
+		t.Fatalf("R4: backed commitment was rewritten: %q", publisher.event.Content)
 	}
 }
 
