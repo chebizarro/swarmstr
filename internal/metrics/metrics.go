@@ -164,12 +164,13 @@ var Default = NewRegistry()
 
 // Standard metric names registered in Default.
 var (
-	MessagesInbound  = Default.Counter("metiq_messages_inbound_total", "Total inbound messages processed")
-	MessagesOutbound = Default.Counter("metiq_messages_outbound_total", "Total outbound messages sent")
-	ToolCalls        = Default.Counter("metiq_tool_calls_total", "Total agent tool calls executed")
-	ToolDenied       = Default.Counter("metiq_tool_denied_total", "Total agent tool calls denied by approval gate")
-	TokensIn         = Default.Counter("metiq_tokens_in_total", "Total input tokens processed")
-	TokensOut        = Default.Counter("metiq_tokens_out_total", "Total output tokens generated")
+	MessagesInbound      = Default.Counter("metiq_messages_inbound_total", "Total inbound messages processed")
+	MessagesOutbound     = Default.Counter("metiq_messages_outbound_total", "Total outbound messages sent")
+	OutboundACKReactions = Default.Counter("metiq_outbound_ack_reactions_total", "Total pure-ACK outbound room messages converted to reactions")
+	ToolCalls            = Default.Counter("metiq_tool_calls_total", "Total agent tool calls executed")
+	ToolDenied           = Default.Counter("metiq_tool_denied_total", "Total agent tool calls denied by approval gate")
+	TokensIn             = Default.Counter("metiq_tokens_in_total", "Total input tokens processed")
+	TokensOut            = Default.Counter("metiq_tokens_out_total", "Total output tokens generated")
 
 	SteeringEnqueued       = Default.Counter("metiq_steering_enqueued_total", "Total active-run steering inputs accepted into a mailbox")
 	SteeringDrained        = Default.Counter("metiq_steering_drained_total", "Total active-run steering inputs drained for model injection or residual fallback")

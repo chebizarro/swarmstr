@@ -1,9 +1,13 @@
 package channels
 
 import (
+	"context"
 	"testing"
 
 	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip29"
+
+	metricspkg "metiq/internal/metrics"
 )
 
 func outHasTag(evt nostr.Event, name, val string) bool {
@@ -56,6 +60,107 @@ func TestBuildNIP29ReactionEvent(t *testing.T) {
 	if _, err := BuildNIP29ReactionEvent("g", "x", "t", "", 0, nil); err == nil {
 		t.Error("missing target author pubkey must error (NIP-25 p tag)")
 	}
+}
+
+func TestClassifyPureACK(t *testing.T) {
+	tests := []struct {
+		text      string
+		wantEmoji string
+		want      bool
+	}{
+		{text: "got it", wantEmoji: "👍", want: true},
+		{text: "@alice, ON IT!!!", wantEmoji: "✅", want: true},
+		{text: "@alice @bob sounds good.", wantEmoji: "👍", want: true},
+		{text: "will do", wantEmoji: "✅", want: true},
+		{text: "👍🏽", wantEmoji: "👍", want: true},
+		{text: "✅", wantEmoji: "✅", want: true},
+		{text: "got it, I will update the deployment", want: false},
+		{text: "thanks for the detailed report", want: false},
+		{text: "@alice please continue", want: false},
+		{text: "", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.text, func(t *testing.T) {
+			gotEmoji, got := ClassifyPureACK(tc.text)
+			if got != tc.want || gotEmoji != tc.wantEmoji {
+				t.Fatalf("ClassifyPureACK(%q) = (%q, %v), want (%q, %v)", tc.text, gotEmoji, got, tc.wantEmoji, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveNIP29ACKAsReaction_DefaultOn(t *testing.T) {
+	if !resolveNIP29ACKAsReaction(nil) {
+		t.Fatal("nil option should enable ACK conversion")
+	}
+	disabled := false
+	if resolveNIP29ACKAsReaction(&disabled) {
+		t.Fatal("explicit false should disable ACK conversion")
+	}
+	enabled := true
+	if !resolveNIP29ACKAsReaction(&enabled) {
+		t.Fatal("explicit true should enable ACK conversion")
+	}
+}
+
+func TestNIP29SendReply_ACKConversion(t *testing.T) {
+	newChannel := func(ackAsReaction bool) (*NIP29GroupChannel, *channelFakePublisher) {
+		publisher := &channelFakePublisher{results: []nostr.PublishResult{{RelayURL: "wss://relay.test"}}}
+		return &NIP29GroupChannel{
+			gad:           nip29.GroupAddress{Relay: "wss://relay.test", ID: "group"},
+			keyer:         testKeyer(t),
+			publisher:     publisher,
+			ackAsReaction: ackAsReaction,
+		}, publisher
+	}
+
+	t.Run("enabled pure ACK with target reacts", func(t *testing.T) {
+		ch, publisher := newChannel(true)
+		before := metricspkg.OutboundACKReactions.Value()
+		if err := ch.sendReply(context.Background(), "@alice on it!", "target-event", "target-author"); err != nil {
+			t.Fatal(err)
+		}
+		if publisher.event.Kind != nostr.KindReaction || publisher.event.Content != "✅" {
+			t.Fatalf("published event = kind %d content %q, want kind 7 reaction", publisher.event.Kind, publisher.event.Content)
+		}
+		if !outHasTag(publisher.event, "e", "target-event") || !outHasTag(publisher.event, "p", "target-author") || !outHasTag(publisher.event, "k", "9") {
+			t.Fatalf("reaction is missing target tags: %v", publisher.event.Tags)
+		}
+		if got := metricspkg.OutboundACKReactions.Value(); got != before+1 {
+			t.Fatalf("conversion metric = %d, want %d", got, before+1)
+		}
+	})
+
+	t.Run("substantive reply stays chat", func(t *testing.T) {
+		ch, publisher := newChannel(true)
+		text := "got it, I will update the deployment"
+		if err := ch.sendReply(context.Background(), text, "target-event", "target-author"); err != nil {
+			t.Fatal(err)
+		}
+		if publisher.event.Kind != nostr.KindSimpleGroupChatMessage || publisher.event.Content != text {
+			t.Fatalf("published event = kind %d content %q, want unchanged kind 9", publisher.event.Kind, publisher.event.Content)
+		}
+	})
+
+	t.Run("disabled policy stays chat", func(t *testing.T) {
+		ch, publisher := newChannel(false)
+		if err := ch.sendReply(context.Background(), "got it", "target-event", "target-author"); err != nil {
+			t.Fatal(err)
+		}
+		if publisher.event.Kind != nostr.KindSimpleGroupChatMessage {
+			t.Fatalf("published kind = %d, want kind 9", publisher.event.Kind)
+		}
+	})
+
+	t.Run("missing target stays chat", func(t *testing.T) {
+		ch, publisher := newChannel(true)
+		if err := ch.sendReply(context.Background(), "got it", "", "target-author"); err != nil {
+			t.Fatal(err)
+		}
+		if publisher.event.Kind != nostr.KindSimpleGroupChatMessage {
+			t.Fatalf("published kind = %d, want kind 9", publisher.event.Kind)
+		}
+	})
 }
 
 func TestBuildNIP29DeletionEvent(t *testing.T) {

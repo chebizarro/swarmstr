@@ -19,13 +19,18 @@ package channels
 //   17          -> TestParityMatrix_QueueOverflow (RoomDispatchQueue)
 //   18          -> TestParityMatrix_SeenGatingRetry (RedispatchScheduler) +
 //                  TestSettleDispatch_SeenGating
+//   R3 ACK conversion, reference: ocn-te2 (default-on; false opts out) -> TestParityMatrix_ACKConversion
 
 import (
+	"context"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	nostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip29"
 
 	runtime "metiq/internal/nostr/runtime"
 	identity "metiq/internal/session/identity"
@@ -150,6 +155,38 @@ func TestParityMatrix_Echo(t *testing.T) {
 	}
 	if s.IsEcho("room", "Starting an entirely unrelated new job now", 0) {
 		t.Error("row 13: a distinct reply must not be suppressed")
+	}
+}
+
+// R3 ACK conversion, reference: ocn-te2. Rooms convert targeted ACKs by
+// default; ackAsReaction=false opts out, and substantive text remains chat.
+func TestParityMatrix_ACKConversion(t *testing.T) {
+	publisher := &channelFakePublisher{results: []nostr.PublishResult{{RelayURL: "wss://relay.test"}}}
+	defaultPolicy := ResolveNostrRoomPolicy(nil)
+	ch := &NIP29GroupChannel{
+		gad:           nip29.GroupAddress{Relay: "wss://relay.test", ID: "room"},
+		keyer:         testKeyer(t),
+		publisher:     publisher,
+		ackAsReaction: defaultPolicy.AckAsReaction,
+	}
+	if err := ch.sendReply(context.Background(), "got it!", "target-event", "target-author"); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.event.Kind != nostr.KindReaction || !outHasTag(publisher.event, "e", "target-event") {
+		t.Fatalf("R3: pure ACK did not become a target reaction: %#v", publisher.event)
+	}
+	if err := ch.sendReply(context.Background(), "got it; I will investigate", "target-event", "target-author"); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.event.Kind != nostr.KindSimpleGroupChatMessage {
+		t.Fatalf("R3: substantive reply was converted: %#v", publisher.event)
+	}
+	ch.ackAsReaction = ResolveNostrRoomPolicy(map[string]any{"ackAsReaction": false}).AckAsReaction
+	if err := ch.sendReply(context.Background(), "ack", "target-event", "target-author"); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.event.Kind != nostr.KindSimpleGroupChatMessage {
+		t.Fatalf("R3: explicit false did not opt out: %#v", publisher.event)
 	}
 }
 

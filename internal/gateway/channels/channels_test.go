@@ -193,10 +193,12 @@ func TestNewNIP29GroupChannel_badAddress(t *testing.T) {
 type channelFakePublisher struct {
 	results []nostr.PublishResult
 	relays  []string
+	event   nostr.Event
 }
 
-func (f *channelFakePublisher) PublishMany(_ context.Context, relays []string, _ nostr.Event) chan nostr.PublishResult {
+func (f *channelFakePublisher) PublishMany(_ context.Context, relays []string, event nostr.Event) chan nostr.PublishResult {
 	f.relays = append([]string(nil), relays...)
+	f.event = event
 	ch := make(chan nostr.PublishResult, len(f.results))
 	for _, result := range f.results {
 		ch <- result

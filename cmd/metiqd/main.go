@@ -2427,6 +2427,7 @@ func main() {
 			onError := func(err error) {
 				log.Printf("auto-join %s error name=%s address=%s err=%v", localChanCfg.Kind, localChanName, channelAddress, err)
 			}
+			roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
 			var ch channels.Channel
 			var chErr error
 			if localChanCfg.Kind == state.NostrChannelKindCommunikey {
@@ -2440,6 +2441,7 @@ func main() {
 					Hub:              controlHub,
 					Keyer:            controlKeyer,
 					PendingStorePath: nostrPendingStorePath(localChanCfg.CommunityAddress),
+					AckAsReaction:    &roomPolicy.AckAsReaction,
 					OnMessage:        onMessage,
 					OnError:          onError,
 				})
@@ -2449,6 +2451,7 @@ func main() {
 					Hub:              controlHub,
 					Keyer:            controlKeyer,
 					PendingStorePath: nostrPendingStorePath(localChanCfg.GroupAddress),
+					AckAsReaction:    &roomPolicy.AckAsReaction,
 					OnMessage:        onMessage,
 					OnError:          onError,
 				})

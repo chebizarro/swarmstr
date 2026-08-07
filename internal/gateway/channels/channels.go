@@ -16,6 +16,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip29"
 
+	metricspkg "metiq/internal/metrics"
 	okpublish "metiq/internal/nostr/publish"
 	nostruntime "metiq/internal/nostr/runtime"
 )
@@ -244,23 +245,28 @@ type NIP29GroupChannelOptions struct {
 	// PendingStorePath, when set, enables durable cross-restart replay of
 	// unsettled inbound events (persisted to this file). Empty disables it.
 	PendingStorePath string
+	// AckAsReaction converts pure-ACK replies with a known target into NIP-25
+	// reactions instead of posting another kind-9 room message. Nil enables the
+	// default; an explicit false opts the room out.
+	AckAsReaction *bool
 }
 
 // NIP29GroupChannel subscribes to a NIP-29 relay-based group (kind 9) and
 // allows the agent to send messages back.
 type NIP29GroupChannel struct {
-	id        string
-	gad       nip29.GroupAddress
-	hub       *nostruntime.NostrHub // non-nil when using shared hub
-	pool      *nostr.Pool           // non-nil only in legacy (no-hub) mode
-	publisher okpublish.Publisher   // publish path; defaults to pool
-	ownsPool  bool                  // true when we created the pool ourselves
-	keyer     nostr.Keyer
-	ctx       context.Context
-	cancel    context.CancelFunc
-	onMsg     func(InboundMessage)
-	onErr     func(error)
-	pubkey    string
+	id            string
+	gad           nip29.GroupAddress
+	hub           *nostruntime.NostrHub // non-nil when using shared hub
+	pool          *nostr.Pool           // non-nil only in legacy (no-hub) mode
+	publisher     okpublish.Publisher   // publish path; defaults to pool
+	ownsPool      bool                  // true when we created the pool ourselves
+	keyer         nostr.Keyer
+	ctx           context.Context
+	cancel        context.CancelFunc
+	onMsg         func(InboundMessage)
+	onErr         func(error)
+	pubkey        string
+	ackAsReaction bool
 
 	seen       *SeenCache
 	lastSeenMu sync.Mutex
@@ -348,6 +354,10 @@ func (c *NIP29GroupChannel) isInflight(id string) bool {
 	return ok
 }
 
+func resolveNIP29ACKAsReaction(configured *bool) bool {
+	return configured == nil || *configured
+}
+
 // NewNIP29GroupChannel creates and starts a NIP-29 group subscription.
 func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions) (*NIP29GroupChannel, error) {
 	if opts.GroupAddress == "" {
@@ -389,22 +399,23 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 	ctx, cancel := context.WithCancel(parent)
 
 	ch := &NIP29GroupChannel{
-		id:         opts.GroupAddress,
-		gad:        gad,
-		hub:        hub,
-		pool:       pool,
-		publisher:  pool,
-		ownsPool:   ownsPool,
-		keyer:      keyer,
-		ctx:        ctx,
-		cancel:     cancel,
-		onMsg:      opts.OnMessage,
-		onErr:      opts.OnError,
-		pubkey:     pk.Hex(),
-		seen:       NewSeenCache(),
-		liveSince:  nostr.Now(),
-		redispatch: NewRedispatchScheduler(RedispatchSchedulerOptions{}),
-		inflight:   map[string]struct{}{},
+		id:            opts.GroupAddress,
+		gad:           gad,
+		hub:           hub,
+		pool:          pool,
+		publisher:     pool,
+		ownsPool:      ownsPool,
+		keyer:         keyer,
+		ctx:           ctx,
+		cancel:        cancel,
+		onMsg:         opts.OnMessage,
+		onErr:         opts.OnError,
+		pubkey:        pk.Hex(),
+		ackAsReaction: resolveNIP29ACKAsReaction(opts.AckAsReaction),
+		seen:          NewSeenCache(),
+		liveSince:     nostr.Now(),
+		redispatch:    NewRedispatchScheduler(RedispatchSchedulerOptions{}),
+		inflight:      map[string]struct{}{},
 	}
 
 	if opts.PendingStorePath != "" {
@@ -448,6 +459,23 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 		Tags:      tags,
 	}
 	return c.signAndPublish(ctx, evt)
+}
+
+// sendReply posts text normally unless this room opted into ACK conversion and
+// the reply target is fully known. A failed reaction publish is returned as a
+// delivery failure rather than falling back to a chat message (which could
+// duplicate on retry).
+func (c *NIP29GroupChannel) sendReply(ctx context.Context, text, targetEventID, targetPubkey string) error {
+	if c.ackAsReaction && strings.TrimSpace(targetEventID) != "" && strings.TrimSpace(targetPubkey) != "" {
+		if emoji, ok := ClassifyPureACK(text); ok {
+			if err := c.SendReaction(ctx, emoji, targetEventID, targetPubkey, int(nostr.KindSimpleGroupChatMessage)); err != nil {
+				return err
+			}
+			metricspkg.OutboundACKReactions.Inc()
+			return nil
+		}
+	}
+	return c.Send(ctx, text)
 }
 
 // signAndPublish signs evt and publishes it to the group relay, bounding the
@@ -616,7 +644,7 @@ func (c *NIP29GroupChannel) dispatchInbound(ev nostr.Event, evIDHex string) {
 		CreatedAt:  int64(ev.CreatedAt),
 		Meta:       extractNIP29Meta(ev, evIDHex, c.liveSince),
 		Reply: func(ctx context.Context, text string) error {
-			return c.Send(ctx, text)
+			return c.sendReply(ctx, text, evIDHex, senderHex)
 		},
 		Settle: func(deliveredOK bool) {
 			c.settleDispatch(ev, evIDHex, deliveredOK)

@@ -10,12 +10,65 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	nostr "fiatjaf.com/nostr"
 )
 
 // NIP29RoomDeletionKind is the NIP-29 relay-managed delete-event kind.
 const NIP29RoomDeletionKind = nostr.Kind(9005)
+
+var pureACKReactions = map[string]string{
+	"got it":       "👍",
+	"on it":        "✅",
+	"ok":           "👍",
+	"okay":         "👍",
+	"ack":          "👍",
+	"acknowledged": "👍",
+	"thanks":       "👍",
+	"thank you":    "👍",
+	"will do":      "✅",
+	"sounds good":  "👍",
+}
+
+// ClassifyPureACK reports whether text contains only a short acknowledgement
+// (optionally preceded by one or more @mentions and followed by punctuation).
+// The returned emoji is suitable for replacing the posted acknowledgement with
+// a NIP-25 reaction. Any additional substantive content makes the match fail.
+func ClassifyPureACK(text string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	for len(fields) > 0 && strings.HasPrefix(fields[0], "@") {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return "", false
+	}
+	body := strings.Join(fields, " ")
+	if emoji, ok := classifyACKEmoji(body); ok {
+		return emoji, true
+	}
+	emoji, ok := pureACKReactions[NormalizeEchoText(body)]
+	return emoji, ok
+}
+
+func classifyACKEmoji(text string) (string, bool) {
+	emoji := ""
+	for _, r := range strings.TrimSpace(text) {
+		switch {
+		case r == '👍':
+			emoji = "👍"
+		case r == '✅' && emoji == "":
+			emoji = "✅"
+		case r == '\ufe0f' || r >= '\U0001F3FB' && r <= '\U0001F3FF':
+			// Emoji presentation selector and skin-tone modifiers.
+		case unicode.IsSpace(r) || strings.ContainsRune(".,!?;:()[]{}", r):
+			// Cosmetic punctuation is allowed around an emoji-only ACK.
+		default:
+			return "", false
+		}
+	}
+	return emoji, emoji != ""
+}
 
 // BuildNIP29ReactionEvent builds an unsigned NIP-29 room reaction (kind:7,
 // NIP-25 shape + `h` tag + best-effort `previous` refs). Per NIP-25 the target

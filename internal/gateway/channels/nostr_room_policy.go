@@ -19,6 +19,10 @@ type NostrRoomPolicy struct {
 	UnmentionedRoomEvent bool
 	// PairLoop is the room-level bot-loop-protection override (nil when unset).
 	PairLoop *PairLoopGuardConfig
+	// AckAsReaction converts pure acknowledgements into NIP-25 reactions on
+	// the inbound event instead of posting a new room message. It defaults to
+	// true; rooms can explicitly opt out with ackAsReaction=false.
+	AckAsReaction bool
 	// EchoSuppression / CommitmentGuard opt-ins (secondary defenses).
 	EchoSuppression bool
 	// EchoThreshold is the per-room echo similarity bar (0..1); 0 means use the
@@ -32,7 +36,7 @@ type NostrRoomPolicy struct {
 // mutated. The bot/loop-control knobs here never influence allow_from or command
 // authorization (trust boundary).
 func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
-	p := NostrRoomPolicy{AllowBots: AllowBotsMentions}
+	p := NostrRoomPolicy{AllowBots: AllowBotsMentions, AckAsReaction: true}
 	if config == nil {
 		return p
 	}
@@ -53,6 +57,9 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 		p.UnmentionedRoomEvent = strings.EqualFold(strings.TrimSpace(s), "room_event")
 	}
 
+	if v, ok := boolFromAny(config["ackAsReaction"]); ok {
+		p.AckAsReaction = v
+	}
 	if v, ok := boolFromAny(config["echoSuppression"]); ok {
 		p.EchoSuppression = v
 	}

@@ -469,6 +469,7 @@ type CommunikeyChannelOptions struct {
 	OnTarget         func(CommunikeyTarget)
 	OnError          func(error)
 	PendingStorePath string
+	AckAsReaction    *bool
 }
 
 // CommunikeyChannel keeps NIP-29 kind-9 transport while adding the client-side
@@ -556,6 +557,7 @@ func NewCommunikeyChannel(parent context.Context, opts CommunikeyChannelOptions)
 		Hub:              opts.Hub,
 		Keyer:            keyer,
 		PendingStorePath: opts.PendingStorePath,
+		AckAsReaction:    opts.AckAsReaction,
 		OnMessage: func(msg InboundMessage) {
 			c.handleChatMessage(msg, opts.OnMessage)
 		},
@@ -599,11 +601,18 @@ func (c *CommunikeyChannel) handleChatMessage(msg InboundMessage, onMessage func
 	}
 	msg.ChannelID = c.id
 	msg.GroupID = c.community
-	// The underlying transport reply closure sends directly through NIP-29.
-	// Replace it so automatic replies pass the same current ACL check as
-	// explicit CommunikeyChannel.Send calls.
+	// Preserve the target-aware NIP-29 reply closure so ACK conversion still
+	// has the inbound event ID/author, while enforcing the current Communikey
+	// ACL before either a kind-9 message or kind-7 reaction is published.
+	transportReply := msg.Reply
 	msg.Reply = func(replyCtx context.Context, text string) error {
-		return c.Send(replyCtx, text)
+		if err := c.authorizeChatPublish(); err != nil {
+			return err
+		}
+		if transportReply != nil {
+			return transportReply(replyCtx, text)
+		}
+		return c.chat.Send(replyCtx, text)
 	}
 	if onMessage == nil {
 		if msg.Settle != nil {
@@ -614,8 +623,7 @@ func (c *CommunikeyChannel) handleChatMessage(msg InboundMessage, onMessage func
 	onMessage(msg)
 }
 
-// Send publishes an authorized kind-9 message through the NIP-29 transport.
-func (c *CommunikeyChannel) Send(ctx context.Context, text string) error {
+func (c *CommunikeyChannel) authorizeChatPublish() error {
 	if c.ctx != nil && c.ctx.Err() != nil {
 		return fmt.Errorf("communikey channel is closed")
 	}
@@ -625,6 +633,14 @@ func (c *CommunikeyChannel) Send(ctx context.Context, text string) error {
 	}
 	if !allowed {
 		return fmt.Errorf("communikey publisher %s is not authorized for kind 9", c.pubkey)
+	}
+	return nil
+}
+
+// Send publishes an authorized kind-9 message through the NIP-29 transport.
+func (c *CommunikeyChannel) Send(ctx context.Context, text string) error {
+	if err := c.authorizeChatPublish(); err != nil {
+		return err
 	}
 	return c.chat.Send(ctx, text)
 }

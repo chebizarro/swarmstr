@@ -13,8 +13,11 @@ func TestResolveNostrRoomPolicy_Defaults(t *testing.T) {
 	if p.AllowBots != AllowBotsMentions {
 		t.Errorf("allowBots default = %q, want mentions", p.AllowBots)
 	}
+	if !p.AckAsReaction {
+		t.Error("ackAsReaction should default true")
+	}
 	if p.AmbientRespond || p.UnmentionedRoomEvent || p.EchoSuppression || p.CommitmentGuard {
-		t.Error("boolean knobs should default false")
+		t.Error("opt-in boolean knobs should default false")
 	}
 	if p.PairLoop != nil {
 		t.Error("PairLoop should be nil when unset")
@@ -27,6 +30,7 @@ func TestResolveNostrRoomPolicy_Typed(t *testing.T) {
 		"allowBots":          "off",
 		"ambientPolicy":      "respond",
 		"unmentionedInbound": "room_event",
+		"ackAsReaction":      false,
 		"echoSuppression":    true,
 		"commitmentGuard":    true,
 	}
@@ -42,6 +46,9 @@ func TestResolveNostrRoomPolicy_Typed(t *testing.T) {
 	}
 	if !p.UnmentionedRoomEvent {
 		t.Error("unmentionedInbound room_event -> true")
+	}
+	if p.AckAsReaction {
+		t.Error("ackAsReaction false should opt out")
 	}
 	if !p.EchoSuppression || !p.CommitmentGuard {
 		t.Error("echoSuppression/commitmentGuard should be true")
@@ -103,6 +110,7 @@ func TestResolveNostrRoomPolicy_IgnoresGarbageTypes(t *testing.T) {
 	// Wrong types must not panic and should fall back to defaults.
 	cfg := map[string]any{
 		"requireMention":    "yes",  // not a bool
+		"ackAsReaction":     "yes",  // not a bool
 		"ambientPolicy":     123,    // not a string
 		"botLoopProtection": "nope", // not a map
 	}
@@ -112,6 +120,9 @@ func TestResolveNostrRoomPolicy_IgnoresGarbageTypes(t *testing.T) {
 	}
 	if p.AmbientRespond {
 		t.Error("non-string ambientPolicy must stay default")
+	}
+	if !p.AckAsReaction {
+		t.Error("non-bool ackAsReaction must retain the enabled default")
 	}
 	if p.PairLoop != nil {
 		t.Error("non-map botLoopProtection must stay nil")
