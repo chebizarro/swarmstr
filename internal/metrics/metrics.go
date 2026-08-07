@@ -21,6 +21,7 @@ type Registry struct {
 	counters        map[string]*Counter
 	labeledCounters map[string]*labeledCounterSeries
 	gauges          map[string]*Gauge
+	labeledGauges   map[string]*labeledGaugeSeries
 	help            map[string]string // optional HELP lines
 }
 
@@ -35,12 +36,41 @@ type labeledCounterSeries struct {
 	counter *Counter
 }
 
+type labeledGaugeSeries struct {
+	name   string
+	labels []metricLabel
+	gauge  *Gauge
+}
+
+// labeledSeriesKey canonicalizes one labeled series: sorted label pairs plus
+// the NUL-delimited lookup key shared by labeled counters and gauges.
+func labeledSeriesKey(name string, labels map[string]string) ([]metricLabel, string) {
+	labelNames := make([]string, 0, len(labels))
+	for label := range labels {
+		labelNames = append(labelNames, label)
+	}
+	sort.Strings(labelNames)
+	seriesLabels := make([]metricLabel, 0, len(labelNames))
+	var key strings.Builder
+	key.WriteString(name)
+	for _, label := range labelNames {
+		value := labels[label]
+		seriesLabels = append(seriesLabels, metricLabel{name: label, value: value})
+		key.WriteByte(0)
+		key.WriteString(label)
+		key.WriteByte('=')
+		key.WriteString(value)
+	}
+	return seriesLabels, key.String()
+}
+
 // NewRegistry creates an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{
 		counters:        map[string]*Counter{},
 		labeledCounters: map[string]*labeledCounterSeries{},
 		gauges:          map[string]*Gauge{},
+		labeledGauges:   map[string]*labeledGaugeSeries{},
 		help:            map[string]string{},
 	}
 }
@@ -109,34 +139,36 @@ func (r *Registry) Counter(name, help string) *Counter {
 
 // CounterWithLabels registers (or retrieves) one labeled counter series.
 func (r *Registry) CounterWithLabels(name, help string, labels map[string]string) *Counter {
-	labelNames := make([]string, 0, len(labels))
-	for label := range labels {
-		labelNames = append(labelNames, label)
-	}
-	sort.Strings(labelNames)
-	seriesLabels := make([]metricLabel, 0, len(labelNames))
-	var key strings.Builder
-	key.WriteString(name)
-	for _, label := range labelNames {
-		value := labels[label]
-		seriesLabels = append(seriesLabels, metricLabel{name: label, value: value})
-		key.WriteByte(0)
-		key.WriteString(label)
-		key.WriteByte('=')
-		key.WriteString(value)
-	}
+	seriesLabels, key := labeledSeriesKey(name, labels)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if series, ok := r.labeledCounters[key.String()]; ok {
+	if series, ok := r.labeledCounters[key]; ok {
 		return series.counter
 	}
 	counter := &Counter{}
-	r.labeledCounters[key.String()] = &labeledCounterSeries{name: name, labels: seriesLabels, counter: counter}
+	r.labeledCounters[key] = &labeledCounterSeries{name: name, labels: seriesLabels, counter: counter}
 	if help != "" {
 		r.help[name] = help
 	}
 	return counter
+}
+
+// GaugeWithLabels registers (or retrieves) one labeled gauge series.
+func (r *Registry) GaugeWithLabels(name, help string, labels map[string]string) *Gauge {
+	seriesLabels, key := labeledSeriesKey(name, labels)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if series, ok := r.labeledGauges[key]; ok {
+		return series.gauge
+	}
+	gauge := &Gauge{}
+	r.labeledGauges[key] = &labeledGaugeSeries{name: name, labels: seriesLabels, gauge: gauge}
+	if help != "" {
+		r.help[name] = help
+	}
+	return gauge
 }
 
 // Gauge registers (or retrieves) a gauge with the given name and optional help string.
@@ -170,6 +202,10 @@ func (r *Registry) Exposition() string {
 	for _, series := range r.labeledCounters {
 		labeledCounters = append(labeledCounters, series)
 	}
+	labeledGauges := make([]*labeledGaugeSeries, 0, len(r.labeledGauges))
+	for _, series := range r.labeledGauges {
+		labeledGauges = append(labeledGauges, series)
+	}
 	r.mu.RUnlock()
 
 	sort.Strings(counterNames)
@@ -180,6 +216,12 @@ func (r *Registry) Exposition() string {
 		return formatMetricLabels(labeledCounters[i].labels) < formatMetricLabels(labeledCounters[j].labels)
 	})
 	sort.Strings(gaugeNames)
+	sort.Slice(labeledGauges, func(i, j int) bool {
+		if labeledGauges[i].name != labeledGauges[j].name {
+			return labeledGauges[i].name < labeledGauges[j].name
+		}
+		return formatMetricLabels(labeledGauges[i].labels) < formatMetricLabels(labeledGauges[j].labels)
+	})
 
 	var sb strings.Builder
 	for _, name := range counterNames {
@@ -227,6 +269,27 @@ func (r *Registry) Exposition() string {
 		} else {
 			fmt.Fprintf(&sb, "%s %g\n", name, v)
 		}
+	}
+	emittedGaugeFamily := make(map[string]struct{}, len(gaugeNames)+len(labeledGauges))
+	for _, name := range gaugeNames {
+		emittedGaugeFamily[name] = struct{}{}
+	}
+	for _, series := range labeledGauges {
+		if _, emitted := emittedGaugeFamily[series.name]; !emitted {
+			r.mu.RLock()
+			h := r.help[series.name]
+			r.mu.RUnlock()
+			if h != "" {
+				fmt.Fprintf(&sb, "# HELP %s %s\n", series.name, h)
+			}
+			fmt.Fprintf(&sb, "# TYPE %s gauge\n", series.name)
+			emittedGaugeFamily[series.name] = struct{}{}
+		}
+		v := series.gauge.Value()
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			v = 0
+		}
+		fmt.Fprintf(&sb, "%s%s %g\n", series.name, formatMetricLabels(series.labels), v)
 	}
 	return sb.String()
 }

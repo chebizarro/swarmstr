@@ -28,6 +28,7 @@ import (
 	"metiq/internal/gateway/sessioncoord"
 	mcppkg "metiq/internal/mcp"
 	"metiq/internal/memory"
+	metricspkg "metiq/internal/metrics"
 	"metiq/internal/policy"
 	"metiq/internal/store/state"
 )
@@ -346,6 +347,18 @@ func Start(ctx context.Context, opts ServerOptions) error {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(exposition))
+	}))
+	// /metrics/scorecard — the R7 per-room group-chat-discipline scorecard as
+	// JSON ({"rooms": [...]}). Requires auth if token is set.
+	mux.HandleFunc("/metrics/scorecard", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
+		body, err := metricspkg.RoomScorecardJSON()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
 	}))
 	mux.HandleFunc("/status", withAuth(opts.Token, func(w http.ResponseWriter, _ *http.Request) {
 		dmPolicy := opts.Status.DMPolicy

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	metricspkg "metiq/internal/metrics"
 )
 
 type fakeLLM struct{ items []ExtractedCommitment }
@@ -178,6 +180,37 @@ func TestHeartbeatDroppedCommitmentNotices(t *testing.T) {
 			t.Fatalf("successfully delivered notice repeated: %+v", redelivery)
 		}
 	}
+}
+
+// TestHeartbeatDroppedScorecardSignal checks the R7 per-room scorecard wiring:
+// delivering a dropped-commitment notice records commitment_dropped for the
+// commitment's session/room key.
+func TestHeartbeatDroppedScorecardSignal(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	session := "nostr:room:commitment-dropped-scorecard-test"
+	store := NewStore()
+	store.Add(Commitment{ID: "drop-sc", SessionID: session, Text: "I'll handle the migration", Status: StatusPending, DueAt: now.Add(-2 * time.Hour), CreatedAt: now.Add(-3 * time.Hour), Channel: "nostr", To: "room"})
+	hb := HeartbeatScheduler{
+		Store:  store,
+		Config: Config{DroppedCommitmentNotices: true, MaxPerHeartbeat: 5, DueWindow: time.Hour},
+		Now:    func() time.Time { return now },
+	}
+	due := hb.Due(session)
+	if len(due) != 1 || due[0].Kind != DeliveryDroppedCommitment {
+		t.Fatalf("expected one dropped delivery, got %+v", due)
+	}
+	if err := hb.MarkDelivered(due[0]); err != nil {
+		t.Fatal(err)
+	}
+	for _, snap := range metricspkg.DefaultScorecard.Snapshots() {
+		if snap.Room == session {
+			if snap.Signals[string(metricspkg.RoomSignalCommitmentDropped)] != 1 {
+				t.Fatalf("expected one commitment_dropped signal, got %+v", snap.Signals)
+			}
+			return
+		}
+	}
+	t.Fatalf("session %q missing from default scorecard", session)
 }
 
 func TestHeartbeatDroppedNoticePersistsAcknowledgement(t *testing.T) {

@@ -288,8 +288,20 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 	// (even ones the gate drops below — those are the unanswered mentions the
 	// moderator review is for).
 	lc.recordProgressLedgerEvent(preflight.RoomKey, msg)
+	// R7: every live inbound room message feeds the per-room message-share
+	// window (takeover redeliveries were counted at original arrival; own
+	// outbound messages are counted at the channel send path).
+	if !msg.ResponderTakeover {
+		metricspkg.RecordRoomMessage(preflight.RoomKey, msg.FromPubKey)
+	}
 	if decision := preflight.ShouldReplyGateDecision; decision != nil {
 		metricspkg.RecordShouldReplyGate(string(decision.Outcome), string(decision.Reason))
+		switch decision.Outcome {
+		case "pass":
+			metricspkg.RecordRoomSignal(preflight.RoomKey, metricspkg.RoomSignalGatePass)
+		case "drop":
+			metricspkg.RecordRoomSignal(preflight.RoomKey, metricspkg.RoomSignalGateDrop)
+		}
 		log.Printf("nip29 should-reply gate from=%s channel=%s outcome=%s reason=%s score=%d",
 			msg.FromPubKey, msg.ChannelID, decision.Outcome, decision.Reason, decision.Score)
 	}
@@ -324,6 +336,7 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 			return nostrGateDecision{}, false
 		}
 		metricspkg.RecordResponderElection("takeover")
+		metricspkg.RecordRoomSignal(preflight.RoomKey, metricspkg.RoomSignalElectionTakeover)
 		log.Printf("nip29 responder takeover room=%s event=%s: elected responder stayed silent past the window",
 			preflight.RoomKey, msg.EventID)
 	} else if responderElection != nil {
@@ -335,12 +348,14 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 			// arms a takeover timer (caller-side, off-dispatch); everyone else
 			// defers for this event.
 			metricspkg.RecordResponderElection("deferred")
+			metricspkg.RecordRoomSignal(preflight.RoomKey, metricspkg.RoomSignalElectionDeferred)
 			return nostrGateDecision{
 				ResponderElection: responderElection,
 				ResponderRoomKey:  preflight.RoomKey,
 			}, false
 		}
 		metricspkg.RecordResponderElection("won")
+		metricspkg.RecordRoomSignal(preflight.RoomKey, metricspkg.RoomSignalElectionWon)
 	}
 	// A takeover redelivery was already recorded by the pair guard at its
 	// original arrival; never double-record it.
@@ -354,6 +369,7 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 			DefaultEnabled: true,
 			EventID:        msg.EventID,
 		}); res.Suppressed {
+			metricspkg.RecordRoomSignal(preflight.RoomKey, metricspkg.RoomSignalPairGuardTrip)
 			log.Printf("nip29 bot-loop suppressed from=%s channel=%s room=%s", msg.FromPubKey, msg.ChannelID, preflight.RoomKey)
 			return nostrGateDecision{}, false
 		}

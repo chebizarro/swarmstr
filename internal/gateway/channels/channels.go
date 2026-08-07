@@ -286,7 +286,10 @@ type NIP29GroupChannelOptions struct {
 // NIP29GroupChannel subscribes to a NIP-29 relay-based group (kind 9) and
 // allows the agent to send messages back.
 type NIP29GroupChannel struct {
-	id                    string
+	id string
+	// roomKey is the normalized per-room scorecard/session key
+	// (NormalizeNostrRoomSessionKey(group address)).
+	roomKey               string
 	gad                   nip29.GroupAddress
 	hub                   *nostruntime.NostrHub // non-nil when using shared hub
 	pool                  *nostr.Pool           // non-nil only in legacy (no-hub) mode
@@ -434,6 +437,7 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 
 	ch := &NIP29GroupChannel{
 		id:                    opts.GroupAddress,
+		roomKey:               NormalizeNostrRoomSessionKey(opts.GroupAddress),
 		gad:                   gad,
 		hub:                   hub,
 		pool:                  pool,
@@ -478,7 +482,12 @@ func (c *NIP29GroupChannel) Type() string { return "nip29-group" }
 // Send posts a kind-9 message to the group relay.
 func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 	text = strings.TrimSpace(text)
-	text, _ = EnforceOutboundCommitment(ctx, text, c.commitmentEnforcement)
+	var commitmentBlocked bool
+	text, commitmentBlocked = EnforceOutboundCommitment(ctx, text, c.commitmentEnforcement)
+	if commitmentBlocked {
+		// R7 scorecard: an unbacked work promise was rewritten at the wire.
+		metricspkg.RecordRoomSignal(c.roomKey, metricspkg.RoomSignalCommitmentBlocked)
+	}
 	if text == "" {
 		return fmt.Errorf("text must not be empty")
 	}
@@ -495,7 +504,13 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		Tags:      tags,
 	}
-	return c.signAndPublish(ctx, evt)
+	if err := c.signAndPublish(ctx, evt); err != nil {
+		return err
+	}
+	// R7 scorecard: our own delivered room message counts toward the per-room
+	// message-share window (inbound peers are counted at the loop-control gate).
+	metricspkg.RecordRoomMessage(c.roomKey, c.pubkey)
+	return nil
 }
 
 // sendReply posts text normally unless this room opted into ACK conversion and
@@ -509,6 +524,7 @@ func (c *NIP29GroupChannel) sendReply(ctx context.Context, text, targetEventID, 
 				return err
 			}
 			metricspkg.OutboundACKReactions.Inc()
+			metricspkg.RecordRoomSignal(c.roomKey, metricspkg.RoomSignalACKConversion)
 			return nil
 		}
 	}

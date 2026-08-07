@@ -514,6 +514,7 @@ func (s *ProgressLedgerScheduler) Run(p ProgressLedgerRunParams) ProgressLedgerR
 	s.mu.Unlock()
 
 	metricspkg.RecordProgressLedger("run")
+	metricspkg.RecordRoomSignal(p.RoomKey, metricspkg.RoomSignalLedgerRun)
 	var input ProgressLedgerInput
 	if p.Collect != nil {
 		input = p.Collect()
@@ -525,6 +526,16 @@ func (s *ProgressLedgerScheduler) Run(p ProgressLedgerRunParams) ProgressLedgerR
 		input.StaleMentionAge = p.Policy.ProgressLedgerStaleMentionAge
 	}
 	result := ProgressLedgerRunResult{Ran: true, Findings: EvaluateProgressLedger(input)}
+	// R7 scorecard: reuse this review's stale-mention findings for the per-room
+	// unanswered-mention age gauge (oldest, zero when none) instead of running
+	// a second evaluation elsewhere.
+	var oldestMention time.Duration
+	for _, m := range result.Findings.StaleMentions {
+		if m.Age > oldestMention {
+			oldestMention = m.Age
+		}
+	}
+	metricspkg.SetRoomUnansweredMentionAge(p.RoomKey, oldestMention)
 	if !result.Findings.Actionable() {
 		return result // silence is the default
 	}
@@ -546,6 +557,7 @@ func (s *ProgressLedgerScheduler) Run(p ProgressLedgerRunParams) ProgressLedgerR
 	}
 	result.Posted = true
 	metricspkg.RecordProgressLedger("post")
+	metricspkg.RecordRoomSignal(p.RoomKey, metricspkg.RoomSignalLedgerPost)
 	s.mu.Lock()
 	state.lastPost = now
 	s.mu.Unlock()

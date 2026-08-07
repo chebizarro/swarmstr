@@ -3,6 +3,8 @@ package commitments
 import (
 	"strings"
 	"time"
+
+	metricspkg "metiq/internal/metrics"
 )
 
 type DeliveryKind string
@@ -161,6 +163,8 @@ func (h HeartbeatScheduler) MarkDelivered(delivery Delivery) error {
 		c.Status = StatusExpired
 		c.BrokenReason = firstNonEmpty(delivery.DropReason, c.BrokenReason, "expired before completion")
 		c.DroppedNoticeAt = now
+		// R7 scorecard: one commitment dropped (notice delivered) for this room.
+		metricspkg.RecordRoomSignal(firstNonEmpty(delivery.SessionID, c.SessionID), metricspkg.RoomSignalCommitmentDropped)
 	} else {
 		c.Status = StatusFulfilled
 	}

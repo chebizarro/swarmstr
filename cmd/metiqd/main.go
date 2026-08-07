@@ -2458,6 +2458,7 @@ func main() {
 					if decision.TaskEchoSuppress {
 						if v := nostrLoopControl.checkTaskEcho(sessionID, replyText, decision.TaskEchoThreshold); v.Suppress {
 							metricspkg.TaskEchoSuppressed.Inc()
+							metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalTaskEchoDrop)
 							log.Printf("nip29 task-echo suppressed reply room=%s task=%s status=%s", sessionID, v.TaskID, v.Status)
 							delivered = true // deliberate suppression, not a failure
 							return
@@ -2469,6 +2470,7 @@ func main() {
 					// recent room traffic; otherwise record it so future echoes
 					// of it are caught.
 					if decision.EchoSuppress && nostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
+						metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalEchoDrop)
 						log.Printf("nip29 echo suppressed reply room=%s", sessionID)
 						delivered = true // deliberate suppression, not a failure
 						return
@@ -5991,6 +5993,9 @@ func main() {
 		if rh, ok := rawHandle.(sdk.ReactionHandle); ok && eventID != "" {
 			statusCtrl = channels.NewStatusReactionController(turnCtx, rh, eventID)
 			statusCtrl.SetQueued()
+			// R7 scorecard: one status-reaction lifecycle engaged for this
+			// room turn (per-turn, not per-emoji, to keep the count meaningful).
+			metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalStatusReaction)
 		}
 		closeStatus := func(success bool) {
 			if statusCtrl == nil {

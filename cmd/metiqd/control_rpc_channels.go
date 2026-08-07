@@ -271,6 +271,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				if decision.TaskEchoSuppress {
 					if v := controlNostrLoopControl.checkTaskEcho(sessionID, replyText, decision.TaskEchoThreshold); v.Suppress {
 						metricspkg.TaskEchoSuppressed.Inc()
+						metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalTaskEchoDrop)
 						log.Printf("nip29 task-echo suppressed reply room=%s task=%s status=%s", sessionID, v.TaskID, v.Status)
 						delivered = true // deliberate suppression, not a failure
 						return
@@ -279,6 +280,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 					}
 				}
 				if decision.EchoSuppress && controlNostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
+					metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalEchoDrop)
 					log.Printf("nip29 echo suppressed reply room=%s", sessionID)
 					delivered = true // deliberate suppression, not a failure
 					return

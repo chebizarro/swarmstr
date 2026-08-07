@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	metricspkg "metiq/internal/metrics"
 )
 
 var ledgerBase = time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
@@ -205,6 +207,55 @@ func TestProgressLedgerRecorder_WindowAndRedelivery(t *testing.T) {
 	}
 	if r.Events("other") != nil {
 		t.Fatal("unknown room must be empty")
+	}
+}
+
+// TestProgressLedgerScheduler_ScorecardWiring checks the R7 per-room scorecard
+// reuse: a run records ledger_run/ledger_post signals and derives the
+// unanswered-mention age gauge from THIS review's stale-mention findings
+// (parity: openclaw-nostr ocn-340, counterpart pending).
+func TestProgressLedgerScheduler_ScorecardWiring(t *testing.T) {
+	self := hexKey()
+	agent := hexKey()
+	roomKey := "nostr:room:scorecard-wiring-test"
+	now := ledgerBase
+	s := &ProgressLedgerScheduler{Now: func() time.Time { return now }}
+	policy := ResolveNostrRoomPolicy(map[string]any{
+		"progressLedger":          true,
+		"progressLedgerModerator": self,
+	})
+	collect := func() ProgressLedgerInput {
+		return ProgressLedgerInput{
+			AgentPubkeys: []string{agent},
+			Events:       []ProgressLedgerEvent{ledgerEvent("evt", hexKey(), ledgerBase.Add(-time.Hour), agent)},
+		}
+	}
+	r := s.Run(ProgressLedgerRunParams{
+		RoomKey:    roomKey,
+		Policy:     policy,
+		SelfPubkey: self,
+		Collect:    collect,
+		Post:       func(string) error { return nil },
+	})
+	if !r.Ran || !r.Posted {
+		t.Fatalf("expected a posted run, got %+v", r)
+	}
+	var snap metricspkg.RoomScorecardSnapshot
+	found := false
+	for _, s := range metricspkg.DefaultScorecard.Snapshots() {
+		if s.Room == roomKey {
+			snap, found = s, true
+		}
+	}
+	if !found {
+		t.Fatalf("room %q missing from default scorecard", roomKey)
+	}
+	if snap.Signals[string(metricspkg.RoomSignalLedgerRun)] != 1 ||
+		snap.Signals[string(metricspkg.RoomSignalLedgerPost)] != 1 {
+		t.Fatalf("expected one ledger_run and one ledger_post, got %+v", snap.Signals)
+	}
+	if snap.UnansweredMentionAgeSeconds != 3600 {
+		t.Fatalf("expected 1h unanswered-mention age from the review findings, got %g", snap.UnansweredMentionAgeSeconds)
 	}
 }
 
