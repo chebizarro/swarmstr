@@ -1,6 +1,17 @@
 package channels
 
-import "strings"
+import (
+	"math"
+	"strings"
+	"time"
+)
+
+// Responder-election (R2) defaults: the takeover window the successor waits
+// before claiming a contested event, and the minimum a room may configure.
+const (
+	DefaultResponderElectionTakeover    = 120 * time.Second
+	MinResponderElectionTakeoverSeconds = 5
+)
 
 // NostrRoomPolicy holds the per-room knobs the preflight and context builder
 // need, resolved from a room's free-form NostrChannelConfig.Config map. Mirrors
@@ -20,6 +31,14 @@ type NostrRoomPolicy struct {
 	// ShouldReplyGate runs the cheap deterministic relevance gate for ambient,
 	// non-mention room traffic. It defaults on; false preserves legacy dispatch.
 	ShouldReplyGate bool
+	// ResponderElection runs the deterministic single-responder election (R2)
+	// for ambient traffic the should-reply gate admits. It defaults on; false
+	// lets every capable agent answer (legacy behavior).
+	ResponderElection bool
+	// ResponderElectionTakeover is how long the successor waits for the
+	// elected responder before claiming the event with a 🙋 reaction
+	// (config key responderElectionTakeoverSeconds, ≥ 5, default 120).
+	ResponderElectionTakeover time.Duration
 	// PairLoop is the room-level bot-loop-protection override (nil when unset).
 	PairLoop *PairLoopGuardConfig
 	// AckAsReaction converts pure acknowledgements into NIP-25 reactions on
@@ -51,7 +70,13 @@ type NostrRoomPolicy struct {
 // mutated. The bot/loop-control knobs here never influence allow_from or command
 // authorization (trust boundary).
 func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
-	p := NostrRoomPolicy{AllowBots: AllowBotsMentions, ShouldReplyGate: true, AckAsReaction: true}
+	p := NostrRoomPolicy{
+		AllowBots:                 AllowBotsMentions,
+		ShouldReplyGate:           true,
+		AckAsReaction:             true,
+		ResponderElection:         true,
+		ResponderElectionTakeover: DefaultResponderElectionTakeover,
+	}
 	if config == nil {
 		return p
 	}
@@ -73,6 +98,15 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	}
 	if v, ok := boolFromAny(config["shouldReplyGate"]); ok {
 		p.ShouldReplyGate = v
+	}
+	if v, ok := boolFromAny(config["responderElection"]); ok {
+		p.ResponderElection = v
+	}
+	// Out-of-range or non-numeric takeover windows keep the default (mirrors
+	// the reference resolver: finite number ≥ 5 seconds only).
+	if f, ok := floatFromAny(config["responderElectionTakeoverSeconds"]); ok &&
+		!math.IsNaN(f) && !math.IsInf(f, 0) && f >= MinResponderElectionTakeoverSeconds {
+		p.ResponderElectionTakeover = time.Duration(math.Round(f*1000)) * time.Millisecond
 	}
 
 	if v, ok := boolFromAny(config["ackAsReaction"]); ok {

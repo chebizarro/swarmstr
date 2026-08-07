@@ -51,6 +51,14 @@ type InboundMessage struct {
 	Meta NostrInboundMeta
 	// Reply sends a reply back to the channel/sender.
 	Reply func(ctx context.Context, text string) error
+	// React publishes an emoji reaction targeting this inbound event (the same
+	// publish path the ACK conversion and status reactions use). Nil for
+	// channels without reaction support; callers must nil-check.
+	React func(ctx context.Context, emoji string) error
+	// ResponderTakeover marks a responder-election takeover redelivery (R2):
+	// the elected responder stayed silent past the window and this successor
+	// re-verifies + claims the event. Never set on transport deliveries.
+	ResponderTakeover bool
 	// Settle reports the dispatch outcome for delivery-confirmed seen-gating:
 	// true = processed/delivered (the event stays durably seen); false =
 	// retryable failure (model timeout / signer failure / unconfirmed send),
@@ -92,6 +100,9 @@ func extractNIP29Meta(ev nostr.Event, eventID string, liveSince nostr.Timestamp)
 				if author != "" {
 					meta.ReplyToSenderPubkey = author
 				}
+				if marker == "reply" || meta.ReplyToEventID == "" {
+					meta.ReplyToEventID = tag[1]
+				}
 				if marker == "reply" || meta.ThreadRootEventID == "" {
 					// A bare e-tag (no marker) is a reply target in NIP-10.
 					if meta.ThreadRootEventID == "" {
@@ -110,6 +121,20 @@ func extractNIP29Meta(ev nostr.Event, eventID string, liveSince nostr.Timestamp)
 		meta.ThreadRootEventID = eventID
 	}
 	return meta
+}
+
+// InboundReaction is a normalised inbound room reaction (kind:7), consumed by
+// the responder-election takeover coordinator (R2): a reply/claim reaction on
+// a contested event stands a pending takeover down.
+type InboundReaction struct {
+	ChannelID     string // registry key ("relay'groupID" for NIP-29)
+	GroupID       string
+	Relay         string
+	FromPubKey    string
+	Content       string
+	EventID       string
+	TargetEventID string
+	CreatedAt     int64
 }
 
 // ─── Channel interface ────────────────────────────────────────────────────────
@@ -240,6 +265,10 @@ type NIP29GroupChannelOptions struct {
 	Keyer nostr.Keyer
 	// OnMessage is called for every inbound group message.
 	OnMessage func(InboundMessage)
+	// OnReaction, when set, subscribes to the room's kind:7 reactions and is
+	// called for every inbound (non-own) reaction. Used by the R2
+	// responder-election takeover coordinator.
+	OnReaction func(InboundReaction)
 	// OnError is called for subscription errors.
 	OnError func(error)
 	// PendingStorePath, when set, enables durable cross-restart replay of
@@ -267,6 +296,7 @@ type NIP29GroupChannel struct {
 	ctx                   context.Context
 	cancel                context.CancelFunc
 	onMsg                 func(InboundMessage)
+	onReaction            func(InboundReaction)
 	onErr                 func(error)
 	pubkey                string
 	ackAsReaction         bool
@@ -413,6 +443,7 @@ func NewNIP29GroupChannel(parent context.Context, opts NIP29GroupChannelOptions)
 		ctx:                   ctx,
 		cancel:                cancel,
 		onMsg:                 opts.OnMessage,
+		onReaction:            opts.OnReaction,
 		onErr:                 opts.OnError,
 		pubkey:                pk.Hex(),
 		ackAsReaction:         resolveNIP29ACKAsReaction(opts.AckAsReaction),
@@ -549,8 +580,15 @@ func (c *NIP29GroupChannel) subscribeLoop(ctx context.Context) {
 
 	backoff := channelReconnectInitialBackoff
 	for ctx.Err() == nil {
+		// The takeover coordinator (R2) also needs the room's reactions (a ✅
+		// ack from the elected responder or a 🙋 claim from an earlier
+		// successor stands a pending takeover down).
+		kinds := []nostr.Kind{nostr.KindSimpleGroupChatMessage}
+		if c.onReaction != nil {
+			kinds = append(kinds, nostr.KindReaction)
+		}
 		filter := nostr.Filter{
-			Kinds: []nostr.Kind{nostr.KindSimpleGroupChatMessage},
+			Kinds: kinds,
 			Tags:  nostr.TagMap{"h": []string{c.gad.ID}},
 			Since: c.subscribeSince(),
 		}
@@ -604,6 +642,9 @@ func (c *NIP29GroupChannel) consumeSubscription(ctx context.Context, events <-ch
 }
 
 func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
+	if ev.Kind == nostr.KindReaction {
+		return c.handleReactionEvent(ev)
+	}
 	if !validChannelEvent(ev.Event, nostr.KindSimpleGroupChatMessage, "h", c.gad.ID) {
 		return false
 	}
@@ -633,6 +674,46 @@ func (c *NIP29GroupChannel) handleEvent(ev nostr.RelayEvent) bool {
 	return true
 }
 
+// handleReactionEvent forwards a room reaction to the OnReaction observer
+// (R2 takeover cancellation). Reactions never enter the message dispatch,
+// redispatch, or `previous`-tag paths.
+func (c *NIP29GroupChannel) handleReactionEvent(ev nostr.RelayEvent) bool {
+	if c.onReaction == nil {
+		return false
+	}
+	if !validChannelEvent(ev.Event, nostr.KindReaction, "h", c.gad.ID) {
+		return false
+	}
+	evIDHex := ev.ID.Hex()
+	if c.seen.Add(evIDHex) {
+		return false // recently seen
+	}
+	if ev.PubKey.Hex() == c.pubkey {
+		return true
+	}
+	target := ""
+	// NIP-25: the last "e" tag is the reacted-to event.
+	for _, tag := range ev.Tags {
+		if len(tag) >= 2 && tag[0] == "e" && tag[1] != "" {
+			target = tag[1]
+		}
+	}
+	if target == "" {
+		return true
+	}
+	c.onReaction(InboundReaction{
+		ChannelID:     c.id,
+		GroupID:       c.gad.ID,
+		Relay:         c.gad.Relay,
+		FromPubKey:    ev.PubKey.Hex(),
+		Content:       ev.Content,
+		EventID:       evIDHex,
+		TargetEventID: target,
+		CreatedAt:     int64(ev.CreatedAt),
+	})
+	return true
+}
+
 // dispatchInbound builds the inbound context and invokes the handler. It is
 // called for the initial delivery, re-invoked by the bounded redispatch
 // scheduler on a delivery failure, and by the durable pending-event replay on
@@ -651,6 +732,9 @@ func (c *NIP29GroupChannel) dispatchInbound(ev nostr.Event, evIDHex string) {
 		Meta:       extractNIP29Meta(ev, evIDHex, c.liveSince),
 		Reply: func(ctx context.Context, text string) error {
 			return c.sendReply(ctx, text, evIDHex, senderHex)
+		},
+		React: func(ctx context.Context, emoji string) error {
+			return c.SendReaction(ctx, emoji, evIDHex, senderHex, int(nostr.KindSimpleGroupChatMessage))
 		},
 		Settle: func(deliveredOK bool) {
 			c.settleDispatch(ev, evIDHex, deliveredOK)

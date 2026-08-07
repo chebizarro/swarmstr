@@ -275,6 +275,33 @@ func RecordShouldReplyGate(outcome, reason string) {
 	Default.RecordShouldReplyGate(outcome, reason)
 }
 
+const responderElectionMetricHelp = "Total deterministic single-responder election outcomes (R2)"
+
+// RecordResponderElection records one responder-election outcome: "won" (this
+// agent was elected and takes the turn), "deferred" (another agent answers this
+// event), or "takeover" (the elected responder stayed silent past the window
+// and this successor claims the event). Mirrors the reference election.won /
+// election.deferred / election.takeover counters.
+func (r *Registry) RecordResponderElection(outcome string) {
+	var name string
+	switch outcome {
+	case "won":
+		name = "metiq_responder_election_won_total"
+	case "deferred":
+		name = "metiq_responder_election_deferred_total"
+	case "takeover":
+		name = "metiq_responder_election_takeover_total"
+	default:
+		return
+	}
+	r.Counter(name, responderElectionMetricHelp).Inc()
+}
+
+// RecordResponderElection records on the process-wide registry.
+func RecordResponderElection(outcome string) {
+	Default.RecordResponderElection(outcome)
+}
+
 // Default is the process-wide default registry.
 var Default = NewRegistry()
 

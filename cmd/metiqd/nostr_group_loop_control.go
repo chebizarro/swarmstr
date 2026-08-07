@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"path/filepath"
 	"time"
@@ -46,6 +47,104 @@ type nostrGroupLoopControl struct {
 	establisher             *sessionidentity.Establisher
 	echo                    *channels.EchoSuppressor
 	shouldReplyCapabilities []string
+	// responderDirectory snapshots the NIP-51 fleet directory (R2 responder
+	// election): pubkey + advertised kind:30317 capability terms per member.
+	// Nil/empty leaves the election inert.
+	responderDirectory func() []channels.ResponderDirectoryEntry
+	// isMutedPeer excludes muted fleet members from taking election turns.
+	isMutedPeer func(pubkey string) bool
+	// takeovers arms the R2 successor takeover timers (off-dispatch: no queue
+	// slot is held while waiting for the elected responder).
+	takeovers *channels.TakeoverCoordinator[nostrResponderTakeoverPayload]
+}
+
+// nostrResponderTakeoverPayload is the armed takeover context: the original
+// inbound message and the dispatch closure that re-verifies it under CURRENT
+// config when the takeover fires.
+type nostrResponderTakeoverPayload struct {
+	msg     channels.InboundMessage
+	deliver func(channels.InboundMessage)
+}
+
+// nostrResponderClaimTimeout bounds the best-effort 🙋 claim reaction publish.
+const nostrResponderClaimTimeout = 30 * time.Second
+
+// newNostrResponderTakeoverCoordinator builds the shared R2 takeover
+// coordinator. When a takeover fires, the contested event is re-delivered
+// through the normal dispatch path with the ResponderTakeover marker set so
+// the gate re-verifies it under CURRENT config (mention/commands/authorization
+// checks run again) before the claim + reply turn.
+func newNostrResponderTakeoverCoordinator(
+	ctx context.Context,
+	selfPubkey string,
+) (*channels.TakeoverCoordinator[nostrResponderTakeoverPayload], error) {
+	return channels.NewTakeoverCoordinator(channels.TakeoverCoordinatorOptions[nostrResponderTakeoverPayload]{
+		SelfPubkey: selfPubkey,
+		OnTakeover: func(pending channels.TakeoverPending[nostrResponderTakeoverPayload]) {
+			if ctx.Err() != nil || pending.Payload.deliver == nil {
+				return
+			}
+			redelivery := pending.Payload.msg
+			redelivery.ResponderTakeover = true
+			// The original dispatch already settled (deliberate defer); the
+			// takeover redelivery must not settle it again.
+			redelivery.Settle = nil
+			pending.Payload.deliver(redelivery)
+		},
+		OnError: func(err error) {
+			log.Printf("nip29 responder takeover failed: %v", err)
+		},
+	})
+}
+
+// armResponderTakeover arms the successor takeover timer for a deferred event.
+// No-op unless this agent is the immediate successor in the election order.
+func (lc *nostrGroupLoopControl) armResponderTakeover(decision nostrGateDecision, msg channels.InboundMessage, deliver func(channels.InboundMessage)) {
+	if lc == nil || lc.takeovers == nil || deliver == nil {
+		return
+	}
+	election := decision.ResponderElection
+	if election == nil || election.Role != channels.ResponderRoleSuccessor {
+		return
+	}
+	if lc.takeovers.Schedule(channels.TakeoverPending[nostrResponderTakeoverPayload]{
+		RoomKey:       decision.ResponderRoomKey,
+		EventID:       msg.EventID,
+		ElectedPubkey: election.ElectedPubkey,
+		Payload:       nostrResponderTakeoverPayload{msg: msg, deliver: deliver},
+	}, election.Takeover) {
+		log.Printf("nip29 responder takeover armed room=%s event=%s elected=%s window=%s",
+			decision.ResponderRoomKey, msg.EventID, election.ElectedPubkey, election.Takeover)
+	}
+}
+
+// postResponderClaim posts the visible 🙋 claim BEFORE answering a takeover so
+// later successors stand down. Best-effort: a failed claim never blocks the
+// answer (mirrors the reference takeover path).
+func (lc *nostrGroupLoopControl) postResponderClaim(msg channels.InboundMessage) {
+	if msg.React == nil {
+		log.Printf("nip29 responder claim skipped (channel has no reaction path) event=%s", msg.EventID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), nostrResponderClaimTimeout)
+	defer cancel()
+	if err := msg.React(ctx, channels.NostrResponderClaimEmoji); err != nil {
+		log.Printf("nip29 responder claim reaction failed (continuing): %v", err)
+	}
+}
+
+// observeReaction feeds a room reaction into the takeover coordinator: a ✅
+// ack from the elected responder or a 🙋 claim from an earlier successor
+// stands this agent's pending takeover down.
+func (lc *nostrGroupLoopControl) observeReaction(reaction channels.InboundReaction) {
+	if lc == nil || lc.takeovers == nil {
+		return
+	}
+	lc.takeovers.ObserveReaction(channels.TakeoverReactionFacts{
+		RoomKey:       channels.NormalizeNostrRoomSessionKey(reaction.ChannelID),
+		SenderPubkey:  reaction.FromPubKey,
+		TargetEventID: reaction.TargetEventID,
+	})
 }
 
 // observeEcho records room text (peer or own) into the echo ring.
@@ -105,6 +204,13 @@ type nostrGateDecision struct {
 	// (ambient) traffic so the agent does not spew errors into rooms it was not
 	// directly addressed in.
 	InboundEventKind string
+	// ResponderElection carries the R2 election outcome when the turn was
+	// deferred to another agent (set only on non-admitted decisions so the
+	// caller can arm the successor takeover timer). Nil = election bypassed
+	// or this agent elected.
+	ResponderElection *channels.NostrResponderElectionDecision
+	// ResponderRoomKey is the room session key the takeover is armed under.
+	ResponderRoomKey string
 }
 
 // gate runs the loop-control preflight + bot-loop pair guard for an inbound
@@ -145,6 +251,18 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 		ShouldReplyAliases:      []string{"metiq"},
 		ShouldReplyCapabilities: lc.shouldReplyCapabilities,
 	})
+	// R2: every live room message doubles as a takeover observation — the
+	// elected responder answering (or anyone replying in the contested event's
+	// thread) stands this agent's pending claim down, even when this message
+	// is itself dropped below.
+	if lc.takeovers != nil && !msg.ResponderTakeover {
+		lc.takeovers.ObserveRoomMessage(channels.TakeoverRoomMessageFacts{
+			RoomKey:           preflight.RoomKey,
+			SenderPubkey:      msg.FromPubKey,
+			ReplyToEventID:    msg.Meta.ReplyToEventID,
+			ThreadRootEventID: msg.Meta.ThreadRootEventID,
+		})
+	}
 	if decision := preflight.ShouldReplyGateDecision; decision != nil {
 		metricspkg.RecordShouldReplyGate(string(decision.Outcome), string(decision.Reason))
 		log.Printf("nip29 should-reply gate from=%s channel=%s outcome=%s reason=%s score=%d",
@@ -154,7 +272,54 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 		log.Printf("nip29 preflight drop from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, preflight.DropReason)
 		return nostrGateDecision{}, false
 	}
-	if knownBot && lc.guard != nil {
+	// R2: deterministic single-responder election over the NIP-51 fleet
+	// directory for admitted ambient traffic. Nil = bypass (explicit mentions,
+	// replies-to-bot, commands, no fleet directory, or no other
+	// capability-advertising member: the message is fully this agent's).
+	var responderDirectory []channels.ResponderDirectoryEntry
+	if lc.responderDirectory != nil {
+		responderDirectory = lc.responderDirectory()
+	}
+	responderElection := channels.EvaluateNostrResponderElection(channels.NostrResponderElectionParams{
+		Policy:           roomPolicy,
+		SelfPubkey:       lc.ownPubkey,
+		SelfCapabilities: lc.shouldReplyCapabilities,
+		EventID:          msg.EventID,
+		Text:             msg.Text,
+		SenderPubkey:     msg.FromPubKey,
+		Gate:             preflight.ShouldReplyGateDecision,
+		Directory:        responderDirectory,
+		IsMuted:          lc.isMutedPeer,
+	})
+	if msg.ResponderTakeover {
+		// Takeover re-verification under CURRENT config: the event must still
+		// be admissible (checked above), and this agent must still be in the
+		// election order (any position may claim after the window).
+		if responderElection != nil && responderElection.SelfIndex < 0 {
+			return nostrGateDecision{}, false
+		}
+		metricspkg.RecordResponderElection("takeover")
+		log.Printf("nip29 responder takeover room=%s event=%s: elected responder stayed silent past the window",
+			preflight.RoomKey, msg.EventID)
+	} else if responderElection != nil {
+		log.Printf("nip29 responder election channel=%s room=%s event=%s role=%s elected=%s eligible=%d",
+			msg.ChannelID, preflight.RoomKey, msg.EventID, responderElection.Role,
+			responderElection.ElectedPubkey, responderElection.EligibleCount)
+		if responderElection.Role != channels.ResponderRoleElected {
+			// Only the elected agent takes the turn; the immediate successor
+			// arms a takeover timer (caller-side, off-dispatch); everyone else
+			// defers for this event.
+			metricspkg.RecordResponderElection("deferred")
+			return nostrGateDecision{
+				ResponderElection: responderElection,
+				ResponderRoomKey:  preflight.RoomKey,
+			}, false
+		}
+		metricspkg.RecordResponderElection("won")
+	}
+	// A takeover redelivery was already recorded by the pair guard at its
+	// original arrival; never double-record it.
+	if knownBot && lc.guard != nil && !msg.ResponderTakeover {
 		if res := lc.guard.RecordAndCheck(channels.BotLoopProtectionFacts{
 			ScopeID:        lc.ownPubkey,
 			ConversationID: preflight.RoomKey,

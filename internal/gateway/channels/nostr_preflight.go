@@ -72,8 +72,12 @@ func ResolveNostrAllowBots(raw any) NostrAllowBots {
 
 // NostrInboundMeta carries per-event facts the preflight needs.
 type NostrInboundMeta struct {
-	EventID                 string
-	ThreadRootEventID       string
+	EventID           string
+	ThreadRootEventID string
+	// ReplyToEventID is the direct reply target ("e" reply tag), consumed by
+	// the R2 takeover coordinator (a reply to a contested event stands a
+	// pending takeover down).
+	ReplyToEventID          string
 	MentionedPubkeys        []string
 	ReplyToSenderPubkey     string
 	QuoteSenderPubkey       string

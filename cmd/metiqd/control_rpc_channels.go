@@ -196,7 +196,12 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 			roomAddress = req.CommunityAddress
 			roomKind = state.NostrChannelKindCommunikey
 		}
-		onMessage := func(msg channels.InboundMessage) {
+		// onMessage is self-referential: an armed R2 takeover re-delivers the
+		// contested event through this same handler (with the ResponderTakeover
+		// marker) so it is re-verified under CURRENT config before the claim +
+		// reply turn.
+		var onMessage func(msg channels.InboundMessage)
+		onMessage = func(msg channels.InboundMessage) {
 			// Same loop-control gate as auto-join so a manually-joined room is
 			// gated identically (swarmstr-nfl4). An ad-hoc join has no
 			// configured room policy, so defaults apply (requireMention,
@@ -204,8 +209,15 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 			roomCfg := state.NostrChannelConfig{Kind: roomKind, GroupAddress: roomAddress, CommunityAddress: req.CommunityAddress}
 			decision, admitted := controlNostrLoopControl.gate(msg, roomCfg, configState.Get().DM.AllowFrom)
 			if !admitted {
+				// R2: when this agent deferred as the immediate successor, arm
+				// the off-dispatch takeover timer (no-op for any other drop).
+				controlNostrLoopControl.armResponderTakeover(decision, msg, onMessage)
 				settleNostrDispatch(msg, true) // deliberate gate drop; terminal
 				return
+			}
+			if msg.ResponderTakeover {
+				// R2: visible claim BEFORE answering so later successors stand down.
+				controlNostrLoopControl.postResponderClaim(msg)
 			}
 			sessionID := decision.SessionID
 			emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID})
@@ -312,6 +324,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				Keyer:            h.deps.keyer,
 				PendingStorePath: nostrPendingStorePath(req.CommunityAddress),
 				OnMessage:        onMessage,
+				OnReaction:       controlNostrLoopControl.observeReaction,
 				OnError:          onError,
 			})
 		} else {
@@ -321,6 +334,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				Keyer:            h.deps.keyer,
 				PendingStorePath: nostrPendingStorePath(req.GroupAddress),
 				OnMessage:        onMessage,
+				OnReaction:       controlNostrLoopControl.observeReaction,
 				OnError:          onError,
 			})
 		}

@@ -2291,6 +2291,14 @@ func main() {
 	// The should-reply gate matches ambient requests against the same local tool
 	// names advertised in our kind:30317 capability descriptor.
 	localCapabilities := buildLocalCapabilityAnnouncement(context.Background(), configState.Get(), docsRepo)
+	// R2 responder-election takeover coordinator: when this agent is the
+	// immediate successor for a contested ambient event, it waits OFF-dispatch
+	// (no queue slot held) and claims the event only if the elected responder
+	// never answers.
+	nostrResponderTakeovers, nostrTakeoverErr := newNostrResponderTakeoverCoordinator(ctx, nostrOwnPubkey)
+	if nostrTakeoverErr != nil {
+		log.Printf("responder takeover coordinator init failed (takeovers disabled): %v", nostrTakeoverErr)
+	}
 	nostrLoopControl := &nostrGroupLoopControl{
 		ownPubkey:               nostrOwnPubkey,
 		peerIndex:               nostrPeerIndex,
@@ -2299,6 +2307,25 @@ func main() {
 		establisher:             nostrSessionEstablisher,
 		echo:                    nostrEchoSuppressor,
 		shouldReplyCapabilities: append([]string(nil), localCapabilities.Tools...),
+		// R2: the election candidates are the NIP-51 fleet directory's
+		// capability-advertising members (kind:30317 tool terms) — the same
+		// shared inputs every fleet instance sees, so all agents elect the
+		// same responder. Muted members never take turns.
+		responderDirectory: func() []channels.ResponderDirectoryEntry {
+			entries := fleetDirectory()
+			out := make([]channels.ResponderDirectoryEntry, 0, len(entries))
+			for _, entry := range entries {
+				out = append(out, channels.ResponderDirectoryEntry{
+					Pubkey:       entry.Pubkey,
+					Capabilities: append([]string(nil), entry.Tools...),
+				})
+			}
+			return out
+		},
+		isMutedPeer: func(pubkey string) bool {
+			return listStore.IsMuted(nostrOwnPubkey, pubkey)
+		},
+		takeovers: nostrResponderTakeovers,
 	}
 	controlNostrLoopControl = nostrLoopControl
 
@@ -2326,7 +2353,12 @@ func main() {
 				channelAddress = localChanCfg.CommunityAddress
 			}
 			roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
-			onMessage := func(msg channels.InboundMessage) {
+			// onMessage is self-referential: an armed R2 takeover re-delivers
+			// the contested event through this same handler (with the
+			// ResponderTakeover marker) so it is re-verified under CURRENT
+			// config before the claim + reply turn.
+			var onMessage func(msg channels.InboundMessage)
+			onMessage = func(msg channels.InboundMessage) {
 				// Resolve CURRENT config so a policy change since startup
 				// (requireMention / allowBots / allow_from) applies now.
 				cfg := configState.Get()
@@ -2355,8 +2387,17 @@ func main() {
 				// established record-first inside the queued run.
 				decision, admitted := nostrLoopControl.gate(msg, curCfg, cfg.DM.AllowFrom)
 				if !admitted {
+					// R2: when this agent deferred as the immediate successor,
+					// arm the off-dispatch takeover timer for the contested
+					// event (no-op for any other drop).
+					nostrLoopControl.armResponderTakeover(decision, msg, onMessage)
 					settleNostrDispatch(msg, true) // deliberate gate drop; terminal
 					return
+				}
+				if msg.ResponderTakeover {
+					// R2: visible claim BEFORE answering so later successors
+					// stand down.
+					nostrLoopControl.postResponderClaim(msg)
 				}
 				sessionID := decision.SessionID
 				activeAgentID, rt := resolveInboundChannelRuntime(curCfg.AgentID, msg.ChannelID)
@@ -2465,6 +2506,7 @@ func main() {
 					AckAsReaction:         &roomPolicy.AckAsReaction,
 					CommitmentEnforcement: roomPolicy.CommitmentEnforcement,
 					OnMessage:             onMessage,
+					OnReaction:            nostrLoopControl.observeReaction,
 					OnError:               onError,
 				})
 			} else {
@@ -2476,6 +2518,7 @@ func main() {
 					AckAsReaction:         &roomPolicy.AckAsReaction,
 					CommitmentEnforcement: roomPolicy.CommitmentEnforcement,
 					OnMessage:             onMessage,
+					OnReaction:            nostrLoopControl.observeReaction,
 					OnError:               onError,
 				})
 			}

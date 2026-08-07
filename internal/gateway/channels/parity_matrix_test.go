@@ -27,10 +27,18 @@ package channels
 //      TestParityMatrix_TaskEchoSuppression (asserts Metiq's independently
 //      implemented behavior: a chat message restating a same-author kind-30900
 //      transition is dropped after one compact throttled announcement)
+//   R2 deterministic single-responder election, reference: ocn-myl ->
+//      TestParityMatrix_ResponderElection (identical winner/order on every
+//      instance, capability ranking above the hash tie-break, mention bypass,
+//      room off-switch) + TestParityMatrix_ResponderTakeover (successor claim
+//      fires only when the elected responder stays silent; replies and
+//      reactions stand it down). Full decision coverage in
+//      responder_election_test.go.
 
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -292,6 +300,93 @@ func TestParityMatrix_CommitmentEnforcement(t *testing.T) {
 	}
 	if publisher.event.Content != backed {
 		t.Fatalf("R4: backed commitment was rewritten: %q", publisher.event.Content)
+	}
+}
+
+// R2 deterministic single-responder election, reference: ocn-myl. Every fleet
+// instance computes the SAME election locally from shared inputs (event id +
+// text + NIP-51 capability advertisements): identical order everywhere, the
+// better capability match ranks above the hash tie-break, name-addressed and
+// mention/command traffic bypasses (fully this agent's), and the room
+// off-switch preserves legacy every-capable-agent dispatch.
+func TestParityMatrix_ResponderElection(t *testing.T) {
+	fleet := []ResponderDirectoryEntry{
+		{Pubkey: electionAgentA, Capabilities: []string{"deploy", "gateway"}},
+		{Pubkey: electionAgentB, Capabilities: []string{"deploy"}},
+	}
+	gate := electionGatePass()
+	evaluate := func(self string, policy NostrRoomPolicy, gate *ShouldReplyGateDecision) *NostrResponderElectionDecision {
+		return EvaluateNostrResponderElection(NostrResponderElectionParams{
+			Policy: policy, SelfPubkey: self, SelfCapabilities: []string{"deploy"},
+			EventID: electionEvent, Text: "can someone deploy the gateway?",
+			SenderPubkey: electionHuman, Gate: gate, Directory: fleet,
+		})
+	}
+	policy := ResolveNostrRoomPolicy(nil)
+
+	fromA := evaluate(electionAgentA, policy, gate)
+	fromB := evaluate(electionAgentB, policy, gate)
+	if fromA == nil || fromB == nil {
+		t.Fatal("R2: election must apply to admitted ambient traffic")
+	}
+	if fromA.ElectedPubkey != fromB.ElectedPubkey || !reflect.DeepEqual(fromA.Order, fromB.Order) {
+		t.Fatalf("R2: instances disagree: %v vs %v", fromA.Order, fromB.Order)
+	}
+	// Capability ranking above the hash tie-break: A matches "deploy" AND
+	// "gateway", so A is elected regardless of the event hash.
+	if fromA.ElectedPubkey != electionAgentA || fromA.Role != ResponderRoleElected || fromB.Role != ResponderRoleSuccessor {
+		t.Fatalf("R2: ranking wrong: fromA=%+v fromB=%+v", fromA, fromB)
+	}
+
+	// Mention bypass: explicit mention/command traffic has no gate decision;
+	// name-addressed traffic passes the gate with directlyAddressed.
+	if evaluate(electionAgentA, policy, nil) != nil {
+		t.Fatal("R2: mention/command traffic must bypass the election")
+	}
+	named := electionGatePass()
+	named.Reason = ShouldReplyReasonDirectlyAddressed
+	named.Facts.DirectlyAddressed = true
+	if evaluate(electionAgentA, policy, named) != nil {
+		t.Fatal("R2: name-addressed traffic must bypass the election")
+	}
+
+	// Off-switch.
+	off := ResolveNostrRoomPolicy(map[string]any{"responderElection": false})
+	if evaluate(electionAgentA, off, gate) != nil {
+		t.Fatal("R2: responderElection=false must preserve legacy dispatch")
+	}
+}
+
+// R2 takeover half, reference: ocn-myl. The successor's timer fires only when
+// the elected responder stays silent past the window; the elected agent's
+// reply (or anyone's reaction on the contested event, e.g. an earlier
+// successor's 🙋 claim) stands the takeover down.
+func TestParityMatrix_ResponderTakeover(t *testing.T) {
+	h := newTakeoverHarness(t, 0, nil)
+	h.coordinator.Schedule(takeoverPendingFor(electionEvent), 120*time.Second)
+	h.timers[0].fn()
+	if len(h.fired) != 1 {
+		t.Fatal("R2: silent elected responder must trigger the takeover")
+	}
+
+	h = newTakeoverHarness(t, 0, nil)
+	h.coordinator.Schedule(takeoverPendingFor(electionEvent), 120*time.Second)
+	h.coordinator.ObserveRoomMessage(TakeoverRoomMessageFacts{
+		RoomKey: electionRoom, SenderPubkey: electionAgentA,
+	})
+	h.timers[0].fn()
+	if len(h.fired) != 0 {
+		t.Fatal("R2: the elected responder answering must stand the takeover down")
+	}
+
+	h = newTakeoverHarness(t, 0, nil)
+	h.coordinator.Schedule(takeoverPendingFor(electionEvent), 120*time.Second)
+	h.coordinator.ObserveReaction(TakeoverReactionFacts{
+		RoomKey: electionRoom, SenderPubkey: electionAgentC, TargetEventID: electionEvent,
+	})
+	h.timers[0].fn()
+	if len(h.fired) != 0 {
+		t.Fatal("R2: another agent's claim reaction must stand the takeover down")
 	}
 }
 

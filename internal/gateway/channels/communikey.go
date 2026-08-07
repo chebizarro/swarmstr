@@ -466,6 +466,7 @@ type CommunikeyChannelOptions struct {
 	Hub                   *nostruntime.NostrHub
 	Keyer                 nostr.Keyer
 	OnMessage             func(InboundMessage)
+	OnReaction            func(InboundReaction)
 	OnTarget              func(CommunikeyTarget)
 	OnError               func(error)
 	PendingStorePath      string
@@ -553,6 +554,18 @@ func NewCommunikeyChannel(parent context.Context, opts CommunikeyChannelOptions)
 		pubkey:       pk.Hex(),
 	}
 
+	// Only observe kind-7 reactions when a consumer asked for them, so the
+	// chat filter stays kind-9-only otherwise.
+	var onReaction func(InboundReaction)
+	if opts.OnReaction != nil {
+		onReaction = func(reaction InboundReaction) {
+			// Present the community identity (matching InboundMessage rewrites)
+			// so observers key reactions to the same room as messages.
+			reaction.ChannelID = c.id
+			reaction.GroupID = c.community
+			opts.OnReaction(reaction)
+		}
+	}
 	chat, err := NewNIP29GroupChannel(ctx, NIP29GroupChannelOptions{
 		GroupAddress:          relays[0] + "'" + address.PubKey,
 		Hub:                   opts.Hub,
@@ -563,7 +576,8 @@ func NewCommunikeyChannel(parent context.Context, opts CommunikeyChannelOptions)
 		OnMessage: func(msg InboundMessage) {
 			c.handleChatMessage(msg, opts.OnMessage)
 		},
-		OnError: opts.OnError,
+		OnReaction: onReaction,
+		OnError:    opts.OnError,
 	})
 	if err != nil {
 		cancel()
@@ -615,6 +629,17 @@ func (c *CommunikeyChannel) handleChatMessage(msg InboundMessage, onMessage func
 			return transportReply(replyCtx, text)
 		}
 		return c.chat.Send(replyCtx, text)
+	}
+	// Reactions (R2 takeover claim, status/ack reactions) go through the same
+	// ACL gate as chat publishes.
+	transportReact := msg.React
+	if transportReact != nil {
+		msg.React = func(reactCtx context.Context, emoji string) error {
+			if err := c.authorizeChatPublish(); err != nil {
+				return err
+			}
+			return transportReact(reactCtx, emoji)
+		}
 	}
 	if onMessage == nil {
 		if msg.Settle != nil {

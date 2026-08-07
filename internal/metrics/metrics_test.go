@@ -111,3 +111,28 @@ func TestRecordShouldReplyGateLabelsOutcomeAndReason(t *testing.T) {
 		t.Errorf("drop metric family metadata should appear once:\n%s", out)
 	}
 }
+
+// R2 responder-election metrics mirror the reference election.won /
+// election.deferred / election.takeover counters.
+func TestRecordResponderElection(t *testing.T) {
+	r := NewRegistry()
+	r.RecordResponderElection("won")
+	r.RecordResponderElection("deferred")
+	r.RecordResponderElection("deferred")
+	r.RecordResponderElection("takeover")
+	r.RecordResponderElection("bogus") // ignored
+
+	exposition := r.Exposition()
+	for _, want := range []string{
+		"metiq_responder_election_won_total 1",
+		"metiq_responder_election_deferred_total 2",
+		"metiq_responder_election_takeover_total 1",
+	} {
+		if !strings.Contains(exposition, want) {
+			t.Fatalf("exposition missing %q:\n%s", want, exposition)
+		}
+	}
+	if strings.Contains(exposition, "bogus") {
+		t.Fatal("invalid outcome must not register a series")
+	}
+}
