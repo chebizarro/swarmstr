@@ -894,6 +894,27 @@ func TestDecodeChannelsJoinParams_TypeValidation(t *testing.T) {
 		t.Fatalf("expected default type nip29-group, got: %#v", joinReq)
 	}
 
+	community := strings.Repeat("a", 64)
+	commReq, err := DecodeChannelsJoinParams(json.RawMessage(`{"type":"communikey","community_address":"` + community + `","relays":["wss://relay.example"]}`))
+	if err != nil {
+		t.Fatalf("communikey channels.join decode error: %v", err)
+	}
+	commReq, err = commReq.Normalize()
+	if err != nil {
+		t.Fatalf("communikey channels.join normalize error: %v", err)
+	}
+	if commReq.Type != "communikey" || commReq.CommunityAddress != community || len(commReq.Relays) != 1 {
+		t.Fatalf("unexpected communikey join request: %#v", commReq)
+	}
+
+	missingCommunity, err := DecodeChannelsJoinParams(json.RawMessage(`{"type":"communikey"}`))
+	if err != nil {
+		t.Fatalf("communikey missing address decode error: %v", err)
+	}
+	if _, err := missingCommunity.Normalize(); err == nil {
+		t.Fatal("expected community_address validation error")
+	}
+
 	badReq, err := DecodeChannelsJoinParams(json.RawMessage(`{"type":"slack","group_address":"relay.example.com'group-1"}`))
 	if err != nil {
 		t.Fatalf("channels.join bad type decode error: %v", err)

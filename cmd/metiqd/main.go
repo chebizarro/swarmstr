@@ -2306,122 +2306,155 @@ func main() {
 			continue
 		}
 		switch chanCfg.Kind {
-		case state.NostrChannelKindNIP29:
-			if chanCfg.GroupAddress == "" {
+		case state.NostrChannelKindNIP29, state.NostrChannelKindCommunikey:
+			if chanCfg.Kind == state.NostrChannelKindNIP29 && chanCfg.GroupAddress == "" {
 				log.Printf("auto-join skip: nostr_channels.%s has no group_address", chanName)
+				continue
+			}
+			if chanCfg.Kind == state.NostrChannelKindCommunikey && chanCfg.CommunityAddress == "" {
+				log.Printf("auto-join skip: nostr_channels.%s has no community_address", chanName)
 				continue
 			}
 			localChanCfg := chanCfg // capture loop var
 			localChanName := chanName
-			ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
-				GroupAddress:     localChanCfg.GroupAddress,
-				Hub:              controlHub,
-				Keyer:            controlKeyer,
-				PendingStorePath: nostrPendingStorePath(localChanCfg.GroupAddress),
-				OnMessage: func(msg channels.InboundMessage) {
-					// Resolve CURRENT config so a policy change since startup
-					// (requireMention / allowBots / allow_from) applies now.
-					cfg := configState.Get()
-					curCfg, ok := cfg.NostrChannels[localChanName]
-					if !ok || !curCfg.Enabled {
-						settleNostrDispatch(msg, true) // deliberate drop; terminal
-						return
-					}
+			channelAddress := localChanCfg.GroupAddress
+			if localChanCfg.Kind == state.NostrChannelKindCommunikey {
+				channelAddress = localChanCfg.CommunityAddress
+			}
+			onMessage := func(msg channels.InboundMessage) {
+				// Resolve CURRENT config so a policy change since startup
+				// (requireMention / allowBots / allow_from) applies now.
+				cfg := configState.Get()
+				curCfg, ok := cfg.NostrChannels[localChanName]
+				if !ok || !curCfg.Enabled {
+					settleNostrDispatch(msg, true) // deliberate drop; terminal
+					return
+				}
+				if curCfg.Kind == state.NostrChannelKindCommunikey {
+					// Loop-control uses GroupAddress as its stable room key; the
+					// Communikey channel ID is the canonical ncommunity URI.
+					curCfg.GroupAddress = msg.ChannelID
+				}
 
-					// Per-channel allow-from check (AUTHORIZATION — kept separate
-					// from loop control; the bot flag never affects this).
-					if dec := policy.EvaluateGroupMessage(msg.FromPubKey, curCfg.AllowFrom, cfg); !dec.Allowed {
-						log.Printf("nip29 group message rejected from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, dec.Reason)
-						settleNostrDispatch(msg, true) // deliberate drop; terminal
-						return
-					}
+				// Per-channel allow-from check (AUTHORIZATION — kept separate
+				// from loop control; the bot flag never affects this).
+				if dec := policy.EvaluateGroupMessage(msg.FromPubKey, curCfg.AllowFrom, cfg); !dec.Allowed {
+					log.Printf("nostr group message rejected from=%s channel=%s reason=%s", msg.FromPubKey, msg.ChannelID, dec.Reason)
+					settleNostrDispatch(msg, true) // deliberate drop; terminal
+					return
+				}
 
-					// Loop-control gate (preflight + bot-loop guard), shared with
-					// the channels.join RPC path; returns the room-scoped session
-					// key. Turns are serialized per room and identity is
-					// established record-first inside the queued run.
-					decision, admitted := nostrLoopControl.gate(msg, curCfg, cfg.DM.AllowFrom)
-					if !admitted {
-						settleNostrDispatch(msg, true) // deliberate gate drop; terminal
+				// Loop-control gate (preflight + bot-loop guard), shared with
+				// the channels.join RPC path; returns the room-scoped session
+				// key. Turns are serialized per room and identity is
+				// established record-first inside the queued run.
+				decision, admitted := nostrLoopControl.gate(msg, curCfg, cfg.DM.AllowFrom)
+				if !admitted {
+					settleNostrDispatch(msg, true) // deliberate gate drop; terminal
+					return
+				}
+				sessionID := decision.SessionID
+				activeAgentID, rt := resolveInboundChannelRuntime(curCfg.AgentID, msg.ChannelID)
+				emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
+				if !nostrLoopControl.enqueue(sessionID, msg.EventID, func() {
+					// Delivery-confirmed seen-gating: default to "not delivered"
+					// (retryable); set true only on success or a deliberate
+					// no-send. A retryable failure triggers bounded redispatch.
+					delivered := false
+					defer func() { settleNostrDispatch(msg, delivered) }()
+					turnCtx, release := chatCancels.Begin(sessionID, ctx)
+					defer release()
+					// Watchdog stage 2: abort a hung turn so it frees the room lane.
+					turnCtx, abortCancel := context.WithTimeout(turnCtx, nostrInboundDispatchAbort)
+					defer abortCancel()
+					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
+					prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor)
+					result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
+					if turnErr != nil {
+						log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 						return
 					}
-					sessionID := decision.SessionID
-					activeAgentID, rt := resolveInboundChannelRuntime(curCfg.AgentID, msg.ChannelID)
-					emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID, AgentID: activeAgentID, CreatedAt: msg.CreatedAt})
-					if !nostrLoopControl.enqueue(sessionID, msg.EventID, func() {
-						// Delivery-confirmed seen-gating: default to "not delivered"
-						// (retryable); set true only on success or a deliberate
-						// no-send. A retryable failure triggers bounded redispatch.
-						delivered := false
-						defer func() { settleNostrDispatch(msg, delivered) }()
-						turnCtx, release := chatCancels.Begin(sessionID, ctx)
-						defer release()
-						// Watchdog stage 2: abort a hung turn so it frees the room lane.
-						turnCtx, abortCancel := context.WithTimeout(turnCtx, nostrInboundDispatchAbort)
-						defer abortCancel()
-						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor)
-						result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
-						if turnErr != nil {
-							log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
-							return
-						}
-						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
-						// Persist/ingest turn history, tool traces, session-memory
-						// observation, and task-state — equivalent to the DM path so
-						// auto-joined channel turns are not lost (swarmstr-nibw).
-						persistPostTurn(autoJoinPostTurnSvc, postTurnPersistenceParams{
-							Ctx:       ctx,
-							Config:    configState.Get(),
-							Scope:     prepared.Scope,
-							Runtime:   filteredRuntime,
-							SessionID: sessionID,
-							EventID:   msg.EventID,
-							AgentID:   activeAgentID,
-							Result:    result,
-						})
-						replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
-						if !sendOK {
-							delivered = true // deliberate no-send, not a failure
-							return
-						}
-						// Don't spew a generated failure reply into a room we were
-						// not directly addressed in (ambient room_event).
-						if decision.InboundEventKind == channels.InboundEventRoomEvent && channels.IsGeneratedFailureReplyPayload(replyText) {
-							log.Printf("nip29 suppressed failure reply for ambient room_event room=%s", sessionID)
-							delivered = true
-							return
-						}
-						// Echo suppression (opt-in): drop a reply that restates
-						// recent room traffic; otherwise record it so future echoes
-						// of it are caught.
-						if decision.EchoSuppress && nostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
-							log.Printf("nip29 echo suppressed reply room=%s", sessionID)
-							delivered = true // deliberate suppression, not a failure
-							return
-						}
-						nostrLoopControl.observeEcho(sessionID, replyText)
-						if err := msg.Reply(turnCtx, replyText); err != nil {
-							emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
-							log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
-							return
-						}
-						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
+					commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
+					// Persist/ingest turn history, tool traces, session-memory
+					// observation, and task-state — equivalent to the DM path so
+					// auto-joined channel turns are not lost (swarmstr-nibw).
+					persistPostTurn(autoJoinPostTurnSvc, postTurnPersistenceParams{
+						Ctx:       ctx,
+						Config:    configState.Get(),
+						Scope:     prepared.Scope,
+						Runtime:   filteredRuntime,
+						SessionID: sessionID,
+						EventID:   msg.EventID,
+						AgentID:   activeAgentID,
+						Result:    result,
+					})
+					replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
+					if !sendOK {
+						delivered = true // deliberate no-send, not a failure
+						return
+					}
+					// Don't spew a generated failure reply into a room we were
+					// not directly addressed in (ambient room_event).
+					if decision.InboundEventKind == channels.InboundEventRoomEvent && channels.IsGeneratedFailureReplyPayload(replyText) {
+						log.Printf("nip29 suppressed failure reply for ambient room_event room=%s", sessionID)
 						delivered = true
-					}) {
-						// Load-shed: room at capacity (metered/logged via the
-						// queue's OnOverflow). The event stays seen; the relay may
-						// redeliver but it is not auto-retried here.
-						settleNostrDispatch(msg, true)
 						return
 					}
-				},
-				OnError: func(err error) {
-					log.Printf("auto-join nip29 error name=%s group=%s err=%v", localChanName, localChanCfg.GroupAddress, err)
-				},
-			})
+					// Echo suppression (opt-in): drop a reply that restates
+					// recent room traffic; otherwise record it so future echoes
+					// of it are caught.
+					if decision.EchoSuppress && nostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
+						log.Printf("nip29 echo suppressed reply room=%s", sessionID)
+						delivered = true // deliberate suppression, not a failure
+						return
+					}
+					nostrLoopControl.observeEcho(sessionID, replyText)
+					if err := msg.Reply(turnCtx, replyText); err != nil {
+						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
+						log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
+						return
+					}
+					emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
+					delivered = true
+				}) {
+					// Load-shed: room at capacity (metered/logged via the
+					// queue's OnOverflow). The event stays seen; the relay may
+					// redeliver but it is not auto-retried here.
+					settleNostrDispatch(msg, true)
+					return
+				}
+			}
+			onError := func(err error) {
+				log.Printf("auto-join %s error name=%s address=%s err=%v", localChanCfg.Kind, localChanName, channelAddress, err)
+			}
+			var ch channels.Channel
+			var chErr error
+			if localChanCfg.Kind == state.NostrChannelKindCommunikey {
+				relays := localChanCfg.Relays
+				if len(relays) == 0 {
+					relays = configState.Get().Relays.Read
+				}
+				ch, chErr = channels.NewCommunikeyChannel(ctx, channels.CommunikeyChannelOptions{
+					CommunityAddress: localChanCfg.CommunityAddress,
+					Relays:           relays,
+					Hub:              controlHub,
+					Keyer:            controlKeyer,
+					PendingStorePath: nostrPendingStorePath(localChanCfg.CommunityAddress),
+					OnMessage:        onMessage,
+					OnError:          onError,
+				})
+			} else {
+				ch, chErr = channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
+					GroupAddress:     localChanCfg.GroupAddress,
+					Hub:              controlHub,
+					Keyer:            controlKeyer,
+					PendingStorePath: nostrPendingStorePath(localChanCfg.GroupAddress),
+					OnMessage:        onMessage,
+					OnError:          onError,
+				})
+			}
 			if chErr != nil {
-				log.Printf("auto-join nip29 failed name=%s group=%s err=%v", localChanName, localChanCfg.GroupAddress, chErr)
+				log.Printf("auto-join %s failed name=%s address=%s err=%v", localChanCfg.Kind, localChanName, channelAddress, chErr)
 				continue
 			}
 			if addErr := channelReg.Add(ch); addErr != nil {
@@ -2429,7 +2462,7 @@ func main() {
 				log.Printf("auto-join channel add failed name=%s err=%v", localChanName, addErr)
 				continue
 			}
-			log.Printf("auto-join nip29 channel joined name=%s group=%s id=%s", localChanName, localChanCfg.GroupAddress, ch.ID())
+			log.Printf("auto-join %s channel joined name=%s address=%s id=%s", localChanCfg.Kind, localChanName, channelAddress, ch.ID())
 		case state.NostrChannelKindNIP28:
 			if chanCfg.ChannelID == "" {
 				log.Printf("auto-join skip: nostr_channels.%s has no channel_id", chanName)
@@ -5516,7 +5549,7 @@ func main() {
 			chatRelays := map[string]struct{}{}
 			for _, chanCfg := range liveCfg.NostrChannels {
 				switch state.NostrChannelKind(chanCfg.Kind) {
-				case state.NostrChannelKindNIP29:
+				case state.NostrChannelKindNIP29, state.NostrChannelKindCommunikey:
 					for _, r := range chanCfg.Relays {
 						nip29Relays[r] = struct{}{}
 					}

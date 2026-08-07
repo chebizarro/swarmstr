@@ -168,6 +168,7 @@ var validNostrChannelKinds = map[string]bool{
 	state.NostrChannelKindDM:          true,
 	state.NostrChannelKindNIP28:       true,
 	state.NostrChannelKindNIP29:       true,
+	state.NostrChannelKindCommunikey:  true,
 	state.NostrChannelKindChat:        true,
 	state.NostrChannelKindRelayFilter: true,
 	state.NostrChannelKindNIP34Inbox:  true,
@@ -179,12 +180,16 @@ func validateNostrChannels(channels state.NostrChannelsConfig) error {
 			return fmt.Errorf("nostr_channels.%s: kind is required", name)
 		}
 		if !validNostrChannelKinds[ch.Kind] {
-			return fmt.Errorf("nostr_channels.%s: unknown kind %q (valid: dm, nip28, nip29, chat, relay-filter, nip34-inbox)", name, ch.Kind)
+			return fmt.Errorf("nostr_channels.%s: unknown kind %q (valid: dm, nip28, nip29, communikey, chat, relay-filter, nip34-inbox)", name, ch.Kind)
 		}
 		switch ch.Kind {
 		case state.NostrChannelKindNIP29:
 			if ch.GroupAddress == "" {
 				return fmt.Errorf("nostr_channels.%s: group_address is required for nip29 channels", name)
+			}
+		case state.NostrChannelKindCommunikey:
+			if ch.CommunityAddress == "" {
+				return fmt.Errorf("nostr_channels.%s: community_address is required for communikey channels", name)
 			}
 		case state.NostrChannelKindNIP28:
 			if ch.ChannelID == "" {

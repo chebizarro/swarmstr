@@ -35,11 +35,13 @@ type ChannelsPairingResolveRequest struct {
 	RequestID string `json:"request_id"`
 }
 
-// ChannelsJoinRequest joins a NIP-29 relay group or other channel.
+// ChannelsJoinRequest joins a NIP-29 relay group or Communikey community.
 // For NIP-29, GroupAddress has the form "<relayHost>'<groupID>".
 type ChannelsJoinRequest struct {
-	Type         string `json:"type"`          // "nip29-group"
-	GroupAddress string `json:"group_address"` // relay'groupID
+	Type             string   `json:"type"`              // "nip29-group" or "communikey"
+	GroupAddress     string   `json:"group_address"`     // relay'groupID
+	CommunityAddress string   `json:"community_address"` // bare pubkey or ncommunity:// URI
+	Relays           []string `json:"relays,omitempty"`  // bootstrap relays for a bare community pubkey
 }
 
 // ChannelsLeaveRequest leaves a previously joined channel.
@@ -157,14 +159,24 @@ func (r ChannelsPairingResolveRequest) Normalize() (ChannelsPairingResolveReques
 func (r ChannelsJoinRequest) Normalize() (ChannelsJoinRequest, error) {
 	r.Type = strings.ToLower(strings.TrimSpace(r.Type))
 	r.GroupAddress = strings.TrimSpace(r.GroupAddress)
+	r.CommunityAddress = strings.TrimSpace(r.CommunityAddress)
+	for i := range r.Relays {
+		r.Relays[i] = strings.TrimSpace(r.Relays[i])
+	}
 	if r.Type == "" {
 		r.Type = "nip29-group"
 	}
-	if r.Type != "nip29-group" {
+	switch r.Type {
+	case "nip29-group":
+		if r.GroupAddress == "" {
+			return r, fmt.Errorf("group_address is required")
+		}
+	case "communikey":
+		if r.CommunityAddress == "" {
+			return r, fmt.Errorf("community_address is required")
+		}
+	default:
 		return r, fmt.Errorf("unsupported channel type %q", r.Type)
-	}
-	if r.GroupAddress == "" {
-		return r, fmt.Errorf("group_address is required")
 	}
 	return r, nil
 }

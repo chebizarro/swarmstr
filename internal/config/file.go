@@ -495,6 +495,9 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 				if v, ok := cm["group_address"].(string); ok {
 					ch.GroupAddress = strings.TrimSpace(v)
 				}
+				if v, ok := cm["community_address"].(string); ok {
+					ch.CommunityAddress = strings.TrimSpace(v)
+				}
 				if v, ok := cm["channel_id"].(string); ok {
 					ch.ChannelID = strings.TrimSpace(v)
 				}
@@ -1146,7 +1149,7 @@ func detectUnknownNostrChannelKeys(raw any) []string {
 	if !ok {
 		return nil
 	}
-	allowed := []string{"kind", "enabled", "group_address", "channel_id", "relays", "agent_id", "tags", "config", "allow_from"}
+	allowed := []string{"kind", "enabled", "group_address", "community_address", "channel_id", "relays", "agent_id", "tags", "config", "allow_from"}
 	var errs []string
 	for name, item := range m {
 		cm, ok := item.(map[string]any)

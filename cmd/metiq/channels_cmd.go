@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -187,7 +188,8 @@ func runChannelsList(args []string) error {
 
 func runChannelsJoin(args []string) error {
 	fs := flag.NewFlagSet("channels join", flag.ContinueOnError)
-	var adminAddr, adminToken, bootstrapPath, channelType, groupAddress string
+	var adminAddr, adminToken, bootstrapPath, channelType, groupAddress, communityAddress string
+	var relays stringListFlag
 	var jsonOut bool
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
@@ -195,18 +197,35 @@ func runChannelsJoin(args []string) error {
 	fs.StringVar(&channelType, "type", "nip29-group", "channel type")
 	fs.StringVar(&groupAddress, "group-address", "", "NIP-29 group address: relayHost'groupID")
 	fs.StringVar(&groupAddress, "group", "", "alias for --group-address")
+	fs.StringVar(&communityAddress, "community-address", "", "Communikey community pubkey or ncommunity URI")
+	fs.StringVar(&communityAddress, "community", "", "alias for --community-address")
+	fs.Var(&relays, "relay", "Communikey bootstrap relay URL (repeatable)")
 	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if groupAddress == "" && fs.NArg() > 0 {
-		groupAddress = fs.Arg(0)
-	}
-	if groupAddress == "" {
-		var err error
-		groupAddress, err = promptText(os.Stdin, os.Stdout, "NIP-29 group address (relayHost'groupID)", "", false)
-		if err != nil {
-			return err
+	channelType = strings.ToLower(strings.TrimSpace(channelType))
+	if channelType == "communikey" {
+		if communityAddress == "" && fs.NArg() > 0 {
+			communityAddress = fs.Arg(0)
+		}
+		if communityAddress == "" {
+			var err error
+			communityAddress, err = promptText(os.Stdin, os.Stdout, "Communikey community pubkey or ncommunity URI", "", false)
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		if groupAddress == "" && fs.NArg() > 0 {
+			groupAddress = fs.Arg(0)
+		}
+		if groupAddress == "" {
+			var err error
+			groupAddress, err = promptText(os.Stdin, os.Stdout, "NIP-29 group address (relayHost'groupID)", "", false)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -214,7 +233,10 @@ func runChannelsJoin(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := cl.call("channels.join", map[string]any{"type": channelType, "group_address": groupAddress})
+	result, err := cl.call("channels.join", map[string]any{
+		"type": channelType, "group_address": groupAddress,
+		"community_address": communityAddress, "relays": relays.Values(),
+	})
 	if err != nil {
 		return err
 	}

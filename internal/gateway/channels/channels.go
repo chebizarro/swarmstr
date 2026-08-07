@@ -1,7 +1,8 @@
 // Package channels provides the multi-channel messaging framework for Metiq.
 //
 // It supports NIP-17 (private DMs, already handled by nostr/runtime) and
-// NIP-29 (relay-based group chat).  New channel types can be added by
+// NIP-29 (relay-based group chat) and NIP-CAS-0007 Communikey communities.
+// New channel types can be added by
 // implementing the Channel interface and registering them with Registry.
 package channels
 

@@ -375,6 +375,27 @@ func TestParseConfigBytesLoadsPreviouslyDroppedFields(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytesCommunikeyChannel(t *testing.T) {
+	const community = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	doc, err := ParseConfigBytes([]byte(`{
+		"nostr_channels": {
+			"community": {
+				"kind": "communikey",
+				"enabled": true,
+				"community_address": "ncommunity://`+community+`?relay=wss%3A%2F%2Frelay.example",
+				"relays": ["wss://relay.example"]
+			}
+		}
+	}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	channel := doc.NostrChannels["community"]
+	if channel.Kind != "communikey" || channel.CommunityAddress == "" || len(channel.Relays) != 1 {
+		t.Fatalf("unexpected Communikey channel: %#v", channel)
+	}
+}
+
 func TestParseConfigBytesRejectsUnsupportedFieldsInsteadOfDroppingThem(t *testing.T) {
 	_, err := ParseConfigBytes([]byte(`{
 		"hooks": {"enabled": true, "bogus": true},

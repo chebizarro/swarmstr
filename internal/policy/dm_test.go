@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"metiq/internal/store/state"
@@ -135,6 +136,26 @@ func TestValidateDMReplySchemeRejectsInvalidMode(t *testing.T) {
 	d.DM.ReplyScheme = "giftwrap"
 	if err := ValidateConfig(d); err == nil {
 		t.Fatal("expected invalid dm.reply_scheme error")
+	}
+}
+
+func TestValidateNostrChannelsCommunikeyRequiresAddress(t *testing.T) {
+	err := validateNostrChannels(state.NostrChannelsConfig{
+		"community": {Kind: state.NostrChannelKindCommunikey},
+	})
+	if err == nil || !strings.Contains(err.Error(), "community_address is required") {
+		t.Fatalf("expected missing community_address error, got %v", err)
+	}
+
+	err = validateNostrChannels(state.NostrChannelsConfig{
+		"community": {
+			Kind:             state.NostrChannelKindCommunikey,
+			CommunityAddress: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			Relays:           []string{"wss://relay.example"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("valid Communikey channel rejected: %v", err)
 	}
 }
 

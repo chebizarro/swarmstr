@@ -189,100 +189,126 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		if h.deps.channels == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel runtime not configured")
 		}
-		ch, chErr := channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
-			GroupAddress:     req.GroupAddress,
-			Hub:              h.deps.nostrHub,
-			Keyer:            h.deps.keyer,
-			PendingStorePath: nostrPendingStorePath(req.GroupAddress),
-			OnMessage: func(msg channels.InboundMessage) {
-				// Same loop-control gate as auto-join so a manually-joined room is
-				// gated identically (swarmstr-nfl4). An ad-hoc join has no
-				// configured room policy, so defaults apply (requireMention,
-				// allowBots="mentions"). Returns the room-scoped session key.
-				roomCfg := state.NostrChannelConfig{Kind: state.NostrChannelKindNIP29, GroupAddress: req.GroupAddress}
-				decision, admitted := controlNostrLoopControl.gate(msg, roomCfg, configState.Get().DM.AllowFrom)
-				if !admitted {
-					settleNostrDispatch(msg, true) // deliberate gate drop; terminal
+		roomAddress := req.GroupAddress
+		roomKind := state.NostrChannelKindNIP29
+		if req.Type == "communikey" {
+			roomAddress = req.CommunityAddress
+			roomKind = state.NostrChannelKindCommunikey
+		}
+		onMessage := func(msg channels.InboundMessage) {
+			// Same loop-control gate as auto-join so a manually-joined room is
+			// gated identically (swarmstr-nfl4). An ad-hoc join has no
+			// configured room policy, so defaults apply (requireMention,
+			// allowBots="mentions"). Returns the room-scoped session key.
+			roomCfg := state.NostrChannelConfig{Kind: roomKind, GroupAddress: roomAddress, CommunityAddress: req.CommunityAddress}
+			decision, admitted := controlNostrLoopControl.gate(msg, roomCfg, configState.Get().DM.AllowFrom)
+			if !admitted {
+				settleNostrDispatch(msg, true) // deliberate gate drop; terminal
+				return
+			}
+			sessionID := decision.SessionID
+			emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID})
+			controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
+				TS:        time.Now().UnixMilli(),
+				ChannelID: msg.ChannelID,
+				GroupID:   msg.GroupID,
+				Relay:     msg.Relay,
+				Direction: "inbound",
+				From:      msg.FromPubKey,
+				Text:      msg.Text,
+				EventID:   msg.EventID,
+			})
+			activeAgentID, rt := resolveInboundChannelRuntime("", msg.ChannelID)
+			if !controlNostrLoopControl.enqueue(sessionID, msg.EventID, func() {
+				delivered := false
+				defer func() { settleNostrDispatch(msg, delivered) }()
+				turnCtx, release := chatCancels.Begin(sessionID, ctx)
+				defer release()
+				// Watchdog stage 2: abort a hung turn so it frees the room lane.
+				turnCtx, abortCancel := context.WithTimeout(turnCtx, nostrInboundDispatchAbort)
+				defer abortCancel()
+				sessionStore := h.deps.sessionStore
+				filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
+				scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
+				turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
+				result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
+					SessionID:           sessionID,
+					UserText:            decision.BodyForAgent,
+					Tools:               turnTools,
+					Executor:            turnExecutor,
+					ContextWindowTokens: maxContextTokensForAgent(configState.Get(), activeAgentID),
+					HookInvoker:         controlHookInvoker,
+				})
+				if turnErr != nil {
+					log.Printf("channel agent turn error channel=%s err=%v", msg.ChannelID, turnErr)
 					return
 				}
-				sessionID := decision.SessionID
-				emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: msg.ChannelID, SenderID: msg.FromPubKey, Text: msg.Text, EventID: msg.EventID, SessionID: sessionID})
+				replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
+				if !sendOK {
+					delivered = true // deliberate no-send, not a failure
+					return
+				}
+				if decision.InboundEventKind == channels.InboundEventRoomEvent && channels.IsGeneratedFailureReplyPayload(replyText) {
+					log.Printf("nip29 suppressed failure reply for ambient room_event room=%s", sessionID)
+					delivered = true
+					return
+				}
+				if decision.EchoSuppress && controlNostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
+					log.Printf("nip29 echo suppressed reply room=%s", sessionID)
+					delivered = true // deliberate suppression, not a failure
+					return
+				}
+				controlNostrLoopControl.observeEcho(sessionID, replyText)
+				if err := msg.Reply(turnCtx, replyText); err != nil {
+					emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
+					log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
+					return
+				}
+				emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
 				controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
 					TS:        time.Now().UnixMilli(),
 					ChannelID: msg.ChannelID,
 					GroupID:   msg.GroupID,
 					Relay:     msg.Relay,
-					Direction: "inbound",
-					From:      msg.FromPubKey,
-					Text:      msg.Text,
-					EventID:   msg.EventID,
+					Direction: "outbound",
+					Text:      replyText,
 				})
-				activeAgentID, rt := resolveInboundChannelRuntime("", msg.ChannelID)
-				if !controlNostrLoopControl.enqueue(sessionID, msg.EventID, func() {
-					delivered := false
-					defer func() { settleNostrDispatch(msg, delivered) }()
-					turnCtx, release := chatCancels.Begin(sessionID, ctx)
-					defer release()
-					// Watchdog stage 2: abort a hung turn so it frees the room lane.
-					turnCtx, abortCancel := context.WithTimeout(turnCtx, nostrInboundDispatchAbort)
-					defer abortCancel()
-					sessionStore := h.deps.sessionStore
-					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-					scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
-					turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-					result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
-						SessionID:           sessionID,
-						UserText:            decision.BodyForAgent,
-						Tools:               turnTools,
-						Executor:            turnExecutor,
-						ContextWindowTokens: maxContextTokensForAgent(configState.Get(), activeAgentID),
-						HookInvoker:         controlHookInvoker,
-					})
-					if turnErr != nil {
-						log.Printf("channel agent turn error channel=%s err=%v", msg.ChannelID, turnErr)
-						return
-					}
-					replyText, sendOK := applyPluginMessageSending(turnCtx, pluginhooks.MessageSendingEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: result.Text, SessionID: sessionID, AgentID: activeAgentID})
-					if !sendOK {
-						delivered = true // deliberate no-send, not a failure
-						return
-					}
-					if decision.InboundEventKind == channels.InboundEventRoomEvent && channels.IsGeneratedFailureReplyPayload(replyText) {
-						log.Printf("nip29 suppressed failure reply for ambient room_event room=%s", sessionID)
-						delivered = true
-						return
-					}
-					if decision.EchoSuppress && controlNostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
-						log.Printf("nip29 echo suppressed reply room=%s", sessionID)
-						delivered = true // deliberate suppression, not a failure
-						return
-					}
-					controlNostrLoopControl.observeEcho(sessionID, replyText)
-					if err := msg.Reply(turnCtx, replyText); err != nil {
-						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
-						log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
-						return
-					}
-					emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
-					controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
-						TS:        time.Now().UnixMilli(),
-						ChannelID: msg.ChannelID,
-						GroupID:   msg.GroupID,
-						Relay:     msg.Relay,
-						Direction: "outbound",
-						Text:      replyText,
-					})
-					delivered = true
-				}) {
-					// Load-shed: room at capacity; event stays seen, not retried.
-					settleNostrDispatch(msg, true)
-					return
-				}
-			},
-			OnError: func(err error) {
-				log.Printf("nip29 channel error channel=%s err=%v", req.GroupAddress, err)
-			},
-		})
+				delivered = true
+			}) {
+				// Load-shed: room at capacity; event stays seen, not retried.
+				settleNostrDispatch(msg, true)
+				return
+			}
+		}
+		onError := func(err error) {
+			log.Printf("%s channel error channel=%s err=%v", req.Type, roomAddress, err)
+		}
+		var ch channels.Channel
+		var chErr error
+		if req.Type == "communikey" {
+			relays := req.Relays
+			if len(relays) == 0 {
+				relays = cfg.Relays.Read
+			}
+			ch, chErr = channels.NewCommunikeyChannel(ctx, channels.CommunikeyChannelOptions{
+				CommunityAddress: req.CommunityAddress,
+				Relays:           relays,
+				Hub:              h.deps.nostrHub,
+				Keyer:            h.deps.keyer,
+				PendingStorePath: nostrPendingStorePath(req.CommunityAddress),
+				OnMessage:        onMessage,
+				OnError:          onError,
+			})
+		} else {
+			ch, chErr = channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
+				GroupAddress:     req.GroupAddress,
+				Hub:              h.deps.nostrHub,
+				Keyer:            h.deps.keyer,
+				PendingStorePath: nostrPendingStorePath(req.GroupAddress),
+				OnMessage:        onMessage,
+				OnError:          onError,
+			})
+		}
 		if chErr != nil {
 			return nostruntime.ControlRPCResult{}, true, chErr
 		}
