@@ -35,13 +35,17 @@ type ChannelsPairingResolveRequest struct {
 	RequestID string `json:"request_id"`
 }
 
-// ChannelsJoinRequest joins a NIP-29 relay group or Communikey community.
+// ChannelsJoinRequest joins a NIP-29 group, Communikey community, or Concord community.
 // For NIP-29, GroupAddress has the form "<relayHost>'<groupID>".
 type ChannelsJoinRequest struct {
-	Type             string   `json:"type"`              // "nip29-group" or "communikey"
-	GroupAddress     string   `json:"group_address"`     // relay'groupID
-	CommunityAddress string   `json:"community_address"` // bare pubkey or ncommunity:// URI
-	Relays           []string `json:"relays,omitempty"`  // bootstrap relays for a bare community pubkey
+	Type             string   `json:"type"`
+	GroupAddress     string   `json:"group_address"`
+	CommunityAddress string   `json:"community_address"`
+	CommunityID      string   `json:"community_id"`
+	KeysRef          string   `json:"keys_ref,omitempty"`
+	Channel          string   `json:"channel,omitempty"`
+	ChannelID        string   `json:"channel_id,omitempty"`
+	Relays           []string `json:"relays,omitempty"`
 }
 
 // ChannelsLeaveRequest leaves a previously joined channel.
@@ -156,10 +160,26 @@ func (r ChannelsPairingResolveRequest) Normalize() (ChannelsPairingResolveReques
 	return r, nil
 }
 
+func isLowerHex64(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, ch := range value {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func (r ChannelsJoinRequest) Normalize() (ChannelsJoinRequest, error) {
 	r.Type = strings.ToLower(strings.TrimSpace(r.Type))
 	r.GroupAddress = strings.TrimSpace(r.GroupAddress)
 	r.CommunityAddress = strings.TrimSpace(r.CommunityAddress)
+	r.CommunityID = strings.TrimSpace(r.CommunityID)
+	r.KeysRef = strings.TrimSpace(r.KeysRef)
+	r.Channel = strings.TrimSpace(r.Channel)
+	r.ChannelID = strings.TrimSpace(r.ChannelID)
 	for i := range r.Relays {
 		r.Relays[i] = strings.TrimSpace(r.Relays[i])
 	}
@@ -174,6 +194,16 @@ func (r ChannelsJoinRequest) Normalize() (ChannelsJoinRequest, error) {
 	case "communikey":
 		if r.CommunityAddress == "" {
 			return r, fmt.Errorf("community_address is required")
+		}
+	case "concord":
+		if !isLowerHex64(r.CommunityID) {
+			return r, fmt.Errorf("community_id must be 64-character lowercase hex")
+		}
+		if r.ChannelID != "" && !isLowerHex64(r.ChannelID) {
+			return r, fmt.Errorf("channel_id must be 64-character lowercase hex")
+		}
+		if r.KeysRef != "" && !(strings.HasPrefix(r.KeysRef, "$") || strings.HasPrefix(r.KeysRef, "env:") || strings.HasPrefix(r.KeysRef, "secret:")) {
+			return r, fmt.Errorf("keys_ref must be an env/secret reference")
 		}
 	default:
 		return r, fmt.Errorf("unsupported channel type %q", r.Type)

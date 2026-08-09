@@ -396,6 +396,43 @@ func TestParseConfigBytesCommunikeyChannel(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytesConcordChannel(t *testing.T) {
+	const community = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const channelID = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	doc, err := ParseConfigBytes([]byte(`{
+		"nostr_channels": {
+			"backup": {
+				"kind": "concord",
+				"enabled": true,
+				"community_id": "`+community+`",
+				"keys": "env:CONCORD_JOIN_MATERIAL",
+				"channel": "general",
+				"channel_id": "`+channelID+`",
+				"relays": ["wss://relay.example"]
+			}
+		}
+	}`), ".json")
+	if err != nil {
+		t.Fatalf("ParseConfigBytes: %v", err)
+	}
+	channel := doc.NostrChannels["backup"]
+	if channel.Kind != "concord" || channel.CommunityID != community || channel.Keys != "env:CONCORD_JOIN_MATERIAL" || channel.ChannelID != channelID {
+		t.Fatalf("unexpected Concord channel: %#v", channel)
+	}
+
+	for name, raw := range map[string]string{
+		"missing community": `{"nostr_channels":{"backup":{"kind":"concord"}}}`,
+		"inline keys":       `{"nostr_channels":{"backup":{"kind":"concord","community_id":"` + community + `","keys":"{\"community_root\":\"secret\"}"}}}`,
+		"foreign fields":    `{"nostr_channels":{"backup":{"kind":"nip29","group_address":"relay'group","community_id":"` + community + `"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseConfigBytes([]byte(raw), ".json"); err == nil {
+				t.Fatal("expected Concord schema validation error")
+			}
+		})
+	}
+}
+
 func TestParseConfigBytesRejectsUnsupportedFieldsInsteadOfDroppingThem(t *testing.T) {
 	_, err := ParseConfigBytes([]byte(`{
 		"hooks": {"enabled": true, "bogus": true},

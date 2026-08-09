@@ -907,6 +907,25 @@ func TestDecodeChannelsJoinParams_TypeValidation(t *testing.T) {
 		t.Fatalf("unexpected communikey join request: %#v", commReq)
 	}
 
+	concordReq, err := DecodeChannelsJoinParams(json.RawMessage(`{"type":"concord","community_id":"` + community + `","keys_ref":"env:CONCORD_JOIN_MATERIAL","channel":"general","relays":["wss://relay.example"]}`))
+	if err != nil {
+		t.Fatalf("concord channels.join decode error: %v", err)
+	}
+	concordReq, err = concordReq.Normalize()
+	if err != nil {
+		t.Fatalf("concord channels.join normalize error: %v", err)
+	}
+	if concordReq.Type != "concord" || concordReq.CommunityID != community || concordReq.KeysRef == "" || concordReq.Channel != "general" {
+		t.Fatalf("unexpected concord join request: %#v", concordReq)
+	}
+	missingConcord, err := DecodeChannelsJoinParams(json.RawMessage(`{"type":"concord"}`))
+	if err != nil {
+		t.Fatalf("concord missing id decode error: %v", err)
+	}
+	if _, err := missingConcord.Normalize(); err == nil {
+		t.Fatal("expected concord community_id validation error")
+	}
+
 	missingCommunity, err := DecodeChannelsJoinParams(json.RawMessage(`{"type":"communikey"}`))
 	if err != nil {
 		t.Fatalf("communikey missing address decode error: %v", err)

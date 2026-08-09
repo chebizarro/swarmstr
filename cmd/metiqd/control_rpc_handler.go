@@ -26,8 +26,8 @@ import (
 	"metiq/internal/gateway/nodepending"
 	pluginapprovalpkg "metiq/internal/gateway/pluginapproval"
 	questionspkg "metiq/internal/gateway/questions"
-	suspendpkg "metiq/internal/gateway/suspend"
 	"metiq/internal/gateway/sessioncoord"
+	suspendpkg "metiq/internal/gateway/suspend"
 	talkpkg "metiq/internal/gateway/talk"
 	tasksuggestionspkg "metiq/internal/gateway/tasksuggestions"
 	terminalpkg "metiq/internal/gateway/terminal"
@@ -107,6 +107,7 @@ type controlRPCDeps struct {
 	approvePairing  func(context.Context, channels.PairingRequest) error
 	nostrHub        *nostruntime.NostrHub
 	keyer           nostr.Keyer
+	secretResolver  channels.ConcordSecretResolver
 	terminalManager *terminalpkg.Manager
 	attachGrants    *attachpkg.Store
 	worktrees       *worktreespkg.Service
@@ -132,8 +133,8 @@ type controlRPCDeps struct {
 	// tests that do not exercise the suspend surface (handlers report the surface
 	// unavailable rather than nil-deref).
 	suspendCoordinator *suspendpkg.Coordinator
-	taskSuggestions *tasksuggestionspkg.Registry
-	environments    *environmentspkg.Manager
+	taskSuggestions    *tasksuggestionspkg.Registry
+	environments       *environmentspkg.Manager
 
 	// Voice/talk long-tail surface (swarmstr-0tfj). talkSessions is nil until
 	// the WS gateway starts (session output streams to the owning connection);

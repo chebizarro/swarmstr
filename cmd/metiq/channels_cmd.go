@@ -189,6 +189,7 @@ func runChannelsList(args []string) error {
 func runChannelsJoin(args []string) error {
 	fs := flag.NewFlagSet("channels join", flag.ContinueOnError)
 	var adminAddr, adminToken, bootstrapPath, channelType, groupAddress, communityAddress string
+	var communityID, keysRef, concordChannel, concordChannelID string
 	var relays stringListFlag
 	var jsonOut bool
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
@@ -199,7 +200,11 @@ func runChannelsJoin(args []string) error {
 	fs.StringVar(&groupAddress, "group", "", "alias for --group-address")
 	fs.StringVar(&communityAddress, "community-address", "", "Communikey community pubkey or ncommunity URI")
 	fs.StringVar(&communityAddress, "community", "", "alias for --community-address")
-	fs.Var(&relays, "relay", "Communikey bootstrap relay URL (repeatable)")
+	fs.StringVar(&communityID, "community-id", "", "Concord CORD-02 community ID")
+	fs.StringVar(&keysRef, "keys-ref", "", "Concord join-material secret reference (env:NAME or $NAME)")
+	fs.StringVar(&concordChannel, "concord-channel", "", "Concord target channel name (default general)")
+	fs.StringVar(&concordChannelID, "concord-channel-id", "", "Concord target channel ID (overrides name)")
+	fs.Var(&relays, "relay", "community bootstrap relay URL (repeatable)")
 	fs.BoolVar(&jsonOut, "json", jsonFlagDefault(), "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -212,6 +217,17 @@ func runChannelsJoin(args []string) error {
 		if communityAddress == "" {
 			var err error
 			communityAddress, err = promptText(os.Stdin, os.Stdout, "Communikey community pubkey or ncommunity URI", "", false)
+			if err != nil {
+				return err
+			}
+		}
+	} else if channelType == "concord" {
+		if communityID == "" && fs.NArg() > 0 {
+			communityID = fs.Arg(0)
+		}
+		if communityID == "" {
+			var err error
+			communityID, err = promptText(os.Stdin, os.Stdout, "Concord community ID", "", false)
 			if err != nil {
 				return err
 			}
@@ -235,7 +251,9 @@ func runChannelsJoin(args []string) error {
 	}
 	result, err := cl.call("channels.join", map[string]any{
 		"type": channelType, "group_address": groupAddress,
-		"community_address": communityAddress, "relays": relays.Values(),
+		"community_address": communityAddress, "community_id": communityID,
+		"keys_ref": keysRef, "channel": concordChannel, "channel_id": concordChannelID,
+		"relays": relays.Values(),
 	})
 	if err != nil {
 		return err

@@ -192,9 +192,13 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		}
 		roomAddress := req.GroupAddress
 		roomKind := state.NostrChannelKindNIP29
-		if req.Type == "communikey" {
+		switch req.Type {
+		case "communikey":
 			roomAddress = req.CommunityAddress
 			roomKind = state.NostrChannelKindCommunikey
+		case "concord":
+			roomAddress = "concord:" + req.CommunityID
+			roomKind = state.NostrChannelKindConcord
 		}
 		// onMessage is self-referential: an armed R2 takeover re-delivers the
 		// contested event through this same handler (with the ResponderTakeover
@@ -206,7 +210,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 			// gated identically (swarmstr-nfl4). An ad-hoc join has no
 			// configured room policy, so defaults apply (requireMention,
 			// allowBots="mentions"). Returns the room-scoped session key.
-			roomCfg := state.NostrChannelConfig{Kind: roomKind, GroupAddress: roomAddress, CommunityAddress: req.CommunityAddress}
+			roomCfg := state.NostrChannelConfig{Kind: roomKind, GroupAddress: roomAddress, CommunityAddress: req.CommunityAddress, CommunityID: req.CommunityID, Channel: req.Channel, ChannelID: req.ChannelID}
 			decision, admitted := controlNostrLoopControl.gate(msg, roomCfg, configState.Get().DM.AllowFrom)
 			if !admitted {
 				// R2: when this agent deferred as the immediate successor, arm
@@ -328,6 +332,26 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				OnMessage:        onMessage,
 				OnReaction:       controlNostrLoopControl.observeReaction,
 				OnError:          onError,
+			})
+		} else if req.Type == "concord" {
+			relays := req.Relays
+			if len(relays) == 0 {
+				relays = cfg.Relays.Read
+			}
+			keyMaterial, resolveErr := channels.ResolveConcordKeyMaterial(req.KeysRef, h.deps.secretResolver)
+			if resolveErr != nil {
+				return nostruntime.ControlRPCResult{}, true, resolveErr
+			}
+			ch, chErr = channels.NewConcordChannel(ctx, channels.ConcordChannelOptions{
+				CommunityID:     req.CommunityID,
+				ChannelName:     req.Channel,
+				ChannelID:       req.ChannelID,
+				KeyMaterialJSON: keyMaterial,
+				Relays:          relays,
+				Hub:             h.deps.nostrHub,
+				Keyer:           h.deps.keyer,
+				OnMessage:       onMessage,
+				OnError:         onError,
 			})
 		} else {
 			ch, chErr = channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{

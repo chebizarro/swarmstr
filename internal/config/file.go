@@ -498,6 +498,15 @@ func mapRawToConfigDoc(raw map[string]any) state.ConfigDoc {
 				if v, ok := cm["community_address"].(string); ok {
 					ch.CommunityAddress = strings.TrimSpace(v)
 				}
+				if v, ok := cm["community_id"].(string); ok {
+					ch.CommunityID = strings.TrimSpace(v)
+				}
+				if v, ok := cm["keys"].(string); ok {
+					ch.Keys = strings.TrimSpace(v)
+				}
+				if v, ok := cm["channel"].(string); ok {
+					ch.Channel = strings.TrimSpace(v)
+				}
 				if v, ok := cm["channel_id"].(string); ok {
 					ch.ChannelID = strings.TrimSpace(v)
 				}
@@ -918,7 +927,48 @@ func parseRawConfigMap(raw map[string]any) (state.ConfigDoc, error) {
 	if errs := detectUnknownConfigKeys(raw); len(errs) > 0 {
 		return state.ConfigDoc{}, fmt.Errorf("unsupported config fields:\n  - %s", strings.Join(errs, "\n  - "))
 	}
-	return mapRawToConfigDoc(raw), nil
+	doc := mapRawToConfigDoc(raw)
+	if err := validateConcordChannelConfigs(doc.NostrChannels); err != nil {
+		return state.ConfigDoc{}, err
+	}
+	return doc, nil
+}
+
+func validateConcordChannelConfigs(configs state.NostrChannelsConfig) error {
+	for name, channel := range configs {
+		path := "nostr_channels." + name
+		if channel.Kind == state.NostrChannelKindConcord {
+			if !lowerHex64(channel.CommunityID) {
+				return fmt.Errorf("%s.community_id must be 64-character lowercase hex", path)
+			}
+			if channel.GroupAddress != "" || channel.CommunityAddress != "" {
+				return fmt.Errorf("%s concord channels use community_id, not group_address/community_address", path)
+			}
+			if channel.ChannelID != "" && !lowerHex64(channel.ChannelID) {
+				return fmt.Errorf("%s.channel_id must be 64-character lowercase hex", path)
+			}
+			if channel.Keys != "" && !(strings.HasPrefix(channel.Keys, "$") || strings.HasPrefix(channel.Keys, "env:") || strings.HasPrefix(channel.Keys, "secret:")) {
+				return fmt.Errorf("%s.keys must be an env/secret reference", path)
+			}
+			continue
+		}
+		if channel.CommunityID != "" || channel.Keys != "" || channel.Channel != "" {
+			return fmt.Errorf("%s community_id, keys, and channel are only valid for concord", path)
+		}
+	}
+	return nil
+}
+
+func lowerHex64(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, ch := range value {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func decodeMapIntoStruct(raw map[string]any, out any) bool {
@@ -1149,7 +1199,7 @@ func detectUnknownNostrChannelKeys(raw any) []string {
 	if !ok {
 		return nil
 	}
-	allowed := []string{"kind", "enabled", "group_address", "community_address", "channel_id", "relays", "agent_id", "tags", "config", "allow_from"}
+	allowed := []string{"kind", "enabled", "group_address", "community_address", "community_id", "keys", "channel", "channel_id", "relays", "agent_id", "tags", "config", "allow_from"}
 	var errs []string
 	for name, item := range m {
 		cm, ok := item.(map[string]any)

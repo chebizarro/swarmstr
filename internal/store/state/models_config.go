@@ -491,12 +491,13 @@ type HookMapping struct {
 // "nip28" uses NIP-28 public channel events (kind 40/42).
 // "nip29" uses NIP-29 relay-managed groups.
 // "communikey" uses NIP-CAS-0007 community authorization with NIP-29 chat transport.
+// "concord" uses NIP-CAS-0008 end-to-end encrypted communities.
 // "relay-filter" subscribes to arbitrary relay filters and routes to an agent.
 // "nip34-inbox" is a repo-targeted NIP-34 relay-filter preset.
 type NostrChannelKind = string
 
 type NostrChannelConfig struct {
-	// Kind identifies the transport type (dm, nip28, nip29, communikey, relay-filter, nip34-inbox).
+	// Kind identifies the transport type (dm, nip28, nip29, communikey, concord, relay-filter, nip34-inbox).
 	Kind string `json:"kind"`
 	// Enabled controls whether this channel is active at startup.
 	Enabled bool `json:"enabled,omitempty"`
@@ -506,8 +507,15 @@ type NostrChannelConfig struct {
 	// CommunityAddress is a bare community pubkey or ncommunity:// identifier.
 	// Used when Kind is "communikey".
 	CommunityAddress string `json:"community_address,omitempty"`
-	// ChannelID is the NIP-28 channel event ID.
-	// Used when Kind is "nip28".
+	// CommunityID is the self-certifying CORD-02 community identity.
+	// Used when Kind is "concord".
+	CommunityID string `json:"community_id,omitempty"`
+	// Keys is an env/secret reference resolving to CORD-05 join-material JSON.
+	// It is optional because a Direct Invite can onboard keys at runtime.
+	Keys string `json:"keys,omitempty"`
+	// Channel selects a Concord channel by name (default "general").
+	Channel string `json:"channel,omitempty"`
+	// ChannelID is the NIP-28 channel event ID or explicit Concord channel id.
 	ChannelID string `json:"channel_id,omitempty"`
 	// Relays is the list of relays to subscribe on for this channel.
 	// Defaults to the global relay config when empty.

@@ -159,6 +159,27 @@ func TestValidateNostrChannelsCommunikeyRequiresAddress(t *testing.T) {
 	}
 }
 
+func TestValidateNostrChannelsConcordRequiresCommunityID(t *testing.T) {
+	err := validateNostrChannels(state.NostrChannelsConfig{
+		"community": {Kind: state.NostrChannelKindConcord},
+	})
+	if err == nil || !strings.Contains(err.Error(), "community_id is required") {
+		t.Fatalf("expected missing community_id error, got %v", err)
+	}
+
+	err = validateNostrChannels(state.NostrChannelsConfig{
+		"community": {
+			Kind:        state.NostrChannelKindConcord,
+			CommunityID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			Keys:        "secret:concord_keys",
+			Relays:      []string{"wss://relay.example"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("valid Concord channel rejected: %v", err)
+	}
+}
+
 func TestValidateNostrChannels_relayFilterNIP34RequiresRepoAddr(t *testing.T) {
 	d := baseDoc()
 	d.NostrChannels = state.NostrChannelsConfig{

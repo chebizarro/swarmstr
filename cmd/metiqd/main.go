@@ -2342,7 +2342,7 @@ func main() {
 			continue
 		}
 		switch chanCfg.Kind {
-		case state.NostrChannelKindNIP29, state.NostrChannelKindCommunikey:
+		case state.NostrChannelKindNIP29, state.NostrChannelKindCommunikey, state.NostrChannelKindConcord:
 			if chanCfg.Kind == state.NostrChannelKindNIP29 && chanCfg.GroupAddress == "" {
 				log.Printf("auto-join skip: nostr_channels.%s has no group_address", chanName)
 				continue
@@ -2351,11 +2351,18 @@ func main() {
 				log.Printf("auto-join skip: nostr_channels.%s has no community_address", chanName)
 				continue
 			}
+			if chanCfg.Kind == state.NostrChannelKindConcord && chanCfg.CommunityID == "" {
+				log.Printf("auto-join skip: nostr_channels.%s has no community_id", chanName)
+				continue
+			}
 			localChanCfg := chanCfg // capture loop var
 			localChanName := chanName
 			channelAddress := localChanCfg.GroupAddress
-			if localChanCfg.Kind == state.NostrChannelKindCommunikey {
+			switch localChanCfg.Kind {
+			case state.NostrChannelKindCommunikey:
 				channelAddress = localChanCfg.CommunityAddress
+			case state.NostrChannelKindConcord:
+				channelAddress = "concord:" + localChanCfg.CommunityID
 			}
 			roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
 			// onMessage is self-referential: an armed R2 takeover re-delivers
@@ -2372,9 +2379,9 @@ func main() {
 					settleNostrDispatch(msg, true) // deliberate drop; terminal
 					return
 				}
-				if curCfg.Kind == state.NostrChannelKindCommunikey {
-					// Loop-control uses GroupAddress as its stable room key; the
-					// Communikey channel ID is the canonical ncommunity URI.
+				if curCfg.Kind == state.NostrChannelKindCommunikey || curCfg.Kind == state.NostrChannelKindConcord {
+					// Loop-control uses GroupAddress as its stable room key; community
+					// transports report their canonical channel ID at runtime.
 					curCfg.GroupAddress = msg.ChannelID
 				}
 
@@ -2516,6 +2523,28 @@ func main() {
 					OnReaction:            nostrLoopControl.observeReaction,
 					OnError:               onError,
 				})
+			} else if localChanCfg.Kind == state.NostrChannelKindConcord {
+				relays := localChanCfg.Relays
+				if len(relays) == 0 {
+					relays = configState.Get().Relays.Read
+				}
+				keyMaterial, resolveErr := channels.ResolveConcordKeyMaterial(localChanCfg.Keys, secretsStore)
+				if resolveErr != nil {
+					chErr = resolveErr
+				} else {
+					ch, chErr = channels.NewConcordChannel(ctx, channels.ConcordChannelOptions{
+						CommunityID:           localChanCfg.CommunityID,
+						ChannelName:           localChanCfg.Channel,
+						ChannelID:             localChanCfg.ChannelID,
+						KeyMaterialJSON:       keyMaterial,
+						Relays:                relays,
+						Hub:                   controlHub,
+						Keyer:                 controlKeyer,
+						CommitmentEnforcement: roomPolicy.CommitmentEnforcement,
+						OnMessage:             onMessage,
+						OnError:               onError,
+					})
+				}
 			} else {
 				ch, chErr = channels.NewNIP29GroupChannel(ctx, channels.NIP29GroupChannelOptions{
 					GroupAddress:          localChanCfg.GroupAddress,
@@ -2546,7 +2575,7 @@ func main() {
 				// on the configured group address; Communikey rooms key on the
 				// canonical channel ID the transport reports.
 				ledgerRoomAddress := func(cfg state.NostrChannelConfig) string {
-					if cfg.Kind == state.NostrChannelKindCommunikey {
+					if cfg.Kind == state.NostrChannelKindCommunikey || cfg.Kind == state.NostrChannelKindConcord {
 						return ch.ID()
 					}
 					return cfg.GroupAddress
@@ -5662,7 +5691,7 @@ func main() {
 			chatRelays := map[string]struct{}{}
 			for _, chanCfg := range liveCfg.NostrChannels {
 				switch state.NostrChannelKind(chanCfg.Kind) {
-				case state.NostrChannelKindNIP29, state.NostrChannelKindCommunikey:
+				case state.NostrChannelKindNIP29, state.NostrChannelKindCommunikey, state.NostrChannelKindConcord:
 					for _, r := range chanCfg.Relays {
 						nip29Relays[r] = struct{}{}
 					}
@@ -8141,6 +8170,7 @@ func handleControlRPCRequest(
 		},
 		nostrHub:           svc.relay.hub,
 		keyer:              svc.relay.keyer,
+		secretResolver:     svc.handlers.secretsStore,
 		terminalManager:    controlTerminalManager,
 		attachGrants:       controlAttachGrants,
 		worktrees:          controlWorktrees,
