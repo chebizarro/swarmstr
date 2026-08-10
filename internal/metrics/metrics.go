@@ -327,9 +327,21 @@ func (r *Registry) RecordShouldReplyGate(outcome, reason string) {
 	default:
 		return
 	}
-	if strings.TrimSpace(reason) == "" {
-		reason = "unknown"
-	}
+	reason = boundedMetricLabel(
+		reason,
+		"disabled",
+		"p_tagged",
+		"directly_addressed",
+		"talked_about",
+		"not_question_or_request",
+		"capability_match",
+		"known_bot_ambiguous",
+		"ambiguous",
+		"ambiguous_no_model",
+		"model_respond",
+		"model_ignore",
+		"model_stop",
+	)
 	r.CounterWithLabels(name, shouldReplyGateMetricHelp, map[string]string{"reason": reason}).Inc()
 }
 
@@ -388,8 +400,111 @@ func RecordProgressLedger(outcome string) {
 	Default.RecordProgressLedger(outcome)
 }
 
+const (
+	heartbeatRunsMetricHelp   = "Total heartbeat agent runs by bounded outcome"
+	publishOutcomesMetricHelp = "Total Nostr publish attempts by bounded transport and outcome"
+	handlerFailuresMetricHelp = "Total inbound handler failures by bounded handler"
+	sessionStateMetricHelp    = "Current sessions by bounded runtime state"
+)
+
+func boundedMetricLabel(value string, allowed ...string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value
+		}
+	}
+	return "unknown"
+}
+
+// RecordHeartbeatOutcome records a completed heartbeat agent run. Labels are
+// deliberately restricted to success, failure, or unknown.
+func (r *Registry) RecordHeartbeatOutcome(outcome string) {
+	outcome = boundedMetricLabel(outcome, "success", "failure")
+	r.CounterWithLabels("metiq_heartbeat_runs_total", heartbeatRunsMetricHelp, map[string]string{"outcome": outcome}).Inc()
+}
+
+// RecordHeartbeatOutcome records on the process-wide registry.
+func RecordHeartbeatOutcome(outcome string) {
+	Default.RecordHeartbeatOutcome(outcome)
+}
+
+// RecordPublishOutcome records one Nostr publish attempt. Both dimensions are
+// allowlisted so event data, relay URLs, identities, and content cannot become
+// metric labels.
+func (r *Registry) RecordPublishOutcome(transport, outcome string) {
+	transport = boundedMetricLabel(transport, "nip04", "nip17", "nip29")
+	outcome = boundedMetricLabel(outcome, "success", "failure")
+	r.CounterWithLabels(
+		"metiq_publish_outcomes_total",
+		publishOutcomesMetricHelp,
+		map[string]string{"outcome": outcome, "transport": transport},
+	).Inc()
+}
+
+// RecordPublishOutcome records on the process-wide registry.
+func RecordPublishOutcome(transport, outcome string) {
+	Default.RecordPublishOutcome(transport, outcome)
+}
+
+// RecordHandlerFailure records an error returned from a top-level inbound
+// handler. The handler name is allowlisted rather than derived from a method,
+// event, session, or caller identifier.
+func (r *Registry) RecordHandlerFailure(handler string) {
+	handler = boundedMetricLabel(handler, "control_rpc", "dm")
+	r.CounterWithLabels(
+		"metiq_handler_failures_total",
+		handlerFailuresMetricHelp,
+		map[string]string{"handler": handler},
+	).Inc()
+}
+
+// RecordHandlerFailure records on the process-wide registry.
+func RecordHandlerFailure(handler string) {
+	Default.RecordHandlerFailure(handler)
+}
+
+// SetSessionState sets one bounded session-state gauge.
+func (r *Registry) SetSessionState(state string, value float64) {
+	state = boundedMetricLabel(state, "stored", "running")
+	r.GaugeWithLabels(
+		"metiq_session_state",
+		sessionStateMetricHelp,
+		map[string]string{"state": state},
+	).Set(value)
+}
+
+// SetSessionState sets one session-state gauge on the process-wide registry.
+func SetSessionState(state string, value float64) {
+	Default.SetSessionState(state, value)
+}
+
 // Default is the process-wide default registry.
 var Default = NewRegistry()
+
+func init() {
+	for _, outcome := range []string{"success", "failure"} {
+		Default.CounterWithLabels("metiq_heartbeat_runs_total", heartbeatRunsMetricHelp, map[string]string{"outcome": outcome})
+		for _, transport := range []string{"nip04", "nip17", "nip29"} {
+			Default.CounterWithLabels(
+				"metiq_publish_outcomes_total",
+				publishOutcomesMetricHelp,
+				map[string]string{"outcome": outcome, "transport": transport},
+			)
+		}
+	}
+	for _, handler := range []string{"control_rpc", "dm"} {
+		Default.CounterWithLabels(
+			"metiq_handler_failures_total",
+			handlerFailuresMetricHelp,
+			map[string]string{"handler": handler},
+		)
+	}
+	for _, state := range []string{"stored", "running"} {
+		Default.SetSessionState(state, 0)
+	}
+	HeartbeatAgeSeconds.Set(-1)
+}
 
 // Standard metric names registered in Default.
 var (
@@ -410,8 +525,9 @@ var (
 	SteeringUrgentAborted  = Default.Counter("metiq_steering_urgent_aborted_total", "Total busy interrupt inputs that aborted the active turn immediately")
 	SteeringUrgentDeferred = Default.Counter("metiq_steering_urgent_deferred_total", "Total busy interrupt inputs deferred as urgent steering because a blocking tool was active")
 
-	ActiveSessions    = Default.Gauge("metiq_active_sessions", "Currently active chat sessions")
-	ApprovalQueueSize = Default.Gauge("metiq_approval_queue_size", "Number of pending exec approval requests")
-	RelayConnected    = Default.Gauge("metiq_relays_connected", "Number of currently connected relays")
-	UptimeSeconds     = Default.Gauge("metiq_uptime_seconds", "Daemon uptime in seconds")
+	ActiveSessions      = Default.Gauge("metiq_active_sessions", "Currently stored chat sessions")
+	ApprovalQueueSize   = Default.Gauge("metiq_approval_queue_size", "Number of pending exec approval requests")
+	RelayConnected      = Default.Gauge("metiq_relays_connected", "Number of currently connected relays")
+	UptimeSeconds       = Default.Gauge("metiq_uptime_seconds", "Daemon uptime in seconds")
+	HeartbeatAgeSeconds = Default.Gauge("metiq_heartbeat_age_seconds", "Seconds since the last completed heartbeat attempt; -1 when no heartbeat has completed")
 )

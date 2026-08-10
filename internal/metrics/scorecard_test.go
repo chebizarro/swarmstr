@@ -76,11 +76,35 @@ func TestRoomScorecardSignals(t *testing.T) {
 	}
 
 	out := reg.Exposition()
-	if !strings.Contains(out, `metiq_room_discipline_signal_total{room="nostr:room:alpha",signal="gate_pass"} 2`) {
+	if !strings.Contains(out, `metiq_room_discipline_signal_total{room="room_01",signal="gate_pass"} 2`) {
 		t.Errorf("missing labeled counter series: %s", out)
 	}
 	if !strings.Contains(out, "# TYPE metiq_room_discipline_signal_total counter") {
 		t.Errorf("missing counter TYPE family: %s", out)
+	}
+}
+
+func TestRoomScorecardMetricLabelsDoNotExposeSessionIdentifiers(t *testing.T) {
+	s, reg, _ := newTestScorecard(t, RoomScorecardOptions{})
+	sessionID := "session-7f31d2-private"
+	rawEvent := `{"kind":1,"content":"raw event payload"}`
+	s.RecordSignal(sessionID, RoomSignalGatePass)
+	s.RecordSignal(sessionID, RoomSignal(rawEvent))
+	s.RecordMessage(sessionID, "sender")
+	s.SetUnansweredMentionAge(sessionID, time.Minute)
+
+	out := reg.Exposition()
+	if strings.Contains(out, sessionID) {
+		t.Fatalf("Prometheus exposition leaked session identifier %q:\n%s", sessionID, out)
+	}
+	if strings.Contains(out, rawEvent) {
+		t.Fatalf("Prometheus exposition leaked raw event data %q:\n%s", rawEvent, out)
+	}
+	if !strings.Contains(out, `room="room_01"`) {
+		t.Fatalf("Prometheus exposition missing bounded room label:\n%s", out)
+	}
+	if snap := snapshotFor(t, s, sessionID); snap.Room != sessionID {
+		t.Fatalf("authenticated JSON snapshot should retain the room key: %+v", snap)
 	}
 }
 
@@ -141,10 +165,10 @@ func TestRoomScorecardMessageShareAlarm(t *testing.T) {
 	}
 
 	out := reg.Exposition()
-	if !strings.Contains(out, `metiq_room_message_share_max{room="nostr:room:busy"} 0.7`) {
+	if !strings.Contains(out, `metiq_room_message_share_max{room="room_01"} 0.7`) {
 		t.Errorf("missing share-max gauge: %s", out)
 	}
-	if !strings.Contains(out, `metiq_room_share_alarm_senders{room="nostr:room:busy"} 1`) {
+	if !strings.Contains(out, `metiq_room_share_alarm_senders{room="room_01"} 1`) {
 		t.Errorf("missing share-alarm gauge: %s", out)
 	}
 }
@@ -206,7 +230,7 @@ func TestRoomScorecardUnansweredMentionAge(t *testing.T) {
 	if snap := snapshotFor(t, s, room); snap.UnansweredMentionAgeSeconds != 90 {
 		t.Fatalf("expected 90s mention age, got %g", snap.UnansweredMentionAgeSeconds)
 	}
-	if !strings.Contains(reg.Exposition(), `metiq_room_unanswered_mention_age_seconds{room="nostr:room:mentions"} 90`) {
+	if !strings.Contains(reg.Exposition(), `metiq_room_unanswered_mention_age_seconds{room="room_01"} 90`) {
 		t.Errorf("missing mention-age gauge: %s", reg.Exposition())
 	}
 	// Zero clears; negative clamps.

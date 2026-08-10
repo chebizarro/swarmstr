@@ -45,6 +45,28 @@ metiq exposes two optional local HTTP servers, both configured in `bootstrap.jso
 
 Both servers bind to `127.0.0.1` by default and are only reachable locally. To allow remote access, use one of the approaches below.
 
+## Prometheus scrape boundary
+
+Prometheus metrics are exposed at `GET /metrics` on the **admin API**, not on the public Nostr or Gateway WebSocket surfaces. The scrape boundary follows the admin listener's fail-closed exposure rules:
+
+- With no `admin_token`, `admin_listen_addr` must be loopback (`127.0.0.1`, `::1`, or `localhost`). Scrape locally or through an SSH/Tailscale path that terminates on the host.
+- With `admin_token` configured, `/metrics` requires `Authorization: Bearer <admin_token>`. A non-loopback bind is rejected unless this token is set.
+- If a reverse proxy exposes the admin listener, keep the upstream private, require TLS, preserve the bearer check, and restrict the route to the monitoring network. Do not publish `/metrics` directly to the internet.
+
+Loopback scrape:
+
+```bash
+curl --fail http://127.0.0.1:18788/metrics
+```
+
+Authenticated scrape:
+
+```bash
+curl --fail -H "Authorization: Bearer $METIQ_ADMIN_TOKEN" https://admin.metiq.example.com/metrics
+```
+
+The exported series use only bounded operational labels (for example heartbeat outcome, publish transport/outcome, handler class, and session state). Prompt content, event payloads, relay URLs, credentials, public/private keys, tokens, and session identifiers are not metric labels.
+
 ## Remote Access Options
 
 ### Tailscale (Recommended)

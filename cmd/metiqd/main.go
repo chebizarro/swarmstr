@@ -6947,6 +6947,25 @@ func main() {
 						pending := controlServices.session.execApprovals.GetGlobal()
 						metricspkg.ApprovalQueueSize.Set(float64(len(pending)))
 					}
+
+					storedSessions := 0
+					if controlServices.session.sessionStore != nil {
+						storedSessions = len(controlServices.session.sessionStore.List())
+					}
+					runningSessions := 0
+					if controlServices.session.sessionTurns != nil {
+						runningSessions = controlServices.session.sessionTurns.ActiveCount()
+					}
+					metricspkg.ActiveSessions.Set(float64(storedSessions))
+					metricspkg.SetSessionState("stored", float64(storedSessions))
+					metricspkg.SetSessionState("running", float64(runningSessions))
+
+					heartbeatAge := -1.0
+					if controlServices.session.ops != nil {
+						status := controlServices.session.ops.HeartbeatStatus()
+						heartbeatAge = heartbeatAgeSeconds(status.LastRunMS, time.Now())
+					}
+					metricspkg.HeartbeatAgeSeconds.Set(heartbeatAge)
 					return metricspkg.Default.Exposition()
 				},
 				HealthExtra: func(_ context.Context) map[string]any {
