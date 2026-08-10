@@ -22,6 +22,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -48,6 +49,28 @@ const (
 	RoomSignalLedgerPost        RoomSignal = "ledger_post"
 	RoomSignalStatusReaction    RoomSignal = "status_reaction"
 )
+
+func validRoomSignal(signal RoomSignal) bool {
+	switch signal {
+	case RoomSignalACKConversion,
+		RoomSignalGatePass,
+		RoomSignalGateDrop,
+		RoomSignalEchoDrop,
+		RoomSignalTaskEchoDrop,
+		RoomSignalPairGuardTrip,
+		RoomSignalElectionWon,
+		RoomSignalElectionDeferred,
+		RoomSignalElectionTakeover,
+		RoomSignalCommitmentBlocked,
+		RoomSignalCommitmentDropped,
+		RoomSignalLedgerRun,
+		RoomSignalLedgerPost,
+		RoomSignalStatusReaction:
+		return true
+	default:
+		return false
+	}
+}
 
 // Scorecard bounds and message-share window defaults.
 const (
@@ -90,8 +113,9 @@ type roomMessage struct {
 }
 
 type roomState struct {
-	signals map[RoomSignal]*Counter
-	msgs    []roomMessage
+	metricLabel string
+	signals     map[RoomSignal]*Counter
+	msgs        []roomMessage
 
 	shareMax   *Gauge
 	shareAlarm *Gauge
@@ -145,6 +169,8 @@ func NewRoomScorecard(reg *Registry, opts RoomScorecardOptions) *RoomScorecard {
 }
 
 // roomStateLocked resolves (or creates) the bounded room bucket. Callers hold s.mu.
+// Prometheus labels use process-local ordinals instead of caller-provided room
+// keys, so session identifiers and channel addresses never enter exposition.
 func (s *RoomScorecard) roomStateLocked(room string) (string, *roomState) {
 	room = strings.TrimSpace(room)
 	if room == "" {
@@ -159,11 +185,19 @@ func (s *RoomScorecard) roomStateLocked(room string) (string, *roomState) {
 		}
 		room = ScorecardOverflowRoom
 	}
+
+	metricLabel := room
+	switch room {
+	case scorecardUnknownRoom, ScorecardOverflowRoom:
+	default:
+		metricLabel = fmt.Sprintf("room_%02d", len(s.rooms)+1)
+	}
 	state := &roomState{
-		signals:    map[RoomSignal]*Counter{},
-		shareMax:   s.registry.GaugeWithLabels(roomShareMaxMetricName, roomShareMaxMetricHelp, map[string]string{"room": room}),
-		shareAlarm: s.registry.GaugeWithLabels(roomShareAlarmMetricName, roomShareAlarmMetricHelp, map[string]string{"room": room}),
-		mentionAge: s.registry.GaugeWithLabels(roomMentionAgeMetricName, roomMentionAgeMetricHelp, map[string]string{"room": room}),
+		metricLabel: metricLabel,
+		signals:     map[RoomSignal]*Counter{},
+		shareMax:    s.registry.GaugeWithLabels(roomShareMaxMetricName, roomShareMaxMetricHelp, map[string]string{"room": metricLabel}),
+		shareAlarm:  s.registry.GaugeWithLabels(roomShareAlarmMetricName, roomShareAlarmMetricHelp, map[string]string{"room": metricLabel}),
+		mentionAge:  s.registry.GaugeWithLabels(roomMentionAgeMetricName, roomMentionAgeMetricHelp, map[string]string{"room": metricLabel}),
 	}
 	s.rooms[room] = state
 	return room, state
@@ -173,16 +207,16 @@ func (s *RoomScorecard) roomStateLocked(room string) (string, *roomState) {
 // bounded (overflow bucket past MaxScorecardRooms); the signal label is a
 // closed set, so exported cardinality stays sane.
 func (s *RoomScorecard) RecordSignal(room string, signal RoomSignal) {
-	if signal == "" {
+	if !validRoomSignal(signal) {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	boundedRoom, state := s.roomStateLocked(room)
+	_, state := s.roomStateLocked(room)
 	counter, ok := state.signals[signal]
 	if !ok {
 		counter = s.registry.CounterWithLabels(roomSignalMetricName, roomSignalMetricHelp,
-			map[string]string{"room": boundedRoom, "signal": string(signal)})
+			map[string]string{"room": state.metricLabel, "signal": string(signal)})
 		state.signals[signal] = counter
 	}
 	counter.Inc()

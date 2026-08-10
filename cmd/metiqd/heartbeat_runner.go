@@ -11,6 +11,7 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
+	metricspkg "metiq/internal/metrics"
 	"metiq/internal/store/state"
 )
 
@@ -110,6 +111,17 @@ func (r *heartbeatRunner) runHeartbeatCycle(ctx context.Context) {
 	r.ops.MarkHeartbeatRun(r.now().UnixMilli())
 }
 
+func heartbeatAgeSeconds(lastRunMS int64, now time.Time) float64 {
+	if lastRunMS <= 0 {
+		return -1
+	}
+	age := now.Sub(time.UnixMilli(lastRunMS)).Seconds()
+	if age < 0 {
+		return 0
+	}
+	return age
+}
+
 type heartbeatCycleTrigger string
 
 const (
@@ -122,20 +134,33 @@ func (r *heartbeatRunner) executeCycle(ctx context.Context, cfg state.ConfigDoc,
 		agentWakes := filterHeartbeatWakesForAgent(agentID, wakes)
 		run, err := buildHeartbeatAgentRun(cfg, agentID, agentWakes)
 		if err != nil {
+			metricspkg.RecordHeartbeatOutcome("failure")
 			log.Printf("heartbeat runner: skip agent=%s err=%v", agentID, err)
 			continue
 		}
 		if r.runAgent != nil {
-			if err := r.runAgent(ctx, run); err != nil {
+			err := r.runAgent(ctx, run)
+			recordHeartbeatRunOutcome(err)
+			if err != nil {
 				log.Printf("heartbeat runner: agent=%s err=%v", agentID, err)
 			}
 			continue
 		}
-		if err := executeHeartbeatAgentRun(ctx, run); err != nil {
+		err = executeHeartbeatAgentRun(ctx, run)
+		recordHeartbeatRunOutcome(err)
+		if err != nil {
 			log.Printf("heartbeat runner: agent=%s err=%v", agentID, err)
 		}
 	}
 	return nil
+}
+
+func recordHeartbeatRunOutcome(err error) {
+	if err != nil {
+		metricspkg.RecordHeartbeatOutcome("failure")
+		return
+	}
+	metricspkg.RecordHeartbeatOutcome("success")
 }
 
 func heartbeatCycleAgentIDs(cfg state.ConfigDoc, wakes []heartbeatWakeRecord, trigger heartbeatCycleTrigger) []string {

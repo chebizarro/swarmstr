@@ -32,6 +32,8 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip17"
 	"fiatjaf.com/nostr/nip59"
+
+	metricspkg "metiq/internal/metrics"
 )
 
 const (
@@ -188,6 +190,7 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 				defer b.wg.Done()
 				for msg := range b.messageQueue {
 					if err := b.onMessage(b.ctx, msg); err != nil {
+						metricspkg.RecordHandlerFailure("dm")
 						b.emitErr(fmt.Errorf("on message handler: %w", err))
 					}
 				}
@@ -320,7 +323,15 @@ func (b *NIP17Bus) DeleteMessages(ctx context.Context, room NIP17Room, reason st
 	return b.sendNIP17Rumor(ctx, nostr.KindDeletion, reason, room, tags)
 }
 
-func (b *NIP17Bus) sendNIP17Rumor(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) error {
+func (b *NIP17Bus) sendNIP17Rumor(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) (err error) {
+	defer func() {
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+		}
+		metricspkg.RecordPublishOutcome("nip17", outcome)
+	}()
+
 	rumor, recipients, err := b.buildNIP17Rumor(kind, content, room, extraTags)
 	if err != nil {
 		return err

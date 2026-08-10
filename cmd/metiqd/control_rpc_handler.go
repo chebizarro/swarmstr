@@ -36,6 +36,7 @@ import (
 	hookspkg "metiq/internal/hooks"
 	mediapkg "metiq/internal/media"
 	"metiq/internal/memory"
+	metricspkg "metiq/internal/metrics"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/permissions"
 	pluginmanager "metiq/internal/plugins/manager"
@@ -163,7 +164,13 @@ func requesterSessionKeyFromParent(parent *acppkg.ParentContext, fallback string
 	return strings.TrimSpace(fallback)
 }
 
-func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPCInbound) (nostruntime.ControlRPCResult, error) {
+func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPCInbound) (result nostruntime.ControlRPCResult, err error) {
+	defer func() {
+		if err != nil {
+			metricspkg.RecordHandlerFailure("control_rpc")
+		}
+	}()
+
 	usageState := h.deps.usageState
 	memoryIndex := h.deps.memoryIndex
 	configState := h.deps.configState

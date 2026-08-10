@@ -15,6 +15,8 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/keyer"
 	"fiatjaf.com/nostr/nip04"
+
+	metricspkg "metiq/internal/metrics"
 )
 
 var (
@@ -232,6 +234,7 @@ func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
 				defer bus.wg.Done()
 				for msg := range bus.messageQueue {
 					if err := bus.onMessage(bus.ctx, msg); err != nil {
+						metricspkg.RecordHandlerFailure("dm")
 						bus.emitErr(fmt.Errorf("on message handler: %w", err))
 					}
 				}
@@ -264,7 +267,15 @@ func (b *DMBus) Close() {
 	b.wg.Wait()
 }
 
-func (b *DMBus) SendDM(ctx context.Context, toPubKey string, text string) error {
+func (b *DMBus) SendDM(ctx context.Context, toPubKey string, text string) (err error) {
+	defer func() {
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+		}
+		metricspkg.RecordPublishOutcome("nip04", outcome)
+	}()
+
 	pk, err := ParsePubKey(toPubKey)
 	if err != nil {
 		return err

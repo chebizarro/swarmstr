@@ -535,7 +535,15 @@ func (c *NIP29GroupChannel) sendReply(ctx context.Context, text, targetEventID, 
 // signAndPublish signs evt and publishes it to the group relay, bounding the
 // wait so a wedged relay cannot hang the send (PublishToAny returns on the first
 // relay OK). Shared by Send, SendReaction, and DeleteEvent.
-func (c *NIP29GroupChannel) signAndPublish(ctx context.Context, evt nostr.Event) error {
+func (c *NIP29GroupChannel) signAndPublish(ctx context.Context, evt nostr.Event) (err error) {
+	defer func() {
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+		}
+		metricspkg.RecordPublishOutcome("nip29", outcome)
+	}()
+
 	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
 		return fmt.Errorf("sign group event: %w", err)
 	}

@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"metiq/internal/agent"
 	gatewayws "metiq/internal/gateway/ws"
+	metricspkg "metiq/internal/metrics"
 	"metiq/internal/store/state"
 )
 
@@ -157,6 +160,67 @@ func TestBuildHeartbeatAgentRunUsesHeartbeatModel(t *testing.T) {
 	}
 	if len(run.RuntimeLabels) == 0 || run.RuntimeLabels[0] != "gpt-4o-mini" {
 		t.Fatalf("unexpected runtime labels: %#v", run.RuntimeLabels)
+	}
+}
+
+func metricSampleValue(t *testing.T, exposition, sample string) uint64 {
+	t.Helper()
+	for _, line := range strings.Split(exposition, "\n") {
+		if !strings.HasPrefix(line, sample+" ") {
+			continue
+		}
+		value, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, sample)), 10, 64)
+		if err != nil {
+			t.Fatalf("parse metric sample %q: %v", line, err)
+		}
+		return value
+	}
+	t.Fatalf("metric sample %q not found in:\n%s", sample, exposition)
+	return 0
+}
+
+func TestHeartbeatAgeSeconds(t *testing.T) {
+	now := time.UnixMilli(10_000)
+	if got := heartbeatAgeSeconds(0, now); got != -1 {
+		t.Fatalf("heartbeat age before first run = %g, want -1", got)
+	}
+	if got := heartbeatAgeSeconds(5_000, now); got != 5 {
+		t.Fatalf("heartbeat age = %g, want 5", got)
+	}
+	if got := heartbeatAgeSeconds(11_000, now); got != 0 {
+		t.Fatalf("future heartbeat timestamp age = %g, want 0", got)
+	}
+}
+
+func TestHeartbeatRunnerRecordsSuccessAndFailureOutcomes(t *testing.T) {
+	withHeartbeatTestGlobals(t, stubHeartbeatRuntime{})
+	cfg := state.ConfigDoc{
+		Agent:  state.AgentPolicy{DefaultModel: "gpt-4o"},
+		Agents: state.AgentsConfig{{ID: "main", Model: "gpt-4o"}},
+	}
+	runner := newHeartbeatRunner(newOperationsRegistry(), func() state.ConfigDoc { return cfg })
+
+	successSample := `metiq_heartbeat_runs_total{outcome="success"}`
+	failureSample := `metiq_heartbeat_runs_total{outcome="failure"}`
+	before := metricspkg.Default.Exposition()
+	successBefore := metricSampleValue(t, before, successSample)
+	failureBefore := metricSampleValue(t, before, failureSample)
+
+	runner.runAgent = func(context.Context, heartbeatAgentRun) error { return nil }
+	if err := runner.executeCycle(context.Background(), cfg, nil, heartbeatCycleTriggerSchedule); err != nil {
+		t.Fatalf("successful heartbeat cycle: %v", err)
+	}
+	runner.runAgent = func(context.Context, heartbeatAgentRun) error { return errors.New("runtime failed") }
+	if err := runner.executeCycle(context.Background(), cfg, nil, heartbeatCycleTriggerSchedule); err != nil {
+		t.Fatalf("failed heartbeat cycle: %v", err)
+	}
+
+	after := metricspkg.Default.Exposition()
+	if got := metricSampleValue(t, after, successSample) - successBefore; got != 1 {
+		t.Fatalf("heartbeat success delta = %d, want 1", got)
+	}
+	if got := metricSampleValue(t, after, failureSample) - failureBefore; got != 1 {
+		t.Fatalf("heartbeat failure delta = %d, want 1", got)
 	}
 }
 

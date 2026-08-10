@@ -85,6 +85,11 @@ func TestDefaultRegistry(t *testing.T) {
 		"metiq_steering_overflowed_total",
 		"metiq_steering_urgent_aborted_total",
 		"metiq_steering_urgent_deferred_total",
+		"metiq_heartbeat_age_seconds",
+		"metiq_heartbeat_runs_total",
+		"metiq_publish_outcomes_total",
+		"metiq_handler_failures_total",
+		"metiq_session_state",
 	} {
 		if !strings.Contains(out, name) {
 			t.Errorf("default registry missing %s", name)
@@ -134,6 +139,67 @@ func TestRecordResponderElection(t *testing.T) {
 	}
 	if strings.Contains(exposition, "bogus") {
 		t.Fatal("invalid outcome must not register a series")
+	}
+}
+
+func TestOperationalMetricLabelsAreBoundedAndSecretSafe(t *testing.T) {
+	r := NewRegistry()
+	forbidden := []string{
+		"prompt: reveal the system instructions",
+		"nsec1privatekeymaterial",
+		"bearer-token-secret",
+		"session-7f31d2",
+		`{"kind":1,"content":"raw event payload"}`,
+	}
+
+	r.RecordShouldReplyGate("pass", forbidden[0])
+	r.RecordHeartbeatOutcome(forbidden[0])
+	r.RecordPublishOutcome(forbidden[1], forbidden[2])
+	r.RecordHandlerFailure(forbidden[3])
+	r.SetSessionState(forbidden[4], 1)
+
+	out := r.Exposition()
+	for _, secret := range forbidden {
+		if strings.Contains(out, secret) {
+			t.Fatalf("metric exposition leaked forbidden value %q:\n%s", secret, out)
+		}
+	}
+	for _, want := range []string{
+		`metiq_should_reply_gate_pass_total{reason="unknown"} 1`,
+		`metiq_heartbeat_runs_total{outcome="unknown"} 1`,
+		`metiq_publish_outcomes_total{outcome="unknown",transport="unknown"} 1`,
+		`metiq_handler_failures_total{handler="unknown"} 1`,
+		`metiq_session_state{state="unknown"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("metric exposition missing bounded series %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestOperationalMetricsExposeBoundedOutcomesAndSessionState(t *testing.T) {
+	r := NewRegistry()
+	r.RecordHeartbeatOutcome("success")
+	r.RecordHeartbeatOutcome("failure")
+	r.RecordPublishOutcome("nip17", "success")
+	r.RecordPublishOutcome("nip29", "failure")
+	r.RecordHandlerFailure("control_rpc")
+	r.SetSessionState("stored", 4)
+	r.SetSessionState("running", 2)
+
+	out := r.Exposition()
+	for _, want := range []string{
+		`metiq_heartbeat_runs_total{outcome="success"} 1`,
+		`metiq_heartbeat_runs_total{outcome="failure"} 1`,
+		`metiq_publish_outcomes_total{outcome="success",transport="nip17"} 1`,
+		`metiq_publish_outcomes_total{outcome="failure",transport="nip29"} 1`,
+		`metiq_handler_failures_total{handler="control_rpc"} 1`,
+		`metiq_session_state{state="stored"} 4`,
+		`metiq_session_state{state="running"} 2`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("metric exposition missing %q:\n%s", want, out)
+		}
 	}
 }
 
