@@ -51,18 +51,9 @@ ARG TARGETARCH=amd64
 
 WORKDIR /src
 
-# Private-module resolution for git.sharegap.net (cascadia-go).
-# GOPRIVATE skips the public proxy + checksum DB for the fleet prefix; the git-auth
-# secret (a .netrc mounted via BuildKit, not baked into any layer) authenticates the
-# private Gitea. Build with:
-#   DOCKER_BUILDKIT=1 docker build --secret id=gitauth,src=$HOME/.netrc .
-# where ~/.netrc contains:  machine git.sharegap.net login <user> password <token>
-ENV GOPRIVATE=git.sharegap.net/*
-
 # Cache module downloads before copying sources.
 COPY go.mod go.sum ./
-RUN --mount=type=secret,id=gitauth,target=/root/.netrc \
-    --mount=type=cache,id=metiq-gomod,target=/go/pkg/mod,sharing=locked \
+RUN --mount=type=cache,id=metiq-gomod,target=/go/pkg/mod,sharing=locked \
     go mod download
 
 # Copy sources.
