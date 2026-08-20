@@ -750,6 +750,7 @@ type CapabilityMonitor struct {
 	fipsAdvertRefresh     time.Duration
 	onPublished           func(eventID string)
 	onFIPSAdvertPublished func(eventID string)
+	publishLocalOverride  func(context.Context)
 	triggerCh             chan struct{}
 	rebindCh              chan struct{}
 	fipsRebindCh          chan struct{}
@@ -873,7 +874,13 @@ func (m *CapabilityMonitor) requestRebind() {
 }
 
 func (m *CapabilityMonitor) runPublisher(ctx context.Context) {
-	m.publishLocal(ctx)
+	publishLocal := m.publishLocal
+	m.mu.RLock()
+	if m.publishLocalOverride != nil {
+		publishLocal = m.publishLocalOverride
+	}
+	m.mu.RUnlock()
+	publishLocal(ctx)
 	m.mu.RLock()
 	refresh := m.fipsAdvertRefresh
 	m.mu.RUnlock()
@@ -884,7 +891,7 @@ func (m *CapabilityMonitor) runPublisher(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-m.triggerCh:
-			m.publishLocal(ctx)
+			publishLocal(ctx)
 		case <-ticker.C:
 			m.publishLocalFIPS(ctx)
 		}

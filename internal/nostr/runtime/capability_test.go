@@ -349,6 +349,27 @@ func TestCapabilityMonitorStartIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestCapabilityMonitorRepublishesImmediatelyAfterRestart(t *testing.T) {
+	start := func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		published := make(chan struct{}, 1)
+		monitor := NewCapabilityMonitor(CapabilityMonitorOptions{})
+		monitor.publishLocalOverride = func(context.Context) {
+			published <- struct{}{}
+		}
+		monitor.Start(ctx)
+		select {
+		case <-published:
+		case <-time.After(time.Second):
+			t.Fatal("startup capability publish was not attempted")
+		}
+	}
+
+	start()
+	start()
+}
+
 func TestCapabilityMonitorSnapshotUsesCanonicalDTags(t *testing.T) {
 	sk1, err := ParseSecretKey("1111111111111111111111111111111111111111111111111111111111111111")
 	if err != nil {
