@@ -12,11 +12,12 @@ an incumbent runtime's identity, volumes, container, or controller policy.
 - bootstrap.json contains only a sanitized bunker locator. It must not contain
   one-time connection material or an identity private key.
 - config.json trusts one explicit SoulFactory controller public key and only
-  soulfactory.provision. Direct messages, heartbeats, legacy token fallback,
-  execution, network tools, and writes are disabled by default.
+  soulfactory.provision plus soulfactory.suspend. Direct messages, heartbeats,
+  legacy token fallback, execution, network tools, and writes are disabled by
+  default.
 - Kind values are supplied by cascadia-go in the application. The kind 30317
   capability is parameterized-replaceable and advertises exactly
-  soulfactory.provision.
+  soulfactory.provision and soulfactory.suspend.
 - metiq-production-state persists checkpoints and managed-agent bindings.
   metiq-production-workspace is separate persistent workspace state.
 - The rootless container is read-only outside its volumes/tmpfs, drops all
@@ -186,7 +187,8 @@ podman inspect metiq-production --format '{{json .HostConfig}}'
 On every daemon start, CapabilityMonitor.runPublisher immediately republishes
 the replaceable capability. Confirm the newest accepted kind 30317 is authored
 by the dedicated runtime, has its canonical d tag, contains only
-soulfactory.provision, and lists only the intended controller.
+soulfactory.provision and soulfactory.suspend, and lists only the intended
+controller.
 
 ## 5. Backup and restore
 
@@ -248,8 +250,9 @@ controller allowlist. Never start, stop, or edit an incumbent OpenClaw service.
 - **Replay anomaly:** stop controller delivery, quiesce/back up both volumes,
   record request/result event IDs, and do not use a new idempotency key until
   checkpoint state is inspected.
-- **Capability drift:** stop Metiq if kind 30317 advertises more than
-  soulfactory.provision; restore the reviewed digest/config and republish.
+- **Capability drift:** stop Metiq if kind 30317 advertises anything other than
+  soulfactory.provision and soulfactory.suspend; restore the reviewed
+  digest/config and republish.
 - **Relay outage or late result:** keep the subscription open, use EOSE for
   backfill completion, and reconcile by correlation/idempotency key. Do not poll
   or create a second provisioning request.
@@ -277,22 +280,27 @@ key files, argv dumps, or raw logs.
    retaining decrypted content.
 5. Verify resulting kind 31951 and kind 7950 projections contain no credentials
    or connection material; retain only event IDs and the assertion.
-6. Verify kind 30317 contains exactly soulfactory.provision. Send every other
-   lifecycle/customization method and record rejected result IDs proving a
-   fail-closed authorization or unsupported-method response with no binding
-   mutation.
-7. Replay the exact 38384 with the same idempotency key. Prove the cached prior
-   payload is returned and no second provisioning side effect occurs.
-8. Send a conflicting request with the same idempotency key. Record the result
-   ID proving duplicate_conflict and unchanged binding/spec state.
-9. Restart the bridge. Prove readiness, a newer replacement kind 30317,
-   recovered checkpoint/binding state, exact replay, and conflict behavior.
-10. Exercise Bahia in both orders: result observed live, and result arriving
+6. Verify kind 30317 contains exactly soulfactory.provision and
+   soulfactory.suspend. Send a valid suspend request for the disposable agent,
+   record its signed correlated kind 38386 result ID, and prove suspended state
+   persists across bridge restart.
+7. Re-suspend the already-suspended agent with a new idempotency key and prove
+   idempotent success without another lifecycle effect. Send unadvertised
+   soulfactory.resume and soulfactory.redeploy requests and record rejected
+   result IDs proving unsupported_method with no binding mutation.
+8. Replay the exact suspend 38384 with the same idempotency key. Prove the
+   cached prior payload is returned and no second lifecycle side effect occurs.
+9. Send a conflicting suspend request with the same idempotency key. Record the
+   result ID proving duplicate_conflict and unchanged suspended binding state.
+10. Restart the bridge. Prove readiness, a newer replacement kind 30317 with
+    both methods, recovered checkpoint/binding state, exact replay, and conflict
+    behavior.
+11. Exercise Bahia in both orders: result observed live, and result arriving
     during/after an EOSE-bounded backfill. Prove identical final reconciliation
     and no duplicate provisioning.
-11. Re-run the OpenClaw disposable control path unchanged. Prove its identity,
+12. Re-run the OpenClaw disposable control path unchanged. Prove its identity,
     state, capability, and service were not mutated by Metiq.
-12. Rehearse rollback to the captured prior Metiq digest/config/state, then
+13. Rehearse rollback to the captured prior Metiq digest/config/state, then
     verify health, identity, capability, replay recovery, and OpenClaw safety.
 
 A second operator must independently verify identity isolation, controller and

@@ -404,7 +404,7 @@ func TestBuildControlResponsePayload_ContextVMResult(t *testing.T) {
 
 func TestSignedControlResponseEventIsCorrelatedAndValid(t *testing.T) {
 	keyer := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
-	tags := controlResponseBaseTags("request-event", "requester", "idem-1", "ok", "soulfactory.provision", "params-hash")
+	tags := controlResponseBaseTags("request-event", "requester", "idem-1", "ok", "soulfactory.suspend", "params-hash")
 	evt, err := signedControlResponseEvent(context.Background(), keyer, "{\"status\":\"success\"}", tags)
 	if err != nil {
 		t.Fatalf("signedControlResponseEvent: %v", err)
@@ -416,7 +416,7 @@ func TestSignedControlResponseEventIsCorrelatedAndValid(t *testing.T) {
 		"e":      "request-event",
 		"p":      "requester",
 		"req":    "idem-1",
-		"method": "soulfactory.provision",
+		"method": "soulfactory.suspend",
 	} {
 		if got := firstTagValue(evt.Tags, key); got != want {
 			t.Fatalf("tag %s = %q, want %q", key, got, want)

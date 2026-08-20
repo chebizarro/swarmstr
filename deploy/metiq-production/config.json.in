@@ -23,7 +23,7 @@
     "admins": [
       {
         "pubkey": "{{SOULFACTORY_CONTROLLER_PUBKEY}}",
-        "methods": ["soulfactory.provision"]
+        "methods": ["soulfactory.provision", "soulfactory.suspend"]
       }
     ],
     "legacy_token_fallback": false
