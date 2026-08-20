@@ -131,11 +131,151 @@ func TestSoulFactoryProvisionHandlerExecutesAndReturnsContractEnvelope(t *testin
 	}
 }
 
+func TestSoulFactorySuspendIsPersistentAndIdempotent(t *testing.T) {
+	cfg := state.ConfigDoc{
+		Agent:   state.AgentPolicy{DefaultModel: "echo"},
+		Control: state.ControlPolicy{RequireAuth: true, Admins: []state.ControlAdmin{{PubKey: testSoulFactoryController, Methods: []string{methods.MethodSoulFactoryProvision, methods.MethodSoulFactorySuspend}}}},
+	}
+	backing := newTestStore()
+	docs := state.NewDocsRepository(backing, "test-author")
+	h := newControlRPCHandler(controlRPCDeps{configState: newRuntimeConfigStore(cfg), docsRepo: docs, startedAt: time.Now()})
+	ctx := context.Background()
+
+	provision := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, testSoulFactoryProvisionParams(), "idem-provision", "sha256:spec-1", "event-provision", "agent-alice")
+	res, err := h.Handle(ctx, provision)
+	if err != nil {
+		t.Fatalf("provision Handle: %v", err)
+	}
+	requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
+
+	suspendParams := map[string]any{"reason": "maintenance"}
+	suspend := testSoulFactoryInboundWith(t, methods.MethodSoulFactorySuspend, suspendParams, "idem-suspend", "sha256:spec-1", "event-suspend", "agent-alice")
+	res, err = h.Handle(ctx, suspend)
+	if err != nil {
+		t.Fatalf("suspend Handle: %v", err)
+	}
+	result := requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
+	if result["state"] != "suspended" || result["idempotent"] != nil {
+		t.Fatalf("unexpected first suspend result: %#v", result)
+	}
+	docBeforeRestart, err := docs.GetAgent(ctx, "agent-alice")
+	if err != nil {
+		t.Fatalf("GetAgent after suspend: %v", err)
+	}
+	if stateValue := soulFactoryStateFromMeta(docBeforeRestart.Meta); stateValue != "suspended" {
+		t.Fatalf("persisted state = %q, want suspended", stateValue)
+	}
+	docBeforeResuspend, err := json.Marshal(docBeforeRestart)
+	if err != nil {
+		t.Fatalf("marshal suspended agent: %v", err)
+	}
+
+	// Recreate both repository and handler to model a daemon restart.
+	docs = state.NewDocsRepository(backing, "test-author")
+	h = newControlRPCHandler(controlRPCDeps{configState: newRuntimeConfigStore(cfg), docsRepo: docs, startedAt: time.Now()})
+	recovered, err := docs.GetAgent(ctx, "agent-alice")
+	if err != nil {
+		t.Fatalf("GetAgent after restart: %v", err)
+	}
+	if stateValue := soulFactoryStateFromMeta(recovered.Meta); stateValue != "suspended" {
+		t.Fatalf("recovered state = %q, want suspended", stateValue)
+	}
+
+	resuspend := testSoulFactoryInboundWith(t, methods.MethodSoulFactorySuspend, map[string]any{"reason": "still maintenance"}, "idem-resuspend", "sha256:spec-1", "event-resuspend", "agent-alice")
+	res, err = h.Handle(ctx, resuspend)
+	if err != nil {
+		t.Fatalf("resuspend Handle: %v", err)
+	}
+	result = requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
+	if result["state"] != "suspended" || result["idempotent"] != true {
+		t.Fatalf("unexpected idempotent suspend result: %#v", result)
+	}
+	docAfterResuspend, err := docs.GetAgent(ctx, "agent-alice")
+	if err != nil {
+		t.Fatalf("GetAgent after resuspend: %v", err)
+	}
+	rawAfterResuspend, err := json.Marshal(docAfterResuspend)
+	if err != nil {
+		t.Fatalf("marshal resuspended agent: %v", err)
+	}
+	if string(rawAfterResuspend) != string(docBeforeResuspend) {
+		t.Fatalf("idempotent resuspend mutated agent state\nbefore=%s\nafter=%s", docBeforeResuspend, rawAfterResuspend)
+	}
+}
+
+func TestSoulFactorySuspendReplayAndConflictSurviveRestart(t *testing.T) {
+	cfg := state.ConfigDoc{
+		Agent:   state.AgentPolicy{DefaultModel: "echo"},
+		Control: state.ControlPolicy{RequireAuth: true, Admins: []state.ControlAdmin{{PubKey: testSoulFactoryController, Methods: []string{methods.MethodSoulFactoryProvision, methods.MethodSoulFactorySuspend}}}},
+	}
+	backing := newTestStore()
+	docs := state.NewDocsRepository(backing, "test-author")
+	h := newControlRPCHandler(controlRPCDeps{configState: newRuntimeConfigStore(cfg), docsRepo: docs, startedAt: time.Now()})
+	ctx := context.Background()
+
+	provision := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, testSoulFactoryProvisionParams(), "idem-provision", "sha256:spec-1", "event-provision", "agent-alice")
+	if res, err := h.Handle(ctx, provision); err != nil {
+		t.Fatalf("provision Handle: %v", err)
+	} else {
+		requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
+	}
+	params := map[string]any{"reason": "maintenance"}
+	firstIn := testSoulFactoryInboundWith(t, methods.MethodSoulFactorySuspend, params, "idem-lifecycle", "sha256:spec-1", "event-first", "agent-alice")
+	first, err := h.Handle(ctx, firstIn)
+	if err != nil {
+		t.Fatalf("first suspend Handle: %v", err)
+	}
+	requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, first), "success")
+	doc, err := docs.GetAgent(ctx, "agent-alice")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	doc.Name = "Manual Edit"
+	if _, err := docs.PutAgent(ctx, "agent-alice", doc); err != nil {
+		t.Fatalf("PutAgent: %v", err)
+	}
+
+	docs = state.NewDocsRepository(backing, "test-author")
+	h = newControlRPCHandler(controlRPCDeps{configState: newRuntimeConfigStore(cfg), docsRepo: docs, startedAt: time.Now()})
+	replayIn := testSoulFactoryInboundWith(t, methods.MethodSoulFactorySuspend, params, "idem-lifecycle", "sha256:spec-1", "event-replay", "agent-alice")
+	replay, err := h.Handle(ctx, replayIn)
+	if err != nil {
+		t.Fatalf("replay suspend Handle: %v", err)
+	}
+	if replay.RawPayload != first.RawPayload {
+		t.Fatalf("replay payload changed\nfirst=%s\nreplay=%s", first.RawPayload, replay.RawPayload)
+	}
+	doc, err = docs.GetAgent(ctx, "agent-alice")
+	if err != nil {
+		t.Fatalf("GetAgent after replay: %v", err)
+	}
+	if doc.Name != "Manual Edit" || soulFactoryStateFromMeta(doc.Meta) != "suspended" {
+		t.Fatalf("exact replay repeated side effects: %#v", doc)
+	}
+
+	conflictIn := testSoulFactoryInboundWith(t, methods.MethodSoulFactorySuspend, map[string]any{"reason": "different"}, "idem-lifecycle", "sha256:spec-1", "event-conflict", "agent-alice")
+	conflict, err := h.Handle(ctx, conflictIn)
+	if err != nil {
+		t.Fatalf("conflicting suspend Handle: %v", err)
+	}
+	env := decodeSoulFactoryTestResult(t, conflict)
+	errShape, ok := env["error"].(map[string]any)
+	if env["status"] != "rejected" || !ok || errShape["code"] != "duplicate_conflict" {
+		t.Fatalf("expected duplicate_conflict, got %#v", env)
+	}
+	doc, err = docs.GetAgent(ctx, "agent-alice")
+	if err != nil {
+		t.Fatalf("GetAgent after conflict: %v", err)
+	}
+	if doc.Name != "Manual Edit" || soulFactoryStateFromMeta(doc.Meta) != "suspended" {
+		t.Fatalf("conflict mutated suspended agent: %#v", doc)
+	}
+}
+
 func TestSoulFactoryUnsupportedMethodsFailClosedWithoutSideEffects(t *testing.T) {
 	h, docs := testSoulFactoryHandler(t)
 	unsupported := []string{
 		methods.MethodSoulFactoryUpdate,
-		methods.MethodSoulFactorySuspend,
 		methods.MethodSoulFactoryResume,
 		methods.MethodSoulFactoryRedeploy,
 		methods.MethodSoulFactoryRevoke,
@@ -283,35 +423,38 @@ func TestSoulFactoryHandlerRejectsMissingRequiredParam(t *testing.T) {
 	}
 }
 
-func TestLocalCapabilityAnnouncementAdvertisesOnlyProvision(t *testing.T) {
+func TestLocalCapabilityAnnouncementAdvertisesProvisionAndSuspendAfterRestart(t *testing.T) {
 	cfg := state.ConfigDoc{
 		Relays: state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
 		Control: state.ControlPolicy{Admins: []state.ControlAdmin{
 			{PubKey: "controller-a", Methods: []string{"status.get"}},
 			{PubKey: "controller-b", Methods: []string{methods.MethodSoulFactoryProvision}},
 			{PubKey: "controller-c", Methods: []string{methods.MethodSoulFactoryUpdate}},
+			{PubKey: "controller-d", Methods: []string{methods.MethodSoulFactorySuspend}},
 		}},
 	}
-	cap := buildLocalCapabilityAnnouncement(context.Background(), cfg, nil)
-	if cap.SoulFactory.Schema != nostruntime.SoulFactoryRuntimeCapabilitySchema {
-		t.Fatalf("schema = %q", cap.SoulFactory.Schema)
-	}
-	if cap.SoulFactory.ControlSchema != nostruntime.SoulFactoryRuntimeControlSchema {
-		t.Fatalf("control schema = %q", cap.SoulFactory.ControlSchema)
-	}
-	if len(cap.SoulFactory.Methods) != 1 || cap.SoulFactory.Methods[0] != methods.MethodSoulFactoryProvision {
-		t.Fatalf("advertised methods = %v, want [%s]", cap.SoulFactory.Methods, methods.MethodSoulFactoryProvision)
-	}
-	if len(cap.SoulFactory.ControllerPubKeys) != 1 || cap.SoulFactory.ControllerPubKeys[0] != "controller-b" {
-		t.Fatalf("controllers = %v", cap.SoulFactory.ControllerPubKeys)
-	}
-	if len(cap.SoulFactory.Features) != 0 || cap.SoulFactory.FeatureParity.Runtime != "" {
-		t.Fatalf("unimplemented features advertised: features=%#v parity=%#v", cap.SoulFactory.Features, cap.SoulFactory.FeatureParity)
-	}
-	content := nostruntime.BuildCapabilityContent(cap)
-	parsed := testParseSoulFactoryCapabilityContent(t, content)
-	if len(parsed.Methods) != 1 || parsed.Methods[0] != methods.MethodSoulFactoryProvision {
-		t.Fatalf("serialized methods = %v content=%s", parsed.Methods, content)
+	for publishAttempt := 0; publishAttempt < 2; publishAttempt++ {
+		cap := buildLocalCapabilityAnnouncement(context.Background(), cfg, nil)
+		if cap.SoulFactory.Schema != nostruntime.SoulFactoryRuntimeCapabilitySchema {
+			t.Fatalf("schema = %q", cap.SoulFactory.Schema)
+		}
+		if cap.SoulFactory.ControlSchema != nostruntime.SoulFactoryRuntimeControlSchema {
+			t.Fatalf("control schema = %q", cap.SoulFactory.ControlSchema)
+		}
+		if len(cap.SoulFactory.Methods) != 2 || cap.SoulFactory.Methods[0] != methods.MethodSoulFactoryProvision || cap.SoulFactory.Methods[1] != methods.MethodSoulFactorySuspend {
+			t.Fatalf("advertised methods = %v, want [%s %s]", cap.SoulFactory.Methods, methods.MethodSoulFactoryProvision, methods.MethodSoulFactorySuspend)
+		}
+		if len(cap.SoulFactory.ControllerPubKeys) != 2 || cap.SoulFactory.ControllerPubKeys[0] != "controller-b" || cap.SoulFactory.ControllerPubKeys[1] != "controller-d" {
+			t.Fatalf("controllers = %v", cap.SoulFactory.ControllerPubKeys)
+		}
+		if len(cap.SoulFactory.Features) != 0 || cap.SoulFactory.FeatureParity.Runtime != "" {
+			t.Fatalf("unimplemented features advertised: features=%#v parity=%#v", cap.SoulFactory.Features, cap.SoulFactory.FeatureParity)
+		}
+		content := nostruntime.BuildCapabilityContent(cap)
+		parsed := testParseSoulFactoryCapabilityContent(t, content)
+		if len(parsed.Methods) != 2 || parsed.Methods[0] != methods.MethodSoulFactoryProvision || parsed.Methods[1] != methods.MethodSoulFactorySuspend {
+			t.Fatalf("serialized methods = %v content=%s", parsed.Methods, content)
+		}
 	}
 }
 

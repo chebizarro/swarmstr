@@ -77,7 +77,7 @@ type soulFactoryReplaySignature struct {
 }
 
 func soulFactoryMethods() []string {
-	return []string{methods.MethodSoulFactoryProvision}
+	return []string{methods.MethodSoulFactoryProvision, methods.MethodSoulFactorySuspend}
 }
 
 func soulFactoryControllerPubKeys(cfg state.ConfigDoc) []string {
@@ -103,7 +103,7 @@ func soulFactoryAdminAllowsAny(allowed []string) bool {
 	}
 	for _, method := range allowed {
 		method = strings.ToLower(strings.TrimSpace(method))
-		if method == "*" || method == "soulfactory.*" || method == methods.MethodSoulFactoryProvision {
+		if method == "*" || method == "soulfactory.*" || method == methods.MethodSoulFactoryProvision || method == methods.MethodSoulFactorySuspend {
 			return true
 		}
 	}
@@ -115,7 +115,7 @@ func (h controlRPCHandler) handleSoulFactoryRPC(ctx context.Context, in nostrunt
 	if !strings.HasPrefix(method, "soulfactory.") {
 		return nostruntime.ControlRPCResult{}, false, nil
 	}
-	if method != methods.MethodSoulFactoryProvision {
+	if method != methods.MethodSoulFactoryProvision && method != methods.MethodSoulFactorySuspend {
 		env := decodeSoulFactoryEnvelope(in)
 		errShape := soulFactoryValidationError("unsupported_method", "unsupported SoulFactory method", map[string]any{"method": method})
 		return soulFactoryRawControlResult(in, method, env, "rejected", nil, errShape), true, nil
@@ -194,6 +194,7 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 	doc, err := repo.GetAgent(ctx, agentID)
 	found := err == nil
 	previousState := soulFactoryStateFromMeta(doc.Meta)
+	idempotentNoop := false
 	if err != nil && !errors.Is(err, state.ErrNotFound) {
 		return nil, soulFactoryValidationError("runtime_unavailable", "load managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
 	}
@@ -247,7 +248,9 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 		if !found || doc.Deleted {
 			return nil, soulFactoryValidationError("execution_failed", "managed agent does not exist", map[string]any{"agent_id": agentID})
 		}
-		if err := h.disableSoulFactoryLiveAgent(ctx, repo, agentID, false); err != nil {
+		if previousState == "suspended" {
+			idempotentNoop = true
+		} else if err := h.disableSoulFactoryLiveAgent(ctx, repo, agentID, false); err != nil {
 			return nil, soulFactoryValidationError("execution_failed", "suspend managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
 		}
 	case methods.MethodSoulFactoryResume, methods.MethodSoulFactoryRedeploy:
@@ -286,16 +289,18 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 	if previousState == "suspended" && !soulFactoryMethodActivatesRuntime(method) {
 		stateValue = "suspended"
 	}
-	meta := soulFactoryRuntimeMeta(in, method, env, params, stateValue, now)
-	if customization := soulFactoryCustomizationFromMeta(doc.Meta); len(customization) > 0 {
-		meta["customization"] = customization
-	}
-	doc.Meta = mergeSessionMeta(doc.Meta, map[string]any{"soulfactory": meta})
-	if doc.Version == 0 {
-		doc.Version = 1
-	}
-	if _, err := repo.PutAgent(ctx, agentID, doc); err != nil {
-		return nil, soulFactoryValidationError("execution_failed", "persist managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
+	if !idempotentNoop {
+		meta := soulFactoryRuntimeMeta(in, method, env, params, stateValue, now)
+		if customization := soulFactoryCustomizationFromMeta(doc.Meta); len(customization) > 0 {
+			meta["customization"] = customization
+		}
+		doc.Meta = mergeSessionMeta(doc.Meta, map[string]any{"soulfactory": meta})
+		if doc.Version == 0 {
+			doc.Version = 1
+		}
+		if _, err := repo.PutAgent(ctx, agentID, doc); err != nil {
+			return nil, soulFactoryValidationError("execution_failed", "persist managed agent failed", map[string]any{"agent_id": agentID, "error": err.Error()})
+		}
 	}
 	if h.deps.agentRegistry != nil && !doc.Deleted && stateValue == "running" && strings.TrimSpace(doc.Model) != "" {
 		if rt, rtErr := agent.BuildRuntimeForModel(doc.Model, h.deps.tools); rtErr == nil && rt != nil {
@@ -315,6 +320,9 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 	}
 	if customizationResult != nil {
 		result["customization"] = customizationResult
+	}
+	if idempotentNoop {
+		result["idempotent"] = true
 	}
 	if method == methods.MethodSoulFactoryRedeploy {
 		result["deployment_generation"] = soulFactoryDeploymentGeneration(doc.Meta)
