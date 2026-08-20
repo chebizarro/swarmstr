@@ -480,8 +480,8 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey str
 		}
 	}
 	payload = normalizeControlJSONRPCPayload(id, payload)
-	evt := nostr.Event{Kind: nostr.Kind(events.KindContextVM), CreatedAt: nostr.Now(), Tags: tags, Content: payload}
-	if err := b.keyer.SignEvent(b.ctx, &evt); err != nil {
+	evt, err := signedControlResponseEvent(b.ctx, b.keyer, payload, tags)
+	if err != nil {
 		b.emitErr(fmt.Errorf("sign control response req=%s: %w", requestID, err))
 		return
 	}
@@ -540,6 +540,14 @@ func (b *ControlRPCBus) publishResponse(re nostr.RelayEvent, requesterPubKey str
 		lastErr = fmt.Errorf("no relay accepted control response publish")
 	}
 	b.emitErr(lastErr)
+}
+
+func signedControlResponseEvent(ctx context.Context, keyer nostr.Keyer, payload string, tags nostr.Tags) (nostr.Event, error) {
+	evt := nostr.Event{Kind: nostr.Kind(events.KindContextVM), CreatedAt: nostr.Now(), Tags: tags, Content: payload}
+	if err := keyer.SignEvent(ctx, &evt); err != nil {
+		return nostr.Event{}, err
+	}
+	return evt, nil
 }
 
 type controlRelayClose struct {

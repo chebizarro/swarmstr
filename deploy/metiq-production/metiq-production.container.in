@@ -1,0 +1,40 @@
+# Render with ./render.sh. The image value must remain digest-addressed.
+[Unit]
+Description=Dedicated production Metiq SoulFactory runtime
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{METIQ_IMAGE}}
+ContainerName=metiq-production
+Pull=never
+UserNS=keep-id
+Volume=metiq-production-state.volume:/data/.metiq:rw
+Volume=metiq-production-workspace.volume:/data/.metiq/workspace:rw
+Secret=metiq-nip46-client-key,type=mount,target=/run/secrets/metiq-nip46-client-key
+Environment=HOME=/data
+Environment=METIQ_BOOTSTRAP_PATH=/data/.metiq/bootstrap.json
+ReadOnly=true
+ReadOnlyTmpfs=false
+Tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m
+NoNewPrivileges=true
+DropCapability=all
+LogDriver=journald
+HealthCmd=/usr/bin/curl --fail --silent --show-error http://127.0.0.1:7423/healthz
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=30s
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=180s
+TimeoutStopSec=60s
+CPUQuota=200%
+MemoryMax=2G
+TasksMax=256
+OOMPolicy=stop
+
+[Install]
+WantedBy=default.target

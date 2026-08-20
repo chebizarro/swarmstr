@@ -1,0 +1,9 @@
+{
+  "signer_url": "{{METIQ_SIGNER_URL}}",
+  "nip46_client_key": "file:///run/secrets/metiq-nip46-client-key",
+  "relays": {{METIQ_RELAYS_JSON}},
+  "enable_nip44": true,
+  "enable_nip17": true,
+  "enable_ai_hub_kinds": false,
+  "admin_listen_addr": "127.0.0.1:7423"
+}

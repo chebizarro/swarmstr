@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/gateway/methods"
+	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/store/state"
 )
@@ -129,138 +131,54 @@ func TestSoulFactoryProvisionHandlerExecutesAndReturnsContractEnvelope(t *testin
 	}
 }
 
-func TestSoulFactoryRuntimeExecutionCoversAllMethods(t *testing.T) {
+func TestSoulFactoryUnsupportedMethodsFailClosedWithoutSideEffects(t *testing.T) {
 	h, docs := testSoulFactoryHandler(t)
-	ctx := context.Background()
-	if _, err := docs.PutSession(ctx, "session-1", state.SessionDoc{Version: 1, SessionID: "session-1", Meta: map[string]any{"agent_id": "agent-alice"}}); err != nil {
-		t.Fatalf("seed session: %v", err)
+	unsupported := []string{
+		methods.MethodSoulFactoryUpdate,
+		methods.MethodSoulFactorySuspend,
+		methods.MethodSoulFactoryResume,
+		methods.MethodSoulFactoryRedeploy,
+		methods.MethodSoulFactoryRevoke,
+		methods.MethodSoulFactoryAvatarGenerate,
+		methods.MethodSoulFactoryAvatarSet,
+		methods.MethodSoulFactoryVoiceConfigure,
+		methods.MethodSoulFactoryVoiceSample,
+		methods.MethodSoulFactoryMemoryConfigure,
+		methods.MethodSoulFactoryMemoryReindex,
+		methods.MethodSoulFactoryPersonaUpdate,
+		methods.MethodSoulFactoryConfigReload,
+		"soulfactory.unknown",
 	}
-	cases := []struct {
-		method string
-		idem   string
-		spec   string
-		params map[string]any
-		state  string
-	}{
-		{method: methods.MethodSoulFactoryProvision, idem: "idem-provision", spec: "sha256:spec-1", params: testSoulFactoryProvisionParams(), state: "running"},
-		{method: methods.MethodSoulFactoryUpdate, idem: "idem-update", spec: "sha256:spec-2", params: map[string]any{"resolved_spec": map[string]any{"identity": map[string]any{"name": "Alice Updated"}, "workspace": map[string]any{"repo": "repo-b"}}, "previous_spec_hash": "sha256:spec-1", "new_spec_hash": "sha256:spec-2", "update_mode": "replace"}, state: "running"},
-		{method: methods.MethodSoulFactorySuspend, idem: "idem-suspend", spec: "sha256:spec-2", params: map[string]any{"reason": "maintenance"}, state: "suspended"},
-		{method: methods.MethodSoulFactoryResume, idem: "idem-resume", spec: "sha256:spec-2", params: map[string]any{"reason": "maintenance complete"}, state: "running"},
-		{method: methods.MethodSoulFactoryRedeploy, idem: "idem-redeploy", spec: "sha256:spec-2", params: map[string]any{"reason": "refresh", "strategy": "restart"}, state: "running"},
-		{method: methods.MethodSoulFactoryAvatarGenerate, idem: "idem-avatar-generate", spec: "sha256:spec-3", params: map[string]any{"generation": map[string]any{"prompt": "pixel owl", "style_preset": "pixel-art"}}, state: "running"},
-		{method: methods.MethodSoulFactoryAvatarSet, idem: "idem-avatar-set", spec: "sha256:spec-3", params: map[string]any{"avatar_ref": "blossom:avatar-hash", "current": "generated"}, state: "running"},
-		{method: methods.MethodSoulFactoryVoiceConfigure, idem: "idem-voice-configure", spec: "sha256:spec-3", params: map[string]any{"voice": map[string]any{"provider": "elevenlabs", "persona_id": "alice-voice"}}, state: "running"},
-		{method: methods.MethodSoulFactoryVoiceSample, idem: "idem-voice-sample", spec: "sha256:spec-3", params: map[string]any{"sample_text": "hello from Alice"}, state: "running"},
-		{method: methods.MethodSoulFactoryMemoryConfigure, idem: "idem-memory-configure", spec: "sha256:spec-3", params: map[string]any{"memory": map[string]any{"embedding_provider": "voyage", "strategy": "session-aware"}}, state: "running"},
-		{method: methods.MethodSoulFactoryMemoryReindex, idem: "idem-memory-reindex", spec: "sha256:spec-3", params: map[string]any{"mode": "full"}, state: "running"},
-		{method: methods.MethodSoulFactoryPersonaUpdate, idem: "idem-persona-update", spec: "sha256:spec-3", params: map[string]any{"identity": map[string]any{"name": "Alice Persona"}, "persona": map[string]any{"traits": []any{"curious", "patient"}, "tone": "warm"}}, state: "running"},
-		{method: methods.MethodSoulFactoryConfigReload, idem: "idem-config-reload", spec: "sha256:spec-3", params: map[string]any{"patch": map[string]any{"runtime": map[string]any{"model": "echo"}, "persona": map[string]any{"style": "concise"}}}, state: "running"},
-		{method: methods.MethodSoulFactoryRevoke, idem: "idem-revoke", spec: "sha256:spec-3", params: map[string]any{"reason": "operator revoke", "revoke_runtime_credentials": true}, state: "revoked"},
-	}
-	for i, tc := range cases {
-		t.Run(tc.method, func(t *testing.T) {
-			in := testSoulFactoryInboundWith(t, tc.method, tc.params, tc.idem, tc.spec, fmt.Sprintf("event-%d", i), "agent-alice")
-			res, err := h.Handle(ctx, in)
+	for i, method := range unsupported {
+		t.Run(method, func(t *testing.T) {
+			in := testSoulFactoryInboundWith(t, method, map[string]any{}, fmt.Sprintf("idem-%d", i), "sha256:spec", fmt.Sprintf("event-%d", i), "agent-alice")
+			res, err := h.Handle(context.Background(), in)
 			if err != nil {
 				t.Fatalf("Handle: %v", err)
 			}
 			env := decodeSoulFactoryTestResult(t, res)
-			result := requireSoulFactoryStatus(t, env, "success")
-			if result["state"] != tc.state {
-				t.Fatalf("state = %v, want %s envelope=%#v", result["state"], tc.state, env)
+			if env["status"] != "rejected" {
+				t.Fatalf("status = %v, want rejected envelope=%#v", env["status"], env)
+			}
+			errShape, ok := env["error"].(map[string]any)
+			if !ok || errShape["code"] != "unsupported_method" {
+				t.Fatalf("expected unsupported_method, got %#v", env["error"])
 			}
 		})
 	}
-	doc, err := docs.GetAgent(ctx, "agent-alice")
-	if err != nil {
-		t.Fatalf("GetAgent: %v", err)
-	}
-	if !doc.Deleted {
-		t.Fatalf("revoke should mark agent deleted: %#v", doc)
-	}
-	sf, _ := doc.Meta["soulfactory"].(map[string]any)
-	if sf["state"] != "revoked" || sf["reason"] != "operator revoke" {
-		t.Fatalf("unexpected soulfactory meta: %#v", sf)
-	}
-	customization, _ := sf["customization"].(map[string]any)
-	avatar, _ := customization["avatar"].(map[string]any)
-	persona, _ := customization["persona"].(map[string]any)
-	if avatar["ref"] != "blossom:avatar-hash" || persona["style"] != "concise" {
-		t.Fatalf("customization metadata not preserved: %#v", customization)
-	}
-	session, err := docs.GetSession(ctx, "session-1")
-	if err != nil {
-		t.Fatalf("GetSession: %v", err)
-	}
-	if session.Meta != nil && session.Meta["agent_id"] != nil {
-		t.Fatalf("revoke should clear persisted session assignment: %#v", session.Meta)
+	if _, err := docs.GetAgent(context.Background(), "agent-alice"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("unsupported methods created binding state: %v", err)
 	}
 }
 
-func TestSoulFactoryCustomizationDoesNotResumeSuspendedAgent(t *testing.T) {
-	h, docs := testSoulFactoryHandler(t)
-	ctx := context.Background()
-	provision := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, testSoulFactoryProvisionParams(), "idem-provision", "sha256:spec-1", "event-provision", "agent-alice")
-	res, err := h.Handle(ctx, provision)
-	if err != nil {
-		t.Fatalf("provision Handle: %v", err)
+func TestSoulFactoryIdempotencyExactReplaySurvivesRestartWithoutSideEffects(t *testing.T) {
+	cfg := state.ConfigDoc{
+		Agent:   state.AgentPolicy{DefaultModel: "echo"},
+		Control: state.ControlPolicy{RequireAuth: true, Admins: []state.ControlAdmin{{PubKey: testSoulFactoryController, Methods: []string{methods.MethodSoulFactoryProvision}}}},
 	}
-	requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
-	suspend := testSoulFactoryInboundWith(t, methods.MethodSoulFactorySuspend, map[string]any{"reason": "maintenance"}, "idem-suspend", "sha256:spec-1", "event-suspend", "agent-alice")
-	res, err = h.Handle(ctx, suspend)
-	if err != nil {
-		t.Fatalf("suspend Handle: %v", err)
-	}
-	requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
-
-	customize := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryAvatarSet, map[string]any{"avatar_ref": "blossom:suspended-avatar"}, "idem-avatar", "sha256:spec-2", "event-avatar", "agent-alice")
-	res, err = h.Handle(ctx, customize)
-	if err != nil {
-		t.Fatalf("customize Handle: %v", err)
-	}
-	result := requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
-	if result["state"] != "suspended" {
-		t.Fatalf("customization resumed suspended agent: %#v", result)
-	}
-	doc, err := docs.GetAgent(ctx, "agent-alice")
-	if err != nil {
-		t.Fatalf("GetAgent: %v", err)
-	}
-	sf, _ := doc.Meta["soulfactory"].(map[string]any)
-	customization, _ := sf["customization"].(map[string]any)
-	avatar, _ := customization["avatar"].(map[string]any)
-	if sf["state"] != "suspended" || avatar["ref"] != "blossom:suspended-avatar" {
-		t.Fatalf("unexpected suspended customization meta: %#v", sf)
-	}
-}
-
-func TestSoulFactoryUpdateRejectsSpecHashMismatch(t *testing.T) {
-	h, _ := testSoulFactoryHandler(t)
-	ctx := context.Background()
-	provision := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, testSoulFactoryProvisionParams(), "idem-provision", "sha256:spec-1", "event-provision", "agent-alice")
-	res, err := h.Handle(ctx, provision)
-	if err != nil {
-		t.Fatalf("provision Handle: %v", err)
-	}
-	requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, res), "success")
-	updateParams := map[string]any{"patch": map[string]any{"identity": map[string]any{"name": "Stale"}}, "previous_spec_hash": "sha256:older", "new_spec_hash": "sha256:spec-2", "update_mode": "merge"}
-	update := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryUpdate, updateParams, "idem-stale-update", "sha256:spec-2", "event-update", "agent-alice")
-	res, err = h.Handle(ctx, update)
-	if err != nil {
-		t.Fatalf("update Handle: %v", err)
-	}
-	env := decodeSoulFactoryTestResult(t, res)
-	if env["status"] != "failed" {
-		t.Fatalf("status = %v, want failed envelope=%#v", env["status"], env)
-	}
-	errShape, ok := env["error"].(map[string]any)
-	if !ok || errShape["code"] != "spec_hash_mismatch" {
-		t.Fatalf("expected spec_hash_mismatch, got %#v", env["error"])
-	}
-}
-
-func TestSoulFactoryIdempotencyExactReplayReturnsPriorResultWithoutSideEffects(t *testing.T) {
-	h, docs := testSoulFactoryHandler(t)
+	backing := newTestStore()
+	docs := state.NewDocsRepository(backing, "test-author")
+	h := newControlRPCHandler(controlRPCDeps{configState: newRuntimeConfigStore(cfg), docsRepo: docs, startedAt: time.Now()})
 	ctx := context.Background()
 	params := testSoulFactoryProvisionParams()
 	firstIn := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, params, "idem-replay", "sha256:spec-1", "event-first", "agent-alice")
@@ -277,6 +195,11 @@ func TestSoulFactoryIdempotencyExactReplayReturnsPriorResultWithoutSideEffects(t
 	if _, err := docs.PutAgent(ctx, "agent-alice", doc); err != nil {
 		t.Fatalf("PutAgent: %v", err)
 	}
+
+	// Recreate both repository and handler to model a daemon restart. The
+	// checkpoint and agent binding must be recovered from durable state.
+	docs = state.NewDocsRepository(backing, "test-author")
+	h = newControlRPCHandler(controlRPCDeps{configState: newRuntimeConfigStore(cfg), docsRepo: docs, startedAt: time.Now()})
 
 	replayIn := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, params, "idem-replay", "sha256:spec-1", "event-replay", "agent-alice")
 	replay, err := h.Handle(ctx, replayIn)
@@ -295,8 +218,14 @@ func TestSoulFactoryIdempotencyExactReplayReturnsPriorResultWithoutSideEffects(t
 	}
 }
 
-func TestSoulFactoryIdempotencyConflictReturnsDuplicateConflict(t *testing.T) {
-	h, docs := testSoulFactoryHandler(t)
+func TestSoulFactoryIdempotencyConflictSurvivesRestart(t *testing.T) {
+	cfg := state.ConfigDoc{
+		Agent:   state.AgentPolicy{DefaultModel: "echo"},
+		Control: state.ControlPolicy{RequireAuth: true, Admins: []state.ControlAdmin{{PubKey: testSoulFactoryController, Methods: []string{methods.MethodSoulFactoryProvision}}}},
+	}
+	backing := newTestStore()
+	docs := state.NewDocsRepository(backing, "test-author")
+	h := newControlRPCHandler(controlRPCDeps{configState: newRuntimeConfigStore(cfg), docsRepo: docs, startedAt: time.Now()})
 	ctx := context.Background()
 	params := testSoulFactoryProvisionParams()
 	firstIn := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, params, "idem-conflict", "sha256:spec-1", "event-first", "agent-alice")
@@ -305,6 +234,9 @@ func TestSoulFactoryIdempotencyConflictReturnsDuplicateConflict(t *testing.T) {
 		t.Fatalf("first Handle: %v", err)
 	}
 	requireSoulFactoryStatus(t, decodeSoulFactoryTestResult(t, first), "success")
+
+	docs = state.NewDocsRepository(backing, "test-author")
+	h = newControlRPCHandler(controlRPCDeps{configState: newRuntimeConfigStore(cfg), docsRepo: docs, startedAt: time.Now()})
 
 	conflictIn := testSoulFactoryInboundWith(t, methods.MethodSoulFactoryProvision, params, "idem-conflict", "sha256:spec-2", "event-conflict", "agent-alice")
 	conflict, err := h.Handle(ctx, conflictIn)
@@ -331,7 +263,9 @@ func TestSoulFactoryIdempotencyConflictReturnsDuplicateConflict(t *testing.T) {
 
 func TestSoulFactoryHandlerRejectsMissingRequiredParam(t *testing.T) {
 	h, _ := testSoulFactoryHandler(t)
-	in := testSoulFactoryInbound(t, methods.MethodSoulFactoryRedeploy, map[string]any{"reason": "operator request"})
+	params := testSoulFactoryProvisionParams()
+	delete(params, "assets")
+	in := testSoulFactoryInbound(t, methods.MethodSoulFactoryProvision, params)
 	res, err := h.Handle(context.Background(), in)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -349,105 +283,41 @@ func TestSoulFactoryHandlerRejectsMissingRequiredParam(t *testing.T) {
 	}
 }
 
-func TestLocalCapabilityAnnouncementAdvertisesSoulFactoryControllers(t *testing.T) {
+func TestLocalCapabilityAnnouncementAdvertisesOnlyProvision(t *testing.T) {
 	cfg := state.ConfigDoc{
 		Relays: state.RelayPolicy{Read: []string{"wss://relay.example"}, Write: []string{"wss://relay.example"}},
 		Control: state.ControlPolicy{Admins: []state.ControlAdmin{
 			{PubKey: "controller-a", Methods: []string{"status.get"}},
-			{PubKey: "controller-b", Methods: []string{"soulfactory.*"}},
+			{PubKey: "controller-b", Methods: []string{methods.MethodSoulFactoryProvision}},
+			{PubKey: "controller-c", Methods: []string{methods.MethodSoulFactoryUpdate}},
 		}},
 	}
 	cap := buildLocalCapabilityAnnouncement(context.Background(), cfg, nil)
 	if cap.SoulFactory.Schema != nostruntime.SoulFactoryRuntimeCapabilitySchema {
 		t.Fatalf("schema = %q", cap.SoulFactory.Schema)
 	}
-	if cap.SoulFactory.Schema != "soulfactory-runtime-capability/v2" {
-		t.Fatalf("schema version = %q", cap.SoulFactory.Schema)
-	}
 	if cap.SoulFactory.ControlSchema != nostruntime.SoulFactoryRuntimeControlSchema {
 		t.Fatalf("control schema = %q", cap.SoulFactory.ControlSchema)
 	}
-	methodSet := map[string]struct{}{}
-	for _, method := range cap.SoulFactory.Methods {
-		methodSet[method] = struct{}{}
-	}
-	for _, method := range methods.SoulFactoryMethods() {
-		if _, ok := methodSet[method]; !ok {
-			t.Fatalf("missing advertised method %s in %v", method, cap.SoulFactory.Methods)
-		}
-	}
-	for _, method := range []string{
-		methods.MethodSoulFactoryAvatarGenerate,
-		methods.MethodSoulFactoryAvatarSet,
-		methods.MethodSoulFactoryVoiceConfigure,
-		methods.MethodSoulFactoryVoiceSample,
-		methods.MethodSoulFactoryMemoryConfigure,
-		methods.MethodSoulFactoryMemoryReindex,
-		methods.MethodSoulFactoryPersonaUpdate,
-		methods.MethodSoulFactoryConfigReload,
-	} {
-		if _, ok := methodSet[method]; !ok {
-			t.Fatalf("missing customization method %s in %v", method, cap.SoulFactory.Methods)
-		}
+	if len(cap.SoulFactory.Methods) != 1 || cap.SoulFactory.Methods[0] != methods.MethodSoulFactoryProvision {
+		t.Fatalf("advertised methods = %v, want [%s]", cap.SoulFactory.Methods, methods.MethodSoulFactoryProvision)
 	}
 	if len(cap.SoulFactory.ControllerPubKeys) != 1 || cap.SoulFactory.ControllerPubKeys[0] != "controller-b" {
 		t.Fatalf("controllers = %v", cap.SoulFactory.ControllerPubKeys)
 	}
-	if cap.SoulFactory.FeatureParity.Runtime != "openclaw" || cap.SoulFactory.FeatureParity.Status != "partial" || !cap.SoulFactory.FeatureParity.MethodParity {
-		t.Fatalf("feature parity = %#v", cap.SoulFactory.FeatureParity)
-	}
-	features := map[string]nostruntime.SoulFactoryFeatureCapability{}
-	for _, feature := range cap.SoulFactory.Features {
-		features[feature.Name] = feature
-	}
-	wantStatus := map[string]string{
-		"avatar":        "partial",
-		"voice":         "stubbed",
-		"memory":        "stubbed",
-		"persona":       "partial",
-		"config_reload": "partial",
-	}
-	wantFeatureMethods := map[string][]string{
-		"avatar":        {methods.MethodSoulFactoryAvatarGenerate, methods.MethodSoulFactoryAvatarSet},
-		"voice":         {methods.MethodSoulFactoryVoiceConfigure, methods.MethodSoulFactoryVoiceSample},
-		"memory":        {methods.MethodSoulFactoryMemoryConfigure, methods.MethodSoulFactoryMemoryReindex},
-		"persona":       {methods.MethodSoulFactoryPersonaUpdate},
-		"config_reload": {methods.MethodSoulFactoryConfigReload},
-	}
-	for name, status := range wantStatus {
-		feature, ok := features[name]
-		if !ok {
-			t.Fatalf("missing feature %s in %#v", name, cap.SoulFactory.Features)
-		}
-		if feature.Status != status || feature.OpenClawParity != "partial" {
-			t.Fatalf("feature %s = %#v", name, feature)
-		}
-		for _, method := range wantFeatureMethods[name] {
-			found := false
-			for _, got := range feature.Methods {
-				if got == method {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Fatalf("feature %s missing method %s in %#v", name, method, feature)
-			}
-		}
-		if len(feature.Notes) == 0 {
-			t.Fatalf("feature %s has no availability notes", name)
-		}
+	if len(cap.SoulFactory.Features) != 0 || cap.SoulFactory.FeatureParity.Runtime != "" {
+		t.Fatalf("unimplemented features advertised: features=%#v parity=%#v", cap.SoulFactory.Features, cap.SoulFactory.FeatureParity)
 	}
 	content := nostruntime.BuildCapabilityContent(cap)
 	parsed := testParseSoulFactoryCapabilityContent(t, content)
-	if parsed.Schema != "soulfactory-runtime-capability/v2" || len(parsed.Features) != len(wantStatus) || parsed.FeatureParity.Runtime != "openclaw" {
-		t.Fatalf("serialized SoulFactory capability = %#v content=%s", parsed, content)
+	if len(parsed.Methods) != 1 || parsed.Methods[0] != methods.MethodSoulFactoryProvision {
+		t.Fatalf("serialized methods = %v content=%s", parsed.Methods, content)
 	}
 }
 
 func testParseSoulFactoryCapabilityContent(t *testing.T, content string) nostruntime.SoulFactoryCapability {
 	t.Helper()
-	evt := nostr.Event{Kind: 30317, Content: content}
+	evt := nostr.Event{Kind: nostr.Kind(events.CAS_AGENT_CAPABILITY), Content: content}
 	cap, err := nostruntime.ParseCapabilityEvent(&evt)
 	if err != nil {
 		t.Fatalf("ParseCapabilityEvent: %v", err)

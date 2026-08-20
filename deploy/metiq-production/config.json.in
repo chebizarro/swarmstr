@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "dm": {
+    "policy": "disabled",
+    "reply_scheme": "nip17"
+  },
+  "relays": {
+    "read": {{METIQ_RELAYS_JSON}},
+    "write": {{METIQ_RELAYS_JSON}}
+  },
+  "agent": {
+    "default_model": "echo",
+    "default_autonomy": "observe",
+    "default_authority": {
+      "exec": "block",
+      "network": "block",
+      "write": "block"
+    }
+  },
+  "control": {
+    "require_auth": true,
+    "allow_unauth_methods": [],
+    "admins": [
+      {
+        "pubkey": "{{SOULFACTORY_CONTROLLER_PUBKEY}}",
+        "methods": ["soulfactory.provision"]
+      }
+    ],
+    "legacy_token_fallback": false
+  },
+  "storage": {
+    "encrypt": true
+  },
+  "heartbeat": {
+    "enabled": false
+  }
+}

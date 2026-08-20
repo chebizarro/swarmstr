@@ -35,8 +35,6 @@ func buildLocalCapabilityAnnouncement(ctx context.Context, cfg state.ConfigDoc, 
 			Methods:           soulFactoryMethods(),
 			ControlSchema:     nostruntime.SoulFactoryRuntimeControlSchema,
 			ControllerPubKeys: soulFactoryControllerPubKeys(cfg),
-			Features:          soulFactoryFeatureCapabilities(),
-			FeatureParity:     soulFactoryOpenClawParity(),
 		},
 	}
 }

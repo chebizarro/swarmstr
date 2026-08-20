@@ -402,6 +402,31 @@ func TestBuildControlResponsePayload_ContextVMResult(t *testing.T) {
 	}
 }
 
+func TestSignedControlResponseEventIsCorrelatedAndValid(t *testing.T) {
+	keyer := testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111")
+	tags := controlResponseBaseTags("request-event", "requester", "idem-1", "ok", "soulfactory.provision", "params-hash")
+	evt, err := signedControlResponseEvent(context.Background(), keyer, "{\"status\":\"success\"}", tags)
+	if err != nil {
+		t.Fatalf("signedControlResponseEvent: %v", err)
+	}
+	if evt.Kind != nostr.Kind(events.KindContextVM) {
+		t.Fatalf("kind = %d, want %d", evt.Kind, events.KindContextVM)
+	}
+	for key, want := range map[string]string{
+		"e":      "request-event",
+		"p":      "requester",
+		"req":    "idem-1",
+		"method": "soulfactory.provision",
+	} {
+		if got := firstTagValue(evt.Tags, key); got != want {
+			t.Fatalf("tag %s = %q, want %q", key, got, want)
+		}
+	}
+	if !evt.CheckID() || !evt.VerifySignature() {
+		t.Fatal("control result is not a valid signed event")
+	}
+}
+
 func TestControlFilterSubscribesContextVMOnly(t *testing.T) {
 	pk := mustControlPubKey(t, testControlKeyer(t, "1111111111111111111111111111111111111111111111111111111111111111"))
 	b := &ControlRPCBus{public: pk}
