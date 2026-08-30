@@ -13,7 +13,7 @@ or close shared fleet work. The authoritative state is the merged
 `cascadia.task-state.v2` kind-30900 stream. A local Beads `issues.jsonl`
 file is a projection, not a separate authority.
 
-This convention is peer-to-peer. It does **not** require Nostrig, a daemon,
+This convention is peer-to-peer. It does **not** require Manifest, a daemon,
 ContextVM kind 25910, command acknowledgments, or a coordinator.
 
 ## Required local policy
