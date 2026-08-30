@@ -220,15 +220,20 @@ func TestResponderElectionTakeoverRedelivery(t *testing.T) {
 		t.Fatal("an observed reaction on the contested event must cancel the takeover")
 	}
 
-	// The elected responder answering in the room also cancels (via the gate's
-	// per-message observation).
+	// Unrelated elected traffic stays armed; an elected reply targeting the
+	// contested event cancels through the gate's per-message observation.
 	third := electionTestMsg(strings.Repeat("3", 64))
 	thirdDecision, _ := lc.gate(third, cfg, nil)
 	lc.armResponderTakeover(thirdDecision, third, deliver)
 	electedReply := electionTestMsg(strings.Repeat("4", 64))
 	electedReply.FromPubKey = electAgentSelf
 	lc.gate(electedReply, cfg, nil)
+	if takeovers.Size() != 1 {
+		t.Fatal("unrelated elected traffic must leave the takeover armed")
+	}
+	electedReply.Meta.ReplyToEventID = third.EventID
+	lc.gate(electedReply, cfg, nil)
 	if takeovers.Size() != 0 {
-		t.Fatal("the elected responder's room message must cancel the takeover")
+		t.Fatal("the elected responder's targeted reply must cancel the takeover")
 	}
 }

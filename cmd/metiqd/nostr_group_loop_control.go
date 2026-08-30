@@ -40,6 +40,7 @@ func settleNostrDispatch(msg channels.InboundMessage, deliveredOK bool) {
 // RPC). The bot verdict is loop-control ONLY and never affects allow_from /
 // command authorization.
 type nostrGroupLoopControl struct {
+	ctx                     context.Context
 	ownPubkey               string
 	peerIndex               *nostruntime.PeerAgentIndex
 	guard                   *channels.BotLoopProtection
@@ -272,6 +273,36 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 		ShouldReplyAliases:      []string{"metiq"},
 		ShouldReplyCapabilities: lc.shouldReplyCapabilities,
 	})
+	// R1 Tier 2: only heuristic ambiguity reaches the deployment-backed cheap
+	// model. Mention/command/trust and deterministic pass/drop paths bypass it.
+	if heuristic := preflight.ShouldReplyGateDecision; heuristic != nil && heuristic.Outcome == channels.ShouldReplyAmbiguous {
+		aliases := append([]string{"metiq"}, roomCfg.AgentID)
+		var hook channels.ShouldReplyModelHook
+		if !roomPolicy.ShouldReplyModelDisabled {
+			hook = channels.GetShouldReplyModelHook(channels.ShouldReplyModelHookContext{
+				AccountID:   roomCfg.AgentID,
+				ChannelName: msg.ChannelID,
+				RoomKey:     preflight.RoomKey,
+				Model:       roomPolicy.ShouldReplyModel,
+			})
+		}
+		gateCtx := lc.ctx
+		if gateCtx == nil {
+			gateCtx = context.Background()
+		}
+		resolved := channels.ResolveShouldReplyGateBounded(gateCtx, channels.ShouldReplyGateInput{
+			Text:             msg.Text,
+			Aliases:          aliases,
+			Capabilities:     lc.shouldReplyCapabilities,
+			SenderIsKnownBot: knownBot,
+			Enabled:          roomPolicy.ShouldReplyGate,
+		}, hook, roomPolicy.ShouldReplyModelTimeout)
+		preflight.ShouldReplyGateDecision = &resolved
+		if preflight.DropReason == channels.DropShouldReplyGate && resolved.Outcome == channels.ShouldReplyPass {
+			preflight.ShouldDrop = false
+			preflight.DropReason = ""
+		}
+	}
 	// R2: every live room message doubles as a takeover observation — the
 	// elected responder answering (or anyone replying in the contested event's
 	// thread) stands this agent's pending claim down, even when this message
@@ -288,9 +319,21 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 	// (even ones the gate drops below — those are the unanswered mentions the
 	// moderator review is for).
 	lc.recordProgressLedgerEvent(preflight.RoomKey, msg)
-	// R7: every live inbound room message feeds the per-room message-share
-	// window (takeover redeliveries were counted at original arrival; own
-	// outbound messages are counted at the channel send path).
+	// R7: measure agent share against the live fleet/NIP-51 roster while
+	// retaining all observed senders (including humans) in diagnostics.
+	var responderDirectory []channels.ResponderDirectoryEntry
+	if lc.responderDirectory != nil {
+		responderDirectory = lc.responderDirectory()
+	}
+	roster := make([]string, 0, len(responderDirectory)+1)
+	roster = append(roster, lc.ownPubkey)
+	for _, entry := range responderDirectory {
+		roster = append(roster, entry.Pubkey)
+	}
+	metricspkg.SetRoomAgentRoster(preflight.RoomKey, roster)
+	// Every live inbound room message feeds the observed message window
+	// (takeover redeliveries were counted at original arrival; own outbound
+	// messages are counted at the channel send path).
 	if !msg.ResponderTakeover {
 		metricspkg.RecordRoomMessage(preflight.RoomKey, msg.FromPubKey)
 	}
@@ -313,10 +356,6 @@ func (lc *nostrGroupLoopControl) gate(msg channels.InboundMessage, roomCfg state
 	// directory for admitted ambient traffic. Nil = bypass (explicit mentions,
 	// replies-to-bot, commands, no fleet directory, or no other
 	// capability-advertising member: the message is fully this agent's).
-	var responderDirectory []channels.ResponderDirectoryEntry
-	if lc.responderDirectory != nil {
-		responderDirectory = lc.responderDirectory()
-	}
 	responderElection := channels.EvaluateNostrResponderElection(channels.NostrResponderElectionParams{
 		Policy:           roomPolicy,
 		SelfPubkey:       lc.ownPubkey,

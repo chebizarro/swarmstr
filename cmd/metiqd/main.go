@@ -1736,6 +1736,13 @@ func main() {
 	controlACPDispatcher = acpDispatcher
 	controlACPManager = acpManager
 	controlACPFlowRegistry = acpFlowRegistry
+	commitmentService, commitmentErr := newNostrCommitmentService(filepath.Join(filepath.Dir(state.DefaultSessionStorePath()), "commitments.json"))
+	if commitmentErr != nil {
+		log.Fatalf("commitment store init failed: %v", commitmentErr)
+	}
+	controlCommitmentService = commitmentService
+	unregisterCommitmentResolver := channels.RegisterCommitmentBackingResolver(commitmentService.resolve)
+	defer unregisterCommitmentResolver()
 	if n := prepopulateACPPeersFromConfig(acpPeers, configState.Get()); n > 0 {
 		log.Printf("acp peer registry pre-populated from config: %d peer(s)", n)
 	}
@@ -2128,6 +2135,7 @@ func main() {
 
 	// Channel registry for NIP-29 group chat and future channel types.
 	channelReg := channels.NewRegistry()
+	commitmentService.startHeartbeat(ctx, channelReg)
 	defer channelReg.CloseAll()
 	defer func() {
 		if controlHub != nil {
@@ -2299,11 +2307,22 @@ func main() {
 	if nostrTakeoverErr != nil {
 		log.Printf("responder takeover coordinator init failed (takeovers disabled): %v", nostrTakeoverErr)
 	}
-	// R5 progress ledger: bounded per-room event window + the per-room
-	// review/post throttle state, shared across every joined room.
-	nostrProgressLedgerRecorder := channels.NewProgressLedgerRecorder(0)
-	nostrProgressLedgerScheduler := &channels.ProgressLedgerScheduler{}
+	// R5 progress ledger: durable bounded per-room event window plus durable
+	// review/post throttle state, shared across every joined room and restored
+	// after restart.
+	progressLedgerDir := filepath.Join(filepath.Dir(state.DefaultSessionStorePath()), "progress-ledger")
+	nostrProgressLedgerRecorder, progressRecorderErr := channels.NewFileProgressLedgerRecorder(filepath.Join(progressLedgerDir, "events.json"), 0)
+	if progressRecorderErr != nil {
+		log.Printf("progress ledger event-state restore failed (starting empty): %v", progressRecorderErr)
+		nostrProgressLedgerRecorder = channels.NewProgressLedgerRecorder(0)
+	}
+	nostrProgressLedgerScheduler, progressSchedulerErr := channels.NewFileProgressLedgerScheduler(filepath.Join(progressLedgerDir, "review-state.json"))
+	if progressSchedulerErr != nil {
+		log.Printf("progress ledger review-state restore failed (starting empty): %v", progressSchedulerErr)
+		nostrProgressLedgerScheduler = &channels.ProgressLedgerScheduler{}
+	}
 	nostrLoopControl := &nostrGroupLoopControl{
+		ctx:                     ctx,
 		ownPubkey:               nostrOwnPubkey,
 		peerIndex:               nostrPeerIndex,
 		guard:                   nostrBotLoopGuard,
@@ -2333,6 +2352,31 @@ func main() {
 		ledgerRecorder: nostrProgressLedgerRecorder,
 	}
 	controlNostrLoopControl = nostrLoopControl
+	// R6: managed ACP TaskFlow lifecycle joins the same typed transition corpus
+	// and per-room/task announcement throttle as fleet-task transitions. Terminal
+	// transitions also close every commitment correlated to the live flow.
+	unregisterFlowObserver := acpFlowRegistry.ObserveTransitions(func(transition acppkg.FlowTransition) {
+		flow := transition.Current
+		bridgeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		outcome, bridgeErr := routeManagedFlowTransition(bridgeCtx, nostrLoopControl, configState.Get(), channelReg, nostrOwnPubkey, transition)
+		cancel()
+		if bridgeErr != nil {
+			log.Printf("managed TaskFlow transition bridge failed flow=%s action=%s: %v", flow.FlowID, transition.Action, bridgeErr)
+		} else if outcome == channels.TaskFlowAnnouncementSuppressed {
+			log.Printf("managed TaskFlow announcement suppressed by shared throttle flow=%s action=%s", flow.FlowID, transition.Action)
+		}
+		if flow.Status.Terminal() && controlCommitmentService != nil {
+			completed := flow.Status == acppkg.FlowStatusSucceeded
+			if err := controlCommitmentService.resolveBacking("flow:"+flow.FlowID, completed, flowTerminalReason(string(flow.Status), flow.LastTransitionError, flow.CancellationReason)); err != nil {
+				log.Printf("commitment flow lifecycle correlation failed flow=%s: %v", flow.FlowID, err)
+			}
+		}
+	})
+	defer unregisterFlowObserver()
+	// R1: deployment-backed Tier-2 resolver. It uses only an explicit room model
+	// or the routed agent's configured light_model and fails quiet when absent.
+	unregisterShouldReplyModel := channels.RegisterShouldReplyModelHookResolver(newNostrShouldReplyModelResolver(configState))
+	defer unregisterShouldReplyModel()
 
 	// Auto-join any NostrChannels declared in the config with enabled: true.
 	// This provides OpenClaw parity: channels configured in the config file are
@@ -2463,6 +2507,7 @@ func main() {
 					// typed event is the source of truth — except the one compact
 					// throttled announcement per (room, task).
 					if decision.TaskEchoSuppress {
+						metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalTaskEchoOpportunity)
 						if v := nostrLoopControl.checkTaskEcho(sessionID, replyText, decision.TaskEchoThreshold); v.Suppress {
 							metricspkg.TaskEchoSuppressed.Inc()
 							metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalTaskEchoDrop)
@@ -2476,6 +2521,9 @@ func main() {
 					// Echo suppression (opt-in): drop a reply that restates
 					// recent room traffic; otherwise record it so future echoes
 					// of it are caught.
+					if decision.EchoSuppress {
+						metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalEchoOpportunity)
+					}
 					if decision.EchoSuppress && nostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
 						metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalEchoDrop)
 						log.Printf("nip29 echo suppressed reply room=%s", sessionID)
@@ -2484,8 +2532,13 @@ func main() {
 					}
 					nostrLoopControl.observeEcho(sessionID, replyText)
 					commitmentState := agent.BuildCommitmentStateFromTraces(result.ToolTraces)
-					commitmentCtx := channels.ContextWithCommitmentBacking(turnCtx, channels.CommitmentBacking{SuccessfulCronAdds: commitmentState.SuccessfulCronAdds, SuccessfulTaskFlowActions: commitmentState.SuccessfulTaskFlowActions})
-					replyText, _ = channels.EnforceOutboundCommitment(commitmentCtx, replyText, roomPolicy.CommitmentEnforcement)
+					commitmentCtx := channels.ContextWithCommitmentBacking(turnCtx, channels.CommitmentBacking{
+						SuccessfulCronAdds:        commitmentState.SuccessfulCronAdds,
+						SuccessfulTaskFlowActions: commitmentState.SuccessfulTaskFlowActions,
+						RoomKey:                   sessionID,
+						TurnID:                    msg.EventID,
+						References:                commitmentState.BackingReferences,
+					})
 					if err := msg.Reply(commitmentCtx, replyText); err != nil {
 						emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
 						log.Printf("auto-join channel reply error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, err)
@@ -2570,7 +2623,7 @@ func main() {
 			log.Printf("auto-join %s channel joined name=%s address=%s id=%s", localChanCfg.Kind, localChanName, channelAddress, ch.ID())
 			// R5: start the scheduled moderator review loop when THIS instance
 			// is the room's designated progress-ledger moderator (opt-in).
-			if roomPolicy.ProgressLedgerModeratorFor(nostrOwnPubkey) {
+			if roomPolicy.ProgressLedgerModeratorFor(nostrOwnPubkey) || roomPolicy.ProgressLedgerModeratorRotation {
 				// The room key must match the gate's recorder key: NIP-29 keys
 				// on the configured group address; Communikey rooms key on the
 				// canonical channel ID the transport reports.
@@ -2581,12 +2634,22 @@ func main() {
 					return cfg.GroupAddress
 				}
 				startNostrProgressLedgerLoop(ctx, nostrProgressLedgerLoopOptions{
-					roomKey:    channels.NormalizeNostrRoomSessionKey(ledgerRoomAddress(localChanCfg)),
-					selfPubkey: nostrOwnPubkey,
-					scheduler:  nostrProgressLedgerScheduler,
-					recorder:   nostrProgressLedgerRecorder,
-					guard:      nostrBotLoopGuard,
-					taskLedger: taskLedger,
+					roomKey:         channels.NormalizeNostrRoomSessionKey(ledgerRoomAddress(localChanCfg)),
+					selfPubkey:      nostrOwnPubkey,
+					scheduler:       nostrProgressLedgerScheduler,
+					recorder:        nostrProgressLedgerRecorder,
+					guard:           nostrBotLoopGuard,
+					taskLedger:      taskLedger,
+					commitmentStore: commitmentService.store,
+					roster: func() []string {
+						entries := fleetDirectory()
+						out := make([]string, 0, len(entries)+1)
+						out = append(out, nostrOwnPubkey)
+						for _, entry := range entries {
+							out = append(out, entry.Pubkey)
+						}
+						return out
+					},
 					policy: func() (channels.NostrRoomPolicy, bool) {
 						cur, ok := configState.Get().NostrChannels[localChanName]
 						if !ok || !cur.Enabled {
@@ -5573,6 +5636,11 @@ func main() {
 				// var at delivery time (nil-safe when nostr chat is disabled).
 				OnTaskTransition: func(author, taskID, status, title string) {
 					controlNostrLoopControl.observeTaskTransition(author, taskID, status, title)
+					if terminalFleetTaskStatus(status) && controlCommitmentService != nil {
+						if err := controlCommitmentService.resolveBacking("task:"+taskID, completedFleetTaskStatus(status), status); err != nil {
+							log.Printf("commitment task lifecycle correlation failed task=%s: %v", taskID, err)
+						}
+					}
 				},
 			})
 			if fleetErr != nil {

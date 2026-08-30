@@ -8,6 +8,7 @@
 package channels
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -321,6 +322,16 @@ type taskEchoEntry struct {
 }
 
 // TaskEchoVerdict is the outcome of CheckTaskEcho.
+type TaskFlowAnnouncementOutcome string
+
+const (
+	TaskFlowTypedOnly               TaskFlowAnnouncementOutcome = "typed_only"
+	TaskFlowAnnouncementSent        TaskFlowAnnouncementOutcome = "sent"
+	TaskFlowAnnouncementSuppressed  TaskFlowAnnouncementOutcome = "suppressed"
+	TaskFlowAnnouncementUnavailable TaskFlowAnnouncementOutcome = "unavailable"
+)
+
+// TaskEchoVerdict is the outcome of CheckTaskEcho.
 type TaskEchoVerdict struct {
 	// Suppress is true when the text restates a recent same-author transition
 	// AND the compact announcement for it was already spent.
@@ -405,6 +416,40 @@ func taskCoverage(candidate, entry map[string]struct{}) float64 {
 // uses the configured task default. The first shadow per (room, author, task)
 // inside the announce window is returned as Announce (allowed through, and
 // the throttle is recorded); later shadows return Suppress.
+// RouteTaskFlowTransition always records durable typed truth in the shared
+// corpus. When announce is true, it consumes the same per-room/author/task
+// throttle used by generated replies before calling send. Repeated explicit or
+// generated chat shadows therefore suppress one another.
+func (s *EchoSuppressor) RouteTaskFlowTransition(
+	ctx context.Context,
+	roomKey string,
+	transition TaskTransitionSummary,
+	announce bool,
+	announcement string,
+	send func(context.Context, string) error,
+) (TaskFlowAnnouncementOutcome, error) {
+	s.ObserveTaskTransition(transition)
+	if !announce {
+		return TaskFlowTypedOnly, nil
+	}
+	if send == nil || strings.TrimSpace(roomKey) == "" || strings.TrimSpace(announcement) == "" {
+		return TaskFlowAnnouncementUnavailable, nil
+	}
+	// Check the canonical typed summary so routing does not depend on cosmetic
+	// wording in the compact announcement.
+	verdict := s.CheckTaskEcho(roomKey, transition.Author, taskTransitionText(transition), 0)
+	if verdict.Suppress {
+		return TaskFlowAnnouncementSuppressed, nil
+	}
+	if !verdict.Announce {
+		return TaskFlowAnnouncementUnavailable, nil
+	}
+	if err := send(ctx, strings.TrimSpace(announcement)); err != nil {
+		return TaskFlowAnnouncementUnavailable, err
+	}
+	return TaskFlowAnnouncementSent, nil
+}
+
 func (s *EchoSuppressor) CheckTaskEcho(roomKey, author, text string, thresholdOverride float64) TaskEchoVerdict {
 	author = strings.ToLower(strings.TrimSpace(author))
 	if author == "" {

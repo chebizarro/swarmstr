@@ -1,8 +1,12 @@
 package channels
 
 import (
+	"context"
+	"errors"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ShouldReplyGateOutcome is the Tier-1/Tier-2 admission result.
@@ -30,6 +34,8 @@ const (
 	ShouldReplyReasonModelRespond         ShouldReplyGateReason = "model_respond"
 	ShouldReplyReasonModelIgnore          ShouldReplyGateReason = "model_ignore"
 	ShouldReplyReasonModelStop            ShouldReplyGateReason = "model_stop"
+	ShouldReplyReasonModelTimeout         ShouldReplyGateReason = "model_timeout"
+	ShouldReplyReasonModelError           ShouldReplyGateReason = "model_error"
 )
 
 // ShouldReplyGateInput contains only cheap, local facts. Bot status is loop
@@ -78,16 +84,66 @@ type ShouldReplyModelInput struct {
 	Heuristic ShouldReplyGateDecision
 }
 
-// ShouldReplyModelHook is the optional Tier-2 classifier for ambiguous traffic.
+// ShouldReplyModelHook is the optional asynchronous Tier-2 classifier for
+// ambiguous traffic. Implementations must honor context cancellation.
 type ShouldReplyModelHook interface {
-	Classify(ShouldReplyModelInput) ShouldReplyModelVerdict
+	Classify(context.Context, ShouldReplyModelInput) (ShouldReplyModelVerdict, error)
 }
 
 // ShouldReplyModelHookFunc adapts a function to ShouldReplyModelHook.
-type ShouldReplyModelHookFunc func(ShouldReplyModelInput) ShouldReplyModelVerdict
+type ShouldReplyModelHookFunc func(context.Context, ShouldReplyModelInput) (ShouldReplyModelVerdict, error)
 
-func (f ShouldReplyModelHookFunc) Classify(in ShouldReplyModelInput) ShouldReplyModelVerdict {
-	return f(in)
+func (f ShouldReplyModelHookFunc) Classify(ctx context.Context, in ShouldReplyModelInput) (ShouldReplyModelVerdict, error) {
+	return f(ctx, in)
+}
+
+// ShouldReplyModelHookContext identifies the configured cheap-model deployment
+// to use for one room without coupling channel code to a provider.
+type ShouldReplyModelHookContext struct {
+	AccountID   string
+	ChannelName string
+	RoomKey     string
+	Model       string
+}
+
+// ShouldReplyModelHookResolver is registered by the daemon deployment.
+type ShouldReplyModelHookResolver func(ShouldReplyModelHookContext) ShouldReplyModelHook
+
+var shouldReplyModelResolverRegistry struct {
+	sync.RWMutex
+	nextID   uint64
+	activeID uint64
+	resolver ShouldReplyModelHookResolver
+}
+
+// RegisterShouldReplyModelHookResolver installs the deployment resolver. The
+// returned closure unregisters only this exact registration.
+func RegisterShouldReplyModelHookResolver(resolver ShouldReplyModelHookResolver) func() {
+	shouldReplyModelResolverRegistry.Lock()
+	shouldReplyModelResolverRegistry.nextID++
+	id := shouldReplyModelResolverRegistry.nextID
+	shouldReplyModelResolverRegistry.activeID = id
+	shouldReplyModelResolverRegistry.resolver = resolver
+	shouldReplyModelResolverRegistry.Unlock()
+	return func() {
+		shouldReplyModelResolverRegistry.Lock()
+		if shouldReplyModelResolverRegistry.activeID == id {
+			shouldReplyModelResolverRegistry.activeID = 0
+			shouldReplyModelResolverRegistry.resolver = nil
+		}
+		shouldReplyModelResolverRegistry.Unlock()
+	}
+}
+
+// GetShouldReplyModelHook resolves the currently registered deployment hook.
+func GetShouldReplyModelHook(in ShouldReplyModelHookContext) ShouldReplyModelHook {
+	shouldReplyModelResolverRegistry.RLock()
+	resolver := shouldReplyModelResolverRegistry.resolver
+	shouldReplyModelResolverRegistry.RUnlock()
+	if resolver == nil {
+		return nil
+	}
+	return resolver(in)
 }
 
 var (
@@ -247,6 +303,12 @@ func EvaluateShouldReplyHeuristics(input ShouldReplyGateInput) ShouldReplyGateDe
 // ResolveShouldReplyGate resolves ambiguity with an optional cheap-model hook.
 // Without one it fails quiet rather than spending a full agent turn.
 func ResolveShouldReplyGate(input ShouldReplyGateInput, hook ShouldReplyModelHook) ShouldReplyGateDecision {
+	return ResolveShouldReplyGateBounded(context.Background(), input, hook, 1500*time.Millisecond)
+}
+
+// ResolveShouldReplyGateBounded invokes Tier 2 under a hard wall-clock bound.
+// Provider errors, invalid verdicts, and timeouts fail quiet.
+func ResolveShouldReplyGateBounded(ctx context.Context, input ShouldReplyGateInput, hook ShouldReplyModelHook, timeout time.Duration) ShouldReplyGateDecision {
 	decision := EvaluateShouldReplyHeuristics(input)
 	if decision.Outcome != ShouldReplyAmbiguous {
 		return decision
@@ -256,16 +318,39 @@ func ResolveShouldReplyGate(input ShouldReplyGateInput, hook ShouldReplyModelHoo
 		decision.Reason = ShouldReplyReasonAmbiguousNoModel
 		return decision
 	}
-	switch hook.Classify(ShouldReplyModelInput{Input: input, Heuristic: decision}) {
+	if timeout <= 0 {
+		timeout = 1500 * time.Millisecond
+	}
+	boundedCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	verdict, err := hook.Classify(boundedCtx, ShouldReplyModelInput{Input: input, Heuristic: decision})
+	if err != nil {
+		decision.Outcome = ShouldReplyDrop
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(boundedCtx.Err(), context.DeadlineExceeded) {
+			decision.Reason = ShouldReplyReasonModelTimeout
+		} else {
+			decision.Reason = ShouldReplyReasonModelError
+		}
+		return decision
+	}
+	if boundedCtx.Err() != nil {
+		decision.Outcome = ShouldReplyDrop
+		decision.Reason = ShouldReplyReasonModelTimeout
+		return decision
+	}
+	switch verdict {
 	case ShouldReplyModelRespond:
 		decision.Outcome = ShouldReplyPass
 		decision.Reason = ShouldReplyReasonModelRespond
+	case ShouldReplyModelIgnore:
+		decision.Outcome = ShouldReplyDrop
+		decision.Reason = ShouldReplyReasonModelIgnore
 	case ShouldReplyModelStop:
 		decision.Outcome = ShouldReplyDrop
 		decision.Reason = ShouldReplyReasonModelStop
 	default:
 		decision.Outcome = ShouldReplyDrop
-		decision.Reason = ShouldReplyReasonModelIgnore
+		decision.Reason = ShouldReplyReasonModelError
 	}
 	return decision
 }

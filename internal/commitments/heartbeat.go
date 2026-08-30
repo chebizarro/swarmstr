@@ -45,14 +45,16 @@ func (h HeartbeatScheduler) Due(sessionID string) []Delivery {
 	// convention notice would defeat its purpose. They remain bounded by the
 	// per-heartbeat delivery cap and repeat until MarkDelivered succeeds.
 	if cfg.DroppedCommitmentNotices {
-		for _, c := range h.Store.List(sessionID, StatusExpired) {
-			if len(out) >= cfg.MaxPerHeartbeat {
-				return out
+		for _, status := range []Status{StatusExpired, StatusBroken} {
+			for _, c := range h.Store.List(sessionID, status) {
+				if len(out) >= cfg.MaxPerHeartbeat {
+					return out
+				}
+				if !c.DroppedNoticeAt.IsZero() {
+					continue
+				}
+				out = append(out, droppedDelivery(c, firstNonEmpty(c.BrokenReason, "expired before completion")))
 			}
-			if !c.DroppedNoticeAt.IsZero() {
-				continue
-			}
-			out = append(out, droppedDelivery(c, firstNonEmpty(c.BrokenReason, "expired before completion")))
 		}
 		for _, c := range h.Store.List(sessionID, StatusPending) {
 			if len(out) >= cfg.MaxPerHeartbeat {
@@ -163,8 +165,12 @@ func (h HeartbeatScheduler) MarkDelivered(delivery Delivery) error {
 		c.Status = StatusExpired
 		c.BrokenReason = firstNonEmpty(delivery.DropReason, c.BrokenReason, "expired before completion")
 		c.DroppedNoticeAt = now
-		// R7 scorecard: one commitment dropped (notice delivered) for this room.
-		metricspkg.RecordRoomSignal(firstNonEmpty(delivery.SessionID, c.SessionID), metricspkg.RoomSignalCommitmentDropped)
+		// R7 scorecard: count the lifecycle once. Task/flow terminal
+		// correlation may already have recorded it before the visible notice.
+		if !c.LifecycleRecorded {
+			metricspkg.RecordRoomSignal(firstNonEmpty(delivery.SessionID, c.SessionID), metricspkg.RoomSignalCommitmentDropped)
+			c.LifecycleRecorded = true
+		}
 	} else {
 		c.Status = StatusFulfilled
 	}

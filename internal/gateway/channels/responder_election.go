@@ -532,9 +532,9 @@ func (c *TakeoverCoordinator[T]) fire(key string) {
 	c.onTakeover(entry.pending)
 }
 
-// ObserveRoomMessage feeds EVERY live room message; it cancels takeovers the
-// message settles (the elected responder answering, or anyone but self
-// replying in the contested event's thread).
+// ObserveRoomMessage feeds EVERY live room message; it cancels a takeover only
+// when someone other than self answers in the contested event's reply/thread.
+// Unrelated room traffic from the elected responder does not settle the event.
 func (c *TakeoverCoordinator[T]) ObserveRoomMessage(facts TakeoverRoomMessageFacts) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -546,11 +546,9 @@ func (c *TakeoverCoordinator[T]) ObserveRoomMessage(facts TakeoverRoomMessageFac
 		if entry.pending.RoomKey != facts.RoomKey {
 			continue
 		}
-		electedAnswered := sender == entry.pending.ElectedPubkey
-		threadAnswered := sender != c.self &&
+		if sender != c.self &&
 			(facts.ReplyToEventID == entry.pending.EventID ||
-				facts.ThreadRootEventID == entry.pending.EventID)
-		if electedAnswered || threadAnswered {
+				facts.ThreadRootEventID == entry.pending.EventID) {
 			c.removeLocked(key)
 		}
 	}

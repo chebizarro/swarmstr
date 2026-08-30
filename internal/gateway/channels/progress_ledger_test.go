@@ -339,3 +339,78 @@ func TestProgressLedgerScheduler_RunGatesAndThrottle(t *testing.T) {
 		t.Fatalf("retry after failed post expected, got %+v posts=%v", r, posts)
 	}
 }
+
+func TestProgressLedgerDurableRecorderAndSchedulerState(t *testing.T) {
+	dir := t.TempDir()
+	recorder, err := NewFileProgressLedgerRecorder(dir+"/events.json", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder.Record("room", ledgerEvent("one", "a", ledgerBase))
+	recorder.Record("room", ledgerEvent("two", "b", ledgerBase.Add(time.Minute)))
+	recorder.Record("room", ledgerEvent("three", "c", ledgerBase.Add(2*time.Minute)))
+	reloadedRecorder, err := NewFileProgressLedgerRecorder(dir+"/events.json", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := reloadedRecorder.Events("room")
+	if len(events) != 2 || events[0].EventID != "two" || events[1].EventID != "three" {
+		t.Fatalf("durable bounded events = %+v", events)
+	}
+
+	now := ledgerBase
+	scheduler, err := NewFileProgressLedgerScheduler(dir + "/review.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Now = func() time.Time { return now }
+	policy := NostrRoomPolicy{
+		ProgressLedger: true, ProgressLedgerModeratorSelf: true,
+		ProgressLedgerInterval: time.Minute, ProgressLedgerPostInterval: 15 * time.Minute,
+	}
+	first := scheduler.Run(ProgressLedgerRunParams{
+		RoomKey: "room", Policy: policy, SelfPubkey: "self",
+		Collect: func() ProgressLedgerInput {
+			return ProgressLedgerInput{Commitments: []ProgressLedgerCommitment{{ID: "open"}}}
+		},
+		Post: func(string) error { return nil },
+	})
+	if !first.Posted {
+		t.Fatalf("first durable run did not post: %+v", first)
+	}
+	reloadedScheduler, err := NewFileProgressLedgerScheduler(dir + "/review.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	reloadedScheduler.Now = func() time.Time { return now }
+	second := reloadedScheduler.Run(ProgressLedgerRunParams{
+		RoomKey: "room", Policy: policy, SelfPubkey: "self",
+		Collect: func() ProgressLedgerInput {
+			return ProgressLedgerInput{Commitments: []ProgressLedgerCommitment{{ID: "open"}}}
+		},
+		Post: func(string) error { t.Fatal("persisted post throttle was lost"); return nil },
+	})
+	if !second.Ran || !second.Throttled || second.Posted {
+		t.Fatalf("restored scheduler state = %+v", second)
+	}
+}
+
+func TestProgressLedgerDeterministicModeratorRotation(t *testing.T) {
+	policy := NostrRoomPolicy{ProgressLedger: true, ProgressLedgerModeratorRotation: true}
+	roster := []string{"agent-c", "agent-a", "agent-b", "agent-a"}
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	moderators := 0
+	for _, agent := range []string{"agent-a", "agent-b", "agent-c"} {
+		if policy.ProgressLedgerModeratorForRoom(agent, "room", roster, now) {
+			moderators++
+		}
+	}
+	if moderators != 1 {
+		t.Fatalf("rotation selected %d moderators, want exactly one", moderators)
+	}
+	first := policy.ProgressLedgerModeratorForRoom("agent-a", "room", roster, now)
+	if first != policy.ProgressLedgerModeratorForRoom("agent-a", "room", []string{"agent-b", "agent-c", "agent-a"}, now) {
+		t.Fatal("rotation must be independent of roster ordering and duplicates")
+	}
+}

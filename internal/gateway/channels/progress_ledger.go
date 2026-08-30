@@ -371,7 +371,14 @@ func ProgressLedgerCommitmentsFromStore(store *commitments.Store, sessionID stri
 	list := store.List(sessionID, commitments.StatusPending)
 	out := make([]ProgressLedgerCommitment, 0, len(list))
 	for _, c := range list {
-		out = append(out, ProgressLedgerCommitment{ID: c.ID, Text: c.Text})
+		mapped := ProgressLedgerCommitment{ID: c.ID, Text: c.Text}
+		for _, reference := range c.BackingReferences {
+			if strings.HasPrefix(strings.ToLower(reference), "task:") {
+				mapped.TaskID = strings.TrimSpace(reference[len("task:"):])
+				break
+			}
+		}
+		out = append(out, mapped)
 	}
 	return out
 }
@@ -385,6 +392,7 @@ type ProgressLedgerRecorder struct {
 	mu        sync.Mutex
 	maxEvents int
 	rooms     map[string][]ProgressLedgerEvent
+	path      string
 }
 
 // NewProgressLedgerRecorder creates a recorder; maxEvents <= 0 uses the
@@ -414,6 +422,7 @@ func (r *ProgressLedgerRecorder) Record(roomKey string, ev ProgressLedgerEvent) 
 		ring = append([]ProgressLedgerEvent(nil), ring[len(ring)-r.maxEvents:]...)
 	}
 	r.rooms[roomKey] = ring
+	_ = r.saveLocked()
 }
 
 // Events returns a copy of the room's recorded window.
@@ -439,6 +448,7 @@ type ProgressLedgerScheduler struct {
 
 	mu    sync.Mutex
 	rooms map[string]*progressLedgerRoomState
+	path  string
 }
 
 type progressLedgerRoomState struct {
@@ -455,9 +465,10 @@ const (
 
 // ProgressLedgerRunParams parameterizes one scheduler tick for one room.
 type ProgressLedgerRunParams struct {
-	RoomKey    string
-	Policy     NostrRoomPolicy
-	SelfPubkey string
+	RoomKey         string
+	Policy          NostrRoomPolicy
+	SelfPubkey      string
+	ModeratorRoster []string
 	// Collect gathers the review input (recent events, task state, open
 	// commitments, pair-guard snapshot). Called only when a review is due.
 	Collect func() ProgressLedgerInput
@@ -484,7 +495,8 @@ func (s *ProgressLedgerScheduler) Run(p ProgressLedgerRunParams) ProgressLedgerR
 	if !p.Policy.ProgressLedger {
 		return ProgressLedgerRunResult{Skipped: ProgressLedgerSkipDisabled}
 	}
-	if !p.Policy.ProgressLedgerModeratorFor(p.SelfPubkey) {
+	now := s.now()
+	if !p.Policy.ProgressLedgerModeratorForRoom(p.SelfPubkey, p.RoomKey, p.ModeratorRoster, now) {
 		return ProgressLedgerRunResult{Skipped: ProgressLedgerSkipNotModerator}
 	}
 	interval := p.Policy.ProgressLedgerInterval
@@ -495,8 +507,6 @@ func (s *ProgressLedgerScheduler) Run(p ProgressLedgerRunParams) ProgressLedgerR
 	if postInterval <= 0 {
 		postInterval = interval
 	}
-	now := s.now()
-
 	s.mu.Lock()
 	if s.rooms == nil {
 		s.rooms = map[string]*progressLedgerRoomState{}
@@ -511,6 +521,7 @@ func (s *ProgressLedgerScheduler) Run(p ProgressLedgerRunParams) ProgressLedgerR
 		return ProgressLedgerRunResult{Skipped: ProgressLedgerSkipInterval}
 	}
 	state.lastRun = now
+	_ = s.saveLocked()
 	s.mu.Unlock()
 
 	metricspkg.RecordProgressLedger("run")
@@ -560,6 +571,7 @@ func (s *ProgressLedgerScheduler) Run(p ProgressLedgerRunParams) ProgressLedgerR
 	metricspkg.RecordRoomSignal(p.RoomKey, metricspkg.RoomSignalLedgerPost)
 	s.mu.Lock()
 	state.lastPost = now
+	_ = s.saveLocked()
 	s.mu.Unlock()
 	return result
 }

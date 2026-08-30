@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"metiq/internal/commitments"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/store/state"
 	taskspkg "metiq/internal/tasks"
@@ -39,12 +40,16 @@ var nostrProgressLedgerOpenStatuses = []state.TaskStatus{
 
 // nostrProgressLedgerLoopOptions parameterize one room's moderator loop.
 type nostrProgressLedgerLoopOptions struct {
-	roomKey    string
-	selfPubkey string
-	scheduler  *channels.ProgressLedgerScheduler
-	recorder   *channels.ProgressLedgerRecorder
-	guard      *channels.BotLoopProtection
-	taskLedger *taskspkg.Ledger
+	roomKey         string
+	selfPubkey      string
+	scheduler       *channels.ProgressLedgerScheduler
+	recorder        *channels.ProgressLedgerRecorder
+	guard           *channels.BotLoopProtection
+	taskLedger      *taskspkg.Ledger
+	commitmentStore *commitments.Store
+	// roster returns the current fleet/NIP-51 members for stale-mention checks
+	// and deterministic moderator rotation.
+	roster func() []string
 	// policy resolves the room's CURRENT policy each tick (config changes
 	// apply live); ok=false stops the loop's work until re-enabled.
 	policy func() (channels.NostrRoomPolicy, bool)
@@ -73,11 +78,16 @@ func startNostrProgressLedgerLoop(ctx context.Context, opts nostrProgressLedgerL
 			if !ok {
 				continue
 			}
+			var roster []string
+			if opts.roster != nil {
+				roster = opts.roster()
+			}
 			result := opts.scheduler.Run(channels.ProgressLedgerRunParams{
-				RoomKey:    opts.roomKey,
-				Policy:     policy,
-				SelfPubkey: opts.selfPubkey,
-				Collect:    func() channels.ProgressLedgerInput { return collectNostrProgressLedgerInput(ctx, opts) },
+				RoomKey:         opts.roomKey,
+				Policy:          policy,
+				SelfPubkey:      opts.selfPubkey,
+				ModeratorRoster: roster,
+				Collect:         func() channels.ProgressLedgerInput { return collectNostrProgressLedgerInput(ctx, opts) },
 				Post: func(summary string) error {
 					postCtx, cancel := context.WithTimeout(ctx, nostrProgressLedgerPostTimeout)
 					defer cancel()
@@ -97,17 +107,21 @@ func startNostrProgressLedgerLoop(ctx context.Context, opts nostrProgressLedgerL
 }
 
 // collectNostrProgressLedgerInput gathers the typed review facts: the recorded
-// room-event window, the current open fleet-task state from the ledger the
-// FleetTaskBridge synchronizes, and the pair-guard snapshot. Open commitments
-// join here once a daemon-wide commitments.Store is wired (map it with
-// channels.ProgressLedgerCommitmentsFromStore).
+// room-event window, current open fleet-task state, durable open commitments,
+// and the core pair-loop-guard snapshot.
 func collectNostrProgressLedgerInput(ctx context.Context, opts nostrProgressLedgerLoopOptions) channels.ProgressLedgerInput {
 	in := channels.ProgressLedgerInput{}
 	if opts.recorder != nil {
 		in.Events = opts.recorder.Events(opts.roomKey)
 	}
+	if opts.roster != nil {
+		in.AgentPubkeys = opts.roster()
+	}
 	if opts.guard != nil && opts.guard.Guard() != nil {
 		in.PairGuard = opts.guard.Guard().Snapshot()
+	}
+	if opts.commitmentStore != nil {
+		in.Commitments = channels.ProgressLedgerCommitmentsFromStore(opts.commitmentStore, opts.roomKey)
 	}
 	if opts.taskLedger != nil {
 		entries, err := opts.taskLedger.ListTasks(ctx, taskspkg.ListTasksOptions{Status: nostrProgressLedgerOpenStatuses})

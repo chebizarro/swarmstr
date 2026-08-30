@@ -516,6 +516,7 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, fmt.Errorf("acp.pipeline: %w", err)
 		}
+		ctx = acppkg.ContextWithFlowAnnouncement(ctx, req.Announce)
 		cfg := state.ConfigDoc{}
 		if configState != nil {
 			cfg = configState.Get()
@@ -583,6 +584,14 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 			})
 		}
 		ownerSessionKey := strings.TrimSpace(in.FromPubKey)
+		// Prefer the invoking turn's room-scoped parent session so commitment
+		// validation cannot reuse a live flow from another room.
+		for _, step := range steps {
+			if step.ParentContext != nil && strings.TrimSpace(step.ParentContext.SessionID) != "" {
+				ownerSessionKey = strings.TrimSpace(step.ParentContext.SessionID)
+				break
+			}
+		}
 		goal := "ACP pipeline"
 		if len(steps) > 0 {
 			goal = strings.TrimSpace(steps[0].Instructions)

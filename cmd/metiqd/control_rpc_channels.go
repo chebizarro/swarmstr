@@ -273,6 +273,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				// Task chat-shadow suppression (R6): the typed kind-30900 event
 				// is the source of truth; one compact throttled announcement.
 				if decision.TaskEchoSuppress {
+					metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalTaskEchoOpportunity)
 					if v := controlNostrLoopControl.checkTaskEcho(sessionID, replyText, decision.TaskEchoThreshold); v.Suppress {
 						metricspkg.TaskEchoSuppressed.Inc()
 						metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalTaskEchoDrop)
@@ -283,6 +284,9 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 						log.Printf("nip29 task announcement allowed room=%s task=%s status=%s", sessionID, v.TaskID, v.Status)
 					}
 				}
+				if decision.EchoSuppress {
+					metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalEchoOpportunity)
+				}
 				if decision.EchoSuppress && controlNostrLoopControl.isEchoReply(sessionID, replyText, decision.EchoThreshold) {
 					metricspkg.RecordRoomSignal(sessionID, metricspkg.RoomSignalEchoDrop)
 					log.Printf("nip29 echo suppressed reply room=%s", sessionID)
@@ -291,7 +295,13 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				}
 				controlNostrLoopControl.observeEcho(sessionID, replyText)
 				commitmentState := agent.BuildCommitmentStateFromTraces(result.ToolTraces)
-				commitmentCtx := channels.ContextWithCommitmentBacking(turnCtx, channels.CommitmentBacking{SuccessfulCronAdds: commitmentState.SuccessfulCronAdds, SuccessfulTaskFlowActions: commitmentState.SuccessfulTaskFlowActions})
+				commitmentCtx := channels.ContextWithCommitmentBacking(turnCtx, channels.CommitmentBacking{
+					SuccessfulCronAdds:        commitmentState.SuccessfulCronAdds,
+					SuccessfulTaskFlowActions: commitmentState.SuccessfulTaskFlowActions,
+					RoomKey:                   sessionID,
+					TurnID:                    msg.EventID,
+					References:                commitmentState.BackingReferences,
+				})
 				if err := msg.Reply(commitmentCtx, replyText); err != nil {
 					emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: msg.ChannelID, SenderID: activeAgentID, Recipient: msg.FromPubKey, Text: replyText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: err.Error()})
 					log.Printf("channel reply error channel=%s err=%v", msg.ChannelID, err)
@@ -414,7 +424,24 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 		if !ok {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel %q not found; join it first with channels.join", req.ChannelID)
 		}
-		if err := ch.Send(ctx, req.Text); err != nil {
+		targeted := req.ReplyToEventID != "" || req.ThreadRootEventID != ""
+		convertedToReaction := false
+		if targeted {
+			targetedChannel, ok := ch.(channels.TargetedChannel)
+			if !ok {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("channel %q does not support targeted sends", req.ChannelID)
+			}
+			result, err := targetedChannel.SendTargeted(ctx, req.Text, channels.OutboundTarget{
+				ReplyToEventID:    req.ReplyToEventID,
+				ThreadRootEventID: req.ThreadRootEventID,
+				TargetPubkey:      req.TargetPubkey,
+				TargetKind:        req.TargetKind,
+			})
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			convertedToReaction = result.ConvertedToReaction
+		} else if err := ch.Send(ctx, req.Text); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		controlServices.emitWSEvent(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
@@ -423,7 +450,11 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 			Direction: "outbound",
 			Text:      req.Text,
 		})
-		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "channel_id": req.ChannelID}}, true, nil
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok":                    true,
+			"channel_id":            req.ChannelID,
+			"converted_to_reaction": convertedToReaction,
+		}}, true, nil
 	default:
 		return nostruntime.ControlRPCResult{}, false, nil
 	}

@@ -1,7 +1,9 @@
 package channels
 
 import (
+	"hash/fnv"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -9,8 +11,11 @@ import (
 // Responder-election (R2) defaults: the takeover window the successor waits
 // before claiming a contested event, and the minimum a room may configure.
 const (
-	DefaultResponderElectionTakeover    = 120 * time.Second
-	MinResponderElectionTakeoverSeconds = 5
+	DefaultResponderElectionTakeover       = 120 * time.Second
+	MinResponderElectionTakeoverSeconds    = 5
+	DefaultShouldReplyModelTimeout         = 1500 * time.Millisecond
+	MinShouldReplyModelTimeoutMilliseconds = 100
+	MaxShouldReplyModelTimeoutMilliseconds = 10_000
 )
 
 // NostrRoomPolicy holds the per-room knobs the preflight and context builder
@@ -31,6 +36,11 @@ type NostrRoomPolicy struct {
 	// ShouldReplyGate runs the cheap deterministic relevance gate for ambient,
 	// non-mention room traffic. It defaults on; false preserves legacy dispatch.
 	ShouldReplyGate bool
+	// ShouldReplyModel selects an optional deployment cheap model for ambiguous
+	// ambient traffic. A boolean false setting disables Tier 2 for this room.
+	ShouldReplyModel         string
+	ShouldReplyModelDisabled bool
+	ShouldReplyModelTimeout  time.Duration
 	// ResponderElection runs the deterministic single-responder election (R2)
 	// for ambient traffic the should-reply gate admits. It defaults on; false
 	// lets every capable agent answer (legacy behavior).
@@ -60,6 +70,9 @@ type NostrRoomPolicy struct {
 	// means use the suppressor's task default.
 	TaskEchoThreshold float64
 	CommitmentGuard   bool
+	// TaskFlows marks a room as using managed task flows. Such rooms enforce
+	// commitments by default unless commitmentEnforcement is explicitly false.
+	TaskFlows bool
 	// CommitmentEnforcement blocks/rephrases unbacked outbound work promises.
 	// It is explicit opt-in because rooms do not expose a separate taskflow flag.
 	CommitmentEnforcement bool
@@ -83,20 +96,56 @@ type NostrRoomPolicy struct {
 	// instance compares against). Without a designation nobody moderates —
 	// this keeps a shared room config from turning every fleet member into a
 	// ledger poster.
-	ProgressLedgerModeratorSelf   bool
-	ProgressLedgerModeratorPubkey string
+	ProgressLedgerModeratorSelf     bool
+	ProgressLedgerModeratorPubkey   string
+	ProgressLedgerModeratorRotation bool
 }
 
 // ProgressLedgerModeratorFor reports whether the instance owning selfPubkey is
 // this room's designated progress-ledger moderator (R5).
 func (p NostrRoomPolicy) ProgressLedgerModeratorFor(selfPubkey string) bool {
+	return p.ProgressLedgerModeratorForRoom(selfPubkey, "", nil, time.Time{})
+}
+
+// ProgressLedgerModeratorForRoom optionally rotates one moderator per UTC day
+// across the shared fleet roster. Explicit moderator settings take precedence.
+func (p NostrRoomPolicy) ProgressLedgerModeratorForRoom(selfPubkey, roomKey string, roster []string, now time.Time) bool {
 	if !p.ProgressLedger {
 		return false
 	}
 	if pk := strings.TrimSpace(p.ProgressLedgerModeratorPubkey); pk != "" {
 		return strings.EqualFold(pk, strings.TrimSpace(selfPubkey))
 	}
-	return p.ProgressLedgerModeratorSelf
+	if p.ProgressLedgerModeratorSelf {
+		return true
+	}
+	if !p.ProgressLedgerModeratorRotation {
+		return false
+	}
+	members := make([]string, 0, len(roster))
+	seen := map[string]struct{}{}
+	for _, member := range roster {
+		member = strings.ToLower(strings.TrimSpace(member))
+		if member == "" {
+			continue
+		}
+		if _, ok := seen[member]; ok {
+			continue
+		}
+		seen[member] = struct{}{}
+		members = append(members, member)
+	}
+	if len(members) == 0 {
+		return false
+	}
+	sort.Strings(members)
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(strings.TrimSpace(roomKey) + "\x00" + now.UTC().Format("2006-01-02")))
+	moderator := members[int(hash.Sum64()%uint64(len(members)))]
+	return strings.EqualFold(moderator, strings.TrimSpace(selfPubkey))
 }
 
 // ResolveNostrRoomPolicy reads typed preflight knobs from a room's free-form
@@ -107,6 +156,7 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	p := NostrRoomPolicy{
 		AllowBots:                 AllowBotsMentions,
 		ShouldReplyGate:           true,
+		ShouldReplyModelTimeout:   DefaultShouldReplyModelTimeout,
 		AckAsReaction:             true,
 		ResponderElection:         true,
 		ResponderElectionTakeover: DefaultResponderElectionTakeover,
@@ -138,6 +188,17 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	if v, ok := boolFromAny(config["shouldReplyGate"]); ok {
 		p.ShouldReplyGate = v
 	}
+	switch value := config["shouldReplyModel"].(type) {
+	case string:
+		p.ShouldReplyModel = strings.TrimSpace(value)
+	case bool:
+		p.ShouldReplyModelDisabled = !value
+	}
+	if f, ok := floatFromAny(config["shouldReplyModelTimeoutMs"]); ok &&
+		!math.IsNaN(f) && !math.IsInf(f, 0) &&
+		f >= MinShouldReplyModelTimeoutMilliseconds && f <= MaxShouldReplyModelTimeoutMilliseconds {
+		p.ShouldReplyModelTimeout = time.Duration(math.Round(f)) * time.Millisecond
+	}
 	if v, ok := boolFromAny(config["responderElection"]); ok {
 		p.ResponderElection = v
 	}
@@ -168,6 +229,10 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	if v, ok := boolFromAny(config["commitmentGuard"]); ok {
 		p.CommitmentGuard = v
 	}
+	if v, ok := boolFromAny(config["taskFlows"]); ok {
+		p.TaskFlows = v
+		p.CommitmentEnforcement = v
+	}
 	if v, ok := boolFromAny(config["commitmentEnforcement"]); ok {
 		p.CommitmentEnforcement = v
 	}
@@ -193,6 +258,9 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 		p.ProgressLedgerModeratorSelf = mod
 	case string:
 		p.ProgressLedgerModeratorPubkey = strings.ToLower(strings.TrimSpace(mod))
+	}
+	if rotate, ok := config["progressLedgerModeratorRotation"].(bool); ok {
+		p.ProgressLedgerModeratorRotation = rotate
 	}
 	if p.ProgressLedgerPostInterval <= 0 {
 		p.ProgressLedgerPostInterval = p.ProgressLedgerInterval

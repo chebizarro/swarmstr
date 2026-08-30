@@ -1,6 +1,11 @@
 package channels
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
 
 var shouldReplyBase = ShouldReplyGateInput{
 	Aliases:      []string{"Ada", "deploy-bot"},
@@ -66,15 +71,89 @@ func TestShouldReplyGateQuestionAmbiguityAndTier2Hook(t *testing.T) {
 	}
 
 	called := false
-	got = ResolveShouldReplyGate(input, ShouldReplyModelHookFunc(func(modelInput ShouldReplyModelInput) ShouldReplyModelVerdict {
+	got = ResolveShouldReplyGate(input, ShouldReplyModelHookFunc(func(_ context.Context, modelInput ShouldReplyModelInput) (ShouldReplyModelVerdict, error) {
 		called = true
 		if modelInput.Heuristic.Outcome != ShouldReplyAmbiguous {
 			t.Fatalf("hook heuristic = %+v", modelInput.Heuristic)
 		}
-		return ShouldReplyModelRespond
+		return ShouldReplyModelRespond, nil
 	}))
 	if !called || got.Outcome != ShouldReplyPass || got.Reason != ShouldReplyReasonModelRespond {
 		t.Fatalf("Tier-2 RESPOND = %+v called=%v", got, called)
+	}
+}
+
+func TestResolveShouldReplyGateBoundedFailQuiet(t *testing.T) {
+	input := shouldReplyBase
+	input.Text = "What do people think?"
+	tests := []struct {
+		name   string
+		hook   ShouldReplyModelHook
+		reason ShouldReplyGateReason
+	}{
+		{name: "no hook", reason: ShouldReplyReasonAmbiguousNoModel},
+		{
+			name: "provider error",
+			hook: ShouldReplyModelHookFunc(func(context.Context, ShouldReplyModelInput) (ShouldReplyModelVerdict, error) {
+				return "", errors.New("provider unavailable")
+			}),
+			reason: ShouldReplyReasonModelError,
+		},
+		{
+			name: "invalid verdict",
+			hook: ShouldReplyModelHookFunc(func(context.Context, ShouldReplyModelInput) (ShouldReplyModelVerdict, error) {
+				return "MAYBE", nil
+			}),
+			reason: ShouldReplyReasonModelError,
+		},
+		{
+			name: "timeout",
+			hook: ShouldReplyModelHookFunc(func(ctx context.Context, _ ShouldReplyModelInput) (ShouldReplyModelVerdict, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			}),
+			reason: ShouldReplyReasonModelTimeout,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveShouldReplyGateBounded(context.Background(), input, tt.hook, time.Millisecond)
+			if got.Outcome != ShouldReplyDrop || got.Reason != tt.reason {
+				t.Fatalf("decision = %+v, want drop/%s", got, tt.reason)
+			}
+		})
+	}
+
+	called := false
+	deterministic := shouldReplyBase
+	deterministic.Text = "Ada, can you review this?"
+	got := ResolveShouldReplyGateBounded(context.Background(), deterministic, ShouldReplyModelHookFunc(func(context.Context, ShouldReplyModelInput) (ShouldReplyModelVerdict, error) {
+		called = true
+		return ShouldReplyModelIgnore, nil
+	}), time.Second)
+	if called || got.Outcome != ShouldReplyPass {
+		t.Fatalf("deterministic path invoked Tier 2: called=%v decision=%+v", called, got)
+	}
+}
+
+func TestShouldReplyModelHookResolverRegistration(t *testing.T) {
+	first := RegisterShouldReplyModelHookResolver(func(ShouldReplyModelHookContext) ShouldReplyModelHook {
+		return ShouldReplyModelHookFunc(func(context.Context, ShouldReplyModelInput) (ShouldReplyModelVerdict, error) {
+			return ShouldReplyModelIgnore, nil
+		})
+	})
+	second := RegisterShouldReplyModelHookResolver(func(ctx ShouldReplyModelHookContext) ShouldReplyModelHook {
+		if ctx.RoomKey != "room" {
+			t.Fatalf("resolver context = %+v", ctx)
+		}
+		return ShouldReplyModelHookFunc(func(context.Context, ShouldReplyModelInput) (ShouldReplyModelVerdict, error) {
+			return ShouldReplyModelRespond, nil
+		})
+	})
+	defer second()
+	first() // an old unregister must not remove the newer resolver
+	if hook := GetShouldReplyModelHook(ShouldReplyModelHookContext{RoomKey: "room"}); hook == nil {
+		t.Fatal("newer resolver was removed by stale unregister")
 	}
 }
 

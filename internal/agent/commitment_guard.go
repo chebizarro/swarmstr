@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 
 	"metiq/internal/commitments"
@@ -67,9 +69,13 @@ type CommitmentState struct {
 	// HadMutatingAction tracks whether any side-effectful tool was called.
 	HadMutatingAction bool
 
-	// SuccessfulTaskFlowActions counts successful task/flow opening or claiming
-	// actions. Taskflow rooms use this as concrete backing for work promises.
+	// SuccessfulTaskFlowActions counts successful task/flow actions that
+	// returned a concrete handle. A tool name alone is never backing evidence.
 	SuccessfulTaskFlowActions int
+
+	// BackingReferences are concrete task:/flow: handles extracted from
+	// successful structured tool results and resolved against live state later.
+	BackingReferences []string
 }
 
 // RecordToolCall updates the commitment state when a tool completes.
@@ -223,31 +229,102 @@ func ShouldRetryPlanningOnly(text string, state CommitmentState, retriesUsed int
 // This allows post-turn analysis without modifying the tool executor.
 func BuildCommitmentStateFromTraces(traces []ToolTrace) CommitmentState {
 	state := CommitmentState{}
+	seen := map[string]struct{}{}
 	for _, trace := range traces {
 		isError := trace.Error != ""
 		state.RecordToolCall(trace.Call.Name, isError)
-		if traceBacksTaskFlow(trace) {
+		refs := traceBackingReferences(trace)
+		if len(refs) > 0 {
 			state.SuccessfulTaskFlowActions++
 		}
+		for _, reference := range refs {
+			if _, ok := seen[reference]; ok {
+				continue
+			}
+			seen[reference] = struct{}{}
+			state.BackingReferences = append(state.BackingReferences, reference)
+		}
 	}
+	sort.Strings(state.BackingReferences)
 	return state
 }
 
-func traceBacksTaskFlow(trace ToolTrace) bool {
-	if trace.Error != "" {
-		return false
+func traceBackingReferences(trace ToolTrace) []string {
+	if trace.Error != "" || strings.TrimSpace(trace.Result) == "" {
+		return nil
 	}
-	switch trace.Call.Name {
-	case "task_add", "tasks.create", "acp.dispatch", "acp.pipeline", "sessions.spawn", "workflow.create", "workflow.run":
-		return true
-	case "fleet_tasks":
+	name := strings.ToLower(strings.TrimSpace(trace.Call.Name))
+	if name == "fleet_tasks" {
 		action, _ := trace.Call.Args["action"].(string)
 		switch strings.ToLower(strings.TrimSpace(action)) {
-		case "create", "claim", "handoff":
-			return true
+		case "create", "claim", "checkpoint", "block", "handoff":
+		default:
+			return nil
 		}
 	}
-	return false
+	var value any
+	if json.Unmarshal([]byte(trace.Result), &value) != nil {
+		return nil
+	}
+	var prefixes []struct {
+		key    string
+		prefix string
+	}
+	switch name {
+	case "fleet_tasks", "task_add", "tasks.create":
+		prefixes = append(prefixes, struct {
+			key, prefix string
+		}{"task_id", "task:"}, struct {
+			key, prefix string
+		}{"id", "task:"})
+	case "acp.pipeline", "workflow.create", "workflow.run":
+		prefixes = append(prefixes, struct {
+			key, prefix string
+		}{"flow_id", "flow:"})
+	default:
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, candidate := range prefixes {
+		for _, handle := range collectJSONStrings(value, candidate.key) {
+			reference := candidate.prefix + strings.ToLower(strings.TrimSpace(handle))
+			if strings.TrimSuffix(reference, candidate.prefix) == "" {
+				continue
+			}
+			if _, ok := seen[reference]; ok {
+				continue
+			}
+			seen[reference] = struct{}{}
+			out = append(out, reference)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func collectJSONStrings(value any, key string) []string {
+	var out []string
+	var walk func(any)
+	walk = func(current any) {
+		switch typed := current.(type) {
+		case map[string]any:
+			for candidate, nested := range typed {
+				if strings.EqualFold(candidate, key) {
+					if text, ok := nested.(string); ok && strings.TrimSpace(text) != "" {
+						out = append(out, text)
+					}
+				}
+				walk(nested)
+			}
+		case []any:
+			for _, nested := range typed {
+				walk(nested)
+			}
+		}
+	}
+	walk(value)
+	return out
 }
 
 // CountSuccessfulCronAdds counts cron_add calls that succeeded in tool traces.

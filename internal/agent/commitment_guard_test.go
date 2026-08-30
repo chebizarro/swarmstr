@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -258,14 +259,20 @@ func TestHasUnbackedTaskCommitment(t *testing.T) {
 
 func TestBuildCommitmentStateRecognizesTaskFlowBacking(t *testing.T) {
 	traces := []ToolTrace{
-		{Call: ToolCall{Name: "fleet_tasks", Args: map[string]any{"action": "create"}}},
-		{Call: ToolCall{Name: "fleet_tasks", Args: map[string]any{"action": "list"}}},
-		{Call: ToolCall{Name: "task_add"}},
-		{Call: ToolCall{Name: "acp.pipeline"}, Error: "failed"},
+		{Call: ToolCall{Name: "fleet_tasks", Args: map[string]any{"action": "create"}}, Result: `{"task":{"id":"task-1"}}`},
+		{Call: ToolCall{Name: "fleet_tasks", Args: map[string]any{"action": "list"}}, Result: `{"task":{"id":"not-backing"}}`},
+		{Call: ToolCall{Name: "task_add"}, Result: `{"task_id":"task-2"}`},
+		{Call: ToolCall{Name: "acp.pipeline"}, Result: `{"flow_id":"flow-1"}`},
+		{Call: ToolCall{Name: "fleet_tasks", Args: map[string]any{"action": "claim"}}}, // no concrete result handle
+		{Call: ToolCall{Name: "acp.pipeline"}, Result: `{"flow_id":"flow-failed"}`, Error: "failed"},
 	}
 	state := BuildCommitmentStateFromTraces(traces)
-	if state.SuccessfulTaskFlowActions != 2 {
-		t.Fatalf("SuccessfulTaskFlowActions = %d, want 2", state.SuccessfulTaskFlowActions)
+	if state.SuccessfulTaskFlowActions != 3 {
+		t.Fatalf("SuccessfulTaskFlowActions = %d, want 3", state.SuccessfulTaskFlowActions)
+	}
+	want := []string{"flow:flow-1", "task:task-1", "task:task-2"}
+	if !reflect.DeepEqual(state.BackingReferences, want) {
+		t.Fatalf("BackingReferences = %#v, want %#v", state.BackingReferences, want)
 	}
 }
 

@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -247,6 +248,32 @@ func TestTaskEcho_ResetAndValidation(t *testing.T) {
 	}
 	if _, err := NewEchoSuppressor(EchoSuppressorOptions{TaskSimilarityThreshold: 1.5}); err == nil {
 		t.Error("out-of-range taskSimilarityThreshold must error")
+	}
+}
+
+func TestTaskFlowAnnouncementSharesGeneratedThrottle(t *testing.T) {
+	s, _ := NewEchoSuppressor(EchoSuppressorOptions{})
+	transition := taskEchoFixture()
+	var sent []string
+	send := func(_ context.Context, text string) error {
+		sent = append(sent, text)
+		return nil
+	}
+	outcome, err := s.RouteTaskFlowTransition(context.Background(), "room", transition, false, "typed only", send)
+	if err != nil || outcome != TaskFlowTypedOnly || len(sent) != 0 {
+		t.Fatalf("announce=false = outcome=%s sent=%v err=%v", outcome, sent, err)
+	}
+	outcome, err = s.RouteTaskFlowTransition(context.Background(), "room", transition, true, "compact announcement", send)
+	if err != nil || outcome != TaskFlowAnnouncementSent || len(sent) != 1 {
+		t.Fatalf("first explicit announce = outcome=%s sent=%v err=%v", outcome, sent, err)
+	}
+	shadow := "swarmstr-31jn is now in progress — task: Suppress chat shadow"
+	if verdict := s.CheckTaskEcho("room", "aa11", shadow, 0); !verdict.Suppress {
+		t.Fatalf("generated shadow must share explicit throttle: %+v", verdict)
+	}
+	outcome, err = s.RouteTaskFlowTransition(context.Background(), "room", transition, true, "duplicate", send)
+	if err != nil || outcome != TaskFlowAnnouncementSuppressed || len(sent) != 1 {
+		t.Fatalf("repeated explicit announce = outcome=%s sent=%v err=%v", outcome, sent, err)
 	}
 }
 

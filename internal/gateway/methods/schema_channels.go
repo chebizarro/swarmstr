@@ -56,10 +56,15 @@ type ChannelsLeaveRequest struct {
 // ChannelsListRequest requests the list of joined channels.
 type ChannelsListRequest struct{}
 
-// ChannelsSendRequest sends a message to a joined channel.
+// ChannelsSendRequest sends a message to a joined channel. Target fields are
+// additive: targetless requests preserve the legacy chat-send contract.
 type ChannelsSendRequest struct {
-	ChannelID string `json:"channel_id"`
-	Text      string `json:"text"`
+	ChannelID         string `json:"channel_id"`
+	Text              string `json:"text"`
+	ReplyToEventID    string `json:"reply_to_event_id,omitempty"`
+	ThreadRootEventID string `json:"thread_root_event_id,omitempty"`
+	TargetPubkey      string `json:"target_pubkey,omitempty"`
+	TargetKind        int    `json:"target_kind,omitempty"`
 }
 
 type UsageCostRequest struct {
@@ -224,11 +229,30 @@ func (r ChannelsListRequest) Normalize() (ChannelsListRequest, error) { return r
 func (r ChannelsSendRequest) Normalize() (ChannelsSendRequest, error) {
 	r.ChannelID = strings.TrimSpace(r.ChannelID)
 	r.Text = strings.TrimSpace(r.Text)
+	r.ReplyToEventID = strings.ToLower(strings.TrimSpace(r.ReplyToEventID))
+	r.ThreadRootEventID = strings.ToLower(strings.TrimSpace(r.ThreadRootEventID))
+	r.TargetPubkey = strings.ToLower(strings.TrimSpace(r.TargetPubkey))
 	if r.ChannelID == "" {
 		return r, fmt.Errorf("channel_id is required")
 	}
 	if r.Text == "" {
 		return r, fmt.Errorf("text is required")
+	}
+	targeted := r.ReplyToEventID != "" || r.ThreadRootEventID != ""
+	if !targeted && (r.TargetPubkey != "" || r.TargetKind != 0) {
+		return r, fmt.Errorf("target metadata requires reply_to_event_id or thread_root_event_id")
+	}
+	if r.ReplyToEventID != "" && !isLowerHex64(r.ReplyToEventID) {
+		return r, fmt.Errorf("reply_to_event_id must be 64-character hex")
+	}
+	if r.ThreadRootEventID != "" && !isLowerHex64(r.ThreadRootEventID) {
+		return r, fmt.Errorf("thread_root_event_id must be 64-character hex")
+	}
+	if targeted && !isLowerHex64(r.TargetPubkey) {
+		return r, fmt.Errorf("target_pubkey must be 64-character hex for targeted sends")
+	}
+	if r.TargetKind < 0 {
+		return r, fmt.Errorf("target_kind must be >= 0")
 	}
 	return r, nil
 }

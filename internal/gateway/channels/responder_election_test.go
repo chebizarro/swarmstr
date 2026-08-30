@@ -431,43 +431,78 @@ func TestTakeoverCoordinator_FiresAfterTimeout(t *testing.T) {
 	}
 }
 
-func TestTakeoverCoordinator_CancelsOnElectedOrThreadAnswer(t *testing.T) {
-	h := newTakeoverHarness(t, 0, nil)
-	h.coordinator.Schedule(takeoverPendingFor(electionEvent), time.Second)
-	// The elected responder posts anything in the room (case-insensitive).
-	h.coordinator.ObserveRoomMessage(TakeoverRoomMessageFacts{
-		RoomKey: electionRoom, SenderPubkey: strings.ToUpper(electionAgentA),
-	})
-	if h.coordinator.Size() != 0 || !h.timers[0].cleared {
-		t.Fatal("elected responder's message must cancel and clear the timer")
+func TestTakeoverCoordinator_CancelsOnlyOnContestedEventRelation(t *testing.T) {
+	tests := []struct {
+		name   string
+		facts  TakeoverRoomMessageFacts
+		cancel bool
+	}{
+		{
+			name: "unrelated elected traffic remains armed",
+			facts: TakeoverRoomMessageFacts{
+				RoomKey: electionRoom, SenderPubkey: strings.ToUpper(electionAgentA),
+			},
+		},
+		{
+			name: "elected direct reply cancels",
+			facts: TakeoverRoomMessageFacts{
+				RoomKey: electionRoom, SenderPubkey: electionAgentA, ReplyToEventID: electionEvent,
+			},
+			cancel: true,
+		},
+		{
+			name: "elected thread root cancels",
+			facts: TakeoverRoomMessageFacts{
+				RoomKey: electionRoom, SenderPubkey: electionAgentA, ThreadRootEventID: electionEvent,
+			},
+			cancel: true,
+		},
+		{
+			name: "another sender direct reply cancels",
+			facts: TakeoverRoomMessageFacts{
+				RoomKey: electionRoom, SenderPubkey: electionAgentC, ReplyToEventID: electionEvent,
+			},
+			cancel: true,
+		},
+		{
+			name: "self reply does not cancel",
+			facts: TakeoverRoomMessageFacts{
+				RoomKey: electionRoom, SenderPubkey: electionAgentB, ReplyToEventID: electionEvent,
+			},
+		},
+		{
+			name: "wrong room does not cancel",
+			facts: TakeoverRoomMessageFacts{
+				RoomKey: "nostr:room:other'room", SenderPubkey: electionAgentA, ReplyToEventID: electionEvent,
+			},
+		},
+		{
+			name: "wrong target does not cancel",
+			facts: TakeoverRoomMessageFacts{
+				RoomKey: electionRoom, SenderPubkey: electionAgentA, ReplyToEventID: strings.Repeat("f", 64),
+			},
+		},
 	}
-	h.timers[0].fn()
-	if len(h.fired) != 0 {
-		t.Fatal("cancelled takeover must not fire")
-	}
-
-	// Anyone else answering in the contested event's thread cancels.
-	h = newTakeoverHarness(t, 0, nil)
-	h.coordinator.Schedule(takeoverPendingFor(electionEvent), time.Second)
-	h.coordinator.ObserveRoomMessage(TakeoverRoomMessageFacts{
-		RoomKey: electionRoom, SenderPubkey: electionAgentC, ReplyToEventID: electionEvent,
-	})
-	if h.coordinator.Size() != 0 {
-		t.Fatal("a thread reply must cancel")
-	}
-
-	// Unrelated rooms/messages do not cancel.
-	h = newTakeoverHarness(t, 0, nil)
-	h.coordinator.Schedule(takeoverPendingFor(electionEvent), time.Second)
-	h.coordinator.ObserveRoomMessage(TakeoverRoomMessageFacts{
-		RoomKey: "nostr:room:other'room", SenderPubkey: electionAgentA,
-	})
-	h.coordinator.ObserveRoomMessage(TakeoverRoomMessageFacts{
-		RoomKey: electionRoom, SenderPubkey: electionAgentC,
-		ReplyToEventID: strings.Repeat("f", 64),
-	})
-	if h.coordinator.Size() != 1 {
-		t.Fatal("unrelated traffic must not cancel")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTakeoverHarness(t, 0, nil)
+			h.coordinator.Schedule(takeoverPendingFor(electionEvent), time.Second)
+			h.coordinator.ObserveRoomMessage(tt.facts)
+			wantSize := 1
+			if tt.cancel {
+				wantSize = 0
+			}
+			if got := h.coordinator.Size(); got != wantSize {
+				t.Fatalf("pending size = %d, want %d", got, wantSize)
+			}
+			if h.timers[0].cleared != tt.cancel {
+				t.Fatalf("timer cleared = %v, want %v", h.timers[0].cleared, tt.cancel)
+			}
+			h.timers[0].fn()
+			if got := len(h.fired); got != wantSize {
+				t.Fatalf("fired count = %d, want %d", got, wantSize)
+			}
+		})
 	}
 }
 

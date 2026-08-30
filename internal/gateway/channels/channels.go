@@ -152,6 +152,27 @@ type Channel interface {
 	Close()
 }
 
+// OutboundTarget identifies the event/thread a direct channel send addresses.
+// Empty targets retain the legacy targetless Channel.Send behavior.
+type OutboundTarget struct {
+	ReplyToEventID    string
+	ThreadRootEventID string
+	TargetPubkey      string
+	TargetKind        int
+}
+
+// TargetedSendResult reports how a target-aware send was represented on wire.
+type TargetedSendResult struct {
+	ConvertedToReaction bool
+}
+
+// TargetedChannel is the additive capability implemented by channels that can
+// preserve explicit reply/thread targets. Callers must not silently downgrade a
+// targeted request to Channel.Send when this capability is absent.
+type TargetedChannel interface {
+	SendTargeted(context.Context, string, OutboundTarget) (TargetedSendResult, error)
+}
+
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
 // Registry maintains the set of currently joined channels.
@@ -480,8 +501,19 @@ func (c *NIP29GroupChannel) ID() string { return c.id }
 // Type implements Channel.
 func (c *NIP29GroupChannel) Type() string { return "nip29-group" }
 
-// Send posts a kind-9 message to the group relay.
+// Send posts a targetless kind-9 message to the group relay.
 func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
+	_, err := c.sendTargeted(ctx, text, OutboundTarget{})
+	return err
+}
+
+// SendTargeted posts a reply/thread-aware message, converting a targeted pure
+// ACK to a reaction when the room's reaction seam is enabled.
+func (c *NIP29GroupChannel) SendTargeted(ctx context.Context, text string, target OutboundTarget) (TargetedSendResult, error) {
+	return c.sendTargeted(ctx, text, target)
+}
+
+func (c *NIP29GroupChannel) sendTargeted(ctx context.Context, text string, target OutboundTarget) (TargetedSendResult, error) {
 	text = strings.TrimSpace(text)
 	var commitmentBlocked bool
 	text, commitmentBlocked = EnforceOutboundCommitment(ctx, text, c.commitmentEnforcement)
@@ -490,7 +522,30 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 		metricspkg.RecordRoomSignal(c.roomKey, metricspkg.RoomSignalCommitmentBlocked)
 	}
 	if text == "" {
-		return fmt.Errorf("text must not be empty")
+		return TargetedSendResult{}, fmt.Errorf("text must not be empty")
+	}
+
+	targetEventID := strings.TrimSpace(target.ReplyToEventID)
+	if targetEventID == "" {
+		targetEventID = strings.TrimSpace(target.ThreadRootEventID)
+	}
+	if targetEventID != "" && strings.TrimSpace(target.TargetPubkey) != "" {
+		emoji, pureACK := ClassifyPureACK(text)
+		if pureACK {
+			metricspkg.RecordRoomSignal(c.roomKey, metricspkg.RoomSignalACKCandidate)
+		}
+		if c.ackAsReaction && pureACK {
+			targetKind := target.TargetKind
+			if targetKind == 0 {
+				targetKind = int(nostr.KindSimpleGroupChatMessage)
+			}
+			if err := c.SendReaction(ctx, emoji, targetEventID, target.TargetPubkey, targetKind); err != nil {
+				return TargetedSendResult{}, err
+			}
+			metricspkg.OutboundACKReactions.Inc()
+			metricspkg.RecordRoomSignal(c.roomKey, metricspkg.RoomSignalACKConversion)
+			return TargetedSendResult{ConvertedToReaction: true}, nil
+		}
 	}
 
 	tags := nostr.Tags{{"h", c.gad.ID}}
@@ -499,6 +554,15 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 	if prev := BuildPreviousEventTag(c.snapshotRecentIDs()); prev != nil {
 		tags = append(tags, prev)
 	}
+	if root := strings.TrimSpace(target.ThreadRootEventID); root != "" {
+		tags = append(tags, nostr.Tag{"e", root, "", "root"})
+	}
+	if reply := strings.TrimSpace(target.ReplyToEventID); reply != "" {
+		tags = append(tags, nostr.Tag{"e", reply, "", "reply"})
+	}
+	if pubkey := strings.TrimSpace(target.TargetPubkey); pubkey != "" && targetEventID != "" {
+		tags = append(tags, nostr.Tag{"p", pubkey})
+	}
 	evt := nostr.Event{
 		Kind:      nostr.KindSimpleGroupChatMessage,
 		Content:   text,
@@ -506,30 +570,22 @@ func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
 		Tags:      tags,
 	}
 	if err := c.signAndPublish(ctx, evt); err != nil {
-		return err
+		return TargetedSendResult{}, err
 	}
 	// R7 scorecard: our own delivered room message counts toward the per-room
 	// message-share window (inbound peers are counted at the loop-control gate).
 	metricspkg.RecordRoomMessage(c.roomKey, c.pubkey)
-	return nil
+	return TargetedSendResult{}, nil
 }
 
-// sendReply posts text normally unless this room opted into ACK conversion and
-// the reply target is fully known. A failed reaction publish is returned as a
-// delivery failure rather than falling back to a chat message (which could
-// duplicate on retry).
+// sendReply shares the target-aware direct-send path used by channels.send.
 func (c *NIP29GroupChannel) sendReply(ctx context.Context, text, targetEventID, targetPubkey string) error {
-	if c.ackAsReaction && strings.TrimSpace(targetEventID) != "" && strings.TrimSpace(targetPubkey) != "" {
-		if emoji, ok := ClassifyPureACK(text); ok {
-			if err := c.SendReaction(ctx, emoji, targetEventID, targetPubkey, int(nostr.KindSimpleGroupChatMessage)); err != nil {
-				return err
-			}
-			metricspkg.OutboundACKReactions.Inc()
-			metricspkg.RecordRoomSignal(c.roomKey, metricspkg.RoomSignalACKConversion)
-			return nil
-		}
-	}
-	return c.Send(ctx, text)
+	_, err := c.SendTargeted(ctx, text, OutboundTarget{
+		ReplyToEventID: targetEventID,
+		TargetPubkey:   targetPubkey,
+		TargetKind:     int(nostr.KindSimpleGroupChatMessage),
+	})
+	return err
 }
 
 // signAndPublish signs evt and publishes it to the group relay, bounding the

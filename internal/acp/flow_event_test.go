@@ -48,6 +48,52 @@ func TestFlowRegistryRevisionAndStateMachine(t *testing.T) {
 	}
 }
 
+func TestFlowRegistryTransitionObserver(t *testing.T) {
+	ctx := context.Background()
+	registry := NewFlowRegistry(nil)
+	var got []FlowTransition
+	unregister := registry.ObserveTransitions(func(transition FlowTransition) {
+		got = append(got, transition)
+	})
+	if _, err := registry.Create(ctx, FlowRecord{FlowID: "flow-observed", OwnerSessionKey: "room", Goal: "ship"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Start(ctx, "flow-observed", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.SetWaiting(ContextWithFlowAnnouncement(ctx, true), "flow-observed", json.RawMessage(`{"reason":"approval"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Resume(ctx, "flow-observed", json.RawMessage(`{"approved":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Finish(ctx, "flow-observed", nil); err != nil {
+		t.Fatal(err)
+	}
+	wantActions := []string{"create", "start", "wait", "resume", "finish"}
+	if len(got) != len(wantActions) {
+		t.Fatalf("transitions = %+v", got)
+	}
+	for i, want := range wantActions {
+		if got[i].Action != want {
+			t.Fatalf("transition[%d].Action = %q, want %q", i, got[i].Action, want)
+		}
+		if got[i].Announce != (want == "wait") {
+			t.Fatalf("transition[%d].Announce = %v for %q", i, got[i].Announce, want)
+		}
+	}
+	if got[0].Previous != nil || got[1].Previous == nil || got[len(got)-1].Current.Status != FlowStatusSucceeded {
+		t.Fatalf("transition snapshots are incomplete: %+v", got)
+	}
+	unregister()
+	if _, err := registry.Cancel(ctx, "flow-observed", "late"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(wantActions) {
+		t.Fatal("unregistered observer received a transition")
+	}
+}
+
 func TestEventLedgerClonesApprovalRequest(t *testing.T) {
 	ctx := context.Background()
 	ledger := NewInMemoryEventLedger(EventLedgerOptions{})

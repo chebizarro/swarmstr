@@ -55,6 +55,8 @@ type Commitment struct {
 	NextAttemptAt     time.Time `json:"next_attempt_at,omitempty"`
 	SentAt            time.Time `json:"sent_at,omitempty"`
 	DroppedNoticeAt   time.Time `json:"dropped_notice_at,omitempty"`
+	BackingReferences []string  `json:"backing_references,omitempty"`
+	LifecycleRecorded bool      `json:"lifecycle_recorded,omitempty"`
 }
 
 // SessionMessage is a minimal representation of a conversation turn used by
@@ -202,14 +204,27 @@ func NewFileStore(path string) (*Store, error) {
 }
 
 func (s *Store) Add(items ...Commitment) {
+	_ = s.AddE(items...)
+}
+
+// AddE persists commitments and reports durable-store failures. Existing IDs
+// are replaced, allowing deterministic turn retries without duplicate records.
+func (s *Store) AddE(items ...Commitment) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.commitments == nil {
 		s.commitments = map[string]Commitment{}
 	}
+	previous := make(map[string]*Commitment, len(items))
 	for _, c := range items {
 		if c.ID == "" {
 			c.ID = makeID(c.SessionID, c.TurnID, c.Kind, c.Text, c.DueAt)
+		}
+		if old, ok := s.commitments[c.ID]; ok {
+			copy := old
+			previous[c.ID] = &copy
+		} else {
+			previous[c.ID] = nil
 		}
 		if c.Status == "" {
 			c.Status = StatusPending
@@ -218,9 +233,20 @@ func (s *Store) Add(items ...Commitment) {
 			c.CreatedAt = time.Now().UTC()
 		}
 		c.UpdatedAt = nonZeroTime(c.UpdatedAt, c.CreatedAt)
+		c.BackingReferences = normalizeReferences(c.BackingReferences)
 		s.commitments[c.ID] = c
 	}
-	_ = s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		for id, old := range previous {
+			if old == nil {
+				delete(s.commitments, id)
+			} else {
+				s.commitments[id] = *old
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Get(id string) (Commitment, bool) {
@@ -249,6 +275,39 @@ func (s *Store) List(sessionID string, statuses ...Status) []Commitment {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out
+}
+
+// PendingCount reports the number of open commitments for one room/session.
+func (s *Store) PendingCount(sessionID string) int {
+	return len(s.List(sessionID, StatusPending))
+}
+
+// ResolveBacking transitions every pending commitment correlated to reference.
+// The returned records are the commitments whose lifecycle changed.
+func (s *Store) ResolveBacking(reference string, status Status, reason string, at time.Time) ([]Commitment, error) {
+	reference = normalizeReference(reference)
+	if reference == "" {
+		return nil, nil
+	}
+	if status != StatusFulfilled && status != StatusBroken && status != StatusExpired {
+		return nil, fmt.Errorf("invalid terminal commitment status %q", status)
+	}
+	var changed []Commitment
+	for _, commitment := range s.List("", StatusPending) {
+		if !containsReference(commitment.BackingReferences, reference) {
+			continue
+		}
+		fulfilledBy := ""
+		if status == StatusFulfilled {
+			fulfilledBy = reference
+		}
+		if err := s.UpdateStatus(commitment.ID, status, reason, fulfilledBy, at); err != nil {
+			return changed, err
+		}
+		updated, _ := s.Get(commitment.ID)
+		changed = append(changed, updated)
+	}
+	return changed, nil
 }
 
 func (s *Store) UpdateStatus(id string, status Status, reason, fulfilledBy string, at time.Time) error {
@@ -374,6 +433,37 @@ func normalizeWhitespace(s string) string {
 func makeID(sessionID, turnID string, kind Kind, text string, due time.Time) string {
 	h := sha1.Sum([]byte(sessionID + "\x00" + turnID + "\x00" + string(kind) + "\x00" + normalizeWhitespace(text) + "\x00" + due.UTC().Format(time.RFC3339)))
 	return "cmt_" + hex.EncodeToString(h[:])[:16]
+}
+
+func normalizeReference(reference string) string {
+	return strings.ToLower(strings.TrimSpace(reference))
+}
+
+func normalizeReferences(references []string) []string {
+	seen := make(map[string]struct{}, len(references))
+	out := make([]string, 0, len(references))
+	for _, reference := range references {
+		reference = normalizeReference(reference)
+		if reference == "" {
+			continue
+		}
+		if _, ok := seen[reference]; ok {
+			continue
+		}
+		seen[reference] = struct{}{}
+		out = append(out, reference)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func containsReference(references []string, wanted string) bool {
+	for _, reference := range references {
+		if normalizeReference(reference) == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func nonZeroTime(a, b time.Time) time.Time {

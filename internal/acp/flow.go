@@ -291,17 +291,86 @@ func (s *FileFlowStore) saveLocked() error {
 	return nil
 }
 
+// FlowTransition is one persisted managed-flow lifecycle transition.
+type FlowTransition struct {
+	Action   string
+	Previous *FlowRecord
+	Current  FlowRecord
+	Announce bool
+}
+
+type flowAnnouncementContextKey struct{}
+
+// ContextWithFlowAnnouncement marks mutations in this invocation as requesting
+// a compact room announcement. The persisted transition is emitted regardless.
+func ContextWithFlowAnnouncement(ctx context.Context, announce bool) context.Context {
+	return context.WithValue(ctx, flowAnnouncementContextKey{}, announce)
+}
+
+func flowAnnouncementRequested(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	announce, _ := ctx.Value(flowAnnouncementContextKey{}).(bool)
+	return announce
+}
+
 // FlowRegistry provides state-machine helpers over a FlowStore.
-type FlowRegistry struct{ store FlowStore }
+type FlowRegistry struct {
+	store FlowStore
+
+	observerMu sync.RWMutex
+	observers  map[uint64]func(FlowTransition)
+	nextID     uint64
+}
 
 func NewFlowRegistry(store FlowStore) *FlowRegistry {
 	if store == nil {
 		store = NewInMemoryFlowStore()
 	}
-	return &FlowRegistry{store: store}
+	return &FlowRegistry{store: store, observers: map[uint64]func(FlowTransition){}}
 }
 
 func (r *FlowRegistry) Store() FlowStore { return r.store }
+
+// ObserveTransitions subscribes to successfully persisted lifecycle changes.
+func (r *FlowRegistry) ObserveTransitions(observer func(FlowTransition)) func() {
+	if r == nil || observer == nil {
+		return func() {}
+	}
+	r.observerMu.Lock()
+	r.nextID++
+	id := r.nextID
+	r.observers[id] = observer
+	r.observerMu.Unlock()
+	return func() {
+		r.observerMu.Lock()
+		delete(r.observers, id)
+		r.observerMu.Unlock()
+	}
+}
+
+func (r *FlowRegistry) notify(transition FlowTransition) {
+	r.observerMu.RLock()
+	observers := make([]func(FlowTransition), 0, len(r.observers))
+	for _, observer := range r.observers {
+		observers = append(observers, observer)
+	}
+	r.observerMu.RUnlock()
+	for _, observer := range observers {
+		observer(transition)
+	}
+}
+
+func (r *FlowRegistry) update(ctx context.Context, action, flowID string, patch FlowPatch) (*FlowRecord, error) {
+	previous, _ := r.store.Get(ctx, flowID)
+	current, err := r.store.Update(ctx, flowID, patch)
+	if err != nil {
+		return nil, err
+	}
+	r.notify(FlowTransition{Action: action, Previous: previous, Current: cloneFlowRecord(*current), Announce: flowAnnouncementRequested(ctx)})
+	return current, nil
+}
 
 func (r *FlowRegistry) Create(ctx context.Context, rec FlowRecord) (*FlowRecord, error) {
 	if rec.FlowID == "" {
@@ -310,7 +379,12 @@ func (r *FlowRegistry) Create(ctx context.Context, rec FlowRecord) (*FlowRecord,
 	if err := r.store.Create(ctx, rec); err != nil {
 		return nil, err
 	}
-	return r.store.Get(ctx, rec.FlowID)
+	current, err := r.store.Get(ctx, rec.FlowID)
+	if err != nil {
+		return nil, err
+	}
+	r.notify(FlowTransition{Action: "create", Current: cloneFlowRecord(*current), Announce: flowAnnouncementRequested(ctx)})
+	return current, nil
 }
 
 func (r *FlowRegistry) Get(ctx context.Context, flowID string) (*FlowRecord, error) {
@@ -320,31 +394,31 @@ func (r *FlowRegistry) List(ctx context.Context, filter FlowFilter) ([]FlowRecor
 	return r.store.List(ctx, filter)
 }
 func (r *FlowRegistry) Start(ctx context.Context, flowID string, step int) (*FlowRecord, error) {
-	return r.store.Update(ctx, flowID, FlowPatch{Status: flowStatusPtr(FlowStatusRunning), CurrentStep: intPtr(step), WaitJSON: rawMessagePtr(nil), TransitionError: stringPtr("")})
+	return r.update(ctx, "start", flowID, FlowPatch{Status: flowStatusPtr(FlowStatusRunning), CurrentStep: intPtr(step), WaitJSON: rawMessagePtr(nil), TransitionError: stringPtr("")})
 }
 func (r *FlowRegistry) SetWaiting(ctx context.Context, flowID string, wait json.RawMessage) (*FlowRecord, error) {
-	return r.store.Update(ctx, flowID, FlowPatch{Status: flowStatusPtr(FlowStatusWaiting), WaitJSON: rawMessagePtr(wait)})
+	return r.update(ctx, "wait", flowID, FlowPatch{Status: flowStatusPtr(FlowStatusWaiting), WaitJSON: rawMessagePtr(wait)})
 }
 func (r *FlowRegistry) Resume(ctx context.Context, flowID string, state json.RawMessage) (*FlowRecord, error) {
-	return r.store.Update(ctx, flowID, FlowPatch{Status: flowStatusPtr(FlowStatusRunning), StateJSON: rawMessagePtr(state), WaitJSON: rawMessagePtr(nil)})
+	return r.update(ctx, "resume", flowID, FlowPatch{Status: flowStatusPtr(FlowStatusRunning), StateJSON: rawMessagePtr(state), WaitJSON: rawMessagePtr(nil)})
 }
 func (r *FlowRegistry) Block(ctx context.Context, flowID, taskID, summary string) (*FlowRecord, error) {
-	return r.store.Update(ctx, flowID, FlowPatch{Status: flowStatusPtr(FlowStatusBlocked), BlockedTaskID: stringPtr(taskID), BlockedSummary: stringPtr(summary), TransitionError: stringPtr(summary)})
+	return r.update(ctx, "block", flowID, FlowPatch{Status: flowStatusPtr(FlowStatusBlocked), BlockedTaskID: stringPtr(taskID), BlockedSummary: stringPtr(summary), TransitionError: stringPtr(summary)})
 }
 func (r *FlowRegistry) Finish(ctx context.Context, flowID string, artifacts []ArtifactPayload) (*FlowRecord, error) {
 	now := time.Now()
-	return r.store.Update(ctx, flowID, FlowPatch{Status: flowStatusPtr(FlowStatusSucceeded), Artifacts: artifactsPtr(artifacts), EndedAt: timePtrPtr(&now), WaitJSON: rawMessagePtr(nil), TransitionError: stringPtr("")})
+	return r.update(ctx, "finish", flowID, FlowPatch{Status: flowStatusPtr(FlowStatusSucceeded), Artifacts: artifactsPtr(artifacts), EndedAt: timePtrPtr(&now), WaitJSON: rawMessagePtr(nil), TransitionError: stringPtr("")})
 }
 func (r *FlowRegistry) Fail(ctx context.Context, flowID, summary string) (*FlowRecord, error) {
 	now := time.Now()
-	return r.store.Update(ctx, flowID, FlowPatch{Status: flowStatusPtr(FlowStatusFailed), EndedAt: timePtrPtr(&now), TransitionError: stringPtr(summary), BlockedSummary: stringPtr(summary)})
+	return r.update(ctx, "fail", flowID, FlowPatch{Status: flowStatusPtr(FlowStatusFailed), EndedAt: timePtrPtr(&now), TransitionError: stringPtr(summary), BlockedSummary: stringPtr(summary)})
 }
 func (r *FlowRegistry) Cancel(ctx context.Context, flowID, reason string) (*FlowRecord, error) {
 	now := time.Now()
-	return r.store.Update(ctx, flowID, FlowPatch{Status: flowStatusPtr(FlowStatusCancelled), EndedAt: timePtrPtr(&now), CancelReason: stringPtr(reason)})
+	return r.update(ctx, "cancel", flowID, FlowPatch{Status: flowStatusPtr(FlowStatusCancelled), EndedAt: timePtrPtr(&now), CancelReason: stringPtr(reason)})
 }
 func (r *FlowRegistry) AppendTask(ctx context.Context, flowID, taskID string) (*FlowRecord, error) {
-	return r.store.Update(ctx, flowID, FlowPatch{AppendTaskIDs: []string{taskID}})
+	return r.update(ctx, "append_task", flowID, FlowPatch{AppendTaskIDs: []string{taskID}})
 }
 
 func GenerateFlowID() string { return "flow-" + strings.TrimPrefix(GenerateTaskID(), "task-") }

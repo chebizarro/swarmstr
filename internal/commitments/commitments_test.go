@@ -1,6 +1,7 @@
 package commitments
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +89,56 @@ func TestFileStorePersistenceRoundTrip(t *testing.T) {
 	got, ok := reloaded.Get("persisted")
 	if !ok || got.Text != "I'll remind you" || got.Confidence != 0.9 {
 		t.Fatalf("unexpected reloaded commitment: ok=%v got=%+v", ok, got)
+	}
+}
+
+func TestStoreMultiplePendingBackingLifecycle(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	store := NewStore()
+	if err := store.AddE(
+		Commitment{ID: "task", SessionID: "room", Status: StatusPending, CreatedAt: now, BackingReferences: []string{"task:T-1"}},
+		Commitment{ID: "flow", SessionID: "room", Status: StatusPending, CreatedAt: now, BackingReferences: []string{"flow:F-1"}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.PendingCount("room"); got != 2 {
+		t.Fatalf("pending count = %d, want 2", got)
+	}
+	changed, err := store.ResolveBacking("task:t-1", StatusFulfilled, "", now.Add(time.Minute))
+	if err != nil || len(changed) != 1 || changed[0].ID != "task" {
+		t.Fatalf("task lifecycle correlation: changed=%+v err=%v", changed, err)
+	}
+	changed, err = store.ResolveBacking("flow:f-1", StatusBroken, "flow cancelled", now.Add(2*time.Minute))
+	if err != nil || len(changed) != 1 || changed[0].ID != "flow" || changed[0].BrokenReason != "flow cancelled" {
+		t.Fatalf("flow lifecycle correlation: changed=%+v err=%v", changed, err)
+	}
+	if got := store.PendingCount("room"); got != 0 {
+		t.Fatalf("pending count after terminal transitions = %d", got)
+	}
+}
+
+func TestFileStoreMigratesVersionOne(t *testing.T) {
+	path := t.TempDir() + "/commitments.json"
+	legacy := `{"version":1,"commitments":[{"id":"legacy","session_id":"room","kind":"open_loop","text":"legacy","status":"pending"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Get("legacy"); !ok {
+		t.Fatal("version-one commitment was not loaded")
+	}
+	if err := store.AddE(Commitment{ID: "new", SessionID: "room", Text: "new", BackingReferences: []string{"task:T-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"version": 2`) || !strings.Contains(string(body), `"task:t-1"`) {
+		t.Fatalf("store was not migrated to v2: %s", body)
 	}
 }
 

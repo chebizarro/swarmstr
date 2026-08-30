@@ -163,6 +163,78 @@ func TestNIP29SendReply_ACKConversion(t *testing.T) {
 	})
 }
 
+func TestNIP29SendTargeted(t *testing.T) {
+	newChannel := func(ackAsReaction bool) (*NIP29GroupChannel, *channelFakePublisher) {
+		publisher := &channelFakePublisher{results: []nostr.PublishResult{{RelayURL: "wss://relay.test"}}}
+		return &NIP29GroupChannel{
+			gad:           nip29.GroupAddress{Relay: "wss://relay.test", ID: "group"},
+			keyer:         testKeyer(t),
+			publisher:     publisher,
+			ackAsReaction: ackAsReaction,
+		}, publisher
+	}
+	hasMarkedEvent := func(evt nostr.Event, id, marker string) bool {
+		for _, tag := range evt.Tags {
+			if len(tag) >= 4 && tag[0] == "e" && tag[1] == id && tag[3] == marker {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("targeted direct ACK converts to reaction", func(t *testing.T) {
+		ch, publisher := newChannel(true)
+		result, err := ch.SendTargeted(context.Background(), "on it", OutboundTarget{
+			ReplyToEventID: "target-event", TargetPubkey: "target-author", TargetKind: 9,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.ConvertedToReaction || publisher.event.Kind != nostr.KindReaction {
+			t.Fatalf("result=%+v kind=%d, want reaction conversion", result, publisher.event.Kind)
+		}
+	})
+
+	t.Run("targeted substantive text preserves reply and thread", func(t *testing.T) {
+		ch, publisher := newChannel(true)
+		result, err := ch.SendTargeted(context.Background(), "deployment finished", OutboundTarget{
+			ReplyToEventID: "reply-event", ThreadRootEventID: "root-event", TargetPubkey: "target-author",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.ConvertedToReaction || publisher.event.Kind != nostr.KindSimpleGroupChatMessage {
+			t.Fatalf("result=%+v kind=%d, want kind 9", result, publisher.event.Kind)
+		}
+		if !hasMarkedEvent(publisher.event, "root-event", "root") || !hasMarkedEvent(publisher.event, "reply-event", "reply") {
+			t.Fatalf("missing root/reply tags: %v", publisher.event.Tags)
+		}
+	})
+
+	t.Run("opt out keeps targeted ACK as chat", func(t *testing.T) {
+		ch, publisher := newChannel(false)
+		result, err := ch.SendTargeted(context.Background(), "got it", OutboundTarget{
+			ReplyToEventID: "target-event", TargetPubkey: "target-author",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.ConvertedToReaction || publisher.event.Kind != nostr.KindSimpleGroupChatMessage {
+			t.Fatalf("result=%+v kind=%d, want chat", result, publisher.event.Kind)
+		}
+	})
+
+	t.Run("targetless ACK remains chat", func(t *testing.T) {
+		ch, publisher := newChannel(true)
+		if err := ch.Send(context.Background(), "got it"); err != nil {
+			t.Fatal(err)
+		}
+		if publisher.event.Kind != nostr.KindSimpleGroupChatMessage {
+			t.Fatalf("kind=%d, want chat", publisher.event.Kind)
+		}
+	})
+}
+
 func TestBuildNIP29DeletionEvent(t *testing.T) {
 	ev, err := BuildNIP29DeletionEvent("group1", "targetid", "spam", nil)
 	if err != nil {

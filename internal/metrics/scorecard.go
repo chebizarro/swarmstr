@@ -34,34 +34,44 @@ type RoomSignal string
 
 // The closed set of per-room discipline signals (fixed label cardinality).
 const (
-	RoomSignalACKConversion     RoomSignal = "ack_conversion"
-	RoomSignalGatePass          RoomSignal = "gate_pass"
-	RoomSignalGateDrop          RoomSignal = "gate_drop"
-	RoomSignalEchoDrop          RoomSignal = "echo_drop"
-	RoomSignalTaskEchoDrop      RoomSignal = "task_echo_drop"
-	RoomSignalPairGuardTrip     RoomSignal = "pair_guard_trip"
-	RoomSignalElectionWon       RoomSignal = "election_won"
-	RoomSignalElectionDeferred  RoomSignal = "election_deferred"
-	RoomSignalElectionTakeover  RoomSignal = "election_takeover"
-	RoomSignalCommitmentBlocked RoomSignal = "commitment_blocked"
-	RoomSignalCommitmentDropped RoomSignal = "commitment_dropped"
-	RoomSignalLedgerRun         RoomSignal = "ledger_run"
-	RoomSignalLedgerPost        RoomSignal = "ledger_post"
-	RoomSignalStatusReaction    RoomSignal = "status_reaction"
+	RoomSignalACKCandidate        RoomSignal = "ack_candidate"
+	RoomSignalACKConversion       RoomSignal = "ack_conversion"
+	RoomSignalGatePass            RoomSignal = "gate_pass"
+	RoomSignalGateDrop            RoomSignal = "gate_drop"
+	RoomSignalEchoOpportunity     RoomSignal = "echo_opportunity"
+	RoomSignalEchoDrop            RoomSignal = "echo_drop"
+	RoomSignalTaskEchoOpportunity RoomSignal = "task_echo_opportunity"
+	RoomSignalTaskEchoDrop        RoomSignal = "task_echo_drop"
+	RoomSignalPairGuardTrip       RoomSignal = "pair_guard_trip"
+	RoomSignalElectionWon         RoomSignal = "election_won"
+	RoomSignalElectionDeferred    RoomSignal = "election_deferred"
+	RoomSignalElectionTakeover    RoomSignal = "election_takeover"
+	RoomSignalCommitmentBlocked   RoomSignal = "commitment_blocked"
+	RoomSignalCommitmentOpened    RoomSignal = "commitment_opened"
+	RoomSignalCommitmentCompleted RoomSignal = "commitment_completed"
+	RoomSignalCommitmentDropped   RoomSignal = "commitment_dropped"
+	RoomSignalLedgerRun           RoomSignal = "ledger_run"
+	RoomSignalLedgerPost          RoomSignal = "ledger_post"
+	RoomSignalStatusReaction      RoomSignal = "status_reaction"
 )
 
 func validRoomSignal(signal RoomSignal) bool {
 	switch signal {
-	case RoomSignalACKConversion,
+	case RoomSignalACKCandidate,
+		RoomSignalACKConversion,
 		RoomSignalGatePass,
 		RoomSignalGateDrop,
+		RoomSignalEchoOpportunity,
 		RoomSignalEchoDrop,
+		RoomSignalTaskEchoOpportunity,
 		RoomSignalTaskEchoDrop,
 		RoomSignalPairGuardTrip,
 		RoomSignalElectionWon,
 		RoomSignalElectionDeferred,
 		RoomSignalElectionTakeover,
 		RoomSignalCommitmentBlocked,
+		RoomSignalCommitmentOpened,
+		RoomSignalCommitmentCompleted,
 		RoomSignalCommitmentDropped,
 		RoomSignalLedgerRun,
 		RoomSignalLedgerPost,
@@ -113,9 +123,11 @@ type roomMessage struct {
 }
 
 type roomState struct {
-	metricLabel string
-	signals     map[RoomSignal]*Counter
-	msgs        []roomMessage
+	metricLabel    string
+	signals        map[RoomSignal]*Counter
+	msgs           []roomMessage
+	agentRoster    map[string]struct{}
+	commitmentOpen int
 
 	shareMax   *Gauge
 	shareAlarm *Gauge
@@ -226,7 +238,7 @@ func (s *RoomScorecard) RecordSignal(room string, signal RoomSignal) {
 // refreshes the share gauges (max single-sender share + count of senders
 // above the ShareAlarmFactor/n rate-matching threshold).
 func (s *RoomScorecard) RecordMessage(room, sender string) {
-	sender = strings.TrimSpace(sender)
+	sender = strings.ToLower(strings.TrimSpace(sender))
 	if sender == "" {
 		return
 	}
@@ -239,6 +251,34 @@ func (s *RoomScorecard) RecordMessage(room, sender string) {
 	maxShare, alarmed, _, _ := s.sharesLocked(state)
 	state.shareMax.Set(maxShare)
 	state.shareAlarm.Set(float64(len(alarmed)))
+}
+
+// SetAgentRoster configures the fleet/NIP-51 roster used for fair-share math.
+// Observed non-roster senders remain visible in diagnostics but never change n.
+func (s *RoomScorecard) SetAgentRoster(room string, pubkeys []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, state := s.roomStateLocked(room)
+	state.agentRoster = make(map[string]struct{}, len(pubkeys))
+	for _, pubkey := range pubkeys {
+		if normalized := strings.ToLower(strings.TrimSpace(pubkey)); normalized != "" {
+			state.agentRoster[normalized] = struct{}{}
+		}
+	}
+	maxShare, alarmed, _, _ := s.sharesLocked(state)
+	state.shareMax.Set(maxShare)
+	state.shareAlarm.Set(float64(len(alarmed)))
+}
+
+// SetOpenCommitments updates the current pending-commitment gauge in snapshots.
+func (s *RoomScorecard) SetOpenCommitments(room string, count int) {
+	if count < 0 {
+		count = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, state := s.roomStateLocked(room)
+	state.commitmentOpen = count
 }
 
 // SetUnansweredMentionAge sets the room's oldest unanswered-mention age gauge
@@ -271,22 +311,24 @@ func (s *RoomScorecard) pruneLocked(state *roomState, now time.Time) {
 
 // sharesLocked computes per-sender counts and the alarm set. Callers hold s.mu.
 func (s *RoomScorecard) sharesLocked(state *roomState) (maxShare float64, alarmed []string, counts map[string]int, total int) {
-	total = len(state.msgs)
-	counts = make(map[string]int, 8)
+	counts = make(map[string]int, len(state.agentRoster))
 	for _, m := range state.msgs {
-		counts[m.sender]++
+		if _, ok := state.agentRoster[m.sender]; ok {
+			counts[m.sender]++
+			total++
+		}
 	}
-	if total == 0 || len(counts) == 0 {
+	if total == 0 || len(state.agentRoster) == 0 {
 		return 0, nil, counts, total
 	}
-	n := len(counts)
+	n := len(state.agentRoster)
 	threshold := ShareAlarmFactor / float64(n)
 	for sender, c := range counts {
 		share := float64(c) / float64(total)
 		if share > maxShare {
 			maxShare = share
 		}
-		// The alarm needs a meaningful sample and >1 participant; with n<=2
+		// The alarm needs a meaningful sample and >1 roster member; with n<=2
 		// the 2/n threshold is >=1 and can never trip (by design: rate
 		// matching is a many-agent room concern).
 		if total >= ShareAlarmMinMessages && n >= 2 && share > threshold {
@@ -310,11 +352,63 @@ type RoomScorecardSnapshot struct {
 	Signals                     map[string]uint64 `json:"signals,omitempty"`
 	WindowMessages              int               `json:"window_messages"`
 	DistinctSenders             int               `json:"distinct_senders"`
+	ObservedTopSenders          []RoomSenderShare `json:"observed_top_senders,omitempty"`
+	AgentWindowMessages         int               `json:"agent_window_messages"`
+	AgentRosterSize             int               `json:"agent_roster_size"`
 	BaselineShare               float64           `json:"baseline_share,omitempty"`
 	AlarmThreshold              float64           `json:"alarm_threshold,omitempty"`
 	TopSenders                  []RoomSenderShare `json:"top_senders,omitempty"`
 	ShareAlarms                 []string          `json:"share_alarms,omitempty"`
+	ACKCandidates               uint64            `json:"ack_candidates"`
+	ACKConversions              uint64            `json:"ack_conversions"`
+	ACKConversionRate           float64           `json:"ack_conversion_rate"`
+	EchoOpportunities           uint64            `json:"echo_opportunities"`
+	EchoDrops                   uint64            `json:"echo_drops"`
+	EchoDropRate                float64           `json:"echo_drop_rate"`
+	TaskEchoOpportunities       uint64            `json:"task_echo_opportunities"`
+	TaskEchoDrops               uint64            `json:"task_echo_drops"`
+	TaskEchoDropRate            float64           `json:"task_echo_drop_rate"`
+	CommitmentsOpen             int               `json:"commitments_open"`
+	CommitmentsOpened           uint64            `json:"commitments_opened"`
+	CommitmentsCompleted        uint64            `json:"commitments_completed"`
+	CommitmentsDropped          uint64            `json:"commitments_dropped"`
 	UnansweredMentionAgeSeconds float64           `json:"unanswered_mention_age_seconds"`
+}
+
+func senderShares(counts map[string]int, total int) []RoomSenderShare {
+	if total <= 0 || len(counts) == 0 {
+		return nil
+	}
+	senders := make([]RoomSenderShare, 0, len(counts))
+	for sender, count := range counts {
+		senders = append(senders, RoomSenderShare{
+			Sender: sender, Messages: count, Share: float64(count) / float64(total),
+		})
+	}
+	sort.Slice(senders, func(i, j int) bool {
+		if senders[i].Messages != senders[j].Messages {
+			return senders[i].Messages > senders[j].Messages
+		}
+		return senders[i].Sender < senders[j].Sender
+	})
+	if len(senders) > maxSnapshotSenders {
+		senders = senders[:maxSnapshotSenders]
+	}
+	return senders
+}
+
+func signalValue(signals map[RoomSignal]*Counter, signal RoomSignal) uint64 {
+	if counter := signals[signal]; counter != nil {
+		return counter.Value()
+	}
+	return 0
+}
+
+func ratio(numerator, denominator uint64) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return float64(numerator) / float64(denominator)
 }
 
 // Snapshots returns the per-room scorecard, sorted by room key. The message
@@ -326,14 +420,42 @@ func (s *RoomScorecard) Snapshots() []RoomScorecardSnapshot {
 	out := make([]RoomScorecardSnapshot, 0, len(s.rooms))
 	for room, state := range s.rooms {
 		s.pruneLocked(state, now)
-		maxShare, alarmed, counts, total := s.sharesLocked(state)
+		maxShare, alarmed, agentCounts, agentTotal := s.sharesLocked(state)
 		state.shareMax.Set(maxShare)
 		state.shareAlarm.Set(float64(len(alarmed)))
+
+		observedCounts := make(map[string]int)
+		for _, message := range state.msgs {
+			observedCounts[message.sender]++
+		}
+		ackCandidates := signalValue(state.signals, RoomSignalACKCandidate)
+		ackConversions := signalValue(state.signals, RoomSignalACKConversion)
+		echoOpportunities := signalValue(state.signals, RoomSignalEchoOpportunity)
+		echoDrops := signalValue(state.signals, RoomSignalEchoDrop)
+		taskEchoOpportunities := signalValue(state.signals, RoomSignalTaskEchoOpportunity)
+		taskEchoDrops := signalValue(state.signals, RoomSignalTaskEchoDrop)
 		snap := RoomScorecardSnapshot{
 			Room:                        room,
-			WindowMessages:              total,
-			DistinctSenders:             len(counts),
+			WindowMessages:              len(state.msgs),
+			DistinctSenders:             len(observedCounts),
+			ObservedTopSenders:          senderShares(observedCounts, len(state.msgs)),
+			AgentWindowMessages:         agentTotal,
+			AgentRosterSize:             len(state.agentRoster),
+			TopSenders:                  senderShares(agentCounts, agentTotal),
 			ShareAlarms:                 alarmed,
+			ACKCandidates:               ackCandidates,
+			ACKConversions:              ackConversions,
+			ACKConversionRate:           ratio(ackConversions, ackCandidates),
+			EchoOpportunities:           echoOpportunities,
+			EchoDrops:                   echoDrops,
+			EchoDropRate:                ratio(echoDrops, echoOpportunities),
+			TaskEchoOpportunities:       taskEchoOpportunities,
+			TaskEchoDrops:               taskEchoDrops,
+			TaskEchoDropRate:            ratio(taskEchoDrops, taskEchoOpportunities),
+			CommitmentsOpen:             state.commitmentOpen,
+			CommitmentsOpened:           signalValue(state.signals, RoomSignalCommitmentOpened),
+			CommitmentsCompleted:        signalValue(state.signals, RoomSignalCommitmentCompleted),
+			CommitmentsDropped:          signalValue(state.signals, RoomSignalCommitmentDropped),
 			UnansweredMentionAgeSeconds: state.mentionAge.Value(),
 		}
 		if len(state.signals) > 0 {
@@ -342,23 +464,9 @@ func (s *RoomScorecard) Snapshots() []RoomScorecardSnapshot {
 				snap.Signals[string(signal)] = counter.Value()
 			}
 		}
-		if n := len(counts); n > 0 {
+		if n := len(state.agentRoster); n > 0 {
 			snap.BaselineShare = 1 / float64(n)
 			snap.AlarmThreshold = ShareAlarmFactor / float64(n)
-			senders := make([]RoomSenderShare, 0, n)
-			for sender, c := range counts {
-				senders = append(senders, RoomSenderShare{Sender: sender, Messages: c, Share: float64(c) / float64(total)})
-			}
-			sort.Slice(senders, func(i, j int) bool {
-				if senders[i].Messages != senders[j].Messages {
-					return senders[i].Messages > senders[j].Messages
-				}
-				return senders[i].Sender < senders[j].Sender
-			})
-			if len(senders) > maxSnapshotSenders {
-				senders = senders[:maxSnapshotSenders]
-			}
-			snap.TopSenders = senders
 		}
 		out = append(out, snap)
 	}
@@ -382,6 +490,16 @@ func RecordRoomSignal(room string, signal RoomSignal) {
 // RecordRoomMessage tracks one room message on the process-wide scorecard.
 func RecordRoomMessage(room, sender string) {
 	DefaultScorecard.RecordMessage(room, sender)
+}
+
+// SetRoomAgentRoster configures the process-wide room roster used for agent-share math.
+func SetRoomAgentRoster(room string, pubkeys []string) {
+	DefaultScorecard.SetAgentRoster(room, pubkeys)
+}
+
+// SetRoomOpenCommitments updates the process-wide pending commitment snapshot.
+func SetRoomOpenCommitments(room string, count int) {
+	DefaultScorecard.SetOpenCommitments(room, count)
 }
 
 // SetRoomUnansweredMentionAge sets a room's oldest unanswered-mention age on

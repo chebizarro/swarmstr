@@ -442,13 +442,13 @@ func ResolveNostrGroupPreflight(in NostrPreflightInput) NostrPreflightResult {
 	if dropReason == "" && !md.effectiveWasMentioned && !hasCommand && !hasAbort {
 		aliases := append([]string(nil), in.ShouldReplyAliases...)
 		aliases = append(aliases, in.AgentID)
-		decision := ResolveShouldReplyGate(ShouldReplyGateInput{
+		decision := EvaluateShouldReplyHeuristics(ShouldReplyGateInput{
 			Text:             in.Text,
 			Aliases:          aliases,
 			Capabilities:     in.ShouldReplyCapabilities,
 			SenderIsKnownBot: in.SenderIsKnownBot,
 			Enabled:          in.ShouldReplyGate,
-		}, nil)
+		})
 		shouldReplyDecision = &decision
 		if decision.Outcome != ShouldReplyPass {
 			dropReason = DropShouldReplyGate

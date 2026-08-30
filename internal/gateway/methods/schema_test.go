@@ -262,7 +262,7 @@ func TestDecodeACPParams_CamelCaseCompatibility(t *testing.T) {
 		t.Fatalf("unexpected enabled tools: %#v", dispatchReq.EnabledTools)
 	}
 
-	pipelineReq, err := DecodeACPPipelineParams(json.RawMessage(`{"steps":[{"peerPubKey":"peer-1","instructions":"step","contextMessages":[{"role":"assistant","content":"ctx"}],"memoryScope":"local","toolProfile":"coding","enabledTools":["memory_store"],"parentContext":{"sessionId":"sess-2","agentId":"worker"},"timeoutMs":500}],"parallel":true,"maxConcurrency":2}`))
+	pipelineReq, err := DecodeACPPipelineParams(json.RawMessage(`{"steps":[{"peerPubKey":"peer-1","instructions":"step","contextMessages":[{"role":"assistant","content":"ctx"}],"memoryScope":"local","toolProfile":"coding","enabledTools":["memory_store"],"parentContext":{"sessionId":"sess-2","agentId":"worker"},"timeoutMs":500}],"parallel":true,"maxConcurrency":2,"announce":true}`))
 	if err != nil {
 		t.Fatalf("acp.pipeline decode error: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestDecodeACPParams_CamelCaseCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acp.pipeline normalize error: %v", err)
 	}
-	if len(pipelineReq.Steps) != 1 || pipelineReq.Steps[0].PeerPubKey != "peer-1" || pipelineReq.Steps[0].MemoryScope != state.AgentMemoryScopeLocal || pipelineReq.MaxConcurrency != 2 {
+	if len(pipelineReq.Steps) != 1 || pipelineReq.Steps[0].PeerPubKey != "peer-1" || pipelineReq.Steps[0].MemoryScope != state.AgentMemoryScopeLocal || pipelineReq.MaxConcurrency != 2 || !pipelineReq.Announce {
 		t.Fatalf("unexpected acp.pipeline request: %#v", pipelineReq)
 	}
 }

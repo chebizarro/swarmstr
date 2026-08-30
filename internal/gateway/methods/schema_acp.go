@@ -90,6 +90,9 @@ type ACPPipelineRequest struct {
 	// MaxConcurrency bounds simultaneously dispatched steps when Parallel is
 	// true. Values <= 0 use the pipeline's safe default.
 	MaxConcurrency int `json:"max_concurrency,omitempty"`
+	// Announce opts lifecycle mutations from this invocation into compact room
+	// announcements. Typed transitions are recorded regardless.
+	Announce bool `json:"announce,omitempty"`
 }
 
 func (r ACPDispatchRequest) Normalize() (ACPDispatchRequest, error) {
@@ -267,6 +270,7 @@ func DecodeACPPipelineParams(params json.RawMessage) (ACPPipelineRequest, error)
 		Parallel            bool                    `json:"parallel,omitempty"`
 		MaxConcurrency      int                     `json:"max_concurrency,omitempty"`
 		MaxConcurrencyCamel int                     `json:"maxConcurrency,omitempty"`
+		Announce            bool                    `json:"announce,omitempty"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(params))
 	dec.DisallowUnknownFields()
@@ -278,7 +282,7 @@ func DecodeACPPipelineParams(params json.RawMessage) (ACPPipelineRequest, error)
 	if maxConcurrency == 0 {
 		maxConcurrency = compat.MaxConcurrencyCamel
 	}
-	req := ACPPipelineRequest{Parallel: compat.Parallel, MaxConcurrency: maxConcurrency}
+	req := ACPPipelineRequest{Parallel: compat.Parallel, MaxConcurrency: maxConcurrency, Announce: compat.Announce}
 	for _, step := range compat.Steps {
 		contextMessages := step.ContextMessages
 		if len(contextMessages) == 0 {

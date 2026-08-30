@@ -2,9 +2,13 @@ package commitments
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 )
+
+const storeFileVersion = 2
 
 type storeFile struct {
 	Version     int          `json:"version"`
@@ -26,6 +30,9 @@ func (s *Store) load() error {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return err
 	}
+	if f.Version < 0 || f.Version > storeFileVersion {
+		return fmt.Errorf("unsupported commitments store version %d", f.Version)
+	}
 	if s.commitments == nil {
 		s.commitments = map[string]Commitment{}
 	}
@@ -46,9 +53,31 @@ func (s *Store) saveLocked() error {
 	for _, c := range s.commitments {
 		items = append(items, c)
 	}
-	data, err := json.MarshalIndent(storeFile{Version: 1, Commitments: items}, "", "  ")
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	data, err := json.MarshalIndent(storeFile{Version: storeFileVersion, Commitments: items}, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".commitments-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, s.path)
 }

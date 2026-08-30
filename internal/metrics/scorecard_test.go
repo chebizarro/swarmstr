@@ -141,7 +141,8 @@ func TestRoomScorecardRoomBounding(t *testing.T) {
 func TestRoomScorecardMessageShareAlarm(t *testing.T) {
 	s, reg, _ := newTestScorecard(t, RoomScorecardOptions{})
 	room := "nostr:room:busy"
-	// 4 senders, 20 messages: "loud" sends 14 (share 0.7 > 2/4 = 0.5).
+	s.SetAgentRoster(room, []string{"loud", "a", "b", "c"})
+	// 4 agents, 20 agent messages: "loud" sends 14 (share 0.7 > 2/4 = 0.5).
 	for i := 0; i < 14; i++ {
 		s.RecordMessage(room, "loud")
 	}
@@ -177,6 +178,7 @@ func TestRoomScorecardShareAlarmNeedsSampleAndPeers(t *testing.T) {
 	s, _, _ := newTestScorecard(t, RoomScorecardOptions{})
 
 	// Below the minimum sample: a dominant sender must not alarm.
+	s.SetAgentRoster("quiet-room", []string{"solo", "other"})
 	for i := 0; i < ShareAlarmMinMessages-2; i++ {
 		s.RecordMessage("quiet-room", "solo")
 	}
@@ -186,6 +188,7 @@ func TestRoomScorecardShareAlarmNeedsSampleAndPeers(t *testing.T) {
 	}
 
 	// Single participant: 2/1 threshold is unreachable by design.
+	s.SetAgentRoster("mono-room", []string{"solo"})
 	for i := 0; i < 30; i++ {
 		s.RecordMessage("mono-room", "solo")
 	}
@@ -201,6 +204,7 @@ func TestRoomScorecardShareAlarmNeedsSampleAndPeers(t *testing.T) {
 func TestRoomScorecardWindowPruning(t *testing.T) {
 	s, _, now := newTestScorecard(t, RoomScorecardOptions{WindowSize: 5, WindowAge: 10 * time.Minute})
 	room := "nostr:room:pruned"
+	s.SetAgentRoster(room, []string{"early", "late"})
 	// 7 sends with a bounded window of 5: the oldest two fall off.
 	for i := 0; i < 7; i++ {
 		s.RecordMessage(room, "early")
@@ -220,6 +224,72 @@ func TestRoomScorecardWindowPruning(t *testing.T) {
 	s.RecordMessage(room, "late")
 	if snap := snapshotFor(t, s, room); snap.WindowMessages != 1 || snap.TopSenders[0].Sender != "late" {
 		t.Fatalf("post-drain window must only hold fresh traffic: %+v", snap)
+	}
+}
+
+func TestRoomScorecardRosterExcludesHumansFromAgentShare(t *testing.T) {
+	s, _, _ := newTestScorecard(t, RoomScorecardOptions{})
+	room := "nostr:room:mixed"
+	s.SetAgentRoster(room, []string{"agent-a", "agent-b", "silent-agent"})
+	for i := 0; i < 6; i++ {
+		s.RecordMessage(room, "human")
+	}
+	for i := 0; i < 3; i++ {
+		s.RecordMessage(room, "agent-a")
+	}
+	s.RecordMessage(room, "agent-b")
+
+	snap := snapshotFor(t, s, room)
+	if snap.WindowMessages != 10 || snap.DistinctSenders != 3 {
+		t.Fatalf("observed traffic must retain humans: %+v", snap)
+	}
+	if snap.AgentWindowMessages != 4 || snap.AgentRosterSize != 3 {
+		t.Fatalf("agent denominator must use the fleet roster: %+v", snap)
+	}
+	if snap.BaselineShare != 1.0/3.0 || snap.AlarmThreshold != 2.0/3.0 {
+		t.Fatalf("silent roster members must remain in n: %+v", snap)
+	}
+	if len(snap.TopSenders) != 2 || snap.TopSenders[0].Sender != "agent-a" || snap.TopSenders[0].Share != 0.75 {
+		t.Fatalf("agent share must exclude human messages: %+v", snap.TopSenders)
+	}
+	if len(snap.ObservedTopSenders) == 0 || snap.ObservedTopSenders[0].Sender != "human" {
+		t.Fatalf("observed sender diagnostics must retain humans: %+v", snap.ObservedTopSenders)
+	}
+}
+
+func TestRoomScorecardRatesAndCommitmentLifecycle(t *testing.T) {
+	s, _, _ := newTestScorecard(t, RoomScorecardOptions{})
+	room := "nostr:room:rates"
+	for i := 0; i < 4; i++ {
+		s.RecordSignal(room, RoomSignalACKCandidate)
+	}
+	s.RecordSignal(room, RoomSignalACKConversion)
+	for i := 0; i < 5; i++ {
+		s.RecordSignal(room, RoomSignalEchoOpportunity)
+	}
+	s.RecordSignal(room, RoomSignalEchoDrop)
+	for i := 0; i < 2; i++ {
+		s.RecordSignal(room, RoomSignalTaskEchoOpportunity)
+		s.RecordSignal(room, RoomSignalTaskEchoDrop)
+	}
+	s.RecordSignal(room, RoomSignalCommitmentOpened)
+	s.RecordSignal(room, RoomSignalCommitmentOpened)
+	s.RecordSignal(room, RoomSignalCommitmentCompleted)
+	s.RecordSignal(room, RoomSignalCommitmentDropped)
+	s.SetOpenCommitments(room, 2)
+
+	snap := snapshotFor(t, s, room)
+	if snap.ACKCandidates != 4 || snap.ACKConversions != 1 || snap.ACKConversionRate != 0.25 {
+		t.Fatalf("unexpected ACK rate: %+v", snap)
+	}
+	if snap.EchoOpportunities != 5 || snap.EchoDrops != 1 || snap.EchoDropRate != 0.2 {
+		t.Fatalf("unexpected echo rate: %+v", snap)
+	}
+	if snap.TaskEchoOpportunities != 2 || snap.TaskEchoDrops != 2 || snap.TaskEchoDropRate != 1 {
+		t.Fatalf("unexpected task echo rate: %+v", snap)
+	}
+	if snap.CommitmentsOpen != 2 || snap.CommitmentsOpened != 2 || snap.CommitmentsCompleted != 1 || snap.CommitmentsDropped != 1 {
+		t.Fatalf("unexpected commitment lifecycle: %+v", snap)
 	}
 }
 
@@ -247,6 +317,7 @@ func TestRoomScorecardUnansweredMentionAge(t *testing.T) {
 func TestRoomScorecardSnapshotJSON(t *testing.T) {
 	s, _, _ := newTestScorecard(t, RoomScorecardOptions{})
 	s.RecordSignal("nostr:room:json", RoomSignalLedgerPost)
+	s.SetAgentRoster("nostr:room:json", []string{"sender-1"})
 	s.RecordMessage("nostr:room:json", "sender-1")
 	s.SetUnansweredMentionAge("nostr:room:json", 30*time.Second)
 
@@ -275,8 +346,13 @@ func TestRoomScorecardSnapshotJSON(t *testing.T) {
 func TestRoomScorecardSnapshotSenderCap(t *testing.T) {
 	s, _, _ := newTestScorecard(t, RoomScorecardOptions{})
 	room := "nostr:room:crowded"
+	roster := make([]string, 0, maxSnapshotSenders+4)
 	for i := 0; i < maxSnapshotSenders+4; i++ {
-		s.RecordMessage(room, strings.Repeat("s", i+1))
+		roster = append(roster, strings.Repeat("s", i+1))
+	}
+	s.SetAgentRoster(room, roster)
+	for _, sender := range roster {
+		s.RecordMessage(room, sender)
 	}
 	snap := snapshotFor(t, s, room)
 	if snap.DistinctSenders != maxSnapshotSenders+4 {
@@ -290,6 +366,7 @@ func TestRoomScorecardSnapshotSenderCap(t *testing.T) {
 func TestDefaultScorecardHelpers(t *testing.T) {
 	room := "nostr:room:default-helpers-test"
 	RecordRoomSignal(room, RoomSignalPairGuardTrip)
+	SetRoomAgentRoster(room, []string{"sender"})
 	RecordRoomMessage(room, "sender")
 	SetRoomUnansweredMentionAge(room, time.Minute)
 

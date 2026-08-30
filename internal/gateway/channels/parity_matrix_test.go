@@ -19,16 +19,16 @@ package channels
 //   17          -> TestParityMatrix_QueueOverflow (RoomDispatchQueue)
 //   18          -> TestParityMatrix_SeenGatingRetry (RedispatchScheduler) +
 //                  TestSettleDispatch_SeenGating
-//   R1 should-reply gate, reference: ocn-e2f -> TestParityMatrix_ShouldReplyGate
-//   R3 ACK conversion, reference: ocn-te2 (default-on; false opts out) -> TestParityMatrix_ACKConversion
-//   R4 commitment enforcement, reference: ocn-krf (pending) -> TestParityMatrix_CommitmentEnforcement
-//      (asserts Metiq's independently implemented room-policy behavior)
-//   R6 task chat-shadow suppression, reference: ocn-rb3 (pending) ->
-//      TestParityMatrix_TaskEchoSuppression (asserts Metiq's independently
-//      implemented behavior: a chat message restating a same-author kind-30900
-//      transition is dropped after one compact throttled announcement)
-//   R5 progress ledger (scheduled moderator review), reference: ocn-d3u
-//      (pending; asserts Metiq's own behavior) -> TestParityMatrix_ProgressLedger
+//   R1 should-reply gate, reference: openclaw-nostr 5126df4 -> TestParityMatrix_ShouldReplyGate
+//   R3 ACK conversion, reference: openclaw-nostr 5126df4 (default-on; false opts out) -> TestParityMatrix_ACKConversion
+//   R4 commitment enforcement, reference: openclaw-nostr 5126df4 -> TestParityMatrix_CommitmentEnforcement
+//      (asserts Metiq's live-reference-backed room-policy behavior)
+//   R6 task chat-shadow suppression, reference: openclaw-nostr 5126df4 ->
+//      TestParityMatrix_TaskEchoSuppression (a chat message restating a
+//      same-author typed transition is dropped after one explicitly requested,
+//      compact throttled announcement)
+//   R5 progress ledger (scheduled moderator review), reference: openclaw-nostr 5126df4
+//      -> TestParityMatrix_ProgressLedger
 //      (explicit opt-in, single designated moderator, deterministic checks,
 //      one compact post only when actionable, silence + throttle defaults).
 //      Full decision coverage in progress_ledger_test.go.
@@ -215,9 +215,8 @@ func TestParityMatrix_Echo(t *testing.T) {
 	}
 }
 
-// R6 task chat-shadow suppression, reference: openclaw-nostr ocn-rb3 (pending;
-// this asserts Metiq's own behavior until the counterpart lands). The typed
-// kind-30900 transition is the source of truth: a chat restatement by the SAME
+// R6 task/TaskFlow chat-shadow suppression, reference: openclaw-nostr
+// 5126df4. The typed transition is the source of truth: a chat restatement by the SAME
 // author gets exactly one compact throttled announcement per room, further
 // restatements are suppressed, other authors and unrelated text pass, and
 // taskEchoSuppression follows the room's echoSuppression opt-in by default.
@@ -247,6 +246,22 @@ func TestParityMatrix_TaskEchoSuppression(t *testing.T) {
 	}
 	if v := s.CheckTaskEcho("room", author, "Anything else I can pick up from the queue?", policy.TaskEchoThreshold); v.Suppress || v.Announce {
 		t.Fatalf("R6: unrelated chat must pass, got %+v", v)
+	}
+
+	// Managed TaskFlow announce=false remains typed-only. announce=true uses
+	// the same throttle, so a later generated shadow is suppressed.
+	flowSuppressor, _ := NewEchoSuppressor(EchoSuppressorOptions{})
+	transition := TaskTransitionSummary{Author: author, TaskID: "flow:42", Status: "waiting", Title: "relay approval"}
+	var announcements []string
+	send := func(_ context.Context, text string) error { announcements = append(announcements, text); return nil }
+	if outcome, err := flowSuppressor.RouteTaskFlowTransition(context.Background(), "room", transition, false, "typed", send); err != nil || outcome != TaskFlowTypedOnly || len(announcements) != 0 {
+		t.Fatalf("R6: announce=false must stay typed-only: outcome=%s announcements=%v err=%v", outcome, announcements, err)
+	}
+	if outcome, err := flowSuppressor.RouteTaskFlowTransition(context.Background(), "room", transition, true, "flow 42 waiting", send); err != nil || outcome != TaskFlowAnnouncementSent || len(announcements) != 1 {
+		t.Fatalf("R6: explicit announcement must use the shared router: outcome=%s announcements=%v err=%v", outcome, announcements, err)
+	}
+	if v := flowSuppressor.CheckTaskEcho("room", author, "task flow 42 waiting relay approval", 0); !v.Suppress {
+		t.Fatalf("R6: generated shadow must share the explicit announcement throttle: %+v", v)
 	}
 }
 
@@ -282,16 +297,20 @@ func TestParityMatrix_ACKConversion(t *testing.T) {
 	}
 }
 
-// R4 commitment enforcement. openclaw-nostr ocn-krf is still pending, so
-// this asserts Metiq's own explicit taskflow-room policy: an unbacked promise
-// is rewritten while a same-turn task open preserves the response.
+// R4 commitment enforcement, reference: openclaw-nostr 5126df4. An
+// unbacked/fabricated promise is rewritten while a concrete handle that
+// resolves against live room state is durably correlated and preserved.
 func TestParityMatrix_CommitmentEnforcement(t *testing.T) {
 	publisher := &channelFakePublisher{results: []nostr.PublishResult{{RelayURL: "wss://relay.test"}}}
+	policy := ResolveNostrRoomPolicy(map[string]any{"taskFlows": true})
+	if !policy.CommitmentEnforcement || ResolveNostrRoomPolicy(map[string]any{"taskFlows": true, "commitmentEnforcement": false}).CommitmentEnforcement {
+		t.Fatal("R4: taskFlows rooms must enforce by default with an explicit opt-out")
+	}
 	ch := &NIP29GroupChannel{
 		gad:                   nip29.GroupAddress{Relay: "wss://relay.test", ID: "room"},
 		keyer:                 testKeyer(t),
 		publisher:             publisher,
-		commitmentEnforcement: ResolveNostrRoomPolicy(map[string]any{"commitmentEnforcement": true}).CommitmentEnforcement,
+		commitmentEnforcement: policy.CommitmentEnforcement,
 	}
 	if err := ch.Send(context.Background(), "I'll handle the incident."); err != nil {
 		t.Fatal(err)
@@ -299,7 +318,16 @@ func TestParityMatrix_CommitmentEnforcement(t *testing.T) {
 	if publisher.event.Content != CommitmentEnforcementRewrite {
 		t.Fatalf("R4: unbacked commitment posted as-is: %q", publisher.event.Content)
 	}
-	ctx := ContextWithCommitmentBacking(context.Background(), CommitmentBacking{SuccessfulTaskFlowActions: 1})
+	unregister := RegisterCommitmentBackingResolver(func(_ context.Context, req CommitmentBackingRequest) (CommitmentBackingResolution, error) {
+		if len(req.References) == 1 && req.References[0] == "task:incident-1" {
+			return CommitmentBackingResolution{LiveReferences: req.References}, nil
+		}
+		return CommitmentBackingResolution{}, nil
+	})
+	t.Cleanup(unregister)
+	ctx := ContextWithCommitmentBacking(context.Background(), CommitmentBacking{
+		RoomKey: "nostr:room:test", TurnID: "turn-1", References: []string{"task:incident-1"},
+	})
 	const backed = "I'll handle the incident."
 	if err := ch.Send(ctx, backed); err != nil {
 		t.Fatal(err)
@@ -364,9 +392,9 @@ func TestParityMatrix_ResponderElection(t *testing.T) {
 }
 
 // R2 takeover half, reference: ocn-myl. The successor's timer fires only when
-// the elected responder stays silent past the window; the elected agent's
-// reply (or anyone's reaction on the contested event, e.g. an earlier
-// successor's 🙋 claim) stands the takeover down.
+// the elected responder stays silent past the window; a reply/thread relation
+// to the contested event (or an event-targeted reaction/claim) stands the
+// takeover down. Unrelated same-room traffic never cancels.
 func TestParityMatrix_ResponderTakeover(t *testing.T) {
 	h := newTakeoverHarness(t, 0, nil)
 	h.coordinator.Schedule(takeoverPendingFor(electionEvent), 120*time.Second)
@@ -381,8 +409,18 @@ func TestParityMatrix_ResponderTakeover(t *testing.T) {
 		RoomKey: electionRoom, SenderPubkey: electionAgentA,
 	})
 	h.timers[0].fn()
+	if len(h.fired) != 1 {
+		t.Fatal("R2: unrelated elected-responder traffic must not cancel the takeover")
+	}
+
+	h = newTakeoverHarness(t, 0, nil)
+	h.coordinator.Schedule(takeoverPendingFor(electionEvent), 120*time.Second)
+	h.coordinator.ObserveRoomMessage(TakeoverRoomMessageFacts{
+		RoomKey: electionRoom, SenderPubkey: electionAgentA, ReplyToEventID: electionEvent,
+	})
+	h.timers[0].fn()
 	if len(h.fired) != 0 {
-		t.Fatal("R2: the elected responder answering must stand the takeover down")
+		t.Fatal("R2: the elected responder's targeted reply must stand the takeover down")
 	}
 
 	h = newTakeoverHarness(t, 0, nil)

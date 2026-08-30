@@ -62,6 +62,5 @@ func (r *Runtime) Process(req ExtractionRequest) error {
 		items[i].To = req.To
 		items[i].DeliverySessionID = req.SessionID
 	}
-	r.Store.Add(items...)
-	return nil
+	return r.Store.AddE(items...)
 }
