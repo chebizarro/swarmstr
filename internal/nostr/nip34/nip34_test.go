@@ -203,6 +203,50 @@ func TestGraspListAndRoutingFilters(t *testing.T) {
 	}
 }
 
+func TestPermissiveCollaborationParsingReturnsWarnings(t *testing.T) {
+	ctx := context.Background()
+	signer := keyer.NewPlainKeySigner(nostr.Generate())
+	cases := []struct {
+		name  string
+		kind  nostr.Kind
+		parse func(nostr.Event) ([]string, error)
+	}{
+		{name: "patch", kind: KindPatch, parse: func(event nostr.Event) ([]string, error) { value, err := ParsePatch(event); return value.Warnings, err }},
+		{name: "pull request", kind: KindPullRequest, parse: func(event nostr.Event) ([]string, error) {
+			value, err := ParsePullRequest(event)
+			return value.Warnings, err
+		}},
+		{name: "pull request update", kind: KindPullRequestUpdate, parse: func(event nostr.Event) ([]string, error) {
+			value, err := ParsePullRequestUpdate(event)
+			return value.Warnings, err
+		}},
+		{name: "issue", kind: KindIssue, parse: func(event nostr.Event) ([]string, error) { value, err := ParseIssue(event); return value.Warnings, err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			event := nostr.Event{
+				Kind: tc.kind, CreatedAt: nostr.Now(), Content: "",
+				Tags: nostr.Tags{{"a", "not-a-coordinate"}, {"p", "bad"}, {"subject"}, {"c", "not-a-git-id"}},
+			}
+			if err := signer.SignEvent(ctx, &event); err != nil {
+				t.Fatal(err)
+			}
+			warnings, err := tc.parse(event)
+			if err != nil {
+				t.Fatalf("recommended metadata rejected: %v", err)
+			}
+			if len(warnings) == 0 {
+				t.Fatal("expected advisory warnings")
+			}
+			tampered := event
+			tampered.Content = "tampered"
+			if _, err := tc.parse(tampered); err == nil {
+				t.Fatal("invalid signature accepted")
+			}
+		})
+	}
+}
+
 func TestNIP34ValidationRejectsMalformedInputs(t *testing.T) {
 	ctx := context.Background()
 	signer := keyer.NewPlainKeySigner(nostr.Generate())

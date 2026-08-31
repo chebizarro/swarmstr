@@ -243,6 +243,8 @@ func ParseDMReplyScheme(raw string) (string, bool) {
 		return "nip17", true
 	case "nip04", "nip-04":
 		return "nip04", true
+	case "fips":
+		return "fips", true
 	default:
 		return "", false
 	}
@@ -339,13 +341,102 @@ type ProvidersConfig map[string]ProviderEntry
 type SessionConfig struct {
 	TTLSeconds int `json:"ttl_seconds,omitempty"`
 	// PruneAfterDays deletes transcript entries for sessions whose last
-	// activity is older than this many days.  0 = disabled.
+	// activity is older than this many days. 0 = disabled legacy override.
 	PruneAfterDays int `json:"prune_after_days,omitempty"`
 	// PruneIdleAfterDays deletes sessions whose last inbound message is older
 	// than this many days. 0 = disabled.
 	PruneIdleAfterDays int `json:"prune_idle_after_days,omitempty"`
-	// PruneOnBoot runs a pruning pass at daemon startup.
-	PruneOnBoot bool `json:"prune_on_boot,omitempty"`
+	// PruneOnBoot forces a startup pass; continuous maintenance is controlled
+	// independently by Maintenance.IntervalSeconds.
+	PruneOnBoot bool                      `json:"prune_on_boot,omitempty"`
+	Maintenance *SessionMaintenanceConfig `json:"maintenance,omitempty"`
+}
+
+type SessionMaintenanceConfig struct {
+	Mode                      string `json:"mode,omitempty"` // warn | enforce
+	IntervalSeconds           *int64 `json:"interval_seconds,omitempty"`
+	PruneAfterSeconds         *int64 `json:"prune_after_seconds,omitempty"`
+	MaxEntries                *int   `json:"max_entries,omitempty"`
+	ModelRunPruneAfterSeconds *int64 `json:"model_run_prune_after_seconds,omitempty"`
+	PreserveRecentSeconds     *int64 `json:"preserve_recent_seconds,omitempty"`
+	MaxDiskBytes              *int64 `json:"max_disk_bytes,omitempty"`
+	HighWaterBytes            *int64 `json:"high_water_bytes,omitempty"`
+	ArchiveRetentionSeconds   *int64 `json:"archive_retention_seconds,omitempty"`
+}
+
+type ResolvedSessionMaintenanceConfig struct {
+	Mode                      string
+	IntervalSeconds           int64
+	PruneAfterSeconds         int64
+	MaxEntries                int
+	ModelRunPruneAfterSeconds int64
+	PreserveRecentSeconds     int64
+	MaxDiskBytes              int64
+	HighWaterBytes            int64
+	ArchiveRetentionSeconds   int64
+}
+
+func ResolveSessionMaintenanceConfig(cfg SessionConfig) ResolvedSessionMaintenanceConfig {
+	out := ResolvedSessionMaintenanceConfig{
+		Mode: "enforce", IntervalSeconds: 300, PruneAfterSeconds: 30 * 24 * 60 * 60,
+		MaxEntries: 500, ModelRunPruneAfterSeconds: 24 * 60 * 60,
+		MaxDiskBytes: 10 << 30, HighWaterBytes: 8 << 30,
+	}
+	m := cfg.Maintenance
+	if m != nil {
+		if m.Mode == "warn" || m.Mode == "enforce" {
+			out.Mode = m.Mode
+		}
+		if m.IntervalSeconds != nil {
+			out.IntervalSeconds = maxInt64(0, *m.IntervalSeconds)
+		}
+		if m.PruneAfterSeconds != nil {
+			out.PruneAfterSeconds = maxInt64(0, *m.PruneAfterSeconds)
+		}
+		if m.MaxEntries != nil {
+			if *m.MaxEntries > 0 {
+				out.MaxEntries = *m.MaxEntries
+			} else {
+				out.MaxEntries = 0
+			}
+		}
+		if m.ModelRunPruneAfterSeconds != nil {
+			out.ModelRunPruneAfterSeconds = maxInt64(0, *m.ModelRunPruneAfterSeconds)
+		}
+		if m.PreserveRecentSeconds != nil {
+			out.PreserveRecentSeconds = maxInt64(0, *m.PreserveRecentSeconds)
+		}
+		if m.MaxDiskBytes != nil {
+			out.MaxDiskBytes = maxInt64(0, *m.MaxDiskBytes)
+		}
+		if m.ArchiveRetentionSeconds != nil {
+			out.ArchiveRetentionSeconds = maxInt64(0, *m.ArchiveRetentionSeconds)
+		}
+		if m.HighWaterBytes != nil && *m.HighWaterBytes > 0 {
+			out.HighWaterBytes = *m.HighWaterBytes
+		}
+	}
+	if cfg.PruneAfterDays > 0 && (m == nil || m.PruneAfterSeconds == nil) {
+		out.PruneAfterSeconds = int64(cfg.PruneAfterDays) * 24 * 60 * 60
+	}
+	if out.MaxDiskBytes == 0 {
+		out.HighWaterBytes = 0
+	} else {
+		if out.HighWaterBytes <= 0 {
+			out.HighWaterBytes = out.MaxDiskBytes * 8 / 10
+		}
+		if out.HighWaterBytes > out.MaxDiskBytes {
+			out.HighWaterBytes = out.MaxDiskBytes
+		}
+	}
+	return out
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // StorageConfig controls how relay-persisted state documents are stored.

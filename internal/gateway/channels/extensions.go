@@ -134,6 +134,11 @@ func ConnectExtensions(
 		var caps sdk.ChannelCapabilities
 		if cp, ok := plugin.(sdk.ChannelPluginWithCapabilities); ok {
 			caps = cp.Capabilities()
+			if err := sdk.ValidateChannelCapabilityContract(caps, handle); err != nil {
+				handle.Close()
+				log.Printf("extension channel %s capability contract error: %v", channelID, err)
+				continue
+			}
 		}
 		results = append(results, ExtensionConnectResult{
 			PluginID:     chanCfg.Kind,

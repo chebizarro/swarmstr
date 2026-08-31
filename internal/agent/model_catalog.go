@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -19,11 +20,22 @@ type CatalogModelRow struct {
 }
 
 var builtinModelCatalogRows = []CatalogModelRow{
-	{ID: "mistral-large-latest", ProviderID: "mistral", Name: "Mistral Large", Aliases: []string{"mistral-large"}, ContextWindowTokens: 128000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true}, Compatibility: ModelCompatibility{RequiresMistralToolIDs: true}},
-	{ID: "kimi-k2-0711-preview", ProviderID: "moonshot", Name: "Kimi K2", Aliases: []string{"kimi-k2", "moonshot/kimi-k2"}, ContextWindowTokens: 128000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsThinking: true}, Compatibility: ModelCompatibility{SupportsThinking: true}},
-	{ID: "gpt-4.1", ProviderID: "openai-responses", Name: "GPT-4.1", Aliases: []string{"openai-responses/gpt-4.1"}, ContextWindowTokens: 1047576, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true}, Compatibility: ModelCompatibility{SupportsResponsesAPI: true, SupportsThinking: true}},
-	{ID: "gpt-4.1", ProviderID: "azure-responses", Name: "Azure GPT-4.1", Aliases: []string{"azure/gpt-4.1"}, ContextWindowTokens: 1047576, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true}, Compatibility: ModelCompatibility{SupportsResponsesAPI: true, SupportsThinking: true}},
-	{ID: "gemini-2.5-flash", ProviderID: "vertex", Name: "Vertex Gemini 2.5 Flash", Aliases: []string{"vertex/gemini-2.5-flash"}, ContextWindowTokens: 1000000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true}},
+	{ID: "mistral-large-latest", ProviderID: "mistral", Name: "Mistral Large", Aliases: []string{"mistral-large"}, ContextWindowTokens: 128000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, ContextWindowTokens: 128000, InputModalities: "text", OutputModalities: "text", Transport: "mistral-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{RequiresMistralToolIDs: true}},
+	{ID: "kimi-k2-0711-preview", ProviderID: "moonshot", Name: "Kimi K2", Aliases: []string{"kimi-k2", "moonshot/kimi-k2"}, ContextWindowTokens: 128000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsThinking: true, ContextWindowTokens: 128000, InputModalities: "text", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
+	{ID: "gpt-4.1", ProviderID: "openai-responses", Name: "GPT-4.1", Aliases: []string{"openai-responses/gpt-4.1", "responses/gpt-4.1"}, ContextWindowTokens: 1047576, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576, InputModalities: "text,image", OutputModalities: "text", Transport: "responses-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsResponsesAPI: true, SupportsThinking: true}},
+	{ID: "gpt-4.1", ProviderID: "azure-responses", Name: "Azure GPT-4.1", Aliases: []string{"azure/gpt-4.1", "azure-responses/gpt-4.1"}, ContextWindowTokens: 1047576, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576, InputModalities: "text,image", OutputModalities: "text", Transport: "responses-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsResponsesAPI: true, SupportsThinking: true}},
+	{ID: "gemini-2.5-flash", ProviderID: "vertex", Name: "Vertex Gemini 2.5 Flash", Aliases: []string{"vertex/gemini-2.5-flash"}, ContextWindowTokens: 1000000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1000000, InputModalities: "text,image", OutputModalities: "text", Transport: "vertex-sse", TokenAccounting: "provider_usage"}},
+	{ID: "deepseek-v4-flash", ProviderID: "deepseek", Name: "DeepSeek V4 Flash", Aliases: []string{"deepseek/deepseek-v4-flash"}, ContextWindowTokens: 128000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsThinking: true, ContextWindowTokens: 128000, InputModalities: "text", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
+	{ID: "deepseek-chat", ProviderID: "deepseek", Name: "DeepSeek Chat", Aliases: []string{"deepseek/deepseek-chat"}, ContextWindowTokens: 128000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, ContextWindowTokens: 128000, InputModalities: "text", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}},
+	{ID: "glm-5.2", ProviderID: "zai", Name: "GLM 5.2", Aliases: []string{"zai/glm-5.2", "glm/glm-5.2"}, ContextWindowTokens: 202752, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsThinking: true, ContextWindowTokens: 202752, InputModalities: "text", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
+	{ID: "glm-5.3", ProviderID: "zai", Name: "GLM 5.3 Coding", Aliases: []string{"zai/glm-5.3"}, ContextWindowTokens: 202752, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsThinking: true, ContextWindowTokens: 202752, InputModalities: "text", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
+	{ID: "qwen3.7-plus", ProviderID: "qwen", Name: "Qwen 3.7 Plus", Aliases: []string{"qwen/qwen3.7-plus"}, ContextWindowTokens: 262144, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 262144, InputModalities: "text,image,video", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
+	{ID: "qwen3.6-plus", ProviderID: "qwen", Name: "Qwen 3.6 Plus", Aliases: []string{"qwen/qwen3.6-plus"}, ContextWindowTokens: 262144, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 262144, InputModalities: "text,image,video", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
+	{ID: "gpt-oss-120b", ProviderID: "cerebras", Name: "GPT OSS 120B", Aliases: []string{"cerebras/gpt-oss-120b"}, ContextWindowTokens: 131072, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsThinking: true, ContextWindowTokens: 131072, InputModalities: "text", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
+	{ID: "gemma-4-31b", ProviderID: "cerebras", Name: "Gemma 4 31B", Aliases: []string{"cerebras/gemma-4-31b"}, ContextWindowTokens: 131072, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, ContextWindowTokens: 131072, InputModalities: "text,image", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}},
+	{ID: "command-a-plus-05-2026", ProviderID: "cohere", Name: "Command A Plus", Aliases: []string{"cohere/command-a-plus-05-2026"}, ContextWindowTokens: 128000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, ContextWindowTokens: 128000, InputModalities: "text", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}},
+	{ID: "anthropic/claude-opus-4.6", ProviderID: "vercel-ai-gateway", Name: "Claude Opus 4.6 via Vercel", Aliases: []string{"vercel-ai-gateway/anthropic/claude-opus-4.6"}, ContextWindowTokens: 200000, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 200000, InputModalities: "text,image", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
+	{ID: "moonshotai/kimi-k2.6", ProviderID: "vercel-ai-gateway", Name: "Kimi K2.6 via Vercel", Aliases: []string{"vercel-ai-gateway/moonshotai/kimi-k2.6"}, ContextWindowTokens: 262144, Capabilities: ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsThinking: true, ContextWindowTokens: 262144, InputModalities: "text", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}, Compatibility: ModelCompatibility{SupportsThinking: true}},
 }
 
 func normalizeModelRef(ref string) (providerID, modelID string) {
@@ -98,7 +110,13 @@ func parseGenericChatCompletion(body []byte) (*LLMResponse, error) {
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage struct{ PromptTokens, CompletionTokens int } `json:"usage"`
+		Usage struct {
+			PromptTokens       int64 `json:"prompt_tokens"`
+			CompletionTokens   int64 `json:"completion_tokens"`
+			PromptTokenDetails struct {
+				CachedTokens int64 `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, err
@@ -113,19 +131,23 @@ func parseGenericChatCompletion(body []byte) (*LLMResponse, error) {
 		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 		tcs = append(tcs, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: args})
 	}
-	return &LLMResponse{Content: strings.TrimSpace(ch.Message.Content), ToolCalls: tcs, Usage: ProviderUsage{InputTokens: int64(r.Usage.PromptTokens), OutputTokens: int64(r.Usage.CompletionTokens)}, NeedsToolResults: ch.FinishReason == "tool_calls"}, nil
+	return &LLMResponse{Content: strings.TrimSpace(ch.Message.Content), ToolCalls: tcs, Usage: ProviderUsage{InputTokens: r.Usage.PromptTokens, OutputTokens: r.Usage.CompletionTokens, CacheReadTokens: r.Usage.PromptTokenDetails.CachedTokens}, NeedsToolResults: ch.FinishReason == "tool_calls"}, nil
 }
 func parseResponsesAPI(body []byte) (*LLMResponse, error) {
 	var r struct {
 		OutputText string `json:"output_text"`
 		Output     []struct {
-			Type, Role, Content     string
-			Name, CallID, Arguments string
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			CallID    string `json:"call_id"`
+			ID        string `json:"id"`
+			Arguments string `json:"arguments"`
+			Content   []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
 		} `json:"output"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		Usage responsesUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, err
@@ -134,15 +156,23 @@ func parseResponsesAPI(body []byte) (*LLMResponse, error) {
 	var tcs []ToolCall
 	for _, o := range r.Output {
 		if o.Type == "message" && content == "" {
-			content = o.Content
+			for _, part := range o.Content {
+				if part.Type == "output_text" || part.Type == "text" {
+					content += part.Text
+				}
+			}
 		}
 		if o.Type == "function_call" {
-			var args map[string]any
-			_ = json.Unmarshal([]byte(o.Arguments), &args)
-			tcs = append(tcs, ToolCall{ID: o.CallID, Name: o.Name, Args: args})
+			args := map[string]any{}
+			if strings.TrimSpace(o.Arguments) != "" {
+				if err := json.Unmarshal([]byte(o.Arguments), &args); err != nil {
+					return nil, fmt.Errorf("responses tool %q arguments: %w", o.Name, err)
+				}
+			}
+			tcs = append(tcs, ToolCall{ID: firstNonEmptyString(o.CallID, o.ID), Name: o.Name, Args: args})
 		}
 	}
-	return &LLMResponse{Content: strings.TrimSpace(content), ToolCalls: tcs, NeedsToolResults: len(tcs) > 0, Usage: ProviderUsage{InputTokens: int64(r.Usage.InputTokens), OutputTokens: int64(r.Usage.OutputTokens)}}, nil
+	return &LLMResponse{Content: strings.TrimSpace(content), ToolCalls: tcs, NeedsToolResults: len(tcs) > 0, Usage: providerUsageFromResponses(r.Usage)}, nil
 }
 func parseGeminiLikeResponse(body []byte) (*LLMResponse, error) {
 	var r geminiResponse

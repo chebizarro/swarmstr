@@ -51,7 +51,7 @@ func (p *ZaloUserPlugin) ConfigSchema() map[string]any {
 }
 
 func (p *ZaloUserPlugin) Capabilities() sdk.ChannelCapabilities {
-	return sdk.ChannelCapabilities{Typing: true, Reactions: true, Threads: true, MultiAccount: true}
+	return sdk.ChannelCapabilities{Typing: true, Reactions: true, Threads: false, MultiAccount: true}
 }
 
 func (p *ZaloUserPlugin) GatewayMethods() []sdk.GatewayMethod {
@@ -338,9 +338,9 @@ func (b *zaloUserBot) Send(ctx context.Context, text string) error {
 	return err
 }
 
-// SendInThread sends to a Zalo group conversation. Zalo group IDs are the
-// provider-native thread identifiers delivered on inbound group messages.
-func (b *zaloUserBot) SendInThread(ctx context.Context, threadID, text string) error {
+// sendToGroup posts to a Zalo group conversation without claiming that Zalo's
+// group conversation IDs implement a threaded-reply model.
+func (b *zaloUserBot) sendToGroup(ctx context.Context, threadID, text string) error {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" || strings.TrimSpace(text) == "" {
 		return fmt.Errorf("zalouser: threadID and text are required")

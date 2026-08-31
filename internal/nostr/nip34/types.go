@@ -102,6 +102,7 @@ type Patch struct {
 	Reply                *EventReference
 	Commit               CommitMetadata
 	Content              string
+	Warnings             []string
 	Event                nostr.Event
 }
 
@@ -117,6 +118,7 @@ type PullRequest struct {
 	RevisionOf           *nostr.ID
 	MergeBase            string
 	Content              string
+	Warnings             []string
 	Event                nostr.Event
 }
 
@@ -129,6 +131,7 @@ type PullRequestUpdate struct {
 	Tip                  string
 	Clone                []string
 	MergeBase            string
+	Warnings             []string
 	Event                nostr.Event
 }
 
@@ -138,6 +141,7 @@ type Issue struct {
 	Subject    string
 	Labels     []string
 	Content    string
+	Warnings   []string
 	Event      nostr.Event
 }
 

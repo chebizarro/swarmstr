@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVaultBackendSyncParsesMarkdownFrontmatter(t *testing.T) {
@@ -119,6 +120,34 @@ Health checks include note counts.
 	report := backend.HealthReport(context.Background())
 	if !report.Reachable || report.NoteCount != 1 || report.Path != vault {
 		t.Fatalf("unexpected health report: %#v", report)
+	}
+}
+
+func TestVaultBackendWatchUsesFilesystemEvents(t *testing.T) {
+	vault := t.TempDir()
+	backend, err := NewVaultBackend(Config{Path: vault, Debounce: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	changes := make(chan []VaultMemory, 1)
+	stop := backend.Watch(context.Background(), func(notes []VaultMemory) {
+		select {
+		case changes <- notes:
+		default:
+		}
+	})
+	defer stop()
+	writeNote(t, vault, "nested/event.md", "# Event Driven\n\nFilesystem subscription update.\n")
+	select {
+	case notes := <-changes:
+		if findNote(notes, "nested/event.md") == nil {
+			t.Fatalf("event sync omitted note: %+v", notes)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("filesystem event did not trigger wiki sync")
 	}
 }
 

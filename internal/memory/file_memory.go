@@ -60,6 +60,40 @@ type MemoryEntrypointTruncation struct {
 	WasByteTruncated bool
 }
 
+// MemoryEntrypointBudgetError reports a rejected MEMORY.md write/load. Counts
+// are calculated after CRLF normalization and outer whitespace trimming.
+type MemoryEntrypointBudgetError struct {
+	LineCount int
+	ByteCount int
+	MaxLines  int
+	MaxBytes  int
+}
+
+func (e *MemoryEntrypointBudgetError) Error() string {
+	return fmt.Sprintf("%s exceeds budget: %d lines/%d bytes (limits %d lines/%d bytes)", FileMemoryEntrypointName, e.LineCount, e.ByteCount, e.MaxLines, e.MaxBytes)
+}
+
+func normalizeMemoryEntrypointContent(raw string) string {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	raw = strings.ReplaceAll(raw, "\r", "\n")
+	return strings.TrimSpace(raw)
+}
+
+// ValidateMemoryEntrypointContent rejects content over either configured limit.
+// Content exactly at both boundaries is accepted.
+func ValidateMemoryEntrypointContent(raw string) error {
+	normalized := normalizeMemoryEntrypointContent(raw)
+	lineCount := 0
+	if normalized != "" {
+		lineCount = strings.Count(normalized, "\n") + 1
+	}
+	byteCount := len([]byte(normalized))
+	if lineCount <= MaxMemoryEntrypointLines && byteCount <= MaxMemoryEntrypointBytes {
+		return nil
+	}
+	return &MemoryEntrypointBudgetError{LineCount: lineCount, ByteCount: byteCount, MaxLines: MaxMemoryEntrypointLines, MaxBytes: MaxMemoryEntrypointBytes}
+}
+
 type FileMemoryCandidate struct {
 	RelativePath    string
 	Name            string
@@ -261,11 +295,10 @@ func BuildFileMemoryPrompt(workspaceDir string) string {
 	}
 
 	if strings.TrimSpace(entrypointContent) != "" {
-		truncation := TruncateMemoryEntrypointContent(entrypointContent)
 		lines = append(lines,
 			"",
 			"### MEMORY.md",
-			truncation.Content,
+			normalizeMemoryEntrypointContent(entrypointContent),
 		)
 	} else if entrypointWarning != "" {
 		lines = append(lines,
@@ -396,7 +429,10 @@ func loadMemoryEntrypoint(workspaceRoot, path string) (string, string) {
 	if err != nil {
 		return "", fmt.Sprintf("> WARNING: `MEMORY.md` could not be read: %v", err)
 	}
-	return string(raw), ""
+	if err := ValidateMemoryEntrypointContent(string(raw)); err != nil {
+		return "", fmt.Sprintf("> WARNING: `%s` was rejected and not loaded: %v. Move detail into typed topic files under `memory/`.", FileMemoryEntrypointName, err)
+	}
+	return normalizeMemoryEntrypointContent(string(raw)), ""
 }
 
 func resolvedWorkspaceRoot(workspaceDir string) string {

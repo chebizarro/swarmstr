@@ -47,7 +47,14 @@ func pruneSessions(ctx context.Context, docsRepo *state.DocsRepository, transcri
 			if !shouldPruneSession(current, cutoff) {
 				return nil
 			}
-			entries, _ := transcriptRepo.ListSessionAll(ctx, sess.SessionID)
+			entries, listErr := transcriptRepo.ListSessionAllBranches(ctx, sess.SessionID)
+			if listErr != nil {
+				return listErr
+			}
+			archivePath, archiveErr := archiveTranscriptSnapshot(sess.SessionID, "prune:auto", entries, time.Now(), defaultSessionArchiveDir())
+			if archiveErr != nil {
+				return archiveErr
+			}
 			for _, e := range entries {
 				if delErr := transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID); delErr != nil {
 					log.Printf("transcript delete failed session=%s entry=%s: %v", sess.SessionID, e.EntryID, delErr)
@@ -55,7 +62,7 @@ func pruneSessions(ctx context.Context, docsRepo *state.DocsRepository, transcri
 			}
 			_, err = updateExistingSessionDoc(ctx, docsRepo, sess.SessionID, current.PeerPubKey, func(session *state.SessionDoc) error {
 				session.Meta = mergeSessionMeta(session.Meta, map[string]any{
-					"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "auto",
+					"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "auto", "archive_path": archivePath,
 				})
 				return nil
 			})
@@ -103,7 +110,14 @@ func pruneIdleSessions(ctx context.Context, docsRepo *state.DocsRepository, tran
 			if !shouldPruneIdleSession(current, cutoff) {
 				return nil
 			}
-			entries, _ := transcriptRepo.ListSessionAll(ctx, sess.SessionID)
+			entries, listErr := transcriptRepo.ListSessionAllBranches(ctx, sess.SessionID)
+			if listErr != nil {
+				return listErr
+			}
+			archivePath, archiveErr := archiveTranscriptSnapshot(sess.SessionID, "prune:idle", entries, time.Now(), defaultSessionArchiveDir())
+			if archiveErr != nil {
+				return archiveErr
+			}
 			for _, e := range entries {
 				if delErr := transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID); delErr != nil {
 					log.Printf("transcript delete failed session=%s entry=%s: %v", sess.SessionID, e.EntryID, delErr)
@@ -111,7 +125,7 @@ func pruneIdleSessions(ctx context.Context, docsRepo *state.DocsRepository, tran
 			}
 			_, err = updateExistingSessionDoc(ctx, docsRepo, sess.SessionID, current.PeerPubKey, func(session *state.SessionDoc) error {
 				session.Meta = mergeSessionMeta(session.Meta, map[string]any{
-					"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "idle",
+					"deleted": true, "deleted_at": time.Now().Unix(), "prune_reason": "idle", "archive_path": archivePath,
 				})
 				return nil
 			})
@@ -199,7 +213,14 @@ func runSessionsPrune(
 			if !req.All && !shouldPruneSession(current, cutoff) {
 				return nil
 			}
-			entries, _ := transcriptRepo.ListSessionAll(ctx, sess.SessionID)
+			entries, listErr := transcriptRepo.ListSessionAllBranches(ctx, sess.SessionID)
+			if listErr != nil {
+				return listErr
+			}
+			archivePath, archiveErr := archiveTranscriptSnapshot(sess.SessionID, "prune:"+pruneReason, entries, time.Now(), defaultSessionArchiveDir())
+			if archiveErr != nil {
+				return archiveErr
+			}
 			for _, e := range entries {
 				if delErr := transcriptRepo.DeleteEntry(ctx, sess.SessionID, e.EntryID); delErr != nil {
 					log.Printf("transcript delete failed session=%s entry=%s: %v", sess.SessionID, e.EntryID, delErr)
@@ -210,6 +231,7 @@ func runSessionsPrune(
 					"deleted":      true,
 					"deleted_at":   time.Now().Unix(),
 					"prune_reason": pruneReason,
+					"archive_path": archivePath,
 				})
 				return nil
 			})

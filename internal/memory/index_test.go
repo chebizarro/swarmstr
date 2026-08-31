@@ -1,6 +1,11 @@
 package memory
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"metiq/internal/store/state"
@@ -51,6 +56,53 @@ func TestSearchSessionCacheInvalidatedOnDelete(t *testing.T) {
 	got = idx.SearchSession("s1", "project", 5)
 	if len(got) != 0 {
 		t.Fatalf("expected 0 results after delete invalidation, got %d", len(got))
+	}
+}
+
+func TestIndexSavePublishesCurrentGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory-index.json")
+	idx, err := OpenIndex(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.Add(state.MemoryDoc{MemoryID: "m1", Text: "first generation", Unix: 1})
+	idx.Add(state.MemoryDoc{MemoryID: "m2", Text: "second generation", Unix: 2})
+	if err := idx.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	reopened, err := OpenIndex(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if reopened.Count() != 2 || reopened.generation != idx.generation || reopened.persistedGeneration != idx.generation {
+		t.Fatalf("generation-safe reload failed: count=%d generation=%d persisted=%d want=%d", reopened.Count(), reopened.generation, reopened.persistedGeneration, idx.generation)
+	}
+}
+
+func TestCompactWithAppendOnlyFlushPreservesProvenance(t *testing.T) {
+	idx := newTestIndex(t)
+	idx.Add(state.MemoryDoc{MemoryID: "old", Text: "old owner memory", Unix: 1, OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)})
+	idx.Add(state.MemoryDoc{MemoryID: "new", Text: "new owner memory", Unix: 2, OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)})
+	journalPath := filepath.Join(t.TempDir(), "compaction.jsonl")
+	removed, err := idx.CompactWithFlush(context.Background(), 1, &AppendOnlyCompactionJournal{Path: journalPath})
+	if err != nil || removed != 1 || idx.Count() != 1 {
+		t.Fatalf("compact removed=%d count=%d err=%v", removed, idx.Count(), err)
+	}
+	file, err := os.Open(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		t.Fatalf("missing journal record: %v", scanner.Err())
+	}
+	var record compactionJournalRecord
+	if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Generation == 0 || record.Memory.MemoryID != "old" || record.Memory.OriginClass != string(MemoryOriginOwner) || record.Memory.SessionKind != string(MemorySessionInteractive) {
+		t.Fatalf("unexpected journal record: %+v", record)
 	}
 }
 

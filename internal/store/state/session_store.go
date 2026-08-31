@@ -282,6 +282,7 @@ type CompactionCheckpointRef struct {
 	Reason         string         `json:"reason"`
 	TokensBefore   int            `json:"tokens_before,omitempty"`
 	TokensAfter    int            `json:"tokens_after,omitempty"`
+	TokensVersion  int            `json:"tokens_version,omitempty"`
 	Summary        string         `json:"summary,omitempty"`
 	FirstKeptEntry string         `json:"first_kept_entry_id,omitempty"`
 	DroppedEntries int            `json:"dropped_entries,omitempty"`
@@ -289,6 +290,8 @@ type CompactionCheckpointRef struct {
 	PreCompaction  map[string]any `json:"pre_compaction,omitempty"`
 	PostCompaction map[string]any `json:"post_compaction,omitempty"`
 	SnapshotID     string         `json:"snapshot_id,omitempty"`
+	SnapshotBytes  int64          `json:"snapshot_bytes,omitempty"`
+	RetainedBytes  int64          `json:"retained_bytes,omitempty"`
 }
 
 // CarryOverFlags returns a new SessionEntry that inherits the flag-based

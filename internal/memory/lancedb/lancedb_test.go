@@ -2,6 +2,7 @@ package lancedb
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -46,6 +47,32 @@ func TestEmbeddedBackendUpsertSearchDeleteHealth(t *testing.T) {
 	}
 	if len(results) == 0 || results[0].ID == "cat" {
 		t.Fatalf("deleted document returned: %#v", results)
+	}
+}
+
+func TestEmbeddedBackendRejectsStaleGenerationAtomically(t *testing.T) {
+	ctx := context.Background()
+	backend, err := New(Options{Path: filepath.Join(t.TempDir(), "vectors.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Upsert(ctx, []VectorDocument{{Generation: 5, ID: "current", Text: "current", Vector: []float32{1, 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	err = backend.Upsert(ctx, []VectorDocument{
+		{Generation: 6, ID: "new", Text: "would be valid", Vector: []float32{0, 1}},
+		{Generation: 4, ID: "current", Text: "stale", Vector: []float32{1, 0}},
+	})
+	var stale *StaleGenerationError
+	if !errors.As(err, &stale) {
+		t.Fatalf("expected stale generation error, got %v", err)
+	}
+	all, err := backend.All(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].ID != "current" || all[0].Text != "current" || backend.generation != 5 {
+		t.Fatalf("failed batch mutated state: docs=%+v generation=%d", all, backend.generation)
 	}
 }
 

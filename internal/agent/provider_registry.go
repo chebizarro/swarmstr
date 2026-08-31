@@ -25,14 +25,18 @@ const (
 // ProviderCapabilities advertises provider features used by runtime selection
 // and future plugin-backed provider discovery.
 type ProviderCapabilities struct {
-	SupportsTools         bool
-	SupportsStreaming     bool
-	SupportsVision        bool
-	SupportsPromptCaching bool
-	SupportsThinking      bool
-	ContextWindowTokens   int
-	CostPer1KInput        float64
-	CostPer1KOutput       float64
+	SupportsTools         bool    `json:"supports_tools,omitempty"`
+	SupportsStreaming     bool    `json:"supports_streaming,omitempty"`
+	SupportsVision        bool    `json:"supports_vision,omitempty"`
+	SupportsPromptCaching bool    `json:"supports_prompt_caching,omitempty"`
+	SupportsThinking      bool    `json:"supports_thinking,omitempty"`
+	ContextWindowTokens   int     `json:"context_window_tokens,omitempty"`
+	CostPer1KInput        float64 `json:"cost_per_1k_input,omitempty"`
+	CostPer1KOutput       float64 `json:"cost_per_1k_output,omitempty"`
+	InputModalities       string  `json:"input_modalities,omitempty"`
+	OutputModalities      string  `json:"output_modalities,omitempty"`
+	Transport             string  `json:"transport,omitempty"`
+	TokenAccounting       string  `json:"token_accounting,omitempty"`
 }
 
 // ModelInfo describes a model exposed by a provider catalog.
@@ -68,20 +72,21 @@ type ProviderFactory func(model string, override ProviderOverride) (Provider, er
 
 // ProviderDescriptor describes an inference provider plugin/adapter.
 type ProviderDescriptor struct {
-	ID                  string
-	Name                string
-	Aliases             []string
-	Prefixes            []string
-	BaseURL             string
-	BaseURLEnv          string
-	APIKeyEnv           string
-	AuthMethods         []AuthMethod
-	Capabilities        ProviderCapabilities
-	NormalizeToolSchema ToolSchemaNormalizer
-	PrepareRequest      ProviderPrepareRequestFunc
-	WrapTransport       ProviderTransportWrapper
-	ListModels          ModelCatalogFunc
-	Factory             ProviderFactory
+	ID                      string
+	Name                    string
+	Aliases                 []string
+	Prefixes                []string
+	BaseURL                 string
+	BaseURLEnv              string
+	APIKeyEnv               string
+	AuthMethods             []AuthMethod
+	Capabilities            ProviderCapabilities
+	NormalizeToolSchema     ToolSchemaNormalizer
+	PrepareRequest          ProviderPrepareRequestFunc
+	WrapTransport           ProviderTransportWrapper
+	ListModels              ModelCatalogFunc
+	TokenAccountantForModel func(model string) TokenAccountant
+	Factory                 ProviderFactory
 }
 
 func (d ProviderDescriptor) normalizedID() string { return strings.ToLower(strings.TrimSpace(d.ID)) }
@@ -222,6 +227,36 @@ func (r *ProviderRegistry) Match(model string) (ProviderDescriptor, bool) {
 	return ProviderDescriptor{}, false
 }
 
+func (r *ProviderRegistry) ModelInfo(model string) (ModelInfo, bool) {
+	if row, ok := resolveCatalogModelRef(model); ok {
+		caps := row.Capabilities
+		if caps.ContextWindowTokens == 0 {
+			caps.ContextWindowTokens = row.ContextWindowTokens
+		}
+		return ModelInfo{ID: row.ID, Name: row.Name, ProviderID: row.ProviderID, ContextWindowTokens: row.ContextWindowTokens, Capabilities: caps, Metadata: map[string]any{"aliases": append([]string(nil), row.Aliases...), "compatibility": row.Compatibility}}, true
+	}
+	desc, ok := r.Match(model)
+	if !ok {
+		return ModelInfo{}, false
+	}
+	_, modelID := normalizeModelRef(model)
+	return ModelInfo{ID: modelID, ProviderID: desc.ID, ContextWindowTokens: desc.Capabilities.ContextWindowTokens, Capabilities: desc.Capabilities}, true
+}
+
+func (r *ProviderRegistry) CapabilitiesForModel(model string) (ProviderCapabilities, bool) {
+	info, ok := r.ModelInfo(model)
+	return info.Capabilities, ok
+}
+
+func (r *ProviderRegistry) TokenAccountant(model string) (TokenAccountant, bool) {
+	desc, ok := r.Match(model)
+	if !ok || desc.TokenAccountantForModel == nil {
+		return nil, false
+	}
+	accountant := desc.TokenAccountantForModel(model)
+	return accountant, accountant != nil
+}
+
 func (r *ProviderRegistry) Build(model string, override ProviderOverride) (Provider, bool, error) {
 	desc, ok := r.Match(model)
 	if !ok {
@@ -288,9 +323,9 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 	openAIGPT4oCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 128000, CostPer1KInput: 0.0025, CostPer1KOutput: 0.0100}
 	anthropicClaudeCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 200000, CostPer1KInput: 0.0030, CostPer1KOutput: 0.0150}
 	geminiFlashCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 1000000, CostPer1KInput: 0.0003, CostPer1KOutput: 0.0025}
-	openAICompatCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true}
+	openAICompatCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, InputModalities: "text,image", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}
 	mistralCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, ContextWindowTokens: 128000}
-	responsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: false, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576}
+	responsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576, InputModalities: "text,image", OutputModalities: "text", Transport: "responses-sse", TokenAccounting: "provider_usage"}
 	vertexCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1000000}
 	bedrockCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: false, SupportsPromptCaching: false, SupportsThinking: true, ContextWindowTokens: 200000}
 	anthropicVertexCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: false, SupportsPromptCaching: false, SupportsThinking: true, ContextWindowTokens: 200000}
@@ -316,6 +351,10 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 			desc.NormalizeToolSchema = NormalizeStrictOpenAIToolSchema
 		case "openrouter":
 			desc.PrepareRequest = openRouterPrepareRequest
+		case "deepseek", "zai", "qwen", "cerebras", "cohere", "vercel-ai-gateway":
+			desc.ListModels = func(context.Context) ([]ModelInfo, error) {
+				return catalogRowsForProvider(desc.ID, desc.Capabilities), nil
+			}
 		}
 		if desc.ListModels == nil {
 			desc.ListModels = func(ctx context.Context) ([]ModelInfo, error) {
@@ -476,6 +515,12 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 		mkOpenAICompat("fireworks", "Fireworks AI", []string{"fireworks"}, []string{"fireworks/"}, "https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY", ""),
 		mkOpenAICompat("deepinfra", "DeepInfra", []string{"deepinfra"}, []string{"deepinfra/"}, "https://api.deepinfra.com/v1/openai", "DEEPINFRA_API_KEY", ""),
 		mkOpenAICompat("perplexity", "Perplexity", []string{"perplexity"}, []string{"pplx-"}, "https://api.perplexity.ai", "PERPLEXITY_API_KEY", ""),
+		mkOpenAICompat("deepseek", "DeepSeek", []string{"deepseek"}, []string{"deepseek/", "deepseek-"}, "https://api.deepseek.com", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"),
+		mkOpenAICompat("zai", "Z.AI", []string{"zai", "z.ai", "glm"}, []string{"zai/", "z.ai/", "glm/", "glm-"}, "https://api.z.ai/api/paas/v4", "ZAI_API_KEY", "ZAI_BASE_URL"),
+		mkOpenAICompat("qwen", "Qwen", []string{"qwen"}, []string{"qwen/", "qwen-"}, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "QWEN_API_KEY", "QWEN_BASE_URL"),
+		mkOpenAICompat("cerebras", "Cerebras", []string{"cerebras"}, []string{"cerebras/"}, "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", "CEREBRAS_BASE_URL"),
+		mkOpenAICompat("cohere", "Cohere", []string{"cohere"}, []string{"cohere/", "command-"}, "https://api.cohere.ai/compatibility/v1", "COHERE_API_KEY", "COHERE_BASE_URL"),
+		mkOpenAICompat("vercel-ai-gateway", "Vercel AI Gateway", []string{"vercel-ai-gateway", "vercel"}, []string{"vercel-ai-gateway/", "vercel/", "ai-gateway/"}, "https://ai-gateway.vercel.sh/v1", "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL"),
 	}
 }
 

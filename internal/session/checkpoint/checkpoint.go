@@ -17,7 +17,14 @@ import (
 
 // MaxCheckpointsPerSession is the upper bound of compaction checkpoints
 // retained per session.  Older checkpoints are trimmed on persist.
-const MaxCheckpointsPerSession = 25
+const (
+	MaxCheckpointsPerSession = 25
+	// MaxCheckpointBytesPerSession bounds retained checkpoint metadata and
+	// repository-owned snapshot artifacts for one session. The newest
+	// checkpoint is always retained even when it alone exceeds the cap.
+	MaxCheckpointBytesPerSession int64 = 128 << 20
+	checkpointTokensVersion            = 1
+)
 
 // ─── Reason enum ────────────────────────────────────────────────────────────
 
@@ -68,10 +75,21 @@ type TurnCheckpoint struct {
 // Unlike openclaw (which copies session files), swarmstr stores transcripts as
 // individual nostr events, so we reference entry IDs and counts.
 type TranscriptRef struct {
-	SessionID  string `json:"session_id"`
-	EntryCount int    `json:"entry_count,omitempty"`
-	FirstEntry string `json:"first_entry_id,omitempty"`
-	LastEntry  string `json:"last_entry_id,omitempty"`
+	SessionID     string `json:"session_id"`
+	EntryCount    int    `json:"entry_count,omitempty"`
+	FirstEntry    string `json:"first_entry_id,omitempty"`
+	LastEntry     string `json:"last_entry_id,omitempty"`
+	LeafEntryID   string `json:"leaf_entry_id,omitempty"`
+	GraphRevision int64  `json:"graph_revision,omitempty"`
+}
+
+// ArtifactRef identifies a repository-owned snapshot artifact. Path is kept
+// internal/durable and must never be accepted from an untrusted checkpoint.
+type ArtifactRef struct {
+	ID      string `json:"id"`
+	Path    string `json:"path,omitempty"`
+	Bytes   int64  `json:"bytes,omitempty"`
+	Version int    `json:"version,omitempty"`
 }
 
 // Checkpoint records a single compaction event for a session.
@@ -82,31 +100,38 @@ type FileOperations struct {
 }
 
 type Checkpoint struct {
-	CheckpointID   string         `json:"checkpoint_id"`
-	SessionKey     string         `json:"session_key"`
-	SessionID      string         `json:"session_id"`
-	CreatedAt      int64          `json:"created_at"` // unix millis
-	Reason         Reason         `json:"reason"`
-	TokensBefore   int            `json:"tokens_before,omitempty"`
-	TokensAfter    int            `json:"tokens_after,omitempty"`
-	Summary        string         `json:"summary,omitempty"`
-	FirstKeptEntry string         `json:"first_kept_entry_id,omitempty"`
-	DroppedEntries int            `json:"dropped_entries,omitempty"`
-	KeptEntries    int            `json:"kept_entries,omitempty"`
-	PreCompaction  TranscriptRef  `json:"pre_compaction"`
-	PostCompaction TranscriptRef  `json:"post_compaction"`
-	SnapshotID     string         `json:"snapshot_id,omitempty"`
-	FileOps        FileOperations `json:"file_ops,omitempty"`
+	CheckpointID     string         `json:"checkpoint_id"`
+	SessionKey       string         `json:"session_key"`
+	SessionID        string         `json:"session_id"`
+	CreatedAt        int64          `json:"created_at"` // unix millis
+	Reason           Reason         `json:"reason"`
+	TokensBefore     int            `json:"tokens_before,omitempty"`
+	TokensAfter      int            `json:"tokens_after,omitempty"`
+	Summary          string         `json:"summary,omitempty"`
+	FirstKeptEntry   string         `json:"first_kept_entry_id,omitempty"`
+	DroppedEntries   int            `json:"dropped_entries,omitempty"`
+	KeptEntries      int            `json:"kept_entries,omitempty"`
+	PreCompaction    TranscriptRef  `json:"pre_compaction"`
+	PostCompaction   TranscriptRef  `json:"post_compaction"`
+	SnapshotID       string         `json:"snapshot_id,omitempty"`
+	SnapshotArtifact *ArtifactRef   `json:"snapshot_artifact,omitempty"`
+	RetainedBytes    int64          `json:"retained_bytes,omitempty"`
+	TokensVersion    int            `json:"tokens_version,omitempty"`
+	FileOps          FileOperations `json:"file_ops,omitempty"`
 }
 
 // Snapshot captures pre-compaction transcript state.  It is created before
 // compaction begins and discarded (or persisted) afterward.
 type Snapshot struct {
-	SessionKey string
-	SessionID  string
-	EntryCount int
-	FirstEntry string
-	LastEntry  string
+	SessionKey    string
+	SessionID     string
+	EntryCount    int
+	FirstEntry    string
+	LastEntry     string
+	GraphRevision int64
+	ActiveLeafID  string
+	BranchHeads   []string
+	Artifact      *ArtifactRef
 }
 
 // ─── CaptureSnapshot ────────────────────────────────────────────────────────
@@ -144,11 +169,17 @@ type PersistParams struct {
 	TokensBefore   int
 	TokensAfter    int
 	// Post-compaction state.
-	PostEntryCount int
-	PostFirstEntry string
-	PostLastEntry  string
-	CreatedAt      int64 // unix millis; 0 = use time.Now()
-	FileOps        FileOperations
+	PostEntryCount    int
+	PostFirstEntry    string
+	PostLastEntry     string
+	CreatedAt         int64 // unix millis; 0 = use time.Now()
+	GraphRevision     int64
+	PostGraphRevision int64
+	PreLeafEntryID    string
+	PostLeafEntryID   string
+	SnapshotArtifact  *ArtifactRef
+	RetainedBytes     int64
+	FileOps           FileOperations
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────────
@@ -157,13 +188,22 @@ type PersistParams struct {
 // The caller is responsible for persistence (serialising the checkpoint slices
 // to/from the session store).
 type Store struct {
-	mu        sync.Mutex
-	bySession map[string][]Checkpoint
+	mu              sync.Mutex
+	bySession       map[string][]Checkpoint
+	maxBytes        int64
+	cleanupArtifact func(ArtifactRef) error
 }
 
 // NewStore returns an empty Store.
 func NewStore() *Store {
-	return &Store{bySession: make(map[string][]Checkpoint)}
+	return NewStoreWithOptions(MaxCheckpointBytesPerSession, nil)
+}
+
+// NewStoreWithOptions constructs a store with byte retention and optional
+// cleanup for artifacts removed by retention. A non-positive maxBytes disables
+// the byte cap while the count cap remains enforced.
+func NewStoreWithOptions(maxBytes int64, cleanup func(ArtifactRef) error) *Store {
+	return &Store{bySession: make(map[string][]Checkpoint), maxBytes: maxBytes, cleanupArtifact: cleanup}
 }
 
 // Persist creates and stores a new Checkpoint from the given parameters.
@@ -178,10 +218,12 @@ func (s *Store) Persist(p PersistParams) Checkpoint {
 	var pre TranscriptRef
 	if p.Snapshot != nil {
 		pre = TranscriptRef{
-			SessionID:  p.Snapshot.SessionID,
-			EntryCount: p.Snapshot.EntryCount,
-			FirstEntry: p.Snapshot.FirstEntry,
-			LastEntry:  p.Snapshot.LastEntry,
+			SessionID:     p.Snapshot.SessionID,
+			EntryCount:    p.Snapshot.EntryCount,
+			FirstEntry:    p.Snapshot.FirstEntry,
+			LastEntry:     p.Snapshot.LastEntry,
+			LeafEntryID:   firstNonEmpty(p.PreLeafEntryID, p.Snapshot.ActiveLeafID, p.Snapshot.LastEntry),
+			GraphRevision: firstNonZero(p.GraphRevision, p.Snapshot.GraphRevision),
 		}
 	}
 
@@ -189,27 +231,44 @@ func (s *Store) Persist(p PersistParams) Checkpoint {
 	if checkpointID == "" {
 		checkpointID = uuid.New().String()
 	}
+	artifact := p.SnapshotArtifact
+	if artifact == nil && p.Snapshot != nil {
+		artifact = p.Snapshot.Artifact
+	}
 	cp := Checkpoint{
-		CheckpointID:   checkpointID,
-		SessionKey:     p.SessionKey,
-		SessionID:      p.SessionID,
-		CreatedAt:      createdAt,
-		Reason:         p.Reason,
-		TokensBefore:   p.TokensBefore,
-		TokensAfter:    p.TokensAfter,
-		Summary:        strings.TrimSpace(p.Summary),
-		FirstKeptEntry: strings.TrimSpace(p.FirstKeptEntry),
-		DroppedEntries: p.DroppedEntries,
-		KeptEntries:    p.KeptEntries,
-		PreCompaction:  pre,
-		SnapshotID:     strings.TrimSpace(p.SnapshotID),
+		CheckpointID:     checkpointID,
+		SessionKey:       p.SessionKey,
+		SessionID:        p.SessionID,
+		CreatedAt:        createdAt,
+		Reason:           p.Reason,
+		TokensBefore:     p.TokensBefore,
+		TokensAfter:      p.TokensAfter,
+		Summary:          strings.TrimSpace(p.Summary),
+		FirstKeptEntry:   strings.TrimSpace(p.FirstKeptEntry),
+		DroppedEntries:   p.DroppedEntries,
+		KeptEntries:      p.KeptEntries,
+		PreCompaction:    pre,
+		SnapshotID:       strings.TrimSpace(p.SnapshotID),
+		SnapshotArtifact: cloneArtifactRef(artifact),
+		RetainedBytes:    p.RetainedBytes,
+		TokensVersion:    checkpointTokensVersion,
 		PostCompaction: TranscriptRef{
-			SessionID:  p.SessionID,
-			EntryCount: p.PostEntryCount,
-			FirstEntry: strings.TrimSpace(p.PostFirstEntry),
-			LastEntry:  strings.TrimSpace(p.PostLastEntry),
+			SessionID:     p.SessionID,
+			EntryCount:    p.PostEntryCount,
+			FirstEntry:    strings.TrimSpace(p.PostFirstEntry),
+			LastEntry:     strings.TrimSpace(p.PostLastEntry),
+			LeafEntryID:   firstNonEmpty(p.PostLeafEntryID, p.PostLastEntry),
+			GraphRevision: p.PostGraphRevision,
 		},
 		FileOps: p.FileOps,
+	}
+	if cp.SnapshotArtifact != nil {
+		if cp.SnapshotID == "" {
+			cp.SnapshotID = cp.SnapshotArtifact.ID
+		}
+	}
+	if cp.RetainedBytes <= 0 {
+		cp.RetainedBytes = estimateCheckpointBytes(cp)
 	}
 
 	s.mu.Lock()
@@ -217,7 +276,25 @@ func (s *Store) Persist(p PersistParams) Checkpoint {
 
 	cps := s.bySession[p.SessionKey]
 	cps = append(cps, cp)
-	s.bySession[p.SessionKey] = trimCheckpoints(cps)
+	kept, removed := trimCheckpointsByBudget(cps, s.maxBytes)
+	s.bySession[p.SessionKey] = kept
+	if s.cleanupArtifact != nil {
+		retainedArtifacts := make(map[string]struct{}, len(kept))
+		for _, retainedCheckpoint := range kept {
+			if retainedCheckpoint.SnapshotArtifact != nil {
+				retainedArtifacts[retainedCheckpoint.SnapshotArtifact.ID] = struct{}{}
+			}
+		}
+		for _, removedCheckpoint := range removed {
+			if removedCheckpoint.SnapshotArtifact == nil {
+				continue
+			}
+			if _, stillReferenced := retainedArtifacts[removedCheckpoint.SnapshotArtifact.ID]; stillReferenced {
+				continue
+			}
+			_ = s.cleanupArtifact(*removedCheckpoint.SnapshotArtifact)
+		}
+	}
 	return cp
 }
 
@@ -283,7 +360,15 @@ func (s *Store) Load(sessionKey string, checkpoints []Checkpoint) {
 		delete(s.bySession, sessionKey)
 		return
 	}
-	s.bySession[sessionKey] = trimCheckpoints(checkpoints)
+	kept, removed := trimCheckpointsByBudget(checkpoints, s.maxBytes)
+	s.bySession[sessionKey] = kept
+	if s.cleanupArtifact != nil {
+		for _, cp := range removed {
+			if cp.SnapshotArtifact != nil {
+				_ = s.cleanupArtifact(*cp.SnapshotArtifact)
+			}
+		}
+	}
 }
 
 // Export returns a copy of all checkpoints for a session key.  Used
@@ -311,14 +396,82 @@ func (s *Store) Delete(sessionKey string) {
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 func trimCheckpoints(cps []Checkpoint) []Checkpoint {
-	if len(cps) <= MaxCheckpointsPerSession {
-		return cps
+	kept, _ := trimCheckpointsByBudget(cps, MaxCheckpointBytesPerSession)
+	return kept
+}
+
+func trimCheckpointsByBudget(cps []Checkpoint, maxBytes int64) ([]Checkpoint, []Checkpoint) {
+	if len(cps) == 0 {
+		return nil, nil
 	}
-	// Keep the most recent checkpoints.
-	sort.Slice(cps, func(i, j int) bool {
-		return cps[i].CreatedAt < cps[j].CreatedAt
+	ordered := append([]Checkpoint(nil), cps...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].CreatedAt == ordered[j].CreatedAt {
+			return ordered[i].CheckpointID < ordered[j].CheckpointID
+		}
+		return ordered[i].CreatedAt < ordered[j].CreatedAt
 	})
-	return cps[len(cps)-MaxCheckpointsPerSession:]
+	start := 0
+	if len(ordered) > MaxCheckpointsPerSession {
+		start = len(ordered) - MaxCheckpointsPerSession
+	}
+	if maxBytes > 0 {
+		var retained int64
+		byteStart := len(ordered) - 1
+		for i := len(ordered) - 1; i >= start; i-- {
+			size := ordered[i].RetainedBytes
+			if size <= 0 {
+				size = estimateCheckpointBytes(ordered[i])
+			}
+			if i != len(ordered)-1 && retained+size > maxBytes {
+				break
+			}
+			retained += size
+			byteStart = i
+		}
+		if byteStart > start {
+			start = byteStart
+		}
+	}
+	removed := append([]Checkpoint(nil), ordered[:start]...)
+	return append([]Checkpoint(nil), ordered[start:]...), removed
+}
+
+func estimateCheckpointBytes(cp Checkpoint) int64 {
+	artifactBytes := int64(0)
+	if cp.SnapshotArtifact != nil && cp.SnapshotArtifact.Bytes > 0 {
+		artifactBytes = cp.SnapshotArtifact.Bytes
+	}
+	copy := cp
+	copy.RetainedBytes = 0
+	raw, _ := json.Marshal(copy)
+	return int64(len(raw)) + artifactBytes
+}
+
+func cloneArtifactRef(in *ArtifactRef) *ArtifactRef {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonZero(values ...int64) int64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 // FormatCheckpointID returns a deterministic checkpoint ID for testing.
@@ -379,8 +532,29 @@ func (c Checkpoint) ToMap() map[string]any {
 		post["last_entry_id"] = c.PostCompaction.LastEntry
 	}
 	m["post_compaction"] = post
+	if c.PreCompaction.LeafEntryID != "" {
+		pre["leaf_entry_id"] = c.PreCompaction.LeafEntryID
+	}
+	if c.PreCompaction.GraphRevision != 0 {
+		pre["graph_revision"] = c.PreCompaction.GraphRevision
+	}
+	if c.PostCompaction.LeafEntryID != "" {
+		post["leaf_entry_id"] = c.PostCompaction.LeafEntryID
+	}
+	if c.PostCompaction.GraphRevision != 0 {
+		post["graph_revision"] = c.PostCompaction.GraphRevision
+	}
 	if c.SnapshotID != "" {
 		m["snapshot_id"] = c.SnapshotID
+	}
+	if c.SnapshotArtifact != nil {
+		m["snapshot_artifact"] = *c.SnapshotArtifact
+	}
+	if c.RetainedBytes > 0 {
+		m["retained_bytes"] = c.RetainedBytes
+	}
+	if c.TokensVersion > 0 {
+		m["tokens_version"] = c.TokensVersion
 	}
 	if len(c.FileOps.ReadFiles) > 0 || len(c.FileOps.WrittenFiles) > 0 || len(c.FileOps.EditedFiles) > 0 {
 		m["file_ops"] = c.FileOps

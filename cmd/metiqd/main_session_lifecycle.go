@@ -488,8 +488,29 @@ func archiveTranscriptSnapshot(sessionID, reason string, entries []state.Transcr
 		b.Write(raw)
 		b.WriteByte('\n')
 	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+	tmp, err := os.CreateTemp(archiveDir, ".session-archive-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("create archive temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if _, err := tmp.WriteString(b.String()); err != nil {
+		_ = tmp.Close()
 		return "", fmt.Errorf("write archive: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("sync archive: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return "", fmt.Errorf("commit archive: %w", err)
 	}
 	return path, nil
 }

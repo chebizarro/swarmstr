@@ -1097,6 +1097,9 @@ type ProviderOverride struct {
 	Model        string
 	SystemPrompt string // injected as system context for every turn
 	PromptCache  *state.ProviderPromptCacheConfig
+	// KeyRing defers credential selection until each provider request. It is
+	// intentionally not serialized and supersedes APIKey when non-empty.
+	KeyRing *KeyRing
 }
 
 func resolvePromptCacheProfileValue(providerClass PromptCacheProviderClass, cfg *state.ProviderPromptCacheConfig) (PromptCacheProfile, error) {
@@ -1107,6 +1110,16 @@ func resolvePromptCacheProfileValue(providerClass PromptCacheProviderClass, cfg 
 // credentials from the providers[] config section, falling back to env vars
 // when fields are empty.
 func BuildProviderWithOverride(model string, override ProviderOverride) (Provider, error) {
+	if override.KeyRing != nil && override.KeyRing.Len() > 0 {
+		ring := override.KeyRing
+		base := override
+		base.KeyRing = nil
+		return NewRotatingProvider(ring, func(apiKey string) (Provider, error) {
+			attempt := base
+			attempt.APIKey = apiKey
+			return BuildProviderWithOverride(model, attempt)
+		})
+	}
 	overrideBaseURL := strings.TrimSpace(override.BaseURL)
 	overrideAPIKey := strings.TrimSpace(override.APIKey)
 

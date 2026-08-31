@@ -98,6 +98,9 @@ type NIP17BusOptions struct {
 	// Hub, when non-nil, shares the hub's pool instead of creating a new one.
 	// This avoids duplicate WebSocket connections and NIP-42 auth flows.
 	Hub *NostrHub
+	// EphemeralGiftWrap sends kind 21059 wrappers instead of stored kind 1059.
+	// Use only for real-time delivery where offline persistence is not required.
+	EphemeralGiftWrap bool
 }
 
 // NIP17Bus is the NIP-17 equivalent of DMBus.
@@ -118,8 +121,9 @@ type NIP17Bus struct {
 	seenList []string
 	seenCap  int
 
-	messageQueue chan InboundDM
-	rebindCh     chan struct{}
+	messageQueue      chan InboundDM
+	rebindCh          chan struct{}
+	ephemeralGiftWrap bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -168,19 +172,20 @@ func StartNIP17Bus(parent context.Context, opts NIP17BusOptions) (*NIP17Bus, err
 	}
 	ctx, cancel := context.WithCancel(parent)
 	b := &NIP17Bus{
-		pool:         pool,
-		ownsPool:     ownsPool,
-		kr:           ks,
-		public:       pub,
-		relays:       initialRelays,
-		onMessage:    opts.OnMessage,
-		onError:      opts.OnError,
-		seenSet:      make(map[string]struct{}),
-		seenCap:      max(opts.SeenCap, 10_000),
-		messageQueue: make(chan InboundDM, queueSize),
-		rebindCh:     make(chan struct{}, 1),
-		ctx:          ctx,
-		cancel:       cancel,
+		pool:              pool,
+		ownsPool:          ownsPool,
+		kr:                ks,
+		public:            pub,
+		relays:            initialRelays,
+		onMessage:         opts.OnMessage,
+		onError:           opts.OnError,
+		seenSet:           make(map[string]struct{}),
+		seenCap:           max(opts.SeenCap, 10_000),
+		messageQueue:      make(chan InboundDM, queueSize),
+		ephemeralGiftWrap: opts.EphemeralGiftWrap,
+		rebindCh:          make(chan struct{}, 1),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 
 	if b.onMessage != nil {
@@ -226,6 +231,12 @@ func (b *NIP17Bus) Close() {
 // SendDM sends a one-to-one kind-14 NIP-17 message.
 func (b *NIP17Bus) SendDM(ctx context.Context, toPubKey string, text string) error {
 	return b.SendRoomMessage(ctx, NIP17Room{Participants: []NIP17Participant{{PubKey: toPubKey}}}, text)
+}
+
+// SendEphemeralDM sends a real-time-only kind-14 message in a kind-21059 wrap.
+func (b *NIP17Bus) SendEphemeralDM(ctx context.Context, toPubKey string, text string) error {
+	room := NIP17Room{Participants: []NIP17Participant{{PubKey: toPubKey}}}
+	return b.sendNIP17RumorWithWrap(ctx, nostr.KindDirectMessage, text, room, nil, true)
 }
 
 // SendRoomMessage sends a kind-14 message to every participant in a room and
@@ -365,7 +376,11 @@ func (b *NIP17Bus) DeleteMessages(ctx context.Context, room NIP17Room, reason st
 	return errors.Join(failures...)
 }
 
-func (b *NIP17Bus) sendNIP17Rumor(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) (err error) {
+func (b *NIP17Bus) sendNIP17Rumor(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) error {
+	return b.sendNIP17RumorWithWrap(ctx, kind, content, room, extraTags, b.ephemeralGiftWrap)
+}
+
+func (b *NIP17Bus) sendNIP17RumorWithWrap(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags, ephemeral bool) (err error) {
 	defer func() {
 		outcome := "success"
 		if err != nil {
@@ -378,7 +393,7 @@ func (b *NIP17Bus) sendNIP17Rumor(ctx context.Context, kind nostr.Kind, content 
 	if err != nil {
 		return err
 	}
-	return b.publishNIP17Rumor(ctx, rumor, recipients)
+	return b.publishNIP17Rumor(ctx, rumor, recipients, ephemeral)
 }
 
 func (b *NIP17Bus) buildNIP17Rumor(kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) (nostr.Event, []nostr.PubKey, error) {
@@ -423,7 +438,7 @@ func (b *NIP17Bus) buildNIP17Rumor(kind nostr.Kind, content string, room NIP17Ro
 	return rumor, recipients, nil
 }
 
-func (b *NIP17Bus) publishNIP17Rumor(ctx context.Context, rumor nostr.Event, recipients []nostr.PubKey) error {
+func (b *NIP17Bus) publishNIP17Rumor(ctx context.Context, rumor nostr.Event, recipients []nostr.PubKey, ephemeral bool) error {
 	if b.pool == nil || b.kr == nil {
 		return fmt.Errorf("nip17 publisher is not initialized")
 	}
@@ -442,12 +457,16 @@ func (b *NIP17Bus) publishNIP17Rumor(ctx context.Context, rumor nostr.Event, rec
 		if len(relays) == 0 {
 			return fmt.Errorf("no DM relays for %s", recipient.Hex())
 		}
+		modify := func(*nostr.Event) {}
+		if ephemeral {
+			modify = func(evt *nostr.Event) { evt.Kind = nostr.Kind(21059) }
+		}
 		wrap, err := nip59.GiftWrap(
 			rumor,
 			recipient,
 			func(plaintext string) (string, error) { return b.kr.Encrypt(ctx, plaintext, recipient) },
 			func(evt *nostr.Event) error { return b.kr.SignEvent(ctx, evt) },
-			nil,
+			modify,
 		)
 		if err != nil {
 			return fmt.Errorf("gift wrap for %s: %w", recipient.Hex(), err)
@@ -516,6 +535,8 @@ func (b *NIP17Bus) SendDMWithScheme(ctx context.Context, toPubKey string, text s
 	switch s {
 	case "", "auto", "nip17", "nip-17", "nip44", "nip-44", "giftwrap", "nip59", "nip-59":
 		return b.SendDM(ctx, toPubKey, text)
+	case "ephemeral-giftwrap", "ephemeral-gift-wrap", "nip59-ephemeral", "kind21059":
+		return b.SendEphemeralDM(ctx, toPubKey, text)
 	case "nip04", "nip-04":
 		return fmt.Errorf("dm scheme %q not supported by NIP-17 transport", scheme)
 	default:
@@ -697,7 +718,7 @@ func (b *NIP17Bus) perRelaySubscribe(
 		}
 
 		filter := nostr.Filter{
-			Kinds: []nostr.Kind{nostr.KindGiftWrap},
+			Kinds: []nostr.Kind{nostr.KindGiftWrap, nostr.Kind(21059)},
 			Tags:  nostr.TagMap{"p": []string{b.public.Hex()}},
 			Since: since,
 		}
@@ -877,7 +898,7 @@ func (b *NIP17Bus) emitErr(err error) {
 }
 
 func (b *NIP17Bus) validateGiftWrapEvent(evt nostr.Event, now time.Time) error {
-	if evt.Kind != nostr.KindGiftWrap {
+	if evt.Kind != nostr.KindGiftWrap && evt.Kind != nostr.Kind(21059) {
 		return fmt.Errorf("unexpected kind=%d", evt.Kind)
 	}
 	if !evt.Tags.ContainsAny("p", []string{b.public.Hex()}) {

@@ -28,6 +28,21 @@ func TestCommandRegistryDispatchesAliases(t *testing.T) {
 	}
 }
 
+func TestParityAliasesResolveToCanonicalCommands(t *testing.T) {
+	r := newCommandRegistry("")
+	for alias, canonical := range map[string]string{
+		"gateway":        "gw",
+		"automations":    "cron",
+		"exec-approvals": "approvals",
+		"triage":         "diagnostics",
+	} {
+		got := r.byName[alias]
+		if got == nil || got.Name != canonical {
+			t.Errorf("alias %q resolved to %#v, want %q", alias, got, canonical)
+		}
+	}
+}
+
 func TestCommandRegistryConsumesGlobalFlags(t *testing.T) {
 	oldJSON := cliGlobalJSON
 	oldNoColor := cliNoColor

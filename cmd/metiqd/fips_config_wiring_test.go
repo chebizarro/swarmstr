@@ -7,6 +7,17 @@ import (
 	"metiq/internal/store/state"
 )
 
+func TestFIPSControlClientOptionsFromConfig(t *testing.T) {
+	cfg := state.FIPSConfig{ControlSocket: "unix:///tmp/custom-fips.sock", ConnTimeout: "3s"}
+	opts := fipsControlClientOptionsFromConfig(cfg)
+	if opts.ControlSocket != cfg.ControlSocket {
+		t.Fatalf("control socket = %q, want %q", opts.ControlSocket, cfg.ControlSocket)
+	}
+	if opts.DialTimeout != 3*time.Second {
+		t.Fatalf("dial timeout = %s, want 3s", opts.DialTimeout)
+	}
+}
+
 func TestFIPSTransportOptionsFromConfig_DefaultTimeout(t *testing.T) {
 	cfg := state.FIPSConfig{Enabled: true}
 	opts := fipsTransportOptionsFromConfig(cfg)

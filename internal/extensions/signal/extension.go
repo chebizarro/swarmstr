@@ -34,11 +34,15 @@ package signal
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +50,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -102,9 +107,11 @@ func (p *SignalPlugin) ConfigSchema() map[string]any {
 
 func (p *SignalPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Typing:       true,
-		Reactions:    true,
-		MultiAccount: true,
+		Typing:          true,
+		Reactions:       true,
+		Media:           true,
+		DirectTextMedia: true,
+		MultiAccount:    true,
 	}
 }
 
@@ -682,9 +689,10 @@ func (b *signalBot) readWS(ctx context.Context, conn *websocket.Conn) error {
 
 // signalSendRequest is the body for POST /v2/send.
 type signalSendRequest struct {
-	Number     string   `json:"number"`
-	Recipients []string `json:"recipients"`
-	Message    string   `json:"message"`
+	Number            string   `json:"number"`
+	Recipients        []string `json:"recipients"`
+	Message           string   `json:"message"`
+	Base64Attachments []string `json:"base64_attachments,omitempty"`
 }
 
 type signalSendResult struct {
@@ -699,6 +707,75 @@ func signalEventID(author string, timestamp int64) string {
 func (b *signalBot) Send(ctx context.Context, text string) error {
 	_, err := b.SendWithReceipt(ctx, text)
 	return err
+}
+
+// SendMedia delivers local files through signal-cli-rest-api's documented
+// base64_attachments contract. Remote URLs are rejected rather than fetched by
+// the extension, keeping outbound media reads inside the host's trusted file
+// staging boundary.
+func (b *signalBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("signal %s: %w", b.channelID, err)
+	}
+	recipient := strings.TrimSpace(payload.To)
+	if recipient == "" {
+		var err error
+		recipient, err = b.target(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	attachments := make([]string, 0, len(payload.Media))
+	for i, item := range payload.Media {
+		encoded, err := signalBase64Attachment(item)
+		if err != nil {
+			return fmt.Errorf("signal %s: media[%d]: %w", b.channelID, i, err)
+		}
+		attachments = append(attachments, encoded)
+	}
+	defer b.clearTypingIfActive(ctx, recipient)
+	_, err := sendSignalRequest(ctx, b.httpClient, b.apiURL, signalSendRequest{
+		Number: b.account, Recipients: []string{recipient}, Message: payload.Text, Base64Attachments: attachments,
+	})
+	return err
+}
+
+func signalBase64Attachment(item sdk.MediaPayloadInput) (string, error) {
+	path := strings.TrimSpace(item.Path)
+	if channelmedia.IsHTTPURL(path) {
+		return "", fmt.Errorf("remote media URLs are not supported; stage the file locally")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open media: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, channels.DefaultMaxMediaBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read media: %w", err)
+	}
+	if len(data) > channels.DefaultMaxMediaBytes {
+		return "", fmt.Errorf("media exceeds %d byte limit", channels.DefaultMaxMediaBytes)
+	}
+	contentType := strings.TrimSpace(item.ContentType)
+	if contentType == "" {
+		contentType = mime.TypeByExtension(filepath.Ext(path))
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	} else if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = parsed
+	}
+	filename := filepath.Base(path)
+	filename = strings.Map(func(r rune) rune {
+		switch r {
+		case ';', ',', '"', '\r', '\n':
+			return '_'
+		default:
+			return r
+		}
+	}, filename)
+	return "data:" + contentType + ";filename=" + filename + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 func (b *signalBot) SendWithReceipt(ctx context.Context, text string) (channels.DeliveryReceipt, error) {
@@ -735,8 +812,12 @@ func (b *signalBot) target(ctx context.Context) (string, error) {
 }
 
 func sendSignalText(ctx context.Context, client *http.Client, apiURL, account, recipient, text string) (signalSendResult, error) {
+	return sendSignalRequest(ctx, client, apiURL, signalSendRequest{Number: account, Recipients: []string{recipient}, Message: text})
+}
+
+func sendSignalRequest(ctx context.Context, client *http.Client, apiURL string, payload signalSendRequest) (signalSendResult, error) {
 	var result signalSendResult
-	body, _ := json.Marshal(signalSendRequest{Number: account, Recipients: []string{recipient}, Message: text})
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(apiURL, "/")+"/v2/send", bytes.NewReader(body))
 	if err != nil {
 		return result, err

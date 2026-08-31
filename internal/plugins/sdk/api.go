@@ -546,7 +546,11 @@ type ChannelCapabilities struct {
 	Typing bool
 	// Reactions indicates the channel supports adding emoji reactions to messages.
 	Reactions bool
-	// Threads indicates the channel supports threaded replies.
+	// Reply indicates the channel supports replying to a specific message.
+	// It is independent from Threads: many direct-message transports support
+	// reply context without exposing a threaded conversation model.
+	Reply bool
+	// Threads indicates the channel supports threaded conversations.
 	Threads bool
 	// Audio indicates the channel can deliver voice/audio messages.
 	Audio bool
@@ -628,12 +632,55 @@ type DeleteMessageHandle interface {
 	DeleteMessage(ctx context.Context, eventID string) error
 }
 
+// ReplyHandle is implemented by channels that can attach a reply to one
+// specific platform-native message without claiming threaded conversations.
+type ReplyHandle interface {
+	ChannelHandle
+	SendReply(ctx context.Context, eventID, text string) error
+}
+
 // ThreadHandle is implemented by channels that support threaded replies.
 type ThreadHandle interface {
 	ChannelHandle
 	// SendInThread sends a reply within an existing thread.
 	// threadID is the platform-native thread or conversation ID.
 	SendInThread(ctx context.Context, threadID, text string) error
+}
+
+// ValidateChannelCapabilityContract rejects advertised capabilities for which
+// the connected handle does not implement the corresponding optional contract.
+// This keeps channel discovery honest and prevents late runtime failures.
+func ValidateChannelCapabilityContract(capabilities ChannelCapabilities, handle ChannelHandle) error {
+	if handle == nil {
+		return fmt.Errorf("channel handle is nil")
+	}
+	checks := []struct {
+		enabled bool
+		name    string
+		valid   bool
+	}{
+		{capabilities.Typing, "typing", implements[TypingHandle](handle)},
+		{capabilities.Reactions, "reactions", implements[ReactionHandle](handle)},
+		{capabilities.Reply, "reply", implements[ReplyHandle](handle)},
+		{capabilities.Threads, "threads", implements[ThreadHandle](handle)},
+		{capabilities.Audio, "audio", implements[AudioHandle](handle)},
+		{capabilities.Edit, "edit", implements[EditHandle](handle)},
+		{capabilities.Media || capabilities.DirectTextMedia, "media", implements[MediaHandle](handle)},
+	}
+	for _, check := range checks {
+		if check.enabled && !check.valid {
+			return fmt.Errorf("channel advertises %s without implementing its handle contract", check.name)
+		}
+	}
+	if capabilities.DirectTextMedia && !capabilities.Media {
+		return fmt.Errorf("channel advertises direct text/media without media capability")
+	}
+	return nil
+}
+
+func implements[T any](value any) bool {
+	_, ok := value.(T)
+	return ok
 }
 
 // ── Channel plugin constructor registry ──────────────────────────────────────

@@ -50,7 +50,7 @@ func (p *MatrixPlugin) GatewayMethods() []sdk.GatewayMethod {
 				text, _ := params["text"].(string)
 				mimeType, _ := params["mime_type"].(string)
 				filename, _ := params["filename"].(string)
-				receipt, err := bot.SendMedia(ctx, text, data, mimeType, filename)
+				receipt, err := bot.SendMediaBytes(ctx, text, data, mimeType, filename)
 				if err != nil {
 					return nil, err
 				}

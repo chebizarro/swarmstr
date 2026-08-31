@@ -34,6 +34,10 @@ func currentDMReplyTransportBus(mode string) nostruntime.DMTransport {
 		if controlNIP04Bus != nil {
 			return controlNIP04Bus
 		}
+	case "fips":
+		if controlTransportSelector != nil {
+			return controlTransportSelector
+		}
 	}
 	return nil
 }
@@ -55,6 +59,10 @@ func (s *daemonServices) currentDMReplyTransportBus(mode string) nostruntime.DMT
 		}
 		if bus, ok := (*s.relay.dmBus).(*nostruntime.DMBus); ok {
 			return bus
+		}
+	case "fips":
+		if s.relay.transportSelector != nil {
+			return s.relay.transportSelector
 		}
 	}
 	return nil

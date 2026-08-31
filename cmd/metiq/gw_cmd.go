@@ -16,7 +16,7 @@ func runGW(args []string) error {
 	fs.SetOutput(os.Stderr)
 	var adminAddr, adminToken, bootstrapPath string
 	var transport, controlTargetPubKey, controlSignerURL string
-	var timeoutSec int
+	var timeoutMS int
 	var jsonOut bool
 	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
 	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
@@ -24,8 +24,8 @@ func runGW(args []string) error {
 	fs.StringVar(&transport, "transport", "auto", "gateway transport: auto, http, or nostr")
 	fs.StringVar(&controlTargetPubKey, "control-target-pubkey", "", "target daemon pubkey for Nostr control RPC")
 	fs.StringVar(&controlSignerURL, "control-signer-url", "", "caller signer override for Nostr control RPC (URL, env://, file://, bunker://, or direct key material)")
-	fs.IntVar(&timeoutSec, "timeout", 30, "request timeout seconds")
-	fs.BoolVar(&jsonOut, "json", true, "output raw JSON (default true)")
+	fs.IntVar(&timeoutMS, "timeout", 30_000, "request timeout milliseconds")
+	fs.BoolVar(&jsonOut, "json", false, "output raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func runGW(args []string) error {
 		rawParams = json.RawMessage("{}")
 	}
 
-	cl, err := resolveGWClientFn(transport, adminAddr, adminToken, bootstrapPath, controlTargetPubKey, controlSignerURL, time.Duration(timeoutSec)*time.Second)
+	cl, err := resolveGWClientFn(transport, adminAddr, adminToken, bootstrapPath, controlTargetPubKey, controlSignerURL, time.Duration(timeoutMS)*time.Millisecond)
 	if err != nil {
 		return err
 	}

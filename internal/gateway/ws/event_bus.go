@@ -86,9 +86,19 @@ const (
 	EventNodePairResolved = "node.pair.resolved"
 	// EventNodeInvokeProgress delivers accepted invocation chunks in sequence order.
 	EventNodeInvokeProgress = "node.invoke.progress"
+	// Current node-runner lifecycle events used by gateway protocol clients.
+	EventNodePresence               = "node.presence"
+	EventNodeRunnerInventoryChanged = "node.runnerInventory.changed"
+	EventNodeInvokeRequest          = "node.invoke.request"
+	EventNodeInvokeInput            = "node.invoke.input"
+	EventNodeInvokeCancel           = "node.invoke.cancel"
 
-	// EventDevicePairResolved is emitted when a device pair request is approved or rejected.
-	EventDevicePairResolved = "device.pair.resolved"
+	// Device pairing and one-paste bootstrap lifecycle events.
+	EventDevicePairChanged                = "device.pair.changed"
+	EventDevicePairRequested              = "device.pair.requested"
+	EventDevicePairResolved               = "device.pair.resolved"
+	EventDevicePairSetupCompleted         = "device.pair.setup.completed"
+	EventDevicePairSetupDeliveryUncertain = "device.pair.setup.deliveryUncertain"
 
 	// EventTalkMode is emitted when the voice/talk mode changes.
 	EventTalkMode = "talk.mode"
@@ -155,6 +165,9 @@ const (
 	EventCompatPresence         = "presence"
 	EventCompatHeartbeat        = "heartbeat"
 	EventCompatVoicewakeChanged = "voicewake.changed"
+	EventCompatSessionMessage   = "session.message"
+	EventCompatSessionOperation = "session.operation"
+	EventCompatSessionTool      = "session.tool"
 )
 
 // AllPushEvents is the canonical ordered list of events the server may push.
@@ -189,7 +202,16 @@ var AllPushEvents = []string{
 	EventNodePairRequested,
 	EventNodePairResolved,
 	EventNodeInvokeProgress,
+	EventNodePresence,
+	EventNodeRunnerInventoryChanged,
+	EventNodeInvokeRequest,
+	EventNodeInvokeInput,
+	EventNodeInvokeCancel,
+	EventDevicePairChanged,
+	EventDevicePairRequested,
 	EventDevicePairResolved,
+	EventDevicePairSetupCompleted,
+	EventDevicePairSetupDeliveryUncertain,
 	EventTalkMode,
 	// Presence events are also emitted by the ws runtime itself.
 	"presence.updated",
@@ -216,6 +238,9 @@ var AllPushEvents = []string{
 	EventCompatPresence,
 	EventCompatHeartbeat,
 	EventCompatVoicewakeChanged,
+	EventCompatSessionMessage,
+	EventCompatSessionOperation,
+	EventCompatSessionTool,
 }
 
 // ─── EventEmitter interface ───────────────────────────────────────────────────
@@ -257,6 +282,12 @@ func compatibilityEventAliases(event string) []string {
 		return []string{EventCompatHeartbeat}
 	case EventVoicewake:
 		return []string{EventCompatVoicewakeChanged}
+	case EventChatMessage:
+		return []string{EventCompatSessionMessage}
+	case EventSessionPlacement:
+		return []string{EventCompatSessionOperation}
+	case EventToolStart, EventToolProgress, EventToolResult, EventToolError:
+		return []string{EventCompatSessionTool}
 	default:
 		return nil
 	}

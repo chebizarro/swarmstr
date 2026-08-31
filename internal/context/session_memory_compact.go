@@ -2,7 +2,9 @@ package context
 
 import (
 	stdctx "context"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 )
@@ -38,14 +40,34 @@ type SessionMemoryCompactConfig struct {
 
 	// PreviousSummary is optional previously compacted summary context to carry forward.
 	PreviousSummary string
+
+	// Model-window-derived planning. Legacy MinTokens/MaxTokens remain explicit
+	// overrides for callers that require fixed thresholds.
+	ContextWindowTokens         int
+	OutputReserveTokens         int
+	SummarizationOverheadTokens int
+	SafetyMargin                float64
+	RecentContextRatio          float64
+	BaseChunkRatio              float64
+	MinChunkRatio               float64
+	MaxSummaryStages            int
+	MaxOverflowRetries          int
+	SummaryGenerator            SummaryGenerator
 }
 
 // DefaultSessionMemoryCompactConfig provides safe defaults matching the
 // src/ implementation. These work well across small and large context windows.
 var DefaultSessionMemoryCompactConfig = SessionMemoryCompactConfig{
-	MinTokens:            10_000,
-	MinTextBlockMessages: 5,
-	MaxTokens:            40_000,
+	MinTextBlockMessages:        5,
+	ContextWindowTokens:         128_000,
+	OutputReserveTokens:         8_192,
+	SummarizationOverheadTokens: 4_096,
+	SafetyMargin:                1.2,
+	RecentContextRatio:          0.17,
+	BaseChunkRatio:              0.40,
+	MinChunkRatio:               0.15,
+	MaxSummaryStages:            3,
+	MaxOverflowRetries:          2,
 }
 
 // SessionMemoryCompacter is an optional interface that context engines can
@@ -105,6 +127,7 @@ func calculateMessagesToKeepIndex(messages []Message, lastSummarizedIndex int, c
 		return 0
 	}
 
+	config = resolveSessionMemoryCompactConfig(config)
 	// Start from the message after the last summarized one.
 	startIndex := lastSummarizedIndex + 1
 	if lastSummarizedIndex < 0 {
@@ -282,13 +305,37 @@ func mergeSessionSummaries(previousSummary, sessionMemory string) string {
 	return previousSummary + "\n\n" + sessionMemory
 }
 
+// ErrCompactionConflict means messages changed while an out-of-lock summary was
+// being generated. The caller can retry from a fresh snapshot.
+var ErrCompactionConflict = errors.New("session changed during compaction")
+
+func resolveCompactionSummary(ctx stdctx.Context, messages []Message, existingSummary, sessionMemory string, cutPoint int, config SessionMemoryCompactConfig) (string, *CompactionPlanningResult, error) {
+	config = resolveSessionMemoryCompactConfig(config)
+	previous := existingSummary
+	if config.PreviousSummary != "" {
+		previous = config.PreviousSummary
+	}
+	seed := mergeSessionSummaries(previous, sessionMemory)
+	available := maxInt(1, config.ContextWindowTokens-config.OutputReserveTokens-config.SummarizationOverheadTokens)
+	if config.SummaryGenerator == nil || cutPoint <= 0 {
+		return boundCompactionSummary(seed, available), nil, nil
+	}
+	generated, err := GenerateCompactionSummary(ctx, messages[:cutPoint], seed, config)
+	if err != nil {
+		return "", &generated, err
+	}
+	return boundCompactionSummary(generated.Summary, available), &generated, nil
+}
+
 func planSessionMemoryCompaction(messages []Message, existingSummary, sessionMemory string, lastSummarizedIndex int, config SessionMemoryCompactConfig) CompactionPlan {
+	config = resolveSessionMemoryCompactConfig(config)
 	beforeSummary := existingSummary
 	previousSummary := config.PreviousSummary
 	if previousSummary == "" {
 		previousSummary = existingSummary
 	}
-	mergedSummary := mergeSessionSummaries(previousSummary, sessionMemory)
+	available := maxInt(1, config.ContextWindowTokens-config.OutputReserveTokens-config.SummarizationOverheadTokens)
+	mergedSummary := boundCompactionSummary(mergeSessionSummaries(previousSummary, sessionMemory), available)
 	rawCutPoint := calculateMessagesToKeepIndex(messages, lastSummarizedIndex, config)
 	cutPoint := rawCutPoint
 	if cutPoint < 0 {
@@ -341,38 +388,42 @@ func (e *SmallWindowEngine) CompactWithSessionMemory(ctx stdctx.Context, session
 // from state when available, preserving messages after that boundary even if
 // the minimum token/message thresholds would otherwise keep less context.
 func (e *SmallWindowEngine) CompactWithSessionMemoryState(ctx stdctx.Context, sessionID string, sessionMemory string, config SessionMemoryCompactConfig, state *SessionMemoryCompactState) (CompactResult, error) {
+	// Snapshot under lock, generate any model-assisted summary without the lock,
+	// then compare-and-apply so ingest is never blocked by an LLM request.
+	e.mu.Lock()
+	sess := e.getOrCreateSession(sessionID)
+	messages := append([]Message(nil), sess.messages...)
+	existingSummary := sess.summary
+	e.mu.Unlock()
+	if len(messages) == 0 {
+		return CompactResult{OK: true, Compacted: false}, nil
+	}
+
+	lastSummarizedIndex := resolveLastSummarizedIndex(messages, state, sessionID)
+	plan := planSessionMemoryCompaction(messages, existingSummary, sessionMemory, lastSummarizedIndex, config)
+	mergedSummary, planning, err := resolveCompactionSummary(ctx, messages, existingSummary, sessionMemory, plan.AdjustedCutPoint, config)
+	if err != nil {
+		return CompactResult{}, err
+	}
+	plan.SummaryTokens = estimateTextTokens(mergedSummary)
+	plan.TokensAfter = plan.KeptTokens + plan.SummaryTokens
+	if plan.AdjustedCutPoint == 0 && existingSummary == mergedSummary {
+		return CompactResult{OK: true, Compacted: false}, nil
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	sess := e.getOrCreateSession(sessionID)
-	if len(sess.messages) == 0 {
-		return CompactResult{OK: true, Compacted: false}, nil
+	sess = e.getOrCreateSession(sessionID)
+	if sess.summary != existingSummary || !reflect.DeepEqual(sess.messages, messages) {
+		return CompactResult{}, ErrCompactionConflict
 	}
-
-	lastSummarizedIndex := resolveLastSummarizedIndex(sess.messages, state, sessionID)
-	plan := planSessionMemoryCompaction(sess.messages, sess.summary, sessionMemory, lastSummarizedIndex, config)
-	startIndex := plan.AdjustedCutPoint
-	mergedSummary := mergeSessionSummaries(func() string {
-		if config.PreviousSummary != "" {
-			return config.PreviousSummary
-		}
-		return sess.summary
-	}(), sessionMemory)
-
-	// Nothing to compact if we're keeping everything.
-	if startIndex == 0 && sess.summary == sessionMemory {
-		return CompactResult{OK: true, Compacted: false}, nil
-	}
-
-	// Keep messages from startIndex onwards.
-	kept := make([]Message, len(sess.messages)-startIndex)
-	copy(kept, sess.messages[startIndex:])
-	pruned := len(sess.messages) - len(kept)
-
+	kept := append([]Message(nil), messages[plan.AdjustedCutPoint:]...)
+	pruned := len(messages) - len(kept)
 	sess.messages = kept
 	sess.summary = mergedSummary
-
-	return compactResultFromPlan(plan, pruned, len(kept), len(mergedSummary)), nil
+	result := compactResultFromPlan(plan, pruned, len(kept), len(mergedSummary))
+	addCompactionPlanningDetails(&result, planning)
+	return result, nil
 }
 
 // ─── WindowedEngine: session memory compaction ────────────────────────────────
@@ -388,36 +439,55 @@ func (e *WindowedEngine) CompactWithSessionMemory(ctx stdctx.Context, sessionID 
 // from state when available and stores the session memory summary for Assemble.
 func (e *WindowedEngine) CompactWithSessionMemoryState(ctx stdctx.Context, sessionID string, sessionMemory string, config SessionMemoryCompactConfig, state *SessionMemoryCompactState) (CompactResult, error) {
 	e.mu.Lock()
+	messages := append([]Message(nil), e.sessions[sessionID]...)
+	existingSummary := e.summaries[sessionID]
+	e.mu.Unlock()
+	if len(messages) == 0 {
+		return CompactResult{OK: true, Compacted: false}, nil
+	}
+
+	lastSummarizedIndex := resolveLastSummarizedIndex(messages, state, sessionID)
+	plan := planSessionMemoryCompaction(messages, existingSummary, sessionMemory, lastSummarizedIndex, config)
+	mergedSummary, planning, err := resolveCompactionSummary(ctx, messages, existingSummary, sessionMemory, plan.AdjustedCutPoint, config)
+	if err != nil {
+		return CompactResult{}, err
+	}
+	plan.SummaryTokens = estimateTextTokens(mergedSummary)
+	plan.TokensAfter = plan.KeptTokens + plan.SummaryTokens
+	if plan.AdjustedCutPoint == 0 && existingSummary == mergedSummary {
+		return CompactResult{OK: true, Compacted: false}, nil
+	}
+
+	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	msgs := e.sessions[sessionID]
-	if len(msgs) == 0 {
-		return CompactResult{OK: true, Compacted: false}, nil
+	if e.summaries[sessionID] != existingSummary || !reflect.DeepEqual(e.sessions[sessionID], messages) {
+		return CompactResult{}, ErrCompactionConflict
 	}
-	if e.summaries == nil {
-		e.summaries = map[string]string{}
-	}
-
-	lastSummarizedIndex := resolveLastSummarizedIndex(msgs, state, sessionID)
-	plan := planSessionMemoryCompaction(msgs, e.summaries[sessionID], sessionMemory, lastSummarizedIndex, config)
-	startIndex := plan.AdjustedCutPoint
-	mergedSummary := mergeSessionSummaries(func() string {
-		if config.PreviousSummary != "" {
-			return config.PreviousSummary
-		}
-		return e.summaries[sessionID]
-	}(), sessionMemory)
-	if startIndex == 0 && e.summaries[sessionID] == sessionMemory {
-		return CompactResult{OK: true, Compacted: false}, nil
-	}
-
-	kept := make([]Message, len(msgs)-startIndex)
-	copy(kept, msgs[startIndex:])
-	pruned := len(msgs) - len(kept)
+	kept := append([]Message(nil), messages[plan.AdjustedCutPoint:]...)
+	pruned := len(messages) - len(kept)
 	e.sessions[sessionID] = kept
 	e.summaries[sessionID] = mergedSummary
+	result := compactResultFromPlan(plan, pruned, len(kept), len(mergedSummary))
+	addCompactionPlanningDetails(&result, planning)
+	return result, nil
+}
 
-	return compactResultFromPlan(plan, pruned, len(kept), len(mergedSummary)), nil
+func addCompactionPlanningDetails(result *CompactResult, planning *CompactionPlanningResult) {
+	if result == nil || planning == nil {
+		return
+	}
+	if result.Details == nil {
+		result.Details = map[string]any{}
+	}
+	result.LLMAssisted = true
+	result.Details["context_window_tokens"] = planning.ContextWindowTokens
+	result.Details["available_summary_tokens"] = planning.AvailableTokens
+	result.Details["max_chunk_tokens"] = planning.MaxChunkTokens
+	result.Details["chunk_ratio"] = planning.ChunkRatio
+	result.Details["summary_chunks"] = planning.Chunks
+	result.Details["summary_stages"] = planning.Stages
+	result.Details["overflow_retries"] = planning.OverflowRetries
+	result.Details["oversized_messages"] = planning.OversizedMessages
 }
 
 func compactResultFromPlan(plan CompactionPlan, pruned, kept, summaryChars int) CompactResult {

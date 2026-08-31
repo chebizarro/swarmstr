@@ -3,6 +3,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"time"
 )
@@ -19,6 +21,7 @@ type KeyRing struct {
 	keys     []string
 	cooldown map[string]time.Time // key → earliest retry time
 	next     int                  // next index for round-robin
+	now      func() time.Time
 }
 
 // NewKeyRing constructs a KeyRing from the given key list.
@@ -35,18 +38,20 @@ func NewKeyRing(keys []string) *KeyRing {
 	return &KeyRing{
 		keys:     deduped,
 		cooldown: map[string]time.Time{},
+		now:      time.Now,
 	}
 }
 
 // Pick returns the next available key, skipping keys that are in cooldown.
-// Returns ("", false) if all keys are in cooldown or the ring is empty.
+// Legacy callers receive the earliest cooling key when none are ready; production
+// request paths must use Acquire, which never bypasses cooldown.
 func (r *KeyRing) Pick() (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.keys) == 0 {
 		return "", false
 	}
-	now := time.Now()
+	now := r.now()
 	// Try each key starting at r.next, wrapping around.
 	for i := 0; i < len(r.keys); i++ {
 		idx := (r.next + i) % len(r.keys)
@@ -66,14 +71,82 @@ func (r *KeyRing) Pick() (string, bool) {
 	return earliest, true // still return it; caller may choose to wait
 }
 
-// MarkFailed puts key into cooldown for the configured duration.
+// MarkFailed is the legacy explicit cooldown hook. Production request paths call
+// MarkRateLimited only after strict rate-limit/quota classification.
 func (r *KeyRing) MarkFailed(key string) {
 	if key == "" {
 		return
 	}
 	r.mu.Lock()
-	r.cooldown[key] = time.Now().Add(keyCooldown)
+	r.cooldown[key] = r.now().Add(keyCooldown)
 	r.mu.Unlock()
+}
+
+// CredentialLease is a request-scoped key selection. Fingerprint is safe for
+// attempted-key bookkeeping and diagnostics; Key must never be logged.
+type CredentialLease struct {
+	Key         string
+	Fingerprint string
+}
+
+// Acquire selects an available key not present in excludedFingerprints. Unlike
+// legacy Pick, it fails when every key is cooling down and never bypasses the
+// cooldown. Production request paths should use Acquire.
+func (r *KeyRing) Acquire(excludedFingerprints map[string]struct{}) (CredentialLease, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.keys) == 0 {
+		return CredentialLease{}, false
+	}
+	now := r.now()
+	for i := 0; i < len(r.keys); i++ {
+		idx := (r.next + i) % len(r.keys)
+		key := r.keys[idx]
+		fingerprint := credentialFingerprint(key)
+		if _, excluded := excludedFingerprints[fingerprint]; excluded {
+			continue
+		}
+		if until := r.cooldown[key]; !until.IsZero() && now.Before(until) {
+			continue
+		}
+		r.next = (idx + 1) % len(r.keys)
+		return CredentialLease{Key: key, Fingerprint: fingerprint}, true
+	}
+	return CredentialLease{}, false
+}
+
+// MarkRateLimited cools only a classified rate-limit/quota credential.
+func (r *KeyRing) MarkRateLimited(lease CredentialLease, retryAt time.Time) {
+	if lease.Key == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if retryAt.IsZero() || !retryAt.After(r.now()) {
+		retryAt = r.now().Add(keyCooldown)
+	}
+	r.cooldown[lease.Key] = retryAt
+}
+
+func (r *KeyRing) EarliestRetry() (time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var earliest time.Time
+	for _, key := range r.keys {
+		until := r.cooldown[key]
+		if until.IsZero() || !until.After(r.now()) {
+			return r.now(), true
+		}
+		if earliest.IsZero() || until.Before(earliest) {
+			earliest = until
+		}
+	}
+	return earliest, !earliest.IsZero()
+}
+
+func credentialFingerprint(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:8])
 }
 
 // Len returns the number of keys in the ring.

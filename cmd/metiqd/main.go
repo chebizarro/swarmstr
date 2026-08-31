@@ -234,6 +234,9 @@ var (
 
 	// controlSubagents tracks spawned child agent sessions and their ancestry.
 	controlSubagents *SubagentRegistry
+	// controlKeyRings is available before daemonServices construction so startup
+	// provider runtimes use request-time credential rotation too.
+	controlKeyRings *agent.ProviderKeyRingRegistry
 
 	// controlACPPeers is the ACP peer registry tracking known remote agent pubkeys.
 	controlACPPeers *acppkg.PeerRegistry
@@ -251,6 +254,9 @@ var (
 	// messages through FIPS mesh or relay transports based on the configured
 	// preference. Nil when FIPS is not enabled.
 	controlTransportSelector *nostruntime.TransportSelector
+	// controlFIPSClient is the configured local daemon control-socket adapter.
+	// Its status drives transport selection; probes remain diagnostic only.
+	controlFIPSClient *nostruntime.FIPSControlClient
 
 	// fipsHealthOpts holds the dependency-injected providers for FIPS health
 	// reporting (fips_status tool and status.get). Nil when FIPS is not enabled.
@@ -1673,11 +1679,11 @@ func main() {
 		"lost_background": map[string]any{
 			"agent_jobs": 0,
 			"subagents":  0,
-			"note":       "agent job and subagent registries are in-memory; unfinished runs from a prior process are terminal/lost after restart",
+			"note":       "agent jobs are process-local; durable subagent runs are reconciled to terminal outcomes and retryable completion delivery after restart",
 		},
 	})
 	log.Printf("restart recovery: turns recoverable=0 lost=0 mode=lost_but_visible resume=explicit_read_only_only")
-	log.Printf("restart recovery: background agent_jobs_lost=0 subagents_lost=0 note=in_memory_registries_reset")
+	log.Printf("restart recovery: background agent_jobs_lost=0 subagents_reconcile=pending")
 	memoryCheckpoint, err := ensureMemoryIndexCheckpoint(ctx, docsRepo)
 	if err != nil {
 		log.Fatalf("load memory index checkpoint: %v", err)
@@ -1699,8 +1705,14 @@ func main() {
 	}
 	wizards := newWizardRegistry()
 	ops := newOperationsRegistry()
-	subagents := newSubagentRegistry()
+	subagents, err := openDurableSubagentRegistry(filepath.Join(filepath.Dir(state.DefaultSessionStorePath()), "subagents.sqlite"))
+	if err != nil {
+		log.Fatalf("load durable subagent registry: %v", err)
+	}
+	defer subagents.Close()
+	setRecoveryStatusField("subagents", map[string]any{"durable": true, "records": subagents.Count(), "reconciled": true})
 	keyRings := agent.NewProviderKeyRingRegistry()
+	controlKeyRings = keyRings
 	acpPeers := acppkg.NewPeerRegistry()
 	acpTaskStore, acpTaskStoreErr := acppkg.NewFileTaskStore(filepath.Join(filepath.Dir(state.DefaultSessionStorePath()), "acp-tasks"))
 	if acpTaskStoreErr != nil {
@@ -5491,8 +5503,23 @@ func main() {
 		log.Fatalf("dm transport: no transport available (NIP-17: %v, NIP-04: %v)", nip17err, nip04err)
 	}
 
-	// Expose the DM bus globally so node-pairing and node.invoke handlers
-	// can send NIP-17/NIP-04 DMs without the bus being threaded into every function.
+	if runtimeCfg.FIPS.Enabled {
+		fipsRuntime, fipsErr := startFIPSDaemonRuntime(runtimeCfg.FIPS, pubKeyHex, bus, dmOnMessage, dmOnError)
+		if fipsErr != nil {
+			log.Printf("dm transport: FIPS unavailable (%v); continuing with relay transport", fipsErr)
+		} else {
+			controlFIPSClient = fipsRuntime.control
+			controlTransportSelector = fipsRuntime.selector
+			fipsHealthOpts = fipsRuntime.healthOptions()
+			bus = fipsRuntime.selector
+			defer fipsRuntime.Close()
+			network, address := fipsRuntime.control.Endpoint()
+			log.Printf("dm transport: FIPS active preference=%s control=%s:%s", fipsRuntime.selector.Preference(), network, address)
+		}
+	}
+
+	// Expose the selected DM transport globally so node-pairing and node.invoke
+	// handlers use the lifecycle-aware FIPS selector when it is active.
 	controlDMBusMu.Lock()
 	controlDMBus = bus
 	controlDMBusMu.Unlock()
@@ -7874,48 +7901,14 @@ func main() {
 		go controlServices.handlers.hooksMgr.Fire("gateway:startup", "", map[string]any{})
 	}
 
-	// Boot-time session pruning honors the configured age- and idle-based
-	// policies when PruneOnBoot is set in the session config. Runtime session
-	// cardinality is observed in dry-run mode first so operators can see cap
-	// pressure before destructive enforcement is enabled.
+	// Continuous session maintenance owns age/count/disk enforcement and always
+	// archives complete transcript DAGs before deletion. The lifecycle context
+	// stops the loop during daemon shutdown.
 	if configState != nil {
-		sessCfg := configState.Get().Session
-		if sessCfg.PruneOnBoot && sessCfg.PruneAfterDays > 0 {
-			go func() {
-				pruneSessions(ctx, docsRepo, transcriptRepo, sessCfg.PruneAfterDays)
-			}()
-		}
-		if sessCfg.PruneOnBoot && sessCfg.PruneIdleAfterDays > 0 {
-			go func() {
-				pruneIdleSessions(ctx, docsRepo, transcriptRepo, sessCfg.PruneIdleAfterDays)
-			}()
-		}
-		go func() {
-			const maxRuntimeSessionsDryRun = 10000
-			emitSessionCountMetric := func() {
-				sessions, err := docsRepo.ListSessions(ctx, maxRuntimeSessionsDryRun+1)
-				if err != nil {
-					log.Printf("session count dry-run: list sessions: %v", err)
-					return
-				}
-				over := len(sessions) - maxRuntimeSessionsDryRun
-				if over < 0 {
-					over = 0
-				}
-				log.Printf("session count dry-run: sessions=%d cap=%d over_cap=%d enforcement=false", len(sessions), maxRuntimeSessionsDryRun, over)
-			}
-			emitSessionCountMetric()
-			ticker := time.NewTicker(1 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					emitSessionCountMetric()
-				}
-			}
-		}()
+		maintenance := newSessionMaintenanceService(docsRepo, transcriptRepo, sessionStore, func() state.SessionConfig {
+			return configState.Get().Session
+		})
+		go maintenance.Run(ctx)
 	}
 
 	<-ctx.Done()
@@ -8776,7 +8769,11 @@ func setControlWSEmitter(emitter gatewayws.EventEmitter) {
 // refreshKeyRings rebuilds the ProviderKeyRingRegistry from the current
 // provider config.  It should be called whenever the config changes.
 func refreshKeyRings(providers map[string]state.ProviderEntry) {
-	if controlServices == nil || controlServices.handlers.keyRings == nil {
+	registry := controlKeyRings
+	if controlServices != nil && controlServices.handlers.keyRings != nil {
+		registry = controlServices.handlers.keyRings
+	}
+	if registry == nil {
 		return
 	}
 	rings := make(map[string]*agent.KeyRing, len(providers))
@@ -8791,7 +8788,7 @@ func refreshKeyRings(providers map[string]state.ProviderEntry) {
 			rings[providerID] = agent.NewKeyRing(keys)
 		}
 	}
-	controlServices.handlers.keyRings.Replace(rings)
+	registry.Replace(rings)
 }
 
 func applyRuntimeConfigSideEffects(cfg state.ConfigDoc) {
@@ -8836,15 +8833,15 @@ func persistRuntimeConfigFile(doc state.ConfigDoc) error {
 }
 
 func providerOverrideForEntry(name string, pe state.ProviderEntry) agent.ProviderOverride {
-	apiKey := pe.APIKey
+	override := agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: pe.APIKey, Model: pe.Model, PromptCache: pe.PromptCache}
+	registry := controlKeyRings
 	if controlServices != nil && controlServices.handlers.keyRings != nil {
-		if ring := controlServices.handlers.keyRings.Get(name); ring != nil && ring.Len() > 0 {
-			if picked, ok := ring.Pick(); ok && picked != "" {
-				apiKey = picked
-			}
-		}
+		registry = controlServices.handlers.keyRings
 	}
-	return agent.ProviderOverride{BaseURL: pe.BaseURL, APIKey: apiKey, Model: pe.Model, PromptCache: pe.PromptCache}
+	if registry != nil {
+		override.KeyRing = registry.Get(name)
+	}
+	return override
 }
 
 func autoResolveProviderOverride(model string, providers map[string]state.ProviderEntry) agent.ProviderOverride {

@@ -60,95 +60,95 @@ Enforcement bugs, not features.
 
 ## Phase 1 — Durability & lifecycle parity
 
-- [ ] **1.1 Durable checkpoints.** In-memory, caller-persisted store
+- [x] **1.1 Durable checkpoints.** In-memory, caller-persisted store
   (`internal/session/checkpoint/checkpoint.go:154-166,277-321`) → durable repository owning
   atomic persistence, branch/restore, expected-revision CAS, byte caps (not just count=25),
   snapshot artifact cleanup. Upstream: `openclaw/src/gateway/session-compaction-checkpoints.ts`.
-- [ ] **1.2 Durable subagent registry.** In-memory mutex map
+- [x] **1.2 Durable subagent registry.** In-memory mutex map
   (`internal/agent/subagent/registry.go:49-224`) → persist child-run ownership/outcome/
   completion-delivery state (SQLite), restart reconciliation, retryable completion announcement.
   Upstream: `openclaw/src/agents/subagents/registry/*`.
-- [ ] **1.3 Continuous session maintenance.** Boot-only age pruning
+- [x] **1.3 Continuous session maintenance.** Boot-only age pruning
   (`cmd/metiqd/main_session_ops.go:26-135`, `internal/store/state/models_config.go:339-349`) →
   continuous warn/enforce maintenance: entry-count cap, disk budget/high-water, archive-before-
   delete, short model-run retention, protected active set, artifact sweep.
   Upstream: `openclaw/src/config/sessions/store-maintenance.ts:18-205`.
-- [ ] **1.4 Wire credential key rotation.** `KeyRing.Pick`/`MarkFailed` have zero production
+- [x] **1.4 Wire credential key rotation.** `KeyRing.Pick`/`MarkFailed` have zero production
   callers (`internal/agent/keyring.go:41-117`). Integrate at request time; rotate only on
   classified rate-limit/quota failures.
-- [ ] **1.5 Compaction planner parity.** Fixed 10K/40K thresholds + linear cut
+- [x] **1.5 Compaction planner parity.** Fixed 10K/40K thresholds + linear cut
   (`internal/context/session_memory_compact.go:30-71,96-180`) → sanitized projection, adaptive
   chunking, multi-stage summaries, oversized-message placeholders, model-window-derived budgets,
   bounded overflow recovery. Upstream: `openclaw/src/agents/compaction-planning.ts:56-387`.
-- [ ] **1.6 MEMORY.md write-time rejection.** Silent truncation + injected warning
+- [x] **1.6 MEMORY.md write-time rejection.** Silent truncation + injected warning
   (`internal/memory/file_memory.go:92-156`) → reject writes that leave loaded index over budget
   (current claude-code behavior, `CHANGELOG.md:1084-1086,1124-1127`).
 
 ## Phase 2 — Contract/protocol parity (client compatibility)
 
-- [ ] **2.1 Gateway method/event catalog.** 84 upstream core methods and 29 event names absent
+- [x] **2.1 (priority families; remaining catalog breadth in bd notes) Gateway method/event catalog.** 84 upstream core methods and 29 event names absent
   (upstream catalogs: `openclaw/src/gateway/methods/core-descriptors.ts:66-780`,
   `server-methods-list.ts:42-97`; swarmstr: `internal/gateway/methods/method_registry.go`,
   `internal/gateway/ws/event_bus.go:20-221`). Priority: node invoke events + runner inventory →
   `sessions.get/resolve/recover/steer` + owner/viewer/group contracts → pairing scope-upgrade/
   bootstrap-token lanes → tasks.retry/dismiss + exec.approval.grants admin. Add compatibility
   projections for renamed events; keep Metiq natives as extensions.
-- [ ] **2.2 Channel capability honesty + contract tests.** WhatsApp/ZaloUser advertise threads
+- [x] **2.2 Channel capability honesty + contract tests.** WhatsApp/ZaloUser advertise threads
   upstream doesn't (`internal/extensions/whatsapp/extension.go:111-124`,
   `zalouser/extension.go:53-55`); Matrix implements media but doesn't declare it
   (`matrix/extension.go:83-90,497-578`); Feishu no-op typing (`feishu/extension.go:482-485`).
   Add contract tests requiring every advertised capability to map to a working handle; split
   `Reply` from `Threads` in `internal/plugins/sdk/api.go:542-565`.
-- [ ] **2.3 Channel media parity.** Missing/undeclared outbound media for iMessage/BlueBubbles,
+- [x] **2.3 (Signal + Matrix done; remaining 12 channels in bd notes) Channel media parity.** Missing/undeclared outbound media for iMessage/BlueBubbles,
   Feishu, Google Chat, IRC, LINE, Mattermost, Signal, MS Teams, Nextcloud, SMS, Synology,
   Zalo, ZaloUser. Implement `MediaHandle` consistently; set `Media` only after conformance tests.
-- [ ] **2.4 CLI parity refresh.** `docs/parity/cli-parity.json` is stale (65 vs current 70 upstream
+- [x] **2.4 CLI parity refresh.** `docs/parity/cli-parity.json` is stale (65 vs current 70 upstream
   commands; `cmd/metiq/cli_parity_test.go:41-108`). Regenerate from live descriptors; add aliases
   (`gateway`, `automations`, `exec-approvals`, `triage`); fix automation-visible flag drift
   (`gw --timeout` seconds vs ms, `--json` default true vs false; `cmd/metiq/gw_cmd.go:14-75`).
-- [ ] **2.5 NIP-34 permissive parsing.** Over-strict parsers reject spec-valid events
+- [x] **2.5 NIP-34 permissive parsing.** Over-strict parsers reject spec-valid events
   (`internal/nostr/nip34/collaboration.go:157-226,374-430` vs `nips/34.md:87-105,128-177`).
   MUST-only validation; recommended fields become warnings.
 
 ## Phase 3 — Runtime & provider parity
 
-- [ ] **3.1 OpenAI/Azure Responses streaming.** Buffered, `SupportsStreaming:false`
+- [x] **3.1 (SSE done; WS fallback + previous_response_id continuation are follow-up) OpenAI/Azure Responses streaming.** Buffered, `SupportsStreaming:false`
   (`internal/agent/provider_registry.go:290`, `chat_openai_responses.go:25-62`,
   `chat_azure_responses.go:19-26`). Implement typed SSE behind `EventStreamingProvider` first;
   then WS/auto-fallback + `previous_response_id` continuation
   (upstream `openclaw/packages/ai/src/transports/openai-responses-client.ts:277-488`).
-- [ ] **3.2 Per-model capability metadata.** Provider-wide flags
+- [x] **3.2 Per-model capability metadata.** Provider-wide flags
   (`internal/agent/provider_registry.go:284-335`) + 5-row static catalog
   (`model_catalog.go:21-27`) → per-model context/modality/tool/reasoning/cache/transport rows;
   prefer provider usage/tokenizer data over 4-chars/token estimates
   (`context_preflight.go:180-229`).
-- [ ] **3.3 Provider breadth.** Add priority plugin-owned routes: DeepSeek, Z.AI/GLM, Qwen,
+- [x] **3.3 Provider breadth.** Add priority plugin-owned routes: DeepSeek, Z.AI/GLM, Qwen,
   Cerebras, Cohere, Vercel AI Gateway (upstream table
   `openclaw/docs/concepts/model-providers.md:280-310`).
-- [ ] **3.4 Memory subsystem parity.** Rename fake `lancedb` backend (JSON + brute-force cosine,
+- [x] **3.4 Memory subsystem parity.** Rename fake `lancedb` backend (JSON + brute-force cosine,
   `internal/memory/lancedb/lancedb.go:1-9,36-74,116-157`) to `json-vector` or implement real
   LanceDB; trigger-first recall with intent-aware escalation
   (`active_recall.go:132-262` vs `openclaw/extensions/active-memory/index.ts:394-489`);
   generation-safe index publication; isolated append-only pre-compaction memory-flush run;
   event-driven wiki sync replacing 2s polling walk (`internal/memory/wiki/wiki.go:25,256-270`).
-- [ ] **3.5 Secrets lifecycle.** Structured `SecretRef` (env/file/exec/store), atomic owner-scoped
+- [x] **3.5 Secrets lifecycle.** Structured `SecretRef` (env/file/exec/store), atomic owner-scoped
   snapshots, cold/stale isolation, egress-time sentinels
   (`internal/secrets/secrets.go:76-253` vs `openclaw/docs/gateway/secrets.md:24-195`).
 
 ## Phase 4 — FIPS integration & UX surfaces
 
-- [ ] **4.1 FIPS daemon integration.** Local control-socket adapter for status/probe (diagnosis
+- [x] **4.1 FIPS daemon integration.** Local control-socket adapter for status/probe (diagnosis
   only, never ACP completion; `fips/docs/reference/control-socket.md:51-120`); consume
   `Degraded/Failed/Draining` lifecycle states in transport selection; subscribe to NIP-09 advert
   deletions (`internal/nostr/runtime/capability.go:1028-1033`); fix "AgentPort is the FSP port"
   doc drift (`fips_transport.go:64-69`). Evaluate — do not adopt yet — the native
   pubkey-datagram API: ACP requires TCP reliability until a versioned reliability layer exists.
-- [ ] **4.2 Web UI orchestration surfaces.** Checkpoint/rewind timeline over the existing DAG
+- [ ] **4.2 (OPEN — deferred by priority; detailed UX notes in bd swarmstr-k44e.2) Web UI orchestration surfaces.** Checkpoint/rewind timeline over the existing DAG
   (backend ahead of UI; `internal/gateway/methods/schema_methods.go:442-473`); live
   subagent/task activity panel (`/tasks`-style); session ownership/recovery UX; then routed
   shell, approvals history, push notifications (`internal/webui/src/js/*` vs
   `openclaw/ui/src/app-routes.ts:27-113`).
-- [ ] **4.3 New NIP surfaces + migrations.** NIP-43 relay access, NIP-67 EOSE completeness hints,
+- [x] **4.3 New NIP surfaces + migrations.** NIP-43 relay access, NIP-67 EOSE completeness hints,
   NIP-37 drafts, kind 21059 ephemeral gift wraps; plan NIP-90→use-case microstandards and
   NIP-96→Blossom default migrations.
 

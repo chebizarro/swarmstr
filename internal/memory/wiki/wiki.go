@@ -19,10 +19,11 @@ import (
 	"metiq/internal/memory"
 	"metiq/internal/store/state"
 
+	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v3"
 )
 
-const defaultPollInterval = 2 * time.Second
+const defaultWatchDebounce = 100 * time.Millisecond
 
 // VaultMemory describes one memory item discovered from an external knowledge
 // vault such as Obsidian.
@@ -52,6 +53,9 @@ type Config struct {
 	Path         string
 	IncludeGlobs []string
 	ExcludeGlobs []string
+	Debounce     time.Duration
+	// PollInterval is a deprecated compatibility alias for Debounce. Watch is
+	// event-driven and never performs interval polling.
 	PollInterval time.Duration
 }
 
@@ -87,8 +91,11 @@ func NewVaultBackend(cfg Config) (*Backend, error) {
 	if len(cfg.IncludeGlobs) == 0 {
 		cfg.IncludeGlobs = []string{"*.md", "**/*.md"}
 	}
-	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = defaultPollInterval
+	if cfg.Debounce <= 0 {
+		cfg.Debounce = cfg.PollInterval
+	}
+	if cfg.Debounce <= 0 {
+		cfg.Debounce = defaultWatchDebounce
 	}
 	return &Backend{cfg: cfg, notes: map[string]VaultMemory{}, files: map[string]fileState{}}, nil
 }
@@ -253,27 +260,92 @@ func (b *Backend) HealthReport(ctx context.Context) HealthReport {
 	return report
 }
 
-// Watch polls the vault mtime set and calls onChange after successful syncs that
-// observe a changed note set. The returned function stops the watcher.
+// Watch subscribes to recursive filesystem events and calls onChange after a
+// successful debounced sync changes the indexed note set. It does not poll.
 func (b *Backend) Watch(ctx context.Context, onChange func([]VaultMemory)) func() {
 	watchCtx, cancel := context.WithCancel(ctx)
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		b.setLastError(err)
+		return cancel
+	}
+	if err := addRecursiveWatches(watcher, b.cfg.Path); err != nil {
+		_ = watcher.Close()
+		b.setLastError(err)
+		return cancel
+	}
 	go func() {
-		ticker := time.NewTicker(b.cfg.PollInterval)
-		defer ticker.Stop()
+		defer watcher.Close()
+		beforeInitial := b.snapshotStates()
+		if notes, syncErr := b.Sync(watchCtx); syncErr == nil && onChange != nil && !sameStates(beforeInitial, b.snapshotStates()) {
+			onChange(notes)
+		}
+		var timer *time.Timer
+		var timerC <-chan time.Time
+		schedule := func() {
+			if timer == nil {
+				timer = time.NewTimer(b.cfg.Debounce)
+			} else {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(b.cfg.Debounce)
+			}
+			timerC = timer.C
+		}
+		defer func() {
+			if timer != nil {
+				timer.Stop()
+			}
+		}()
 		for {
 			select {
 			case <-watchCtx.Done():
 				return
-			case <-ticker.C:
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Op&fsnotify.Create != 0 {
+					if info, statErr := os.Stat(event.Name); statErr == nil && info.IsDir() {
+						if addErr := addRecursiveWatches(watcher, event.Name); addErr != nil {
+							b.setLastError(addErr)
+						}
+					}
+				}
+				if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) != 0 {
+					schedule()
+				}
+			case watchErr, ok := <-watcher.Errors:
+				if ok && watchErr != nil {
+					b.setLastError(watchErr)
+				}
+			case <-timerC:
+				timerC = nil
 				before := b.snapshotStates()
-				notes, err := b.Sync(watchCtx)
-				if err == nil && onChange != nil && !sameStates(before, b.snapshotStates()) {
+				notes, syncErr := b.Sync(watchCtx)
+				if syncErr == nil && onChange != nil && !sameStates(before, b.snapshotStates()) {
 					onChange(notes)
 				}
 			}
 		}
 	}()
 	return cancel
+}
+
+func addRecursiveWatches(watcher *fsnotify.Watcher, root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return watcher.Add(path)
+		}
+		return nil
+	})
 }
 
 // ToMemoryRecord maps a vault note to the typed memory record model.

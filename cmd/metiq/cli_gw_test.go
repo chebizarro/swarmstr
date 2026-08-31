@@ -56,6 +56,7 @@ func TestRunGW_UsesConfiguredNostrTransport(t *testing.T) {
 			"--control-target-pubkey", "npub1target",
 			"--control-signer-url", "env://METIQ_CONTROL_SIGNER",
 			"--timeout", "12",
+			"--json",
 			"status.get",
 			`{"verbose":true}`,
 		})
@@ -72,7 +73,7 @@ func TestRunGW_UsesConfiguredNostrTransport(t *testing.T) {
 	if gotSigner != "env://METIQ_CONTROL_SIGNER" {
 		t.Fatalf("unexpected control signer: %q", gotSigner)
 	}
-	if gotTimeout != 12*time.Second {
+	if gotTimeout != 12*time.Millisecond {
 		t.Fatalf("unexpected timeout: %v", gotTimeout)
 	}
 	raw, ok := stub.params.(json.RawMessage)
@@ -96,12 +97,14 @@ func TestRunGW_DefaultsToAutoTransport(t *testing.T) {
 
 	stub := &stubGatewayClient{result: map[string]any{"ok": true}}
 	var gotTransport string
+	var gotTimeout time.Duration
 	resolveGWClientFn = func(transport, addrFlag, tokenFlag, bootstrapPath, controlTargetPubKey, controlSignerURL string, timeout time.Duration) (gatewayCaller, error) {
 		gotTransport = transport
+		gotTimeout = timeout
 		return stub, nil
 	}
 
-	_, err := captureStdout(t, func() error {
+	out, err := captureStdout(t, func() error {
 		return runGW([]string{"status.get"})
 	})
 	if err != nil {
@@ -109,6 +112,12 @@ func TestRunGW_DefaultsToAutoTransport(t *testing.T) {
 	}
 	if gotTransport != "auto" {
 		t.Fatalf("unexpected default transport: %q", gotTransport)
+	}
+	if gotTimeout != 30*time.Second {
+		t.Fatalf("unexpected default timeout: %v", gotTimeout)
+	}
+	if strings.Contains(out, `"ok"`) || !strings.Contains(out, "map[ok:true]") {
+		t.Fatalf("expected human-readable output by default, got %q", out)
 	}
 }
 

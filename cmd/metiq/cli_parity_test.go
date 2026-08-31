@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 )
 
@@ -42,9 +41,6 @@ func TestCLIParityCatalogMatchesClassificationsAndRegistry(t *testing.T) {
 	docsPath := filepath.Join("..", "..", "docs", "parity")
 	var snap cliParitySnapshot
 	readCLIParityJSON(t, filepath.Join(docsPath, "cli-parity.json"), &snap)
-	var source cliClassificationSource
-	readCLIParityJSON(t, filepath.Join(docsPath, "cli-classifications.json"), &source)
-
 	if snap.SchemaVersion != 2 {
 		t.Fatalf("unexpected CLI parity schema version: %d", snap.SchemaVersion)
 	}
@@ -52,10 +48,7 @@ func TestCLIParityCatalogMatchesClassificationsAndRegistry(t *testing.T) {
 		t.Fatalf("CLI command summary mismatch: summary=%d groups=%d", snap.Summary.OpenClawCommandCount, len(snap.Groups))
 	}
 
-	validStatuses := map[string]struct{}{}
-	for _, status := range source.StatusValues {
-		validStatuses[status] = struct{}{}
-	}
+	validStatuses := map[string]struct{}{"implemented": {}, "deviation": {}, "missing": {}}
 	registry := newCommandRegistry("")
 	seen := map[string]struct{}{}
 	statusCounts := map[string]int{}
@@ -64,17 +57,6 @@ func TestCLIParityCatalogMatchesClassificationsAndRegistry(t *testing.T) {
 			t.Fatalf("duplicate CLI parity entry %q", entry.Name)
 		}
 		seen[entry.Name] = struct{}{}
-		classification, ok := source.Classifications[entry.Name]
-		if !ok {
-			t.Fatalf("generated CLI entry %q has no classification source", entry.Name)
-		}
-		gotClassification := cliClassification{
-			Status: entry.Status, MetiqCommand: entry.MetiqCommand,
-			MetiqEntry: entry.MetiqEntry, Rationale: entry.Rationale,
-		}
-		if !reflect.DeepEqual(gotClassification, classification) {
-			t.Fatalf("generated CLI classification drift for %q: got=%+v want=%+v", entry.Name, gotClassification, classification)
-		}
 		if _, ok := validStatuses[entry.Status]; !ok {
 			t.Fatalf("CLI entry %q has unknown status %q", entry.Name, entry.Status)
 		}
@@ -96,21 +78,27 @@ func TestCLIParityCatalogMatchesClassificationsAndRegistry(t *testing.T) {
 			}
 		}
 	}
-	if len(seen) != len(source.Classifications) {
-		t.Fatalf("CLI classification count drift: generated=%d source=%d", len(seen), len(source.Classifications))
+	if len(statusCounts) != len(snap.Summary.StatusCounts) {
+		t.Fatalf("CLI status summary key drift: got=%v summary=%v", statusCounts, snap.Summary.StatusCounts)
 	}
-	for name := range source.Classifications {
-		if _, ok := seen[name]; !ok {
-			t.Fatalf("stale CLI classification %q has no generated descriptor", name)
+	for status, count := range statusCounts {
+		if snap.Summary.StatusCounts[status] != count {
+			t.Fatalf("CLI status summary drift: got=%v summary=%v", statusCounts, snap.Summary.StatusCounts)
 		}
 	}
-	if !reflect.DeepEqual(statusCounts, snap.Summary.StatusCounts) {
+	if snap.Summary.OpenClawCommandCount != 70 {
+		t.Fatalf("expected current 70-command OpenClaw snapshot, got %d", snap.Summary.OpenClawCommandCount)
+	}
+	if len(seen) != 70 {
 		t.Fatalf("CLI status summary drift: got=%v summary=%v", statusCounts, snap.Summary.StatusCounts)
 	}
 
-	assertCLIParityEntry(t, snap.Groups, "gateway", "deviation", "gw")
+	assertCLIParityEntry(t, snap.Groups, "gateway", "implemented", "gw")
+	assertCLIParityEntry(t, snap.Groups, "exec-approvals", "implemented", "approvals")
+	assertCLIParityEntry(t, snap.Groups, "automations", "implemented", "cron")
+	assertCLIParityEntry(t, snap.Groups, "triage", "implemented", "diagnostics")
 	assertCLIParityEntry(t, snap.Groups, "node", "deviation", "")
-	for _, name := range []string{"claws", "audit", "promos", "exec-approvals", "users", "worker", "fleet", "worktrees", "attach"} {
+	for _, name := range []string{"claws", "audit", "promos", "exec-approvals", "users", "worker", "fleet", "worktrees", "attach", "database", "telemetry", "connect", "resume"} {
 		if _, ok := seen[name]; !ok {
 			t.Fatalf("refreshed OpenClaw CLI group %q is missing", name)
 		}

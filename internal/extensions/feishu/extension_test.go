@@ -468,11 +468,10 @@ func TestSendInThread_PostsReply(t *testing.T) {
 	}
 }
 
-func TestSendTyping_NoOp(t *testing.T) {
-	bot := &feishuBot{}
-	err := bot.SendTyping(context.Background(), 3000)
-	if err != nil {
-		t.Fatalf("SendTyping should be no-op, got %v", err)
+func TestHandleDoesNotClaimTyping(t *testing.T) {
+	var handle sdk.ChannelHandle = &feishuBot{}
+	if _, ok := handle.(sdk.TypingHandle); ok {
+		t.Fatal("Feishu must not satisfy TypingHandle without a real bot typing API")
 	}
 }
 
@@ -591,7 +590,6 @@ func TestHandleWebhook_UnknownChannel(t *testing.T) {
 // ─── Interface compliance ─────────────────────────────────────────────────────
 
 func TestBot_ImplementsOptionalInterfaces(t *testing.T) {
-	var _ sdk.TypingHandle = (*feishuBot)(nil)
 	var _ sdk.ReactionHandle = (*feishuBot)(nil)
 	var _ sdk.ThreadHandle = (*feishuBot)(nil)
 }

@@ -142,6 +142,46 @@ func TestNewTransportSelector_unknown_pref(t *testing.T) {
 	}
 }
 
+func TestTransportSelectorDaemonLifecycleSkipsFIPS(t *testing.T) {
+	for _, state := range []string{"Degraded", "Failed", "Draining"} {
+		t.Run(state, func(t *testing.T) {
+			fips := &mockTransport{name: "fips"}
+			relay := &mockTransport{name: "relay"}
+			ts, err := NewTransportSelector(TransportSelectorOptions{
+				FIPS: fips, Relay: relay, Pref: TransportPrefFIPSFirst,
+				DaemonState: func(context.Context) (string, error) { return state, nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ts.SendDM(context.Background(), "peer", "hello"); err != nil {
+				t.Fatal(err)
+			}
+			if fips.sendCount() != 0 || relay.sendCount() != 1 {
+				t.Fatalf("fips sends=%d relay sends=%d", fips.sendCount(), relay.sendCount())
+			}
+		})
+	}
+}
+
+func TestTransportSelectorHealthyDaemonUsesFIPS(t *testing.T) {
+	fips := &mockTransport{name: "fips"}
+	relay := &mockTransport{name: "relay"}
+	ts, err := NewTransportSelector(TransportSelectorOptions{
+		FIPS: fips, Relay: relay, Pref: TransportPrefFIPSFirst,
+		DaemonState: func(context.Context) (string, error) { return "Running", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.SendDM(context.Background(), "peer", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if fips.sendCount() != 1 || relay.sendCount() != 0 {
+		t.Fatalf("fips sends=%d relay sends=%d", fips.sendCount(), relay.sendCount())
+	}
+}
+
 // ── fips-first routing ────────────────────────────────────────────────────────
 
 func TestFIPSFirst_optimistically_sends_via_fips(t *testing.T) {

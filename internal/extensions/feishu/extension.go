@@ -479,13 +479,6 @@ func (b *feishuBot) SendInThread(ctx context.Context, threadID, text string) err
 	return b.sendMessage(ctx, b.chatID, "chat_id", text, threadID)
 }
 
-// SendTyping sends a typing indicator to the chat.
-func (b *feishuBot) SendTyping(ctx context.Context, durationMS int) error {
-	// Feishu does not have a public typing-indicator API for bots.
-	// No-op implementation to satisfy the TypingHandle interface.
-	return nil
-}
-
 func (b *feishuBot) sendMessage(ctx context.Context, receiveID, receiveIDType, text, replyToMsgID string) error {
 	content, _ := json.Marshal(map[string]string{"text": text})
 	payload := map[string]any{

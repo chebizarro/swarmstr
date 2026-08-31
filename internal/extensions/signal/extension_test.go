@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,7 +25,7 @@ func TestSignalPlugin_ID(t *testing.T) {
 func TestSignalPlugin_Capabilities(t *testing.T) {
 	p := &SignalPlugin{}
 	caps := p.Capabilities()
-	if !caps.Reactions || !caps.MultiAccount {
+	if !caps.Reactions || !caps.Media || !caps.DirectTextMedia || !caps.MultiAccount {
 		t.Fatalf("unexpected capabilities: %+v", caps)
 	}
 }
@@ -253,6 +255,53 @@ func TestSend_Success(t *testing.T) {
 	recipients, _ := received["recipients"].([]interface{})
 	if len(recipients) == 0 {
 		t.Fatal("expected at least one recipient")
+	}
+}
+
+func TestSendMedia_Base64Attachment(t *testing.T) {
+	var received signalSendRequest
+	srv, bot := newTestSignalServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v2/send" {
+			_ = json.NewDecoder(r.Body).Decode(&received)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"timestamp":9999}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	path := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(path, []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := bot.SendMedia(context.Background(), sdk.DirectTextMediaPayload{
+		To: "+15550001111", Text: "Photo", Media: []sdk.MediaPayloadInput{{Path: path, ContentType: "image/jpeg"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if received.Message != "Photo" || len(received.Recipients) != 1 || received.Recipients[0] != "+15550001111" {
+		t.Fatalf("unexpected send payload: %+v", received)
+	}
+	want := "data:image/jpeg;filename=photo.jpg;base64,aW1hZ2U="
+	if len(received.Base64Attachments) != 1 || received.Base64Attachments[0] != want {
+		t.Fatalf("attachments=%q want %q", received.Base64Attachments, want)
+	}
+	if _, ok := any(bot).(sdk.MediaHandle); !ok {
+		t.Fatal("signal handle does not implement sdk.MediaHandle")
+	}
+	if err := sdk.ValidateChannelCapabilityContract((&SignalPlugin{}).Capabilities(), bot); err != nil {
+		t.Fatalf("capability contract: %v", err)
+	}
+}
+
+func TestSendMedia_RejectsRemoteURL(t *testing.T) {
+	bot := &signalBot{channelID: "signal-test"}
+	err := bot.SendMedia(context.Background(), sdk.DirectTextMediaPayload{
+		To: "+15550001111", Media: []sdk.MediaPayloadInput{{Path: "https://example.test/photo.jpg", ContentType: "image/jpeg"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stage the file locally") {
+		t.Fatalf("expected remote media rejection, got %v", err)
 	}
 }
 

@@ -87,7 +87,7 @@ func newCommandRegistry(bootstrapPath string) *commandRegistry {
 	addLazy(cliCommand{Name: "trajectory", Summary: "session trajectory export and cleanup", Group: "Tasks"}, runTrajectory)
 	addLazy(cliCommand{Name: "qa", Summary: "run deterministic QA scenario packs", Group: "Tasks"}, runQA)
 	addLazy(cliCommand{Name: "daemon", Summary: "daemon lifecycle management", Group: "Daemon Lifecycle"}, runDaemon)
-	addLazy(cliCommand{Name: "gw", Summary: "gateway method passthrough", Group: "Gateway Passthrough"}, runGW)
+	addLazy(cliCommand{Name: "gw", Aliases: []string{"gateway"}, Summary: "gateway method passthrough", Group: "Gateway Passthrough"}, runGW)
 	addLazy(cliCommand{Name: "acp", Summary: "run and inspect ACP-backed coding agents", Group: "Gateway Passthrough", Details: []string{
 		"acp dispatch --target-pubkey <pubkey> --instructions <text>",
 		"acp pipeline '{\"steps\":[...]}'",
@@ -119,14 +119,14 @@ func newCommandRegistry(bootstrapPath string) *commandRegistry {
 
 	addLazy(cliCommand{Name: "nodes", Aliases: []string{"node"}, Summary: "remote node management", Group: "Other"}, runNodes)
 	addLazy(cliCommand{Name: "sessions", Aliases: []string{"session"}, Summary: "session management", Group: "Other"}, runSessions)
-	addLazy(cliCommand{Name: "cron", Summary: "scheduled task management", Group: "Other"}, runCron)
-	addLazy(cliCommand{Name: "approvals", Aliases: []string{"approval"}, Summary: "exec approval management", Group: "Other"}, runApprovals)
+	addLazy(cliCommand{Name: "cron", Aliases: []string{"automations"}, Summary: "scheduled task management", Group: "Other"}, runCron)
+	addLazy(cliCommand{Name: "approvals", Aliases: []string{"approval", "exec-approvals"}, Summary: "exec approval management", Group: "Other"}, runApprovals)
 	addLazy(cliCommand{Name: "exec-policy", Aliases: []string{"execpolicy"}, Summary: "exec approval policy management", Group: "Other", Details: []string{
 		"exec-policy get              show live policy",
 		"exec-policy doctor           diagnose invalid/conflicting/unreachable rules",
 	}}, runExecPolicy)
 	addLazy(cliCommand{Name: "backup", Summary: "create or restore local metiq backups", Group: "Other"}, runBackup)
-	addLazy(cliCommand{Name: "diagnostics", Aliases: []string{"diag"}, Summary: "export support diagnostic bundle", Group: "Other"}, runDiagnostics)
+	addLazy(cliCommand{Name: "diagnostics", Aliases: []string{"diag", "triage"}, Summary: "export support diagnostic bundle", Group: "Other"}, runDiagnostics)
 	addLazy(cliCommand{Name: "doctor", Summary: "system health diagnostics", Group: "Other"}, runDoctor)
 	addLazy(cliCommand{Name: "qr", Summary: "display agent QR code", Group: "Other"}, runQR)
 	addLazy(cliCommand{Name: "completion", Summary: "generate shell completions", Group: "Other"}, runCompletion)

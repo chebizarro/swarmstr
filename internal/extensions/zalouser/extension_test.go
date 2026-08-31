@@ -23,7 +23,7 @@ func TestZaloUserPluginSurface(t *testing.T) {
 		t.Fatalf("unexpected identity: %q %q", p.ID(), p.Type())
 	}
 	caps := p.Capabilities()
-	if !caps.Typing || !caps.Reactions || !caps.Threads || !caps.MultiAccount {
+	if !caps.Typing || !caps.Reactions || caps.Threads || !caps.MultiAccount {
 		t.Fatalf("unexpected capabilities: %+v", caps)
 	}
 	if got := len(p.GatewayMethods()); got != 4 {
@@ -157,7 +157,7 @@ func TestReactionUsesOpaqueReference(t *testing.T) {
 	}
 }
 
-func TestSendInThreadUsesGroupConversation(t *testing.T) {
+func TestGroupConversationDoesNotClaimThreadContract(t *testing.T) {
 	var received map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&received)
@@ -169,8 +169,11 @@ func TestSendInThreadUsesGroupConversation(t *testing.T) {
 		account: bridgeAccount{BaseURL: u, Profile: "p", DefaultChat: "direct"}, httpClient: srv.Client(),
 		activeTyping: map[string]string{},
 	}
-	var _ sdk.ThreadHandle = bot
-	if err := bot.SendInThread(context.Background(), "group-42", "hello group"); err != nil {
+	var handle sdk.ChannelHandle = bot
+	if _, ok := handle.(sdk.ThreadHandle); ok {
+		t.Fatal("ZaloUser group conversations must not satisfy ThreadHandle")
+	}
+	if err := bot.sendToGroup(context.Background(), "group-42", "hello group"); err != nil {
 		t.Fatal(err)
 	}
 	if received["to"] != "group-42" || received["chat_type"] != "group" || received["text"] != "hello group" {

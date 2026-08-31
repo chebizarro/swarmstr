@@ -71,6 +71,10 @@ func NewFIPSControlClient(_ FIPSControlClientOptions) (*FIPSControlClient, error
 
 func (c *FIPSControlClient) Endpoint() (network, address string) { return "", "" }
 
+func (c *FIPSControlClient) DaemonState(context.Context) (string, error) {
+	return "", fmt.Errorf("fips control client: not compiled")
+}
+
 func (c *FIPSControlClient) ShowCache(context.Context) (FIPSCacheSummary, error) {
 	return FIPSCacheSummary{}, fmt.Errorf("fips control client: not compiled")
 }

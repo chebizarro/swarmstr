@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -8,7 +9,10 @@ import (
 	"time"
 )
 
-const maxPersistedCompactionCheckpoints = 25
+const (
+	maxPersistedCompactionCheckpoints           = 25
+	maxPersistedCompactionCheckpointBytes int64 = 128 << 20
+)
 
 var ErrTranscriptRevisionConflict = errors.New("transcript revision conflict")
 
@@ -110,15 +114,7 @@ func (s *SessionStore) CommitTranscriptGraph(key string, expectedRevision int64,
 		if mutation.Checkpoint != nil {
 			cp := cloneCompactionCheckpointRef(*mutation.Checkpoint)
 			entry.CompactionCheckpoints = append(entry.CompactionCheckpoints, cp)
-			if len(entry.CompactionCheckpoints) > maxPersistedCompactionCheckpoints {
-				sort.SliceStable(entry.CompactionCheckpoints, func(i, j int) bool {
-					if entry.CompactionCheckpoints[i].CreatedAt == entry.CompactionCheckpoints[j].CreatedAt {
-						return entry.CompactionCheckpoints[i].CheckpointID < entry.CompactionCheckpoints[j].CheckpointID
-					}
-					return entry.CompactionCheckpoints[i].CreatedAt < entry.CompactionCheckpoints[j].CreatedAt
-				})
-				entry.CompactionCheckpoints = append([]CompactionCheckpointRef(nil), entry.CompactionCheckpoints[len(entry.CompactionCheckpoints)-maxPersistedCompactionCheckpoints:]...)
-			}
+			entry.CompactionCheckpoints = trimPersistedCompactionCheckpoints(entry.CompactionCheckpoints)
 		}
 		entry.UpdatedAt = time.Now().UTC()
 		committed = cloneSessionEntry(*entry)
@@ -128,6 +124,47 @@ func (s *SessionStore) CommitTranscriptGraph(key string, expectedRevision int64,
 		return SessionEntry{}, err
 	}
 	return committed, nil
+}
+
+func trimPersistedCompactionCheckpoints(in []CompactionCheckpointRef) []CompactionCheckpointRef {
+	if len(in) == 0 {
+		return nil
+	}
+	ordered := append([]CompactionCheckpointRef(nil), in...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].CreatedAt == ordered[j].CreatedAt {
+			return ordered[i].CheckpointID < ordered[j].CheckpointID
+		}
+		return ordered[i].CreatedAt < ordered[j].CreatedAt
+	})
+	start := 0
+	if len(ordered) > maxPersistedCompactionCheckpoints {
+		start = len(ordered) - maxPersistedCompactionCheckpoints
+	}
+	var retained int64
+	byteStart := len(ordered) - 1
+	for i := len(ordered) - 1; i >= start; i-- {
+		size := persistedCheckpointBytes(ordered[i])
+		if i != len(ordered)-1 && retained+size > maxPersistedCompactionCheckpointBytes {
+			break
+		}
+		retained += size
+		byteStart = i
+	}
+	if byteStart > start {
+		start = byteStart
+	}
+	return append([]CompactionCheckpointRef(nil), ordered[start:]...)
+}
+
+func persistedCheckpointBytes(cp CompactionCheckpointRef) int64 {
+	if cp.RetainedBytes > 0 {
+		return cp.RetainedBytes
+	}
+	copy := cp
+	copy.RetainedBytes = 0
+	raw, _ := json.Marshal(copy)
+	return int64(len(raw)) + cp.SnapshotBytes
 }
 
 func normalizeTranscriptHeads(in []string) ([]string, error) {

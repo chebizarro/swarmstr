@@ -168,6 +168,13 @@ func (r *TranscriptRepository) ListSessionAll(ctx context.Context, sessionID str
 	return r.listSessionOrderedAll(ctx, sessionID)
 }
 
+// ListSessionAllBranches returns every transcript DAG node for archival and
+// maintenance. Normal conversation reads must continue using ListSessionAll,
+// which projects only the active path.
+func (r *TranscriptRepository) ListSessionAllBranches(ctx context.Context, sessionID string) ([]TranscriptEntryDoc, error) {
+	return r.listSessionOrderedAll(ctx, sessionID)
+}
+
 func (r *TranscriptRepository) ListSessionTail(ctx context.Context, sessionID string, limit int) ([]TranscriptEntryDoc, error) {
 	if limit <= 0 {
 		limit = 100

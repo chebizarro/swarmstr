@@ -112,7 +112,8 @@ func (w *WhatsAppPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
 		Typing:    true,
 		Reactions: true,
-		Threads:   true,
+		Reply:     true,
+		Threads:   false,
 		// Audio is intentionally false: the AudioHandle raw-bytes contract is not
 		// supported (SendAudio returns an explicit error). Audio is still
 		// deliverable via the whatsapp.send_media gateway method with an uploaded
@@ -577,9 +578,16 @@ func (b *whatsappBot) RemoveReaction(ctx context.Context, eventID, emoji string)
 	return b.AddReaction(ctx, eventID, "")
 }
 
-func (b *whatsappBot) SendInThread(ctx context.Context, threadID, text string) error {
-	account := b.accountForID("")
-	_, err := b.sendMessageWithAccount(ctx, account, strings.TrimSpace(threadID), text)
+func (b *whatsappBot) SendReply(ctx context.Context, eventID, text string) error {
+	accountID, to := splitReplyTarget(sdk.ChannelReplyTarget(ctx))
+	account := b.accountForID(accountID)
+	if to == "" {
+		to = account.DefaultRecipient
+	}
+	if to == "" {
+		return fmt.Errorf("whatsapp %s: no reply recipient set", b.channelID)
+	}
+	_, err := sendWhatsAppReply(ctx, b.httpClient, account.Token, account.PhoneNumberID, to, strings.TrimPrefix(strings.TrimSpace(eventID), "wa-"), text)
 	return err
 }
 
@@ -746,6 +754,20 @@ func sendWhatsAppMessage(ctx context.Context, httpClient *http.Client, token, ph
 		"type":              "text",
 		"text":              map[string]string{"body": text},
 	}, "sendMessage")
+}
+
+func sendWhatsAppReply(ctx context.Context, httpClient *http.Client, token, phoneNumberID, to, eventID, text string) (string, error) {
+	if eventID == "" {
+		return "", fmt.Errorf("whatsapp sendReply: event id is required")
+	}
+	return postWhatsAppMessage(ctx, httpClient, token, phoneNumberID, map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    recipientType(to),
+		"to":                to,
+		"context":           map[string]string{"message_id": eventID},
+		"type":              "text",
+		"text":              map[string]string{"body": text},
+	}, "sendReply")
 }
 
 func sendWhatsAppMedia(ctx context.Context, httpClient *http.Client, token, phoneNumberID, to, mediaType, mediaURL, mediaID, caption string) (string, error) {

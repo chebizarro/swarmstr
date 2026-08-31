@@ -3,6 +3,7 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"net"
@@ -153,6 +154,73 @@ func TestParseFIPSControlDataEnvelope(t *testing.T) {
 	}
 	if _, err := parseFIPSControlData([]byte(`{"status":"error","message":"nope"}`)); err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("error response err = %v", err)
+	}
+}
+
+func TestFIPSControlClientStatusAndProbeTCP(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		for i := 0; i < 4; i++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			var req struct {
+				Command string         `json:"command"`
+				Params  map[string]any `json:"params"`
+			}
+			err = json.NewDecoder(bufio.NewReader(conn)).Decode(&req)
+			if err == nil {
+				switch req.Command {
+				case "show_status":
+					_, err = conn.Write([]byte("{\"status\":\"ok\",\"data\":{\"state\":\"Running\"}}\n"))
+				case "probe_start":
+					_, err = conn.Write([]byte("{\"status\":\"ok\",\"data\":{\"probe_id\":7,\"npub\":\"npub1peer\",\"budget_ms\":5000}}\n"))
+				case "probe_poll":
+					_, err = conn.Write([]byte("{\"status\":\"ok\",\"data\":{\"state\":\"done\",\"report\":{\"overall\":\"ok\"}}}\n"))
+				case "probe_cancel":
+					_, err = conn.Write([]byte("{\"status\":\"ok\",\"data\":{}}\n"))
+				}
+			}
+			_ = conn.Close()
+			if err != nil {
+				serverErr <- err
+				return
+			}
+		}
+		serverErr <- nil
+	}()
+
+	client, err := NewFIPSControlClient(FIPSControlClientOptions{ControlSocket: ln.Addr().String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	state, err := client.DaemonState(ctx)
+	if err != nil || state != "Running" {
+		t.Fatalf("state=%q err=%v", state, err)
+	}
+	started, err := client.StartProbe(ctx, "npub1peer")
+	if err != nil || started.ProbeID != 7 {
+		t.Fatalf("start=%#v err=%v", started, err)
+	}
+	poll, err := client.PollProbe(ctx, started.ProbeID)
+	if err != nil || poll.State != "done" || !strings.Contains(string(poll.Report), `"overall":"ok"`) {
+		t.Fatalf("poll=%#v err=%v", poll, err)
+	}
+	if err := client.CancelProbe(ctx, started.ProbeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,25 @@ const (
 	DefaultActiveRecallRecentUsers      = 2
 	DefaultActiveRecallRecentAssistants = 1
 	DefaultActiveRecallTurnChars        = 240
+	DefaultActiveRecallEscalationLimit  = 16
+)
+
+type ActiveRecallTriggerMode string
+
+const (
+	ActiveRecallTriggerIntent ActiveRecallTriggerMode = "intent"
+	ActiveRecallTriggerAlways ActiveRecallTriggerMode = "always"
+	ActiveRecallTriggerOff    ActiveRecallTriggerMode = "off"
+)
+
+type ActiveRecallIntent string
+
+const (
+	ActiveRecallIntentNone       ActiveRecallIntent = "none"
+	ActiveRecallIntentExplicit   ActiveRecallIntent = "explicit_recall"
+	ActiveRecallIntentPreference ActiveRecallIntent = "preference_profile"
+	ActiveRecallIntentContinuity ActiveRecallIntent = "continuity"
+	ActiveRecallIntentDecision   ActiveRecallIntent = "prior_decision"
 )
 
 type ActiveRecallConfig struct {
@@ -37,6 +57,8 @@ type ActiveRecallConfig struct {
 	Model                          string
 	CircuitBreakerFailureThreshold int
 	CircuitBreakerCooldown         time.Duration
+	TriggerMode                    ActiveRecallTriggerMode
+	EscalationSearchLimit          int
 }
 
 type ActiveRecallTurn struct {
@@ -51,16 +73,20 @@ type ActiveRecallRequest struct {
 }
 
 type ActiveRecallResult struct {
-	Context  string
-	Query    string
-	HitCount int
-	Cached   bool
-	TimedOut bool
-	Status   string
-	Error    string
-	Provider string
-	Model    string
-	Partial  bool
+	Context       string
+	Query         string
+	HitCount      int
+	Cached        bool
+	TimedOut      bool
+	Status        string
+	Error         string
+	Provider      string
+	Model         string
+	Partial       bool
+	Triggered     bool
+	Intent        ActiveRecallIntent
+	Escalated     bool
+	TriggerReason string
 }
 
 type ActiveRecallSearcher interface {
@@ -91,7 +117,7 @@ type ActiveRecallAssembler struct {
 }
 
 func NewActiveRecallAssembler(cfg ActiveRecallConfig, searcher ActiveRecallSearcher) *ActiveRecallAssembler {
-	if !cfg.Enabled && cfg.Timeout == 0 && cfg.CacheTTL == 0 && cfg.SearchLimit == 0 && cfg.MaxContextChars == 0 && cfg.RecentUserTurns == 0 && cfg.RecentAssistantTurns == 0 && cfg.MaxTurnChars == 0 && cfg.CitationsMode == "" && len(cfg.ToolAllowlist) == 0 && cfg.Provider == "" && cfg.Model == "" && cfg.CircuitBreakerFailureThreshold == 0 && cfg.CircuitBreakerCooldown == 0 {
+	if !cfg.Enabled && cfg.Timeout == 0 && cfg.CacheTTL == 0 && cfg.SearchLimit == 0 && cfg.MaxContextChars == 0 && cfg.RecentUserTurns == 0 && cfg.RecentAssistantTurns == 0 && cfg.MaxTurnChars == 0 && cfg.CitationsMode == "" && len(cfg.ToolAllowlist) == 0 && cfg.Provider == "" && cfg.Model == "" && cfg.CircuitBreakerFailureThreshold == 0 && cfg.CircuitBreakerCooldown == 0 && cfg.TriggerMode == "" && cfg.EscalationSearchLimit == 0 {
 		cfg.Enabled = true
 	}
 	cfg = normalizeActiveRecallConfig(cfg)
@@ -154,6 +180,15 @@ func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequ
 		out.Status = "disabled"
 		return out, nil
 	}
+	decision := EvaluateActiveRecallTrigger(req, cfg)
+	out.Triggered = decision.Triggered
+	out.Intent = decision.Intent
+	out.Escalated = decision.Escalated
+	out.TriggerReason = decision.Reason
+	if !decision.Triggered {
+		out.Status = "not_triggered"
+		return out, nil
+	}
 	if a.breakerOpen(cfg) {
 		out.Status = "circuit_open"
 		out.Error = "active recall circuit breaker open"
@@ -164,7 +199,11 @@ func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequ
 	if strings.TrimSpace(query) == "" {
 		return out, nil
 	}
-	key := activeRecallCacheKey(req.SessionID, query)
+	searchLimit := cfg.SearchLimit
+	if decision.Escalated {
+		searchLimit = cfg.EscalationSearchLimit
+	}
+	key := activeRecallCacheKey(req.SessionID, query+"\x00"+string(decision.Intent)+"\x00"+strconv.Itoa(searchLimit))
 	if cached, ok := a.getCached(key); ok {
 		cached.Cached = true
 		return cached, nil
@@ -180,7 +219,7 @@ func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequ
 	}
 	ch := make(chan sr, 1)
 	if ps, ok := a.searcher.(ActiveRecallPartialSearcher); ok {
-		go func() { hits, err := ps.SearchPartial(ctx, query, cfg.SearchLimit); ch <- sr{hits: hits, err: err} }()
+		go func() { hits, err := ps.SearchPartial(ctx, query, searchLimit); ch <- sr{hits: hits, err: err} }()
 		got := <-ch
 		if ctx.Err() != nil {
 			out.TimedOut = true
@@ -205,7 +244,7 @@ func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequ
 		a.setCached(key, out, cfg.CacheTTL)
 		return out, nil
 	}
-	go func() { ch <- sr{hits: a.searcher.Search(query, cfg.SearchLimit)} }()
+	go func() { ch <- sr{hits: a.searcher.Search(query, searchLimit)} }()
 	select {
 	case <-ctx.Done():
 		out.TimedOut = true
@@ -227,6 +266,41 @@ func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequ
 		a.setCached(key, out, cfg.CacheTTL)
 		return out, nil
 	}
+}
+
+type ActiveRecallTriggerDecision struct {
+	Triggered bool
+	Intent    ActiveRecallIntent
+	Escalated bool
+	Reason    string
+}
+
+var activeRecallIntentPatterns = []struct {
+	intent   ActiveRecallIntent
+	re       *regexp.Regexp
+	escalate bool
+}{
+	{ActiveRecallIntentDecision, regexp.MustCompile(`(?i)\b(?:we|you|i)\s+(?:decided|agreed|discussed|chose|said)|\bwhat did we\s+(?:decide|agree|choose)|\bprevious\s+(?:decision|plan)|\bwhat was the plan\b`), true},
+	{ActiveRecallIntentContinuity, regexp.MustCompile(`(?i)\b(?:continue|resume|pick up)\b|\bwhere were we\b`), true},
+	{ActiveRecallIntentExplicit, regexp.MustCompile(`(?i)\b(?:remember|recall|previously|earlier|last time|what did we|what did i)\b`), true},
+	{ActiveRecallIntentPreference, regexp.MustCompile(`(?i)\b(?:my(?:\s+\w+){0,3}\s+preference|i prefer|what do i usually|what did i use|my usual)\b`), false},
+}
+
+func EvaluateActiveRecallTrigger(req ActiveRecallRequest, cfg ActiveRecallConfig) ActiveRecallTriggerDecision {
+	cfg = normalizeActiveRecallConfig(cfg)
+	if !cfg.Enabled || cfg.TriggerMode == ActiveRecallTriggerOff {
+		return ActiveRecallTriggerDecision{Intent: ActiveRecallIntentNone, Reason: "disabled"}
+	}
+	if cfg.TriggerMode == ActiveRecallTriggerAlways {
+		return ActiveRecallTriggerDecision{Triggered: true, Intent: ActiveRecallIntentNone, Reason: "always"}
+	}
+	message := StripActiveRecallNoise(req.LatestMessage)
+	for _, pattern := range activeRecallIntentPatterns {
+		if pattern.re.MatchString(message) {
+			return ActiveRecallTriggerDecision{Triggered: true, Intent: pattern.intent, Escalated: pattern.escalate, Reason: "intent_match"}
+		}
+	}
+	return ActiveRecallTriggerDecision{Intent: ActiveRecallIntentNone, Reason: "no_recall_intent"}
 }
 
 func BuildActiveRecallQuery(req ActiveRecallRequest, cfg ActiveRecallConfig) string {
@@ -331,6 +405,15 @@ func normalizeActiveRecallConfig(cfg ActiveRecallConfig) ActiveRecallConfig {
 	}
 	if cfg.SearchLimit <= 0 {
 		cfg.SearchLimit = DefaultActiveRecallSearchLimit
+	}
+	if cfg.TriggerMode == "" {
+		cfg.TriggerMode = ActiveRecallTriggerIntent
+	}
+	if cfg.EscalationSearchLimit <= 0 {
+		cfg.EscalationSearchLimit = DefaultActiveRecallEscalationLimit
+		if cfg.SearchLimit*2 > cfg.EscalationSearchLimit {
+			cfg.EscalationSearchLimit = cfg.SearchLimit * 2
+		}
 	}
 	if cfg.MaxContextChars == 0 {
 		cfg.MaxContextChars = DefaultActiveRecallMaxContextChars

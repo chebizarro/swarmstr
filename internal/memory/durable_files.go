@@ -92,10 +92,38 @@ func WriteDurableMemoryFile(rootDir string, rec MemoryRecord) (string, error) {
 	}
 	body := strings.TrimSpace(rec.Text)
 	content := "---\n" + string(front) + "---\n\n" + body + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	// Preflight the resulting index before mutating either file. A rejected
+	// index write must not leave a new durable topic without a matching index.
+	rec.Source.FilePath = path
+	records, err := scanDurableMemoryRecords(rootDir)
+	if err != nil {
 		return "", err
 	}
-	_ = GenerateMemoryEntrypoint(rootDir)
+	records = upsertDurableMemoryRecord(records, rec, path)
+	entrypoint, err := renderMemoryEntrypoint(rootDir, records)
+	if err != nil {
+		return "", err
+	}
+	if err := ValidateMemoryEntrypointContent(entrypoint); err != nil {
+		return "", err
+	}
+
+	oldTopic, oldTopicErr := os.ReadFile(path)
+	topicExisted := oldTopicErr == nil
+	if oldTopicErr != nil && !os.IsNotExist(oldTopicErr) {
+		return "", oldTopicErr
+	}
+	if err := writeFileAtomic(path, []byte(content), 0o600); err != nil {
+		return "", err
+	}
+	if err := WriteMemoryEntrypoint(filepath.Join(rootDir, FileMemoryEntrypointName), entrypoint); err != nil {
+		if topicExisted {
+			_ = writeFileAtomic(path, oldTopic, 0o600)
+		} else {
+			_ = os.Remove(path)
+		}
+		return "", err
+	}
 	return path, nil
 }
 
@@ -290,32 +318,122 @@ func GenerateMemoryEntrypoint(rootDir string) error {
 	if err := os.MkdirAll(rootDir, 0o700); err != nil {
 		return err
 	}
+	records, err := scanDurableMemoryRecords(rootDir)
+	if err != nil {
+		return err
+	}
+	content, err := renderMemoryEntrypoint(rootDir, records)
+	if err != nil {
+		return err
+	}
+	return WriteMemoryEntrypoint(filepath.Join(rootDir, FileMemoryEntrypointName), content)
+}
+
+func scanDurableMemoryRecords(rootDir string) ([]MemoryRecord, error) {
 	var records []MemoryRecord
 	for _, dir := range durableMemoryDirs {
-		glob, _ := filepath.Glob(filepath.Join(rootDir, dir, "*.md"))
+		glob, err := filepath.Glob(filepath.Join(rootDir, dir, "*.md"))
+		if err != nil {
+			return nil, err
+		}
 		for _, path := range glob {
 			rec, ok, err := ParseDurableMemoryFile(path)
-			if err == nil && ok {
+			if err != nil {
+				return nil, fmt.Errorf("parse durable memory %s: %w", path, err)
+			}
+			if ok {
 				records = append(records, rec)
 			}
 		}
 	}
+	return records, nil
+}
+
+func upsertDurableMemoryRecord(records []MemoryRecord, replacement MemoryRecord, path string) []MemoryRecord {
+	out := make([]MemoryRecord, 0, len(records)+1)
+	for _, rec := range records {
+		if rec.ID == replacement.ID || filepath.Clean(rec.Source.FilePath) == filepath.Clean(path) {
+			continue
+		}
+		out = append(out, rec)
+	}
+	out = append(out, replacement)
+	return out
+}
+
+func renderMemoryEntrypoint(rootDir string, records []MemoryRecord) (string, error) {
+	records = append([]MemoryRecord(nil), records...)
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].Type != records[j].Type {
 			return records[i].Type < records[j].Type
 		}
-		return records[i].Subject < records[j].Subject
+		if records[i].Subject != records[j].Subject {
+			return records[i].Subject < records[j].Subject
+		}
+		return records[i].ID < records[j].ID
 	})
 	lines := []string{"# Memory Index", "", "Durable, human-editable memories. Detailed records live in typed markdown files.", ""}
 	if len(records) == 0 {
 		lines = append(lines, "No durable memories have been written yet.")
 	} else {
 		for _, rec := range records {
-			rel, _ := filepath.Rel(rootDir, rec.Source.FilePath)
+			rel, err := filepath.Rel(rootDir, rec.Source.FilePath)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return "", fmt.Errorf("durable memory path resolves outside root: %s", rec.Source.FilePath)
+			}
 			lines = append(lines, fmt.Sprintf("- [%s](%s) — %s [%s/%s]", firstNonEmpty(rec.Subject, rec.ID), filepath.ToSlash(rel), firstNonEmpty(rec.Summary, summarizeMemoryText(rec.Text, 120)), rec.Type, rec.Scope))
 		}
 	}
-	return os.WriteFile(filepath.Join(rootDir, FileMemoryEntrypointName), []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// WriteMemoryEntrypoint validates the complete loaded index before atomically
+// publishing it. The previous file remains intact on any error.
+func WriteMemoryEntrypoint(path, content string) error {
+	if err := ValidateMemoryEntrypointContent(content); err != nil {
+		return err
+	}
+	return writeFileAtomic(path, []byte(content), 0o600)
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }
 
 func durableCategory(t string) string {

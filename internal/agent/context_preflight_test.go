@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -335,6 +336,28 @@ func TestDropLargestTools_PreservesCritical(t *testing.T) {
 	}
 	if !found {
 		t.Error("critical tool should not be dropped")
+	}
+}
+
+func TestPreflightUsesProviderTokenAccountant(t *testing.T) {
+	calls := 0
+	accountant := TokenAccountantFunc{Source: "test_tokenizer", Count: func(messages []LLMMessage, tools []ToolDefinition) (int, error) {
+		calls++
+		return len(messages)*10 + len(tools)*5, nil
+	}}
+	result := EnforceTotalContextBudgetWithAccountant([]LLMMessage{{Role: "user", Content: strings.Repeat("x", 10000)}}, []ToolDefinition{{Name: "lookup"}}, 4096, 256, nil, accountant)
+	if calls == 0 || result.AccountingSource != "test_tokenizer" || result.AccountingFallback || result.EstimatedTokens != 15 || result.ReservedOutput != 256 {
+		t.Fatalf("result=%+v calls=%d", result, calls)
+	}
+}
+
+func TestPreflightTokenAccountantFallback(t *testing.T) {
+	accountant := TokenAccountantFunc{Source: "broken", Count: func([]LLMMessage, []ToolDefinition) (int, error) {
+		return 0, fmt.Errorf("tokenizer unavailable")
+	}}
+	result := EnforceTotalContextBudgetWithAccountant([]LLMMessage{{Role: "user", Content: "hello"}}, nil, 4096, 0, nil, accountant)
+	if !result.AccountingFallback || result.AccountingSource != "character_estimate" || !strings.Contains(result.AccountingError, "unavailable") || result.EstimatedTokens == 0 {
+		t.Fatalf("result=%+v", result)
 	}
 }
 

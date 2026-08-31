@@ -45,11 +45,14 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -82,11 +85,13 @@ func (p *MatrixPlugin) ConfigSchema() map[string]any {
 
 func (p *MatrixPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Typing:       true,
-		Reactions:    true,
-		Threads:      true,
-		Edit:         true,
-		MultiAccount: true,
+		Typing:          true,
+		Reactions:       true,
+		Threads:         true,
+		Edit:            true,
+		MultiAccount:    true,
+		Media:           true,
+		DirectTextMedia: true,
 	}
 }
 
@@ -494,7 +499,44 @@ func (b *matrixBot) SendWithReceipt(ctx context.Context, text string) (channels.
 	return b.sendRoomMessage(ctx, map[string]any{"msgtype": "m.text", "body": text})
 }
 
-func (b *matrixBot) SendMedia(ctx context.Context, text string, data []byte, mimeType, filename string) (channels.DeliveryReceipt, error) {
+func (b *matrixBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("matrix %s: %w", b.channelID, err)
+	}
+	if len(payload.Media) == 0 {
+		return b.Send(ctx, payload.Text)
+	}
+	for i, item := range payload.Media {
+		caption := ""
+		if i == 0 {
+			caption = payload.Text
+		}
+		if channelmedia.IsHTTPURL(item.Path) {
+			return fmt.Errorf("matrix %s: media[%d]: remote media URLs are not supported; stage the file locally", b.channelID, i)
+		}
+		file, err := os.Open(item.Path)
+		if err != nil {
+			return fmt.Errorf("matrix %s: media[%d]: %w", b.channelID, i, err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, channels.DefaultMaxMediaBytes+1))
+		closeErr := file.Close()
+		if readErr != nil {
+			return fmt.Errorf("matrix %s: media[%d]: %w", b.channelID, i, readErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("matrix %s: media[%d]: %w", b.channelID, i, closeErr)
+		}
+		if len(data) > channels.DefaultMaxMediaBytes {
+			return fmt.Errorf("matrix %s: media[%d] exceeds %d byte limit", b.channelID, i, channels.DefaultMaxMediaBytes)
+		}
+		if _, err := b.SendMediaBytes(ctx, caption, data, item.ContentType, filepath.Base(item.Path)); err != nil {
+			return fmt.Errorf("matrix %s: media[%d]: %w", b.channelID, i, err)
+		}
+	}
+	return nil
+}
+
+func (b *matrixBot) SendMediaBytes(ctx context.Context, text string, data []byte, mimeType, filename string) (channels.DeliveryReceipt, error) {
 	mxcURL, err := b.uploadMedia(ctx, data, mimeType, filename)
 	if err != nil {
 		receipt := channels.DeliveryReceipt{ChannelID: b.channelID, Provider: "matrix", Attempts: 1, CreatedAt: time.Now(), Status: channels.DeliveryFailed, Error: err.Error()}

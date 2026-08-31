@@ -23,10 +23,13 @@ import (
 
 // VectorDocument is a vector-indexed memory document.
 type VectorDocument struct {
-	ID       string         `json:"id"`
-	Text     string         `json:"text"`
-	Vector   []float32      `json:"vector"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	// Generation identifies the publication generation. Zero requests assignment
+	// to the backend's next generation; lower explicit generations are rejected.
+	Generation uint64         `json:"generation,omitempty"`
+	ID         string         `json:"id"`
+	Text       string         `json:"text"`
+	Vector     []float32      `json:"vector"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 // Backend stores vector documents and supports cosine nearest-neighbor search.
@@ -41,13 +44,14 @@ type Backend interface {
 	Health(ctx context.Context) error
 }
 
-// Options configures the embedded backend.
+// Options configures the embedded local JSON vector backend.
 type Options struct {
-	// Path is the JSON persistence file. Empty uses ~/.metiq/lancedb-memory.json.
+	// Path is the JSON persistence file. Empty uses ~/.metiq/json-vector-memory.json.
 	Path string
 }
 
-// New opens an embedded LanceDB-compatible vector backend.
+// New opens the embedded local JSON vector backend. The package name remains
+// for compatibility, but the default filename honestly identifies the storage.
 func New(opts Options) (*EmbeddedBackend, error) {
 	path := strings.TrimSpace(opts.Path)
 	if path == "" {
@@ -55,7 +59,13 @@ func New(opts Options) (*EmbeddedBackend, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get home dir: %w", err)
 		}
-		path = filepath.Join(home, ".metiq", "lancedb-memory.json")
+		path = filepath.Join(home, ".metiq", "json-vector-memory.json")
+		legacy := filepath.Join(home, ".metiq", "lancedb-memory.json")
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if _, legacyErr := os.Stat(legacy); legacyErr == nil {
+				path = legacy
+			}
+		}
 	}
 	b := &EmbeddedBackend{path: path, docs: map[string]VectorDocument{}}
 	if err := b.load(); err != nil {
@@ -64,56 +74,102 @@ func New(opts Options) (*EmbeddedBackend, error) {
 	return b, nil
 }
 
-// EmbeddedBackend is a local, dependency-light vector store that mirrors the
-// LanceDB backend contract without requiring an external service.
+// EmbeddedBackend is a local JSON-backed cosine vector store.
 type EmbeddedBackend struct {
-	mu   sync.RWMutex
-	path string
-	docs map[string]VectorDocument
+	mu         sync.RWMutex
+	path       string
+	generation uint64
+	docs       map[string]VectorDocument
 }
 
-// Upsert inserts or replaces vector documents.
+// StaleGenerationError reports an attempted replacement by an older publisher.
+type StaleGenerationError struct {
+	ID       string
+	Incoming uint64
+	Current  uint64
+}
+
+func (e *StaleGenerationError) Error() string {
+	return fmt.Sprintf("local vector store: stale generation for %q: incoming=%d current=%d", e.ID, e.Incoming, e.Current)
+}
+
+// Upsert validates the whole batch and atomically publishes a new generation.
 func (b *EmbeddedBackend) Upsert(ctx context.Context, docs []VectorDocument) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(docs) == 0 {
+		return nil
+	}
+	next := cloneDocs(b.docs)
+	commitGeneration := b.generation + 1
 	for _, doc := range docs {
 		id := strings.TrimSpace(doc.ID)
 		if id == "" {
-			return errors.New("lancedb: document id is required")
+			return errors.New("local vector store: document id is required")
 		}
 		if strings.TrimSpace(doc.Text) == "" {
-			return fmt.Errorf("lancedb: document %q text is required", id)
+			return fmt.Errorf("local vector store: document %q text is required", id)
 		}
 		vec := normalize(doc.Vector)
 		if vec == nil {
-			return fmt.Errorf("lancedb: document %q vector is empty or zero", id)
+			return fmt.Errorf("local vector store: document %q vector is empty or zero", id)
 		}
-		md := map[string]any(nil)
-		if len(doc.Metadata) > 0 {
-			md = make(map[string]any, len(doc.Metadata))
-			for k, v := range doc.Metadata {
-				md[k] = v
-			}
+		if doc.Generation != 0 && doc.Generation < b.generation {
+			return &StaleGenerationError{ID: id, Incoming: doc.Generation, Current: b.generation}
 		}
-		b.docs[id] = VectorDocument{ID: id, Text: doc.Text, Vector: vec, Metadata: md}
+		if current, ok := next[id]; ok && doc.Generation != 0 && doc.Generation < current.Generation {
+			return &StaleGenerationError{ID: id, Incoming: doc.Generation, Current: current.Generation}
+		}
+		if doc.Generation > commitGeneration {
+			commitGeneration = doc.Generation
+		}
+		doc.ID = id
+		doc.Vector = vec
+		next[id] = cloneDoc(doc)
 	}
-	return b.saveLocked()
+	for id, doc := range next {
+		if doc.Generation == 0 {
+			doc.Generation = commitGeneration
+			next[id] = doc
+		}
+	}
+	if err := b.saveStateLocked(next, commitGeneration); err != nil {
+		return err
+	}
+	b.docs = next
+	b.generation = commitGeneration
+	return nil
 }
 
-// Delete removes vector documents by ID.
+// Delete atomically publishes removals as a new generation.
 func (b *EmbeddedBackend) Delete(ctx context.Context, ids []string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	next := cloneDocs(b.docs)
+	changed := false
 	for _, id := range ids {
-		delete(b.docs, strings.TrimSpace(id))
+		id = strings.TrimSpace(id)
+		if _, ok := next[id]; ok {
+			delete(next, id)
+			changed = true
+		}
 	}
-	return b.saveLocked()
+	if !changed {
+		return nil
+	}
+	generation := b.generation + 1
+	if err := b.saveStateLocked(next, generation); err != nil {
+		return err
+	}
+	b.docs = next
+	b.generation = generation
+	return nil
 }
 
 // Search returns the nearest documents by cosine similarity.
@@ -182,7 +238,7 @@ func (b *EmbeddedBackend) Health(ctx context.Context) error {
 	ok := b.docs != nil
 	b.mu.RUnlock()
 	if !ok {
-		return errors.New("lancedb: backend is closed")
+		return errors.New("local vector store: backend is closed")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -202,7 +258,8 @@ func (b *EmbeddedBackend) Close() error {
 }
 
 type diskState struct {
-	Docs []VectorDocument `json:"docs"`
+	Generation uint64           `json:"generation"`
+	Docs       []VectorDocument `json:"docs"`
 }
 
 func (b *EmbeddedBackend) load() error {
@@ -215,8 +272,9 @@ func (b *EmbeddedBackend) load() error {
 	}
 	var state diskState
 	if err := json.Unmarshal(raw, &state); err != nil {
-		return fmt.Errorf("lancedb: parse %s: %w", b.path, err)
+		return fmt.Errorf("local vector store: parse %s: %w", b.path, err)
 	}
+	b.generation = state.Generation
 	for _, doc := range state.Docs {
 		if strings.TrimSpace(doc.ID) == "" || strings.TrimSpace(doc.Text) == "" {
 			continue
@@ -226,33 +284,65 @@ func (b *EmbeddedBackend) load() error {
 			continue
 		}
 		doc.Vector = vec
+		if doc.Generation > b.generation {
+			b.generation = doc.Generation
+		}
 		b.docs[doc.ID] = cloneDoc(doc)
 	}
 	return nil
 }
 
 func (b *EmbeddedBackend) saveLocked() error {
+	return b.saveStateLocked(b.docs, b.generation)
+}
+
+func (b *EmbeddedBackend) saveStateLocked(docMap map[string]VectorDocument, generation uint64) error {
 	if err := os.MkdirAll(filepath.Dir(b.path), 0o700); err != nil {
 		return err
 	}
-	docs := make([]VectorDocument, 0, len(b.docs))
-	for _, doc := range b.docs {
+	docs := make([]VectorDocument, 0, len(docMap))
+	for _, doc := range docMap {
 		docs = append(docs, cloneDoc(doc))
 	}
 	sort.Slice(docs, func(i, j int) bool { return docs[i].ID < docs[j].ID })
-	raw, err := json.MarshalIndent(diskState{Docs: docs}, "", "  ")
+	raw, err := json.MarshalIndent(diskState{Generation: generation, Docs: docs}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.%d.tmp", b.path, os.Getpid())
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(b.path), filepath.Base(b.path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, b.path)
+	tmp := file.Name()
+	cleanup := func() {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		cleanup()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, b.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func cloneDoc(doc VectorDocument) VectorDocument {
-	out := VectorDocument{ID: doc.ID, Text: doc.Text}
+	out := VectorDocument{Generation: doc.Generation, ID: doc.ID, Text: doc.Text}
 	if len(doc.Vector) > 0 {
 		out.Vector = append([]float32(nil), doc.Vector...)
 	}
@@ -261,6 +351,14 @@ func cloneDoc(doc VectorDocument) VectorDocument {
 		for k, v := range doc.Metadata {
 			out.Metadata[k] = v
 		}
+	}
+	return out
+}
+
+func cloneDocs(in map[string]VectorDocument) map[string]VectorDocument {
+	out := make(map[string]VectorDocument, len(in))
+	for id, doc := range in {
+		out[id] = cloneDoc(doc)
 	}
 	return out
 }

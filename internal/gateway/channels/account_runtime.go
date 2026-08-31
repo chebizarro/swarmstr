@@ -167,6 +167,17 @@ func (r *AccountRuntime) Start(ctx context.Context, provider, accountID string) 
 		entry.snapshot.LastTransitionAtMS = time.Now().UnixMilli()
 		return entry.snapshot, fmt.Errorf("channel provider %q returned a nil handle", account.Provider)
 	}
+	if cp, ok := plugin.(sdk.ChannelPluginWithCapabilities); ok {
+		if err := sdk.ValidateChannelCapabilityContract(cp.Capabilities(), handle); err != nil {
+			cancel()
+			handle.Close()
+			entry.snapshot.State = AccountFailed
+			entry.snapshot.Running = false
+			entry.snapshot.LastError = err.Error()
+			entry.snapshot.LastTransitionAtMS = time.Now().UnixMilli()
+			return entry.snapshot, err
+		}
+	}
 	connection := AccountConnection{Handle: &ExtensionHandle{handle: handle}, RawHandle: handle}
 	entry.connection = connection
 	entry.cancel = cancel

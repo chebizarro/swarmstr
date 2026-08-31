@@ -70,6 +70,7 @@ func TestParseDMReplyScheme(t *testing.T) {
 		{"auto", "auto", true},
 		{"nip17", "nip17", true},
 		{"NIP-04", "nip04", true},
+		{"fips", "fips", true},
 		{"bogus", "", false},
 	}
 	for _, c := range cases {

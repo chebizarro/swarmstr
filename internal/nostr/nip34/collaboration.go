@@ -59,76 +59,76 @@ func ParsePatch(event nostr.Event) (Patch, error) {
 	if err := validateSignedEvent(event, KindPatch); err != nil {
 		return Patch{}, err
 	}
-	repo, euc, recipients, err := parseCollaborationTags(event.Tags)
-	if err != nil {
-		return Patch{}, err
-	}
-	patch := Patch{Repository: repo, EarliestUniqueCommit: euc, Recipients: recipients, Content: event.Content, Event: event}
+	repo, euc, recipients, warnings := parseCollaborationTags(event.Tags)
+	patch := Patch{Repository: repo, EarliestUniqueCommit: euc, Recipients: recipients, Content: event.Content, Warnings: warnings, Event: event}
 	if patch.Content == "" {
-		return Patch{}, fmt.Errorf("patch content required")
+		patch.Warnings = append(patch.Warnings, "patch content is recommended")
 	}
 	for _, tag := range event.Tags {
 		if len(tag) == 2 && tag[0] == "t" {
 			switch tag[1] {
 			case "root":
 				if patch.Root {
-					return Patch{}, fmt.Errorf("duplicate root tag")
+					patch.Warnings = append(patch.Warnings, "duplicate root tag ignored")
+					continue
 				}
 				patch.Root = true
 			case "root-revision":
 				if patch.RootRevision {
-					return Patch{}, fmt.Errorf("duplicate root revision tag")
+					patch.Warnings = append(patch.Warnings, "duplicate root-revision tag ignored")
+					continue
 				}
 				patch.RootRevision = true
 			}
 		}
 		if len(tag) >= 4 && len(tag) <= 5 && tag[0] == "e" && tag[3] == "reply" {
 			if patch.Reply != nil {
-				return Patch{}, fmt.Errorf("duplicate reply tag")
+				patch.Warnings = append(patch.Warnings, "duplicate reply tag ignored")
+				continue
 			}
 			id, err := nostr.IDFromHex(tag[1])
 			if err != nil {
-				return Patch{}, fmt.Errorf("invalid reply event id")
+				patch.Warnings = append(patch.Warnings, "invalid reply event id ignored")
+				continue
 			}
 			ref := &EventReference{ID: id, RelayHint: tag[2]}
 			if len(tag) == 5 && tag[4] != "" {
 				pk, err := parsePubKey(tag[4])
 				if err != nil {
-					return Patch{}, err
+					patch.Warnings = append(patch.Warnings, "invalid reply author ignored")
+				} else {
+					ref.Author = &pk
 				}
-				ref.Author = &pk
 			}
 			patch.Reply = ref
 		}
 	}
 	if patch.RootRevision && patch.Reply == nil {
-		return Patch{}, fmt.Errorf("root revision requires reply")
+		patch.Warnings = append(patch.Warnings, "root-revision should reference the original root")
 	}
-	if patch.Commit.CommitID, err = optionalSingleton(event.Tags, "commit"); err != nil {
-		return Patch{}, err
-	}
-	if patch.Commit.ParentCommitID, err = optionalSingleton(event.Tags, "parent-commit"); err != nil {
-		return Patch{}, err
-	}
-	if patch.Commit.PGPSignature, err = optionalSingleton(event.Tags, "commit-pgp-sig"); err != nil {
-		return Patch{}, err
-	}
+	patch.Commit.CommitID = firstTagValue(event.Tags, "commit", &patch.Warnings)
+	patch.Commit.ParentCommitID = firstTagValue(event.Tags, "parent-commit", &patch.Warnings)
+	patch.Commit.PGPSignature = firstTagValue(event.Tags, "commit-pgp-sig", &patch.Warnings)
 	committer := tagsNamed(event.Tags, "committer")
-	pgpTags := tagsNamed(event.Tags, "commit-pgp-sig")
-	if patch.Commit.CommitID == "" && (patch.Commit.ParentCommitID != "" || len(pgpTags) > 0 || len(committer) > 0) {
-		return Patch{}, fmt.Errorf("partial stable commit metadata")
-	}
 	if patch.Commit.CommitID != "" {
 		if err := validateGitID(patch.Commit.CommitID); err != nil {
-			return Patch{}, err
+			patch.Warnings = append(patch.Warnings, "invalid commit id ignored")
+			patch.Commit.CommitID = ""
 		}
+	}
+	if patch.Commit.ParentCommitID != "" {
 		if err := validateGitID(patch.Commit.ParentCommitID); err != nil {
-			return Patch{}, err
+			patch.Warnings = append(patch.Warnings, "invalid parent-commit ignored")
+			patch.Commit.ParentCommitID = ""
 		}
-		if len(pgpTags) != 1 || len(pgpTags[0]) != 2 || len(committer) != 1 || len(committer[0]) != 5 {
-			return Patch{}, fmt.Errorf("incomplete stable commit metadata")
-		}
+	}
+	if len(committer) > 0 && len(committer[0]) == 5 {
 		patch.Commit.CommitterName, patch.Commit.CommitterEmail, patch.Commit.Timestamp, patch.Commit.TimezoneOffset = committer[0][1], committer[0][2], committer[0][3], committer[0][4]
+	} else if len(committer) > 0 {
+		patch.Warnings = append(patch.Warnings, "malformed committer metadata ignored")
+	}
+	if patch.Commit.CommitID == "" && (patch.Commit.ParentCommitID != "" || patch.Commit.PGPSignature != "" || len(committer) > 0) {
+		patch.Warnings = append(patch.Warnings, "stable commit metadata is incomplete")
 	}
 	patch.EarliestUniqueCommit = ""
 	commitRefs := 0
@@ -141,10 +141,12 @@ func ParsePatch(event nostr.Event) (Patch, error) {
 			continue
 		}
 		if patch.EarliestUniqueCommit != "" {
-			return Patch{}, fmt.Errorf("duplicate earliest unique commit")
+			patch.Warnings = append(patch.Warnings, "additional earliest unique commit ignored")
+			continue
 		}
 		if err := validateGitID(tag[1]); err != nil {
-			return Patch{}, err
+			patch.Warnings = append(patch.Warnings, "invalid earliest unique commit ignored")
+			continue
 		}
 		patch.EarliestUniqueCommit = tag[1]
 	}
@@ -196,38 +198,41 @@ func ParsePullRequest(event nostr.Event) (PullRequest, error) {
 	if err := validateSignedEvent(event, KindPullRequest); err != nil {
 		return PullRequest{}, err
 	}
-	repo, euc, recipients, err := parseCollaborationTags(event.Tags)
-	if err != nil {
-		return PullRequest{}, err
+	repo, euc, recipients, warnings := parseCollaborationTags(event.Tags)
+	pr := PullRequest{Repository: repo, EarliestUniqueCommit: euc, Recipients: recipients, Content: event.Content, Warnings: warnings, Event: event}
+	pr.Subject = firstTagValue(event.Tags, "subject", &pr.Warnings)
+	if pr.Subject == "" {
+		pr.Warnings = append(pr.Warnings, "subject tag is recommended")
 	}
-	pr := PullRequest{Repository: repo, EarliestUniqueCommit: euc, Recipients: recipients, Content: event.Content, Event: event}
-	if pr.Subject, err = requiredSingleton(event.Tags, "subject"); err != nil {
-		return PullRequest{}, err
-	}
-	if pr.Tip, err = requiredSingleton(event.Tags, "c"); err != nil {
-		return PullRequest{}, err
-	}
-	if err := validateGitID(pr.Tip); err != nil {
-		return PullRequest{}, err
+	pr.Tip = firstTagValue(event.Tags, "c", &pr.Warnings)
+	if pr.Tip == "" {
+		pr.Warnings = append(pr.Warnings, "tip commit tag is recommended")
+	} else if err := validateGitID(pr.Tip); err != nil {
+		pr.Warnings = append(pr.Warnings, "invalid tip commit ignored")
+		pr.Tip = ""
 	}
 	pr.Clone = flattenedValues(event.Tags, "clone")
+	validClones := pr.Clone[:0]
 	for _, clone := range pr.Clone {
 		if clone == "" {
-			return PullRequest{}, fmt.Errorf("empty PR clone URL")
+			pr.Warnings = append(pr.Warnings, "empty clone URL ignored")
+			continue
 		}
+		validClones = append(validClones, clone)
 	}
-	if event.Content == "" || len(pr.Clone) == 0 {
-		return PullRequest{}, fmt.Errorf("pull request content and clone URL required")
+	pr.Clone = validClones
+	if event.Content == "" {
+		pr.Warnings = append(pr.Warnings, "pull request content is recommended")
 	}
-	if pr.BranchName, err = optionalSingleton(event.Tags, "branch-name"); err != nil {
-		return PullRequest{}, err
+	if len(pr.Clone) == 0 {
+		pr.Warnings = append(pr.Warnings, "at least one clone URL is recommended")
 	}
-	if pr.MergeBase, err = optionalSingleton(event.Tags, "merge-base"); err != nil {
-		return PullRequest{}, err
-	}
+	pr.BranchName = firstTagValue(event.Tags, "branch-name", &pr.Warnings)
+	pr.MergeBase = firstTagValue(event.Tags, "merge-base", &pr.Warnings)
 	if pr.MergeBase != "" {
 		if err := validateGitID(pr.MergeBase); err != nil {
-			return PullRequest{}, err
+			pr.Warnings = append(pr.Warnings, "invalid merge-base ignored")
+			pr.MergeBase = ""
 		}
 	}
 	for _, tag := range event.Tags {
@@ -236,11 +241,13 @@ func ParsePullRequest(event nostr.Event) (PullRequest, error) {
 		}
 		if len(tag) == 2 && tag[0] == "e" {
 			if pr.RevisionOf != nil {
-				return PullRequest{}, fmt.Errorf("duplicate revision event")
+				pr.Warnings = append(pr.Warnings, "additional revision event ignored")
+				continue
 			}
 			id, err := nostr.IDFromHex(tag[1])
 			if err != nil {
-				return PullRequest{}, err
+				pr.Warnings = append(pr.Warnings, "invalid revision event ignored")
+				continue
 			}
 			pr.RevisionOf = &id
 		}
@@ -278,48 +285,49 @@ func ParsePullRequestUpdate(event nostr.Event) (PullRequestUpdate, error) {
 	if err := validateSignedEvent(event, KindPullRequestUpdate); err != nil {
 		return PullRequestUpdate{}, err
 	}
-	repo, euc, recipients, err := parseCollaborationTags(event.Tags)
-	if err != nil {
-		return PullRequestUpdate{}, err
+	repo, euc, recipients, warnings := parseCollaborationTags(event.Tags)
+	update := PullRequestUpdate{Repository: repo, EarliestUniqueCommit: euc, Recipients: recipients, Warnings: warnings, Event: event}
+	root := firstTagValue(event.Tags, "E", &update.Warnings)
+	if root == "" {
+		update.Warnings = append(update.Warnings, "pull request root event is recommended")
+	} else if id, err := nostr.IDFromHex(root); err != nil {
+		update.Warnings = append(update.Warnings, "invalid pull request root event ignored")
+	} else {
+		update.PullRequestID = id
 	}
-	update := PullRequestUpdate{Repository: repo, EarliestUniqueCommit: euc, Recipients: recipients, Event: event}
-	root, err := requiredSingleton(event.Tags, "E")
-	if err != nil {
-		return PullRequestUpdate{}, err
+	author := firstTagValue(event.Tags, "P", &update.Warnings)
+	if author == "" {
+		update.Warnings = append(update.Warnings, "pull request author is recommended")
+	} else if pk, err := parsePubKey(author); err != nil {
+		update.Warnings = append(update.Warnings, "invalid pull request author ignored")
+	} else {
+		update.PullRequestAuthor = pk
 	}
-	update.PullRequestID, err = nostr.IDFromHex(root)
-	if err != nil {
-		return PullRequestUpdate{}, err
-	}
-	author, err := requiredSingleton(event.Tags, "P")
-	if err != nil {
-		return PullRequestUpdate{}, err
-	}
-	update.PullRequestAuthor, err = parsePubKey(author)
-	if err != nil {
-		return PullRequestUpdate{}, err
-	}
-	if update.Tip, err = requiredSingleton(event.Tags, "c"); err != nil {
-		return PullRequestUpdate{}, err
-	}
-	if err := validateGitID(update.Tip); err != nil {
-		return PullRequestUpdate{}, err
+	update.Tip = firstTagValue(event.Tags, "c", &update.Warnings)
+	if update.Tip == "" {
+		update.Warnings = append(update.Warnings, "tip commit tag is recommended")
+	} else if err := validateGitID(update.Tip); err != nil {
+		update.Warnings = append(update.Warnings, "invalid tip commit ignored")
+		update.Tip = ""
 	}
 	update.Clone = flattenedValues(event.Tags, "clone")
+	validClones := update.Clone[:0]
 	for _, clone := range update.Clone {
 		if clone == "" {
-			return PullRequestUpdate{}, fmt.Errorf("empty PR update clone URL")
+			update.Warnings = append(update.Warnings, "empty clone URL ignored")
+			continue
 		}
+		validClones = append(validClones, clone)
 	}
+	update.Clone = validClones
 	if len(update.Clone) == 0 {
-		return PullRequestUpdate{}, fmt.Errorf("PR update clone URL required")
+		update.Warnings = append(update.Warnings, "at least one clone URL is recommended")
 	}
-	if update.MergeBase, err = optionalSingleton(event.Tags, "merge-base"); err != nil {
-		return PullRequestUpdate{}, err
-	}
+	update.MergeBase = firstTagValue(event.Tags, "merge-base", &update.Warnings)
 	if update.MergeBase != "" {
 		if err := validateGitID(update.MergeBase); err != nil {
-			return PullRequestUpdate{}, err
+			update.Warnings = append(update.Warnings, "invalid merge-base ignored")
+			update.MergeBase = ""
 		}
 	}
 	return update, nil
@@ -349,21 +357,17 @@ func ParseIssue(event nostr.Event) (Issue, error) {
 	if err := validateSignedEvent(event, KindIssue); err != nil {
 		return Issue{}, err
 	}
-	repo, _, recipients, err := parseCollaborationTags(event.Tags)
-	if err != nil {
-		return Issue{}, err
-	}
-	issue := Issue{Repository: repo, Recipients: recipients, Content: event.Content, Event: event}
+	repo, _, recipients, warnings := parseCollaborationTags(event.Tags)
+	issue := Issue{Repository: repo, Recipients: recipients, Content: event.Content, Warnings: warnings, Event: event}
 	if issue.Content == "" {
-		return Issue{}, fmt.Errorf("issue content required")
+		issue.Warnings = append(issue.Warnings, "issue content is recommended")
 	}
-	if issue.Subject, err = optionalSingleton(event.Tags, "subject"); err != nil {
-		return Issue{}, err
-	}
+	issue.Subject = firstTagValue(event.Tags, "subject", &issue.Warnings)
 	for _, tag := range event.Tags {
 		if len(tag) == 2 && tag[0] == "t" {
 			if tag[1] == "" {
-				return Issue{}, fmt.Errorf("empty issue label")
+				issue.Warnings = append(issue.Warnings, "empty issue label ignored")
+				continue
 			}
 			issue.Labels = append(issue.Labels, tag[1])
 		}
@@ -389,49 +393,80 @@ func collaborationTags(repo RepositoryCoordinate, euc string, recipients []nostr
 	return tags, nil
 }
 
-func parseCollaborationTags(tags nostr.Tags) (RepositoryCoordinate, string, []nostr.PubKey, error) {
-	raw, err := requiredSingleton(tags, "a")
-	if err != nil {
-		return RepositoryCoordinate{}, "", nil, err
-	}
-	repo, err := ParseRepositoryCoordinate(raw)
-	if err != nil {
-		return RepositoryCoordinate{}, "", nil, err
+func parseCollaborationTags(tags nostr.Tags) (RepositoryCoordinate, string, []nostr.PubKey, []string) {
+	warnings := []string{}
+	raw := firstTagValue(tags, "a", &warnings)
+	repo := RepositoryCoordinate{}
+	if raw == "" {
+		warnings = append(warnings, "repository coordinate is recommended")
+	} else if parsed, err := ParseRepositoryCoordinate(raw); err != nil {
+		warnings = append(warnings, "invalid repository coordinate ignored")
+	} else {
+		repo = parsed
 	}
 	recipients := []nostr.PubKey{}
 	for _, tag := range tags {
 		if len(tag) > 0 && tag[0] == "p" {
 			if len(tag) != 2 {
-				return RepositoryCoordinate{}, "", nil, fmt.Errorf("invalid p tag")
+				warnings = append(warnings, "malformed recipient tag ignored")
+				continue
 			}
 			pk, err := parsePubKey(tag[1])
 			if err != nil {
-				return RepositoryCoordinate{}, "", nil, err
+				warnings = append(warnings, "invalid recipient pubkey ignored")
+				continue
 			}
 			recipients = append(recipients, pk)
 		}
 	}
-	foundOwner := false
-	for _, pk := range recipients {
-		if pk == repo.Owner {
-			foundOwner = true
+	if repo.Owner != (nostr.PubKey{}) {
+		foundOwner := false
+		for _, pk := range recipients {
+			if pk == repo.Owner {
+				foundOwner = true
+			}
 		}
-	}
-	if !foundOwner {
-		return RepositoryCoordinate{}, "", nil, fmt.Errorf("repository owner p tag required")
+		if !foundOwner {
+			warnings = append(warnings, "repository owner recipient tag is recommended")
+		}
 	}
 	euc := ""
 	for _, tag := range tags {
 		if len(tag) == 2 && tag[0] == "r" {
-			if euc == "" {
-				if err := validateGitID(tag[1]); err != nil {
-					return RepositoryCoordinate{}, "", nil, err
-				}
-				euc = tag[1]
+			if euc != "" {
+				warnings = append(warnings, "additional earliest unique commit ignored")
+				continue
 			}
+			if err := validateGitID(tag[1]); err != nil {
+				warnings = append(warnings, "invalid earliest unique commit ignored")
+				continue
+			}
+			euc = tag[1]
 		}
 	}
-	return repo, euc, uniquePubKeys(recipients), nil
+	return repo, euc, uniquePubKeys(recipients), warnings
+}
+
+// firstTagValue returns the first well-shaped value and records duplicates or
+// malformed tags as advisory warnings instead of rejecting a signed event.
+func firstTagValue(tags nostr.Tags, name string, warnings *[]string) string {
+	value := ""
+	found := false
+	for _, tag := range tags {
+		if len(tag) == 0 || tag[0] != name {
+			continue
+		}
+		if len(tag) != 2 || tag[1] == "" {
+			*warnings = append(*warnings, fmt.Sprintf("malformed %s tag ignored", name))
+			continue
+		}
+		if found {
+			*warnings = append(*warnings, fmt.Sprintf("additional %s tag ignored", name))
+			continue
+		}
+		value, found = tag[1], true
+	}
+	return value
 }
 
 func tagsNamed(tags nostr.Tags, name string) []nostr.Tag {

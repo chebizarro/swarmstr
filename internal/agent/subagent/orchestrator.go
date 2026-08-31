@@ -473,7 +473,14 @@ func (o *Orchestrator) run(ctx context.Context, cancel context.CancelCauseFunc, 
 		status = "error"
 		eventType = EventFailed
 	}
-	_ = o.registry.End(record.RunID, RunOutcome{Status: status, Error: errorString(err)})
+	if _, persistErr := o.registry.EndWithError(record.RunID, RunOutcome{Status: status, Error: errorString(err)}); persistErr != nil {
+		log.Printf("subagent terminal persistence failed run=%s: %v", record.RunID, persistErr)
+		if err == nil {
+			err = fmt.Errorf("persist subagent completion: %w", persistErr)
+			status = "error"
+			eventType = EventFailed
+		}
+	}
 	if providerRuntime, ok := def.Runtime.(*agent.ProviderRuntime); ok {
 		providerRuntime.EndSession(context.WithoutCancel(ctx), record.ChildSessionKey, record.AgentID, status, req.HookInvoker)
 	}

@@ -618,6 +618,54 @@ func (r *CapabilityRegistry) SetFIPSAdvert(announcement FIPSAdvertAnnouncement) 
 	return true
 }
 
+// DeleteFIPSAdvert applies a validated NIP-09 deletion request to the active
+// advert. The deletion author must match the advert author; callers provide
+// only event IDs or coordinates extracted from a signature-checked kind-5 event.
+func (r *CapabilityRegistry) DeleteFIPSAdvert(pubkey string, deletedEventIDs, deletedCoordinates []string, deletedAt int64) bool {
+	pubkey = strings.ToLower(strings.TrimSpace(pubkey))
+	if pubkey == "" || deletedAt <= 0 {
+		return false
+	}
+	r.mu.Lock()
+	entry := r.entries[pubkey]
+	if entry == nil || entry.fipsAnnouncement == nil || deletedAt < entry.fipsCreatedAt {
+		r.mu.Unlock()
+		return false
+	}
+	matched := false
+	for _, eventID := range deletedEventIDs {
+		if strings.EqualFold(strings.TrimSpace(eventID), entry.fipsEventID) {
+			matched = true
+			break
+		}
+	}
+	coordinate := fmt.Sprintf("%d:%s:%s", FIPSOverlayAdvertKind, pubkey, FIPSOverlayAdvertIdentifier)
+	if !matched {
+		for _, candidate := range deletedCoordinates {
+			if strings.EqualFold(strings.TrimSpace(candidate), coordinate) {
+				matched = true
+				break
+			}
+		}
+	}
+	if !matched {
+		r.mu.Unlock()
+		return false
+	}
+	before, hadBefore := effectiveCapability(entry, time.Now())
+	entry.fipsAnnouncement = nil
+	after, hasAfter := effectiveCapability(entry, time.Now())
+	changed := hadBefore && hasAfter && !capabilitySemanticEqual(before, after)
+	callbacks := append([]CapabilityCallback{}, r.callbacks...)
+	r.mu.Unlock()
+	if changed {
+		for _, cb := range callbacks {
+			cb(pubkey, cloneCapabilityAnnouncement(after))
+		}
+	}
+	return true
+}
+
 // PruneExpiredFIPS removes expired effective adverts while retaining their
 // replacement high-water marks. It returns the number of effective changes.
 func (r *CapabilityRegistry) PruneExpiredFIPS(now time.Time) int {
@@ -1006,6 +1054,44 @@ func (m *CapabilityMonitor) runSubscriber(ctx context.Context) {
 	}
 }
 
+func fipsAdvertDeletionValidationFailure(ev nostr.Event, allowedAuthors map[string]struct{}, now time.Time) string {
+	if ev.Kind != nostr.KindDeletion {
+		return fmt.Sprintf("unexpected_kind:%d", ev.Kind)
+	}
+	if _, ok := allowedAuthors[ev.PubKey.Hex()]; !ok {
+		return "unexpected_author"
+	}
+	if !ev.CheckID() {
+		return "invalid_id"
+	}
+	if !ev.VerifySignature() {
+		return "invalid_signature"
+	}
+	if timestampTooFarFuture(int64(ev.CreatedAt), now, inboundEventMaxFutureSkew) {
+		return "created_at_future"
+	}
+	eventIDs, coordinates := fipsAdvertDeletionTargets(ev)
+	if len(eventIDs) == 0 && len(coordinates) == 0 {
+		return "missing_target"
+	}
+	return ""
+}
+
+func fipsAdvertDeletionTargets(ev nostr.Event) (eventIDs, coordinates []string) {
+	for _, tag := range ev.Tags {
+		if len(tag) < 2 {
+			continue
+		}
+		switch tag[0] {
+		case "e":
+			eventIDs = append(eventIDs, tag[1])
+		case "a":
+			coordinates = append(coordinates, tag[1])
+		}
+	}
+	return eventIDs, coordinates
+}
+
 func (m *CapabilityMonitor) runFIPSSubscriber(ctx context.Context) {
 	for {
 		relays, authors := m.snapshotFIPSSubscriptionConfig()
@@ -1026,10 +1112,12 @@ func (m *CapabilityMonitor) runFIPSSubscriber(ctx context.Context) {
 		registry := m.registry
 		m.mu.RUnlock()
 		subCtx, cancel := context.WithCancel(ctx)
+		// Kind 5 is included so NIP-09 advert deletions update effective state.
+		// Authors keep this subscription scoped; event handlers apply the d/e/a
+		// constraints that cannot be expressed in one shared filter.
 		eventsCh, eoseCh := m.pool.SubscribeManyNotifyEOSE(subCtx, relays, nostr.Filter{
-			Kinds:   []nostr.Kind{nostr.Kind(FIPSOverlayAdvertKind)},
+			Kinds:   []nostr.Kind{nostr.Kind(FIPSOverlayAdvertKind), nostr.KindDeletion},
 			Authors: authors,
-			Tags:    nostr.TagMap{"d": []string{FIPSOverlayAdvertIdentifier}},
 		}, nostr.SubscriptionOptions{})
 	restartLoop:
 		for {
@@ -1049,6 +1137,14 @@ func (m *CapabilityMonitor) runFIPSSubscriber(ctx context.Context) {
 					break restartLoop
 				}
 				now := time.Now()
+				if re.Event.Kind == nostr.KindDeletion {
+					if registry == nil || fipsAdvertDeletionValidationFailure(re.Event, allowedAuthors, now) != "" {
+						continue
+					}
+					eventIDs, coordinates := fipsAdvertDeletionTargets(re.Event)
+					registry.DeleteFIPSAdvert(re.Event.PubKey.Hex(), eventIDs, coordinates, int64(re.Event.CreatedAt))
+					continue
+				}
 				if reason := fipsAdvertValidationFailure(re.Event, allowedAuthors, now); reason != "" {
 					continue
 				}

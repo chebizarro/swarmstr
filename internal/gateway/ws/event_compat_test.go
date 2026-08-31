@@ -14,6 +14,9 @@ func TestCompatibilityEventAliasesMappings(t *testing.T) {
 		{"presence.updated", EventCompatPresence},
 		{EventTick, EventCompatHeartbeat},
 		{EventVoicewake, EventCompatVoicewakeChanged},
+		{EventChatMessage, EventCompatSessionMessage},
+		{EventSessionPlacement, EventCompatSessionOperation},
+		{EventToolStart, EventCompatSessionTool},
 	}
 	for _, tc := range cases {
 		aliases := compatibilityEventAliases(tc.event)
@@ -39,6 +42,9 @@ func TestAllPushEventsIncludesCompatAliases(t *testing.T) {
 		EventCompatPresence,
 		EventCompatHeartbeat,
 		EventCompatVoicewakeChanged,
+		EventCompatSessionMessage,
+		EventCompatSessionOperation,
+		EventCompatSessionTool,
 	} {
 		if !has(name) {
 			t.Fatalf("missing compat event %q in AllPushEvents", name)

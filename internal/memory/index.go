@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -52,18 +53,34 @@ type IndexedMemory struct {
 }
 
 type Index struct {
-	mu       sync.RWMutex
-	saveMu   sync.Mutex
-	path     string
-	docs     map[string]IndexedMemory
-	byToken  map[string]map[string]struct{}
-	cache    map[string][]IndexedMemory
-	order    []string
-	cacheCap int
+	mu                  sync.RWMutex
+	saveMu              sync.Mutex
+	path                string
+	generation          uint64
+	persistedGeneration uint64
+	docs                map[string]IndexedMemory
+	byToken             map[string]map[string]struct{}
+	cache               map[string][]IndexedMemory
+	order               []string
+	cacheCap            int
 }
 
 type diskIndex struct {
-	Docs []IndexedMemory `json:"docs"`
+	Generation uint64          `json:"generation"`
+	Docs       []IndexedMemory `json:"docs"`
+}
+
+// CompactionBatch is the immutable generation-scoped set selected for removal.
+// Flushers should treat Generation+MemoryID as an idempotency key.
+type CompactionBatch struct {
+	Generation uint64          `json:"generation"`
+	Entries    []IndexedMemory `json:"entries"`
+}
+
+// PreCompactionFlusher persists a compaction batch before the index publishes
+// the corresponding deletion. Implementations must be safe to retry.
+type PreCompactionFlusher interface {
+	FlushBeforeCompaction(context.Context, CompactionBatch) error
 }
 
 func DefaultIndexPath() (string, error) {
@@ -130,6 +147,7 @@ func (i *Index) Delete(id string) bool {
 		return false
 	}
 	delete(i.docs, id)
+	i.generation++
 	i.rebuildTokenMapLocked()
 	i.clearCacheLocked()
 	return true
@@ -177,6 +195,7 @@ func (i *Index) Add(doc state.MemoryDoc) {
 		InvalidateReason:  doc.InvalidateReason,
 	}
 	i.docs[im.MemoryID] = im
+	i.generation++
 	i.rebuildTokenMapLocked()
 	i.clearCacheLocked()
 }
@@ -293,26 +312,63 @@ func (i *Index) ListByTaskID(taskID string, limit int) []IndexedMemory {
 }
 
 // Compact removes the oldest entries (lowest Unix timestamp) to keep the total
-// count at or below maxEntries.  Returns the number of entries removed.
+// count at or below maxEntries. It preserves the historical API; callers that
+// require a durable pre-compaction handoff should use CompactWithFlush.
 func (i *Index) Compact(maxEntries int) int {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if len(i.docs) <= maxEntries {
-		return 0
+	removed, _ := i.CompactWithFlush(context.Background(), maxEntries, nil)
+	return removed
+}
+
+// CompactWithFlush publishes the exact victim batch to flusher before removing
+// it. If concurrent mutation changes the generation, selection and flush retry;
+// deletion is only published for the generation that was flushed.
+func (i *Index) CompactWithFlush(ctx context.Context, maxEntries int, flusher PreCompactionFlusher) (int, error) {
+	if maxEntries < 0 {
+		maxEntries = 0
 	}
-	entries := make([]IndexedMemory, 0, len(i.docs))
-	for _, d := range i.docs {
-		entries = append(entries, d)
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		i.mu.RLock()
+		if len(i.docs) <= maxEntries {
+			i.mu.RUnlock()
+			return 0, nil
+		}
+		generation := i.generation
+		entries := make([]IndexedMemory, 0, len(i.docs))
+		for _, d := range i.docs {
+			entries = append(entries, cloneMemory(d))
+		}
+		i.mu.RUnlock()
+		sort.Slice(entries, func(a, b int) bool {
+			if entries[a].Unix == entries[b].Unix {
+				return entries[a].MemoryID < entries[b].MemoryID
+			}
+			return entries[a].Unix < entries[b].Unix
+		})
+		victims := entries[:len(entries)-maxEntries]
+		batch := CompactionBatch{Generation: generation, Entries: cloneMemories(victims)}
+		if flusher != nil {
+			if err := flusher.FlushBeforeCompaction(ctx, batch); err != nil {
+				return 0, fmt.Errorf("flush pre-compaction generation %d: %w", generation, err)
+			}
+		}
+
+		i.mu.Lock()
+		if i.generation != generation {
+			i.mu.Unlock()
+			continue
+		}
+		for _, victim := range victims {
+			delete(i.docs, victim.MemoryID)
+		}
+		i.generation++
+		i.rebuildTokenMapLocked()
+		i.clearCacheLocked()
+		i.mu.Unlock()
+		return len(victims), nil
 	}
-	// Sort ascending by age (oldest first).
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Unix < entries[b].Unix })
-	toRemove := len(entries) - maxEntries
-	for idx := 0; idx < toRemove; idx++ {
-		delete(i.docs, entries[idx].MemoryID)
-	}
-	i.rebuildTokenMapLocked()
-	i.clearCacheLocked()
-	return toRemove
 }
 
 // Count returns the total number of indexed memory entries.
@@ -415,28 +471,95 @@ func (i *Index) SearchSession(sessionID, query string, limit int) []IndexedMemor
 func (i *Index) Save() error {
 	i.saveMu.Lock()
 	defer i.saveMu.Unlock()
-
-	i.mu.RLock()
-	docs := make([]IndexedMemory, 0, len(i.docs))
-	for _, doc := range i.docs {
-		docs = append(docs, doc)
-	}
-	i.mu.RUnlock()
-
-	sort.Slice(docs, func(a, b int) bool { return docs[a].Unix > docs[b].Unix })
-
-	raw, err := json.MarshalIndent(diskIndex{Docs: docs}, "", "  ")
-	if err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Dir(i.path), 0o700); err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.%d.tmp", i.path, time.Now().UnixNano())
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+
+	// Optimistic snapshot/write avoids blocking ordinary index mutations on I/O.
+	// Rename is generation-checked under the write lock so a stale snapshot can
+	// never replace a newer generation on disk.
+	for attempt := 0; attempt < 5; attempt++ {
+		i.mu.RLock()
+		generation := i.generation
+		docs := snapshotDocs(i.docs)
+		i.mu.RUnlock()
+		tmp, err := writeIndexTemp(i.path, diskIndex{Generation: generation, Docs: docs})
+		if err != nil {
+			return err
+		}
+		i.mu.Lock()
+		if i.generation != generation {
+			i.mu.Unlock()
+			_ = os.Remove(tmp)
+			continue
+		}
+		err = os.Rename(tmp, i.path)
+		if err == nil {
+			i.persistedGeneration = generation
+		} else {
+			_ = os.Remove(tmp)
+		}
+		i.mu.Unlock()
 		return err
 	}
-	return os.Rename(tmp, i.path)
+
+	// Under sustained mutation, take a bounded blocking snapshot so progress is
+	// guaranteed without weakening the publication invariant.
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	generation := i.generation
+	tmp, err := writeIndexTemp(i.path, diskIndex{Generation: generation, Docs: snapshotDocs(i.docs)})
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, i.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	i.persistedGeneration = generation
+	return nil
+}
+
+func writeIndexTemp(path string, disk diskIndex) (string, error) {
+	sort.Slice(disk.Docs, func(a, b int) bool { return disk.Docs[a].Unix > disk.Docs[b].Unix })
+	raw, err := json.MarshalIndent(disk, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmp := file.Name()
+	cleanup := func() {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		cleanup()
+		return "", err
+	}
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return tmp, nil
+}
+
+func snapshotDocs(docs map[string]IndexedMemory) []IndexedMemory {
+	out := make([]IndexedMemory, 0, len(docs))
+	for _, doc := range docs {
+		out = append(out, cloneMemory(doc))
+	}
+	return out
 }
 
 func (i *Index) load() error {
@@ -452,8 +575,10 @@ func (i *Index) load() error {
 		return fmt.Errorf("parse index %s: %w", i.path, err)
 	}
 	for _, doc := range disk.Docs {
-		i.docs[doc.MemoryID] = doc
+		i.docs[doc.MemoryID] = cloneMemory(doc)
 	}
+	i.generation = disk.Generation
+	i.persistedGeneration = disk.Generation
 	i.rebuildTokenMapLocked()
 	i.clearCacheLocked()
 	return nil
@@ -481,7 +606,15 @@ func cloneMemories(in []IndexedMemory) []IndexedMemory {
 		return nil
 	}
 	out := make([]IndexedMemory, len(in))
-	copy(out, in)
+	for idx := range in {
+		out[idx] = cloneMemory(in[idx])
+	}
+	return out
+}
+
+func cloneMemory(in IndexedMemory) IndexedMemory {
+	out := in
+	out.Keywords = append([]string(nil), in.Keywords...)
 	return out
 }
 

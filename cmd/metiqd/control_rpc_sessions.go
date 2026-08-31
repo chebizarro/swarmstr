@@ -400,10 +400,12 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 				newLeaf = parent
 			}
 			nowMS := time.Now().UnixMilli()
+			snapshotPayload, _ := json.Marshal(entries)
 			checkpoint := state.CompactionCheckpointRef{
 				CheckpointID: checkpointID, SessionKey: req.SessionID, SessionID: req.SessionID,
 				CreatedAt: nowMS, Reason: "manual", Summary: summaryText, FirstKeptEntry: firstKept,
 				DroppedEntries: dropped, KeptEntries: len(entries) - dropped, SnapshotID: snapshotID,
+				TokensVersion: 1, SnapshotBytes: int64(len(snapshotPayload)),
 				PreCompaction:  map[string]any{"session_id": req.SessionID, "leaf_id": graph.ActiveLeafID},
 				PostCompaction: map[string]any{"session_id": req.SessionID, "leaf_id": newLeaf},
 			}

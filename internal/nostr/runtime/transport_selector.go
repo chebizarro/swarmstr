@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,6 +32,10 @@ const (
 // It is advisory only; TransportSelector does not synchronously gate sends on it.
 type ReachabilityChecker func(pubkeyHex string) bool
 
+// FIPSDaemonStateChecker reports the local daemon lifecycle state. It is used
+// only for diagnosis and transport selection, never for ACP task completion.
+type FIPSDaemonStateChecker func(context.Context) (string, error)
+
 // TransportSelectorOptions configures a TransportSelector.
 type TransportSelectorOptions struct {
 	// FIPS is the FIPS mesh transport. May be nil if FIPS is not available.
@@ -46,6 +51,9 @@ type TransportSelectorOptions struct {
 	// ReachCacheTTL controls how long FIPS transport failures suppress optimistic
 	// FIPS attempts for a peer. Default: 30s.
 	ReachCacheTTL time.Duration
+	// DaemonState optionally reports the local FIPS daemon lifecycle state.
+	// Degraded, Failed, and Draining states make FIPS ineligible for selection.
+	DaemonState FIPSDaemonStateChecker
 	// OnFallback is called when a send falls back from the preferred transport.
 	// Optional; used for observability / logging.
 	OnFallback func(toPubKey string, preferredTransport string, err error)
@@ -60,8 +68,9 @@ type TransportSelector struct {
 	pref  string
 
 	// reachable is advisory only and intentionally not used to gate SendDM.
-	reachable  ReachabilityChecker
-	onFallback func(toPubKey string, preferredTransport string, err error)
+	reachable   ReachabilityChecker
+	daemonState FIPSDaemonStateChecker
+	onFallback  func(toPubKey string, preferredTransport string, err error)
 
 	failureMu sync.RWMutex
 	failures  map[string]fipsFailureState
@@ -106,13 +115,14 @@ func NewTransportSelector(opts TransportSelectorOptions) (*TransportSelector, er
 	}
 
 	return &TransportSelector{
-		fips:       opts.FIPS,
-		relay:      opts.Relay,
-		pref:       pref,
-		reachable:  opts.Reachable,
-		onFallback: opts.OnFallback,
-		failures:   make(map[string]fipsFailureState),
-		cacheTTL:   cacheTTL,
+		fips:        opts.FIPS,
+		relay:       opts.Relay,
+		pref:        pref,
+		reachable:   opts.Reachable,
+		daemonState: opts.DaemonState,
+		onFallback:  opts.OnFallback,
+		failures:    make(map[string]fipsFailureState),
+		cacheTTL:    cacheTTL,
 	}, nil
 }
 
@@ -196,6 +206,14 @@ func (ts *TransportSelector) sendFIPSFirst(ctx context.Context, toPubKey string,
 		return fmt.Errorf("transport selector: no transport available")
 	}
 
+	if healthErr := ts.fipsHealthError(ctx); healthErr != nil {
+		if ts.relay != nil {
+			ts.emitFallback(toPubKey, "fips", healthErr)
+			return ts.relay.SendDM(ctx, toPubKey, text)
+		}
+		return healthErr
+	}
+
 	if state, ok := ts.activeFIPSFailure(toPubKey); ok {
 		cachedErr := cachedFIPSFailureError(toPubKey, state)
 		if ts.relay != nil {
@@ -240,6 +258,9 @@ func (ts *TransportSelector) sendRelayFirst(ctx context.Context, toPubKey string
 	if ts.fips == nil {
 		return relayErr
 	}
+	if ts.fipsHealthError(ctx) != nil {
+		return relayErr
+	}
 	if _, ok := ts.activeFIPSFailure(toPubKey); ok {
 		return relayErr
 	}
@@ -265,6 +286,9 @@ func (ts *TransportSelector) sendFIPSOnly(ctx context.Context, toPubKey string, 
 	if ts.fips == nil {
 		return fmt.Errorf("transport selector: fips-only mode but no FIPS transport")
 	}
+	if healthErr := ts.fipsHealthError(ctx); healthErr != nil {
+		return healthErr
+	}
 	if state, ok := ts.activeFIPSFailure(toPubKey); ok {
 		return cachedFIPSFailureError(toPubKey, state)
 	}
@@ -279,6 +303,25 @@ func (ts *TransportSelector) sendFIPSOnly(ctx context.Context, toPubKey string, 
 		ts.cacheFIPSFailure(toPubKey, err)
 	}
 	return err
+}
+
+func (ts *TransportSelector) fipsHealthError(ctx context.Context) error {
+	if ts.daemonState == nil {
+		return nil
+	}
+	state, err := ts.daemonState(ctx)
+	if err != nil {
+		// A missing diagnostic socket must not turn an otherwise usable mesh path
+		// into a hard failure. Only explicit daemon lifecycle states gate FIPS.
+		log.Printf("transport selector: FIPS daemon status unavailable: %v", err)
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "degraded", "failed", "draining":
+		return fmt.Errorf("fips daemon lifecycle state %q is not selectable", state)
+	default:
+		return nil
+	}
 }
 
 // ── FIPS failure cache ────────────────────────────────────────────────────────

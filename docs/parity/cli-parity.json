@@ -3,24 +3,24 @@
   "generated_for": "metiq CLI parity",
   "reference": {
     "project": "openclaw",
-    "revision": "5ff16901ef4a8532844000505a6e6ad0cae74a2a",
+    "revision": "c7cf49ec346d0d2f21627ae6429f775252d9eec2",
     "files": {
-      "src/cli/program/core-command-descriptors.ts": "5f83f1327250592e7cedf928ab1008e2cfe8d1de342094570549c2115e4a6aa4",
-      "src/cli/program/subcli-descriptors.ts": "d12e9232d555518bc5d6d9ab695564c121a44ff59c33ff9160d04de19b093513"
+      "src/cli/program/core-command-descriptors.ts": "04c5cf580b5beb25e069af922948f2e62933f02f323d60cc8ca1a0a06aa4f07f",
+      "src/cli/program/subcli-descriptors.ts": "13daadee3f5a070cddbef2310b958f3b7e542822e64d7600ee393b190eb58e26"
     }
   },
-  "captured_at": "2026-07-24",
+  "captured_at": "2026-08-31",
   "status_values": [
     "implemented",
     "deviation",
     "missing"
   ],
   "summary": {
-    "openclaw_command_count": 65,
+    "openclaw_command_count": 70,
     "status_counts": {
-      "deviation": 16,
-      "implemented": 36,
-      "missing": 13
+      "deviation": 14,
+      "implemented": 39,
+      "missing": 17
     }
   },
   "groups": [
@@ -67,6 +67,12 @@
       "metiq_entry": "cmd/metiq/registry.go"
     },
     {
+      "name": "database",
+      "reference_source": "core",
+      "status": "missing",
+      "rationale": "OpenClaw database maintenance has no Metiq root command group."
+    },
+    {
       "name": "migrate",
       "reference_source": "core",
       "status": "implemented",
@@ -77,6 +83,14 @@
       "reference_source": "core",
       "status": "implemented",
       "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "triage",
+      "reference_source": "core",
+      "status": "implemented",
+      "metiq_command": "diagnostics",
+      "metiq_entry": "cmd/metiq/registry.go",
+      "rationale": "Exact triage alias dispatches to the sanitized diagnostics bundle command."
     },
     {
       "name": "dashboard",
@@ -151,12 +165,6 @@
       "metiq_entry": "cmd/metiq/registry.go"
     },
     {
-      "name": "commitments",
-      "reference_source": "core",
-      "status": "implemented",
-      "metiq_entry": "cmd/metiq/commitments_cmd.go"
-    },
-    {
       "name": "tasks",
       "reference_source": "core",
       "status": "implemented",
@@ -171,10 +179,10 @@
     {
       "name": "gateway",
       "reference_source": "subcli",
-      "status": "deviation",
+      "status": "implemented",
       "metiq_command": "gw",
       "metiq_entry": "cmd/metiq/registry.go",
-      "rationale": "Metiq names the generic gateway passthrough group gw; daemon lifecycle remains a separate daemon group."
+      "rationale": "Exact gateway alias dispatches to the gw passthrough command."
     },
     {
       "name": "daemon",
@@ -207,6 +215,12 @@
       "rationale": "ClawHub promotional-offer discovery is OpenClaw marketplace infrastructure."
     },
     {
+      "name": "telemetry",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "No exact Metiq telemetry command group is registered."
+    },
+    {
       "name": "infer",
       "reference_source": "subcli",
       "status": "missing",
@@ -227,10 +241,10 @@
     {
       "name": "exec-approvals",
       "reference_source": "subcli",
-      "status": "deviation",
+      "status": "implemented",
       "metiq_command": "approvals",
       "metiq_entry": "cmd/metiq/registry.go",
-      "rationale": "OpenClaw alias; Metiq exposes the same operator area as approvals."
+      "rationale": "Exact exec-approvals alias dispatches to approval management."
     },
     {
       "name": "exec-policy",
@@ -261,6 +275,12 @@
       "reference_source": "subcli",
       "status": "deviation",
       "rationale": "OpenClaw node runs a headless node-host service; Metiq's node alias manages remote nodes and is not semantically equivalent."
+    },
+    {
+      "name": "connect",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "No exact Metiq connect command group is registered."
     },
     {
       "name": "worker",
@@ -299,6 +319,12 @@
       "rationale": "OpenClaw's terminal UI is a separate interactive client subsystem."
     },
     {
+      "name": "resume",
+      "reference_source": "subcli",
+      "status": "missing",
+      "rationale": "No exact Metiq resume command group is registered."
+    },
+    {
       "name": "terminal",
       "reference_source": "subcli",
       "status": "deviation",
@@ -315,6 +341,14 @@
       "reference_source": "subcli",
       "status": "implemented",
       "metiq_entry": "cmd/metiq/registry.go"
+    },
+    {
+      "name": "automations",
+      "reference_source": "subcli",
+      "status": "implemented",
+      "metiq_command": "cron",
+      "metiq_entry": "cmd/metiq/registry.go",
+      "rationale": "Exact automations alias dispatches to Metiq cron management."
     },
     {
       "name": "dns",

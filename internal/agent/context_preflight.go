@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -29,14 +30,44 @@ const preflightSafetyMargin = 0.85
 
 // PreflightResult describes what the pre-flight gate did.
 type PreflightResult struct {
-	Messages         []LLMMessage
-	Tools            []ToolDefinition
-	EstimatedTokens  int
-	BudgetTokens     int
-	HistoryTrimmed   int
-	ToolsDropped     int
-	SystemTruncated  bool
-	ContextTruncated bool
+	Messages           []LLMMessage
+	Tools              []ToolDefinition
+	EstimatedTokens    int
+	BudgetTokens       int
+	ReservedOutput     int
+	AccountingSource   string
+	AccountingFallback bool
+	AccountingError    string
+	HistoryTrimmed     int
+	ToolsDropped       int
+	SystemTruncated    bool
+	ContextTruncated   bool
+}
+
+// TokenAccountant provides model/provider-aware request token counts. Provider
+// usage remains authoritative after a request; this seam is for preflight only.
+type TokenAccountant interface {
+	CountTokens(messages []LLMMessage, tools []ToolDefinition) (int, error)
+	Name() string
+}
+
+type TokenAccountantFunc struct {
+	Source string
+	Count  func([]LLMMessage, []ToolDefinition) (int, error)
+}
+
+func (f TokenAccountantFunc) CountTokens(messages []LLMMessage, tools []ToolDefinition) (int, error) {
+	if f.Count == nil {
+		return 0, fmt.Errorf("token accountant is not configured")
+	}
+	return f.Count(messages, tools)
+}
+
+func (f TokenAccountantFunc) Name() string {
+	if strings.TrimSpace(f.Source) == "" {
+		return "provider_tokenizer"
+	}
+	return strings.TrimSpace(f.Source)
 }
 
 // EnforceTotalContextBudget measures the total estimated token cost of
@@ -55,23 +86,57 @@ func EnforceTotalContextBudget(
 	contextWindowTokens int,
 	criticalToolNames []string,
 ) PreflightResult {
+	return EnforceTotalContextBudgetWithAccountant(messages, tools, contextWindowTokens, 0, criticalToolNames, nil)
+}
+
+func EnforceTotalContextBudgetWithAccountant(
+	messages []LLMMessage,
+	tools []ToolDefinition,
+	contextWindowTokens int,
+	reservedOutputTokens int,
+	criticalToolNames []string,
+	accountant TokenAccountant,
+) PreflightResult {
 	if contextWindowTokens <= 0 {
 		return PreflightResult{Messages: messages, Tools: tools}
 	}
+	if reservedOutputTokens < 0 {
+		reservedOutputTokens = 0
+	}
 
 	profile := ProfileFromContextWindowTokens(contextWindowTokens)
-	budgetTokens := ctxengine.AvailableTokens(profile.EffectiveInputTokens(), 0, preflightSafetyMargin, 0)
+	budgetTokens := ctxengine.AvailableTokens(profile.EffectiveInputTokens(), reservedOutputTokens, preflightSafetyMargin, 0)
 	if budgetTokens < 512 {
 		budgetTokens = 512
 	}
 
 	result := PreflightResult{
-		Messages:     messages,
-		Tools:        tools,
-		BudgetTokens: budgetTokens,
+		Messages:         messages,
+		Tools:            tools,
+		BudgetTokens:     budgetTokens,
+		ReservedOutput:   reservedOutputTokens,
+		AccountingSource: "character_estimate",
+	}
+	measure := func(ms []LLMMessage, ts []ToolDefinition) int {
+		if accountant == nil {
+			return estimateTotalTokens(ms, ts)
+		}
+		count, err := accountant.CountTokens(ms, ts)
+		if err != nil || count < 0 {
+			result.AccountingFallback = true
+			if err != nil {
+				result.AccountingError = err.Error()
+			} else {
+				result.AccountingError = "token accountant returned a negative count"
+			}
+			result.AccountingSource = "character_estimate"
+			return estimateTotalTokens(ms, ts)
+		}
+		result.AccountingSource = accountant.Name()
+		return count
 	}
 
-	estTokens := estimateTotalTokens(messages, tools)
+	estTokens := measure(messages, tools)
 	result.EstimatedTokens = estTokens
 
 	if estTokens <= budgetTokens {
@@ -98,10 +163,11 @@ func EnforceTotalContextBudget(
 		overageTokens -= ctxTrimmed.TokensFreed
 	}
 
-	if overageTokens <= 0 {
-		result.EstimatedTokens = estimateTotalTokens(result.Messages, result.Tools)
+	result.EstimatedTokens = measure(result.Messages, result.Tools)
+	if result.EstimatedTokens <= budgetTokens {
 		return result
 	}
+	overageTokens = result.EstimatedTokens - budgetTokens
 
 	// 2. Trim history messages (oldest first, skip system, dynamic context,
 	// and the real current user message).
@@ -114,10 +180,11 @@ func EnforceTotalContextBudget(
 		overageTokens -= trimmed.TokensFreed
 	}
 
-	if overageTokens <= 0 {
-		result.EstimatedTokens = estimateTotalTokens(result.Messages, result.Tools)
+	result.EstimatedTokens = measure(result.Messages, result.Tools)
+	if result.EstimatedTokens <= budgetTokens {
 		return result
 	}
+	overageTokens = result.EstimatedTokens - budgetTokens
 
 	// 3. Drop tool definitions (largest non-critical first)
 	result.Tools = make([]ToolDefinition, len(tools))
@@ -137,10 +204,11 @@ func EnforceTotalContextBudget(
 		overageTokens -= dropped.TokensFreed
 	}
 
-	if overageTokens <= 0 {
-		result.EstimatedTokens = estimateTotalTokens(result.Messages, result.Tools)
+	result.EstimatedTokens = measure(result.Messages, result.Tools)
+	if result.EstimatedTokens <= budgetTokens {
 		return result
 	}
+	overageTokens = result.EstimatedTokens - budgetTokens
 
 	// 4. Truncate static system prompt
 	for i, msg := range result.Messages {
@@ -166,7 +234,7 @@ func EnforceTotalContextBudget(
 		break
 	}
 
-	result.EstimatedTokens = estimateTotalTokens(result.Messages, result.Tools)
+	result.EstimatedTokens = measure(result.Messages, result.Tools)
 
 	if result.EstimatedTokens > budgetTokens {
 		log.Printf("%s: WARNING still over budget after all trimming: est=%d budget=%d",

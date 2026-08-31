@@ -23,7 +23,7 @@ func TestMatrixPlugin_ID(t *testing.T) {
 func TestMatrixPlugin_Capabilities(t *testing.T) {
 	p := &MatrixPlugin{}
 	caps := p.Capabilities()
-	if !caps.Reactions || !caps.Threads || !caps.Edit || !caps.MultiAccount {
+	if !caps.Reactions || !caps.Threads || !caps.Edit || !caps.MultiAccount || !caps.Media || !caps.DirectTextMedia {
 		t.Fatalf("unexpected capabilities: %+v", caps)
 	}
 }
@@ -267,7 +267,7 @@ func TestMatrixBot_SendMedia_UploadsMXCAndSendsMediaMessage(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	receipt, err := bot.SendMedia(context.Background(), "caption", []byte("png"), "image/png", "pic.png")
+	receipt, err := bot.SendMediaBytes(context.Background(), "caption", []byte("png"), "image/png", "pic.png")
 	if err != nil {
 		t.Fatalf("SendMedia: %v", err)
 	}

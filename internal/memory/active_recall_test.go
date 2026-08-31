@@ -11,6 +11,7 @@ import (
 type activeRecallTestSearcher struct {
 	mu      sync.Mutex
 	queries []string
+	limits  []int
 	hits    []IndexedMemory
 	delay   time.Duration
 }
@@ -18,6 +19,7 @@ type activeRecallTestSearcher struct {
 func (s *activeRecallTestSearcher) Search(query string, limit int) []IndexedMemory {
 	s.mu.Lock()
 	s.queries = append(s.queries, query)
+	s.limits = append(s.limits, limit)
 	s.mu.Unlock()
 	if s.delay > 0 {
 		time.Sleep(s.delay)
@@ -67,7 +69,7 @@ func TestBuildActiveRecallQueryLatestFirstRoleBudgetsAndNoiseStripping(t *testin
 func TestActiveRecallAssemblerCachesAndFormats(t *testing.T) {
 	searcher := &activeRecallTestSearcher{hits: []IndexedMemory{{Text: "User prefers Docker sandbox by default", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}}
 	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, CacheTTL: time.Hour}, searcher)
-	req := ActiveRecallRequest{SessionID: "sess", LatestMessage: "sandbox preference?"}
+	req := ActiveRecallRequest{SessionID: "sess", LatestMessage: "What was my sandbox preference?"}
 	first, err := assembler.Recall(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
@@ -86,7 +88,7 @@ func TestActiveRecallAssemblerCachesAndFormats(t *testing.T) {
 
 func TestActiveRecallAssemblerTimeout(t *testing.T) {
 	searcher := &activeRecallTestSearcher{delay: 20 * time.Millisecond, hits: []IndexedMemory{{Text: "slow", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}}
-	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, Timeout: time.Millisecond}, searcher)
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, TriggerMode: ActiveRecallTriggerAlways, Timeout: time.Millisecond}, searcher)
 	result, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess", LatestMessage: "slow?"})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
@@ -108,7 +110,7 @@ func (s *activeRecallPartialTestSearcher) SearchPartial(ctx context.Context, que
 
 func TestActiveRecallAssemblerStatusPersistence(t *testing.T) {
 	searcher := &activeRecallTestSearcher{hits: []IndexedMemory{{Text: "debug status", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}}
-	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true}, searcher)
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, TriggerMode: ActiveRecallTriggerAlways}, searcher)
 	result, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-status", LatestMessage: "status?"})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
@@ -121,7 +123,7 @@ func TestActiveRecallAssemblerStatusPersistence(t *testing.T) {
 
 func TestActiveRecallAssemblerCircuitBreakerOpenAndCooldown(t *testing.T) {
 	searcher := &activeRecallTestSearcher{delay: 20 * time.Millisecond}
-	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, Timeout: time.Millisecond, Provider: "p", Model: "m", CircuitBreakerFailureThreshold: 1, CircuitBreakerCooldown: 5 * time.Millisecond}, searcher)
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, TriggerMode: ActiveRecallTriggerAlways, Timeout: time.Millisecond, Provider: "p", Model: "m", CircuitBreakerFailureThreshold: 1, CircuitBreakerCooldown: 5 * time.Millisecond}, searcher)
 	first, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-cb", LatestMessage: "one"})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
@@ -140,8 +142,45 @@ func TestActiveRecallAssemblerCircuitBreakerOpenAndCooldown(t *testing.T) {
 	}
 }
 
+func TestActiveRecallTriggerSkipsOrdinaryTurnsAndEscalatesIntent(t *testing.T) {
+	searcher := &activeRecallTestSearcher{hits: []IndexedMemory{{Text: "prior deployment decision", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}}
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, SearchLimit: 3, EscalationSearchLimit: 9}, searcher)
+	ordinary, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "s", LatestMessage: "Please explain this function"})
+	if err != nil || ordinary.Status != "not_triggered" || ordinary.Triggered || searcher.callCount() != 0 {
+		t.Fatalf("ordinary=%+v calls=%d err=%v", ordinary, searcher.callCount(), err)
+	}
+	triggered, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "s", LatestMessage: "What did we decide about deployment?"})
+	if err != nil || !triggered.Triggered || !triggered.Escalated || triggered.Intent != ActiveRecallIntentDecision || searcher.callCount() != 1 {
+		t.Fatalf("triggered=%+v calls=%d err=%v", triggered, searcher.callCount(), err)
+	}
+	searcher.mu.Lock()
+	limit := searcher.limits[len(searcher.limits)-1]
+	searcher.mu.Unlock()
+	if limit != 9 {
+		t.Fatalf("escalated limit=%d, want 9", limit)
+	}
+}
+
+func TestActiveRecallIntentClassification(t *testing.T) {
+	cases := []struct {
+		message string
+		intent  ActiveRecallIntent
+	}{
+		{"Do you remember last time?", ActiveRecallIntentExplicit},
+		{"Please continue where we were", ActiveRecallIntentContinuity},
+		{"What was my deployment preference?", ActiveRecallIntentPreference},
+		{"We decided to use SQLite", ActiveRecallIntentDecision},
+	}
+	for _, tc := range cases {
+		decision := EvaluateActiveRecallTrigger(ActiveRecallRequest{LatestMessage: tc.message}, ActiveRecallConfig{Enabled: true})
+		if !decision.Triggered || decision.Intent != tc.intent {
+			t.Errorf("%q => %+v", tc.message, decision)
+		}
+	}
+}
+
 func TestActiveRecallAssemblerPartialTimeoutReturnsPartial(t *testing.T) {
-	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, Timeout: time.Millisecond}, &activeRecallPartialTestSearcher{hits: []IndexedMemory{{Text: "partial memory", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}})
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, TriggerMode: ActiveRecallTriggerAlways, Timeout: time.Millisecond}, &activeRecallPartialTestSearcher{hits: []IndexedMemory{{Text: "partial memory", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}})
 	result, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-partial", LatestMessage: "partial?"})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)

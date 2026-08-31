@@ -47,6 +47,15 @@ func TestNIP17ValidateGiftWrapEvent(t *testing.T) {
 	if err := bus.validateGiftWrapEvent(evt, time.Now()); err != nil {
 		t.Fatalf("expected valid gift wrap, got error: %v", err)
 	}
+	ephemeral := signedEvent(t, keyer, nostr.Event{
+		Kind:      nostr.Kind(21059),
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"p", recipient.Hex()}},
+		Content:   "ephemeral-sealed-content",
+	})
+	if err := bus.validateGiftWrapEvent(ephemeral, time.Now()); err != nil {
+		t.Fatalf("expected valid ephemeral gift wrap, got error: %v", err)
+	}
 
 	badTarget := evt
 	badTarget.Tags = nostr.Tags{{"p", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}}

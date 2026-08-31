@@ -128,8 +128,8 @@ func TestBuiltinStreamingCapabilitiesAreHonest(t *testing.T) {
 	}
 	for _, id := range []string{"openai-responses", "azure-responses"} {
 		desc, ok := reg.Descriptor(id)
-		if !ok || desc.Capabilities.SupportsStreaming {
-			t.Fatalf("provider %s must not advertise an unimplemented stream: %#v", id, desc.Capabilities)
+		if !ok || !desc.Capabilities.SupportsStreaming {
+			t.Fatalf("provider %s must advertise its typed SSE stream: %#v", id, desc.Capabilities)
 		}
 	}
 }

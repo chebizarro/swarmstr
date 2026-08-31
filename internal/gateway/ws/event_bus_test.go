@@ -125,7 +125,9 @@ func TestAllPushEvents_containsCore(t *testing.T) {
 		EventVoicewake, EventUpdateAvailable,
 		EventChannelMessage, EventRelayHealth, EventDMHealth,
 		EventNodePairRequested, EventNodePairResolved, EventNodeInvokeProgress,
-		EventDevicePairResolved, EventPluginLoaded,
+		EventNodePresence, EventNodeRunnerInventoryChanged, EventNodeInvokeRequest, EventNodeInvokeInput, EventNodeInvokeCancel,
+		EventDevicePairChanged, EventDevicePairRequested, EventDevicePairResolved,
+		EventDevicePairSetupCompleted, EventDevicePairSetupDeliveryUncertain, EventPluginLoaded,
 		EventToolStart, EventToolProgress, EventToolResult, EventToolError,
 	}
 	set := make(map[string]struct{}, len(AllPushEvents))

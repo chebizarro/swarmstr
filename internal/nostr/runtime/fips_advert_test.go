@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -209,7 +210,45 @@ func TestCapabilityRegistryFIPSFirstArrivalAndExpirationFallback(t *testing.T) {
 	}
 }
 
-func TestCapabilityRegistryExpiredAdvertRetainsHighWaterMark(t *testing.T) {
+func TestCapabilityRegistryNIP09DeletesActiveAdvert(t *testing.T) {
+	reg := NewCapabilityRegistry()
+	reg.Set(CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", CreatedAt: 1, EventID: "base"})
+	now := time.Now().Unix()
+	announcement := FIPSAdvertAnnouncement{
+		PubKey: "peer", Protocol: FIPSOverlayAdvertIdentifier, Advert: testFIPSAdvert(),
+		EventID: "fips-event", CreatedAt: now, ExpiresAt: now + 60,
+	}
+	if !reg.SetFIPSAdvert(announcement) {
+		t.Fatal("advert rejected")
+	}
+	if !reg.DeleteFIPSAdvert("peer", []string{"fips-event"}, nil, now+1) {
+		t.Fatal("matching NIP-09 deletion was not applied")
+	}
+	got, ok := reg.Get("peer")
+	if !ok || got.FIPSAdvert != nil || got.FIPSEnabled {
+		t.Fatalf("advert still active after deletion: %#v", got)
+	}
+	if reg.DeleteFIPSAdvert("peer", []string{"other"}, nil, now+2) {
+		t.Fatal("unrelated deletion should not apply")
+	}
+}
+
+func TestCapabilityRegistryNIP09CoordinateDeletesActiveAdvert(t *testing.T) {
+	reg := NewCapabilityRegistry()
+	reg.Set(CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", CreatedAt: 1, EventID: "base"})
+	now := time.Now().Unix()
+	announcement := FIPSAdvertAnnouncement{
+		PubKey: "peer", Protocol: FIPSOverlayAdvertIdentifier, Advert: testFIPSAdvert(),
+		EventID: "fips-event", CreatedAt: now, ExpiresAt: now + 60,
+	}
+	reg.SetFIPSAdvert(announcement)
+	coordinate := fmt.Sprintf("%d:%s:%s", FIPSOverlayAdvertKind, "peer", FIPSOverlayAdvertIdentifier)
+	if !reg.DeleteFIPSAdvert("peer", nil, []string{coordinate}, now+1) {
+		t.Fatal("matching coordinate deletion was not applied")
+	}
+}
+
+func TestCapabilityRegistryExpiredAdvertAdvancesHighWaterMark(t *testing.T) {
 	reg := NewCapabilityRegistry()
 	reg.Set(CapabilityAnnouncement{PubKey: "peer", Runtime: "metiq", CreatedAt: 1, EventID: "base"})
 	now := time.Now().Unix()

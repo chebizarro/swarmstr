@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"metiq/internal/agent"
+	subagentstore "metiq/internal/agent/subagent"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/security/commandanalysis"
@@ -324,13 +325,54 @@ type SubagentRegistry struct {
 	mu              sync.Mutex
 	records         map[string]*SubagentRecord // key: RunID
 	livenessChecker *agent.SubagentLivenessChecker
+	durable         *subagentstore.Registry
 }
 
 func newSubagentRegistry() *SubagentRegistry {
-	return &SubagentRegistry{
-		records:         map[string]*SubagentRecord{},
-		livenessChecker: agent.NewSubagentLivenessChecker(),
+	// Tests and explicitly ephemeral callers retain the legacy in-memory view;
+	// daemon startup uses openDurableSubagentRegistry and fails closed if SQLite
+	// cannot be opened.
+	return newSubagentRegistryWithDurable(nil)
+}
+
+func openDurableSubagentRegistry(path string) (*SubagentRegistry, error) {
+	durable, err := subagentstore.OpenSQLiteRegistry(path)
+	if err != nil {
+		return nil, err
 	}
+	if _, err := durable.ReconcileRestart(time.Now()); err != nil {
+		_ = durable.Close()
+		return nil, err
+	}
+	return newSubagentRegistryWithDurable(durable), nil
+}
+
+func newSubagentRegistryWithDurable(durable *subagentstore.Registry) *SubagentRegistry {
+	r := &SubagentRegistry{records: map[string]*SubagentRecord{}, livenessChecker: agent.NewSubagentLivenessChecker(), durable: durable}
+	if durable == nil {
+		return r
+	}
+	for _, stored := range durable.ListAll() {
+		status := "running"
+		result, errText := "", ""
+		if stored.Outcome != nil {
+			result, errText = stored.Outcome.Result, stored.Outcome.Error
+			if errText != "" || stored.Outcome.Status == "error" || stored.Outcome.Status == "unknown" || stored.Outcome.Status == "timeout" {
+				status = "error"
+			} else if stored.EndedAt != 0 {
+				status = "done"
+			}
+		}
+		r.records[stored.RunID] = &SubagentRecord{RunID: stored.RunID, SessionID: stored.ChildSessionKey, ParentSessionID: stored.RequesterSessionKey, Depth: stored.Depth, Status: status, Message: stored.Task, Result: result, Error: errText, StartedAt: stored.StartedAt, UpdatedAt: stored.UpdatedAt}
+	}
+	return r
+}
+
+func (r *SubagentRegistry) Close() error {
+	if r == nil || r.durable == nil {
+		return nil
+	}
+	return r.durable.Close()
 }
 
 func (r *SubagentRegistry) checker() *agent.SubagentLivenessChecker {
@@ -401,6 +443,11 @@ func (r *SubagentRegistry) CleanupStale(now time.Time) int {
 
 	for runID := range r.records {
 		if !shouldKeep(runID) {
+			if r.durable != nil {
+				if err := r.durable.DeleteWithError(runID); err != nil {
+					continue
+				}
+			}
 			delete(r.records, runID)
 			removed++
 		}
@@ -430,8 +477,27 @@ func (r *SubagentRegistry) Spawn(runID, sessionID, parentSessionID string, depth
 	if maxLive > 0 && r.liveCountLocked() >= maxLive {
 		return nil, false
 	}
+	if r.durable != nil {
+		stored := subagentstore.SubagentRunRecord{
+			RunID:                runID,
+			ChildSessionKey:      sessionID,
+			ControllerSessionKey: parentSessionID,
+			RequesterSessionKey:  parentSessionID,
+			Task:                 message,
+			Depth:                depth,
+			Cleanup:              "keep",
+			CreatedAt:            now,
+			UpdatedAt:            now,
+			StartedAt:            now,
+			ExecutionStatus:      subagentstore.ExecutionRunning,
+		}
+		if err := r.durable.Register(stored); err != nil {
+			return nil, false
+		}
+	}
 	r.records[runID] = rec
-	return rec, true
+	copy := *rec
+	return &copy, true
 }
 
 func (r *SubagentRegistry) liveCountLocked() int {
@@ -465,18 +531,29 @@ func (r *SubagentRegistry) Count() int {
 // Finish marks a sub-session as done or errored.
 func (r *SubagentRegistry) Finish(runID, result, errStr string) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	rec := r.records[runID]
-	if rec != nil {
-		if errStr != "" {
-			rec.Status = "error"
-			rec.Error = errStr
-		} else {
-			rec.Status = "done"
-			rec.Result = result
-		}
-		rec.UpdatedAt = time.Now().UnixMilli()
+	if rec == nil {
+		return
 	}
-	r.mu.Unlock()
+	status := "ok"
+	if errStr != "" {
+		status = "error"
+	}
+	if r.durable != nil {
+		ended, err := r.durable.EndWithError(runID, subagentstore.RunOutcome{Status: status, Result: result, Error: errStr})
+		if err != nil || !ended {
+			return
+		}
+	}
+	if errStr != "" {
+		rec.Status = "error"
+		rec.Error = errStr
+	} else {
+		rec.Status = "done"
+		rec.Result = result
+	}
+	rec.UpdatedAt = time.Now().UnixMilli()
 }
 
 // Get returns the record for the given run_id, or nil.

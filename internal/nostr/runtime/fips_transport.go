@@ -60,7 +60,7 @@ type fipsDMEnvelope struct {
 type FIPSTransportOptions struct {
 	// PubkeyHex is the agent's own hex pubkey.
 	PubkeyHex string
-	// AgentPort is the FSP port for agent messages. Default: 1337.
+	// AgentPort is the application TCP port carried over the FIPS TUN interface. Default: 1337.
 	AgentPort int
 	// DialTimeout overrides the default TCP dial timeout.
 	DialTimeout time.Duration
@@ -483,6 +483,9 @@ func (ft *FIPSTransport) handleInbound(frameType fipsFrameType, payload []byte, 
 			Text:       env.Text,
 			CreatedAt:  env.TS,
 			Scheme:     "fips",
+			Reply: func(ctx context.Context, text string) error {
+				return ft.SendDM(ctx, authenticatedPK.Hex(), text)
+			},
 		}
 		if err := ft.onMessage(ft.ctx, dm); err != nil {
 			ft.emitError(fmt.Errorf("fips inbound: handler error: %w", err))

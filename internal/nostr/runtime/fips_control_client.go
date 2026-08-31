@@ -33,6 +33,23 @@ type FIPSControlClient struct {
 	dialTimeout time.Duration
 }
 
+// FIPSProbeStart describes a diagnostic probe admitted by the local daemon.
+// Probe results are diagnostic only and must never be used as ACP completion.
+type FIPSProbeStart struct {
+	ProbeID     uint64 `json:"probe_id"`
+	Npub        string `json:"npub"`
+	NodeAddr    string `json:"node_addr"`
+	DisplayName string `json:"display_name"`
+	BudgetMS    uint64 `json:"budget_ms"`
+}
+
+// FIPSProbePoll is a point-in-time diagnostic probe result. Report remains raw
+// because its stage detail is intentionally extensible across daemon versions.
+type FIPSProbePoll struct {
+	State  string          `json:"state"`
+	Report json.RawMessage `json:"report"`
+}
+
 type FIPSCacheSummary struct {
 	Count        int
 	MaxEntries   int
@@ -355,6 +372,51 @@ func (c *FIPSControlClient) ShowStatus(ctx context.Context) (FIPSStatusSummary, 
 	return out, nil
 }
 
+// StartProbe admits a daemon diagnostic probe and returns immediately.
+func (c *FIPSControlClient) StartProbe(ctx context.Context, npub string) (FIPSProbeStart, error) {
+	var out FIPSProbeStart
+	npub = strings.TrimSpace(npub)
+	if npub == "" {
+		return out, fmt.Errorf("fips control client: probe npub is required")
+	}
+	data, err := c.query(ctx, "probe_start", map[string]any{"npub": npub})
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// PollProbe reports progress for a previously admitted diagnostic probe.
+func (c *FIPSControlClient) PollProbe(ctx context.Context, probeID uint64) (FIPSProbePoll, error) {
+	var out FIPSProbePoll
+	data, err := c.query(ctx, "probe_poll", map[string]any{"probe_id": probeID})
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// CancelProbe requests immediate terminal cleanup for a diagnostic probe.
+func (c *FIPSControlClient) CancelProbe(ctx context.Context, probeID uint64) error {
+	_, err := c.query(ctx, "probe_cancel", map[string]any{"probe_id": probeID})
+	return err
+}
+
+// DaemonState returns the local daemon lifecycle state for transport selection.
+func (c *FIPSControlClient) DaemonState(ctx context.Context) (string, error) {
+	status, err := c.ShowStatus(ctx)
+	if err != nil {
+		return "", err
+	}
+	return status.State, nil
+}
+
 func (c *FIPSControlClient) ShowMetrics(ctx context.Context) (FIPSMetricsSummary, error) {
 	var out FIPSMetricsSummary
 	data, err := c.query(ctx, "show_metrics", nil)
@@ -502,6 +564,9 @@ func defaultFIPSControlEndpoint() fipsControlEndpoint {
 	}
 	if dirExists("/run/fips") {
 		return fipsControlEndpoint{Network: "unix", Address: "/run/fips/control.sock"}
+	}
+	if (runtime.GOOS == "darwin" || runtime.GOOS == "freebsd") && dirExists("/var/run/fips") {
+		return fipsControlEndpoint{Network: "unix", Address: "/var/run/fips/control.sock"}
 	}
 	if xdg := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); xdg != "" && dirExists(xdg) {
 		return fipsControlEndpoint{Network: "unix", Address: filepath.Join(xdg, "fips", "control.sock")}

@@ -3,7 +3,6 @@ package subagent
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
 // ReactivateInput holds the parameters for reactivating a completed subagent
@@ -77,35 +76,36 @@ func (r *Registry) ReactivateCompletedSession(input ReactivateInput) (Reactivate
 
 	previousRunID := latest.RunID
 
-	// Remove the old run.
-	if latestKey != nextRunID {
-		delete(r.runs, latestKey)
-	}
-
-	// Build the replacement run, preserving context from the source.
-	now := time.Now().UnixMilli()
+	// Build the replacement run, preserving complete ownership/configuration.
+	now := r.now().UnixMilli()
 	timeout := input.RunTimeoutSeconds
 	if timeout == 0 {
 		timeout = latest.RunTimeoutSeconds
 	}
 
-	next := &SubagentRunRecord{
-		RunID:               nextRunID,
-		ChildSessionKey:     latest.ChildSessionKey,
-		RequesterSessionKey: latest.RequesterSessionKey,
-		RequesterDisplayKey: latest.RequesterDisplayKey,
-		Task:                latest.Task,
-		Cleanup:             latest.Cleanup,
-		Label:               latest.Label,
-		RunTimeoutSeconds:   timeout,
-		CreatedAt:           latest.CreatedAt,
-		StartedAt:           now,
-		EndedAt:             0,
-		Outcome:             nil,
-		SuppressAnnounce:    "",
-	}
+	next := cloneRunRecord(*latest)
+	next.RunID = nextRunID
+	next.RunTimeoutSeconds = timeout
+	next.StartedAt = now
+	next.UpdatedAt = now
+	next.EndedAt = 0
+	next.Generation = latest.Generation + 1
+	next.ExecutionStatus = ExecutionRunning
+	next.Outcome = nil
+	next.Completion = CompletionState{}
+	next.Delivery = DeliveryState{Status: DeliveryNotRequired}
+	next.SuppressAnnounce = ""
 
-	r.runs[nextRunID] = next
+	// Replace ownership and lifecycle state in one durable transaction before
+	// publishing the new in-memory projection.
+	if err := r.store.Replace(latestKey, next); err != nil {
+		return ReactivateResult{}, err
+	}
+	if latestKey != nextRunID {
+		delete(r.runs, latestKey)
+	}
+	copy := next
+	r.runs[nextRunID] = &copy
 	return ReactivateResult{
 		Reactivated:   true,
 		PreviousRunID: previousRunID,
