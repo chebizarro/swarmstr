@@ -85,6 +85,10 @@ func TestPhase2PriorityRequestContracts(t *testing.T) {
 	if _, err := inventory.Normalize(); err != nil {
 		t.Fatal(err)
 	}
+	recoverReq, err := DecodeSessionsRecoverParams(json.RawMessage(`{"key":"s","agentId":"main"}`))
+	if err != nil || recoverReq.AgentID != "main" {
+		t.Fatalf("recover=%+v err=%v", recoverReq, err)
+	}
 	if _, err := DecodeSessionsRecoverParams(json.RawMessage(`{"key":"s","unexpected":true}`)); err == nil {
 		t.Fatal("unknown field accepted")
 	}

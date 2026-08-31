@@ -51,6 +51,57 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 	}
 
 	switch method {
+	case methods.MethodSessionsGet:
+		req, err := methods.DecodeSessionsGetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := getStoredSession(ctx, docsRepo, transcriptRepo, sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsResolve:
+		req, err := methods.DecodeSessionsResolveParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		result, err := resolveStoredSession(sessionStore, req)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsRecover:
+		req, err := methods.DecodeSessionsRecoverParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if chatCancels != nil {
+			chatCancels.Abort(req.Key)
+		}
+		clearTransientSessionSteering(steeringMailboxes, req.Key)
+		var result map[string]any
+		err = withExclusiveSessionTurn(ctx, req.Key, 15*time.Second, func() error {
+			var innerErr error
+			result, innerErr = recoverStoredSession(ctx, docsRepo, transcriptRepo, sessionStore, req.Key, req.AgentID)
+			return innerErr
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	case methods.MethodChatSend, methods.MethodSessionsSend:
 		req, err := methods.DecodeChatSendParams(in.Params)
 		if err != nil {

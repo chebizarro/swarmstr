@@ -32,7 +32,7 @@ func (r SessionsGetRequest) Normalize() (SessionsGetRequest, error) {
 }
 
 func DecodeSessionsGetParams(raw json.RawMessage) (SessionsGetRequest, error) {
-	return decodeMethodParams[SessionsGetRequest](raw)
+	return decodeMethodParams[SessionsGetRequest](normalizeObjectParamAliases(raw))
 }
 
 type SessionsResolveRequest struct {
@@ -60,7 +60,7 @@ func (r SessionsResolveRequest) Normalize() (SessionsResolveRequest, error) {
 }
 
 func DecodeSessionsResolveParams(raw json.RawMessage) (SessionsResolveRequest, error) {
-	return decodeMethodParams[SessionsResolveRequest](raw)
+	return decodeMethodParams[SessionsResolveRequest](normalizeObjectParamAliases(raw))
 }
 
 type SessionsRecoverRequest struct {
@@ -77,7 +77,7 @@ func (r SessionsRecoverRequest) Normalize() (SessionsRecoverRequest, error) {
 }
 
 func DecodeSessionsRecoverParams(raw json.RawMessage) (SessionsRecoverRequest, error) {
-	return decodeMethodParams[SessionsRecoverRequest](raw)
+	return decodeMethodParams[SessionsRecoverRequest](normalizeObjectParamAliases(raw))
 }
 
 type SessionsSteerRequest struct {
