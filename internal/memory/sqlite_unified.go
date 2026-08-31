@@ -87,6 +87,11 @@ func (b *SQLiteBackend) ensureUnifiedSchema() error {
 		source_event_id TEXT,
 		source_file_path TEXT,
 		source_nostr_event_id TEXT,
+		origin_class TEXT NOT NULL DEFAULT 'untrusted',
+		session_kind TEXT NOT NULL DEFAULT 'interactive',
+		external_tool_taint INTEGER NOT NULL DEFAULT 0,
+		network_taint INTEGER NOT NULL DEFAULT 0,
+		recalled_content INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL,
 		valid_from INTEGER,
@@ -224,7 +229,32 @@ func (b *SQLiteBackend) ensureUnifiedSchema() error {
 	if _, err := b.db.Exec(schema); err != nil {
 		return err
 	}
-	return ensureMemoryOutboxColumns(b.db)
+	if err := ensureMemoryOutboxColumns(b.db); err != nil {
+		return err
+	}
+	return ensureMemoryRecordProvenanceColumns(b.db)
+}
+
+func ensureMemoryRecordProvenanceColumns(db *sql.DB) error {
+	columns, err := sqliteTableColumns(db, "memory_records")
+	if err != nil {
+		return err
+	}
+	alter := map[string]string{
+		"origin_class":        `ALTER TABLE memory_records ADD COLUMN origin_class TEXT NOT NULL DEFAULT 'untrusted'`,
+		"session_kind":        `ALTER TABLE memory_records ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'interactive'`,
+		"external_tool_taint": `ALTER TABLE memory_records ADD COLUMN external_tool_taint INTEGER NOT NULL DEFAULT 0`,
+		"network_taint":       `ALTER TABLE memory_records ADD COLUMN network_taint INTEGER NOT NULL DEFAULT 0`,
+		"recalled_content":    `ALTER TABLE memory_records ADD COLUMN recalled_content INTEGER NOT NULL DEFAULT 0`,
+	}
+	for column, stmt := range alter {
+		if !columns[column] {
+			if _, err := db.Exec(stmt); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (b *SQLiteBackend) BackfillUnifiedFromChunks(ctx context.Context) (int, error) {
@@ -236,7 +266,8 @@ func (b *SQLiteBackend) BackfillUnifiedFromChunks(ctx context.Context) (int, err
 		SELECT id, session_id, role, topic, text, keywords, unix,
 		type, goal_id, task_id, run_id, episode_kind,
 		confidence, source, reviewed_at, reviewed_by, expires_at,
-		mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason
+		mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+		origin_class, session_kind, external_tool_taint, network_taint, recalled_content
 		FROM chunks
 		WHERE id NOT IN (SELECT id FROM memory_records)
 		ORDER BY unix ASC
@@ -250,7 +281,11 @@ func (b *SQLiteBackend) BackfillUnifiedFromChunks(ctx context.Context) (int, err
 	defer b.mu.Unlock()
 	count := 0
 	for _, mem := range mems {
-		if err := b.writeMemoryRecordLocked(MemoryRecordFromIndexed(mem)); err == nil {
+		rec, normalizeErr := NormalizeMemoryRecord(MemoryRecordFromIndexed(mem))
+		if normalizeErr != nil {
+			continue
+		}
+		if err := b.writeMemoryRecordLocked(rec); err == nil {
 			count++
 		}
 	}
@@ -277,17 +312,30 @@ func (b *SQLiteBackend) WriteMemoryRecord(ctx context.Context, rec MemoryRecord)
 }
 
 func (b *SQLiteBackend) writeMemoryRecordLocked(rec MemoryRecord) error {
-	_, err := b.db.Exec(`
+	var existingOrigin, existingSession string
+	var existingExternal, existingNetwork, existingRecalled int
+	err := b.db.QueryRow(`SELECT origin_class, session_kind, external_tool_taint, network_taint, recalled_content FROM memory_records WHERE id = ?`, rec.ID).
+		Scan(&existingOrigin, &existingSession, &existingExternal, &existingNetwork, &existingRecalled)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil && (existingOrigin != string(rec.OriginClass) || existingSession != string(rec.SessionKind) ||
+		existingExternal != boolInt(rec.Taint.ExternalTool) || existingNetwork != boolInt(rec.Taint.Network) || existingRecalled != boolInt(rec.RecalledContent)) {
+		return fmt.Errorf("memory record %q provenance is immutable", rec.ID)
+	}
+	_, err = b.db.Exec(`
 		INSERT OR REPLACE INTO memory_records (
 			id, type, scope, subject, text, summary, keywords, tags,
 			confidence, salience, source_kind, source_ref, source_session_id,
 			source_event_id, source_file_path, source_nostr_event_id,
+			origin_class, session_kind, external_tool_taint, network_taint, recalled_content,
 			created_at, updated_at, valid_from, valid_until, pinned,
 			supersedes, superseded_by, deleted_at, embedding_model,
 			embedding_version, metadata, hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, rec.ID, rec.Type, rec.Scope, rec.Subject, rec.Text, rec.Summary, recordJSON(rec.Keywords), recordJSON(rec.Tags),
 		rec.Confidence, rec.Salience, rec.Source.Kind, rec.Source.Ref, rec.Source.SessionID, rec.Source.EventID, rec.Source.FilePath, rec.Source.NostrEventID,
+		string(rec.OriginClass), string(rec.SessionKind), boolInt(rec.Taint.ExternalTool), boolInt(rec.Taint.Network), boolInt(rec.RecalledContent),
 		rec.CreatedAt.Unix(), rec.UpdatedAt.Unix(), rec.ValidFrom.Unix(), nullableUnix(rec.ValidUntil), boolInt(rec.Pinned),
 		recordJSON(rec.Supersedes), rec.SupersededBy, nullableUnix(rec.DeletedAt), rec.EmbeddingModel, rec.EmbeddingVersion, recordJSON(rec.Metadata), contentHash(rec.Text))
 	if err != nil {
@@ -347,6 +395,7 @@ func (b *SQLiteBackend) queryMemoryRecordsLike(q MemoryQuery) ([]MemoryCard, err
 		SELECT r.id, r.type, r.scope, r.subject, r.text, r.summary, r.keywords, r.tags,
 		r.confidence, r.salience, r.source_kind, r.source_ref, r.source_session_id,
 		r.source_event_id, r.source_file_path, r.source_nostr_event_id,
+		r.origin_class, r.session_kind, r.external_tool_taint, r.network_taint, r.recalled_content,
 		r.created_at, r.updated_at, r.valid_from, r.valid_until, r.pinned,
 		r.supersedes, r.superseded_by, r.deleted_at, r.embedding_model,
 		r.embedding_version, r.metadata, 0.0 AS rank
@@ -380,6 +429,7 @@ func (b *SQLiteBackend) GetMemoryRecord(ctx context.Context, id string) (MemoryR
 		SELECT id, type, scope, subject, text, summary, keywords, tags,
 		       confidence, salience, source_kind, source_ref, source_session_id,
 		       source_event_id, source_file_path, source_nostr_event_id,
+		       origin_class, session_kind, external_tool_taint, network_taint, recalled_content,
 		       created_at, updated_at, valid_from, valid_until, pinned,
 		       supersedes, superseded_by, deleted_at, embedding_model,
 		       embedding_version, metadata, 0.0 AS rank
@@ -785,11 +835,12 @@ func (b *SQLiteBackend) scanMemoryRecordRows(rows *sql.Rows) ([]MemoryRecord, []
 		var rec MemoryRecord
 		var keywords, tags, supersedes, metadata sql.NullString
 		var validFrom, validUntil, deletedAt sql.NullInt64
-		var pinned int
+		var pinned, externalToolTaint, networkTaint, recalledContent int
 		var rank float64
 		var createdAt, updatedAt int64
 		err := rows.Scan(&rec.ID, &rec.Type, &rec.Scope, &rec.Subject, &rec.Text, &rec.Summary, &keywords, &tags,
 			&rec.Confidence, &rec.Salience, &rec.Source.Kind, &rec.Source.Ref, &rec.Source.SessionID, &rec.Source.EventID, &rec.Source.FilePath, &rec.Source.NostrEventID,
+			&rec.OriginClass, &rec.SessionKind, &externalToolTaint, &networkTaint, &recalledContent,
 			&createdAt, &updatedAt, &validFrom, &validUntil, &pinned, &supersedes, &rec.SupersededBy, &deletedAt, &rec.EmbeddingModel, &rec.EmbeddingVersion, &metadata, &rank)
 		if err != nil {
 			continue
@@ -808,6 +859,9 @@ func (b *SQLiteBackend) scanMemoryRecordRows(rows *sql.Rows) ([]MemoryRecord, []
 			rec.DeletedAt = &d
 		}
 		rec.Pinned = pinned != 0
+		rec.Taint.ExternalTool = externalToolTaint != 0
+		rec.Taint.Network = networkTaint != 0
+		rec.RecalledContent = recalledContent != 0
 		_ = json.Unmarshal([]byte(keywords.String), &rec.Keywords)
 		_ = json.Unmarshal([]byte(tags.String), &rec.Tags)
 		_ = json.Unmarshal([]byte(supersedes.String), &rec.Supersedes)

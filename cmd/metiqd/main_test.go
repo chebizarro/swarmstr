@@ -3009,7 +3009,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	ctxCancel, cancelFunc := context.WithCancel(context.Background())
 	done := make(chan bool)
 	go func() {
-		res2, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"test-cancel"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+		res2, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"ls test-cancel"}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 		payload2, _ := res2.Result.(map[string]any)
 		approvalID2, _ := payload2["id"].(string)
 		res3, _ := handleControlRPCRequest(ctxCancel, nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalWaitDecision, Params: json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_ms":5000}`, approvalID2))}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
@@ -3023,7 +3023,7 @@ func TestHandleControlRPCRequest_OperationalBundles(t *testing.T) {
 	cancelFunc()
 	<-done
 
-	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"test-concurrent","timeout_ms":5000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
+	res, err = handleControlRPCRequest(context.Background(), nostruntime.ControlRPCInbound{FromPubKey: "caller", Method: methods.MethodExecApprovalRequest, Params: json.RawMessage(`{"command":"ls test-concurrent","timeout_ms":5000}`)}, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfgState, nil, nil, time.Now())
 	if err != nil {
 		t.Fatalf("exec.approval.request concurrent error: %v", err)
 	}

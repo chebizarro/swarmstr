@@ -1,5 +1,7 @@
 package state
 
+import "metiq/internal/sandbox"
+
 const (
 	NostrChannelKindDM          NostrChannelKind = "dm"
 	NostrChannelKindNIP28       NostrChannelKind = "nip28"
@@ -13,12 +15,13 @@ const (
 
 // NostrChannelConfig describes a single Nostr transport subscription.
 type SessionDoc struct {
-	Version       int            `json:"version"`
-	SessionID     string         `json:"session_id"`
-	PeerPubKey    string         `json:"peer_pubkey"`
-	LastInboundAt int64          `json:"last_inbound_at"`
-	LastReplyAt   int64          `json:"last_reply_at"`
-	Meta          map[string]any `json:"meta,omitempty"`
+	Version            int                        `json:"version"`
+	SessionID          string                     `json:"session_id"`
+	PeerPubKey         string                     `json:"peer_pubkey"`
+	LastInboundAt      int64                      `json:"last_inbound_at"`
+	LastReplyAt        int64                      `json:"last_reply_at"`
+	SandboxRequirement sandbox.SessionRequirement `json:"sandbox_requirement,omitempty"`
+	Meta               map[string]any             `json:"meta,omitempty"`
 }
 
 type ListDoc struct {
@@ -77,12 +80,19 @@ type MemoryDoc struct {
 	RunID       string `json:"run_id,omitempty"`
 	EpisodeKind string `json:"episode_kind,omitempty"` // outcome|decision|error|insight
 
-	// Trust & provenance metadata.
-	Confidence float64 `json:"confidence,omitempty"`  // 0.0–1.0; 0 means unset (defaults to 0.5)
-	Source     string  `json:"source,omitempty"`      // agent|user|system|import
-	ReviewedAt int64   `json:"reviewed_at,omitempty"` // unix seconds; 0 means unreviewed
-	ReviewedBy string  `json:"reviewed_by,omitempty"` // pubkey or agent ID of reviewer
-	ExpiresAt  int64   `json:"expires_at,omitempty"`  // unix seconds; 0 means no expiry
+	// Trust & provenance metadata. OriginClass and SessionKind are closed
+	// classifications enforced by the memory package; the taint/recall markers
+	// are structural fields so model-authored metadata cannot erase them.
+	Confidence        float64 `json:"confidence,omitempty"`          // 0.0–1.0; 0 means unset (defaults to 0.5)
+	Source            string  `json:"source,omitempty"`              // agent|user|system|import
+	OriginClass       string  `json:"origin_class,omitempty"`        // owner|agent|untrusted|system
+	SessionKind       string  `json:"session_kind,omitempty"`        // interactive|cron|heartbeat|subagent
+	ExternalToolTaint bool    `json:"external_tool_taint,omitempty"` // derived from an external tool result
+	NetworkTaint      bool    `json:"network_taint,omitempty"`       // derived from network-sourced content
+	RecalledContent   bool    `json:"recalled_content,omitempty"`    // memory material was injected into the source turn
+	ReviewedAt        int64   `json:"reviewed_at,omitempty"`         // unix seconds; 0 means unreviewed
+	ReviewedBy        string  `json:"reviewed_by,omitempty"`         // pubkey or agent ID of reviewer
+	ExpiresAt         int64   `json:"expires_at,omitempty"`          // unix seconds; 0 means no expiry
 
 	// Invalidation / lifecycle state.
 	MemStatus        string `json:"mem_status,omitempty"`        // active|stale|superseded|contradicted (empty = active)

@@ -45,32 +45,73 @@ const (
 	MemorySourceKindManual         = "manual"
 )
 
+// MemoryOriginClass is a closed trust classification. It is deliberately a
+// typed field rather than free-form metadata so untrusted content cannot
+// promote itself by emitting a trusted-looking label in prose.
+type MemoryOriginClass string
+
+const (
+	MemoryOriginOwner     MemoryOriginClass = "owner"
+	MemoryOriginAgent     MemoryOriginClass = "agent"
+	MemoryOriginUntrusted MemoryOriginClass = "untrusted"
+	MemoryOriginSystem    MemoryOriginClass = "system"
+)
+
+// MemorySessionKind is a closed source-session classification.
+type MemorySessionKind string
+
+const (
+	MemorySessionInteractive MemorySessionKind = "interactive"
+	MemorySessionCron        MemorySessionKind = "cron"
+	MemorySessionHeartbeat   MemorySessionKind = "heartbeat"
+	MemorySessionSubagent    MemorySessionKind = "subagent"
+)
+
+// MemoryTaint records content dependencies that cross the local trust boundary.
+type MemoryTaint struct {
+	ExternalTool bool `json:"external_tool,omitempty"`
+	Network      bool `json:"network,omitempty"`
+}
+
+// TurnProvenance is supplied by extraction call sites before text is admitted
+// to memory. RecalledContent prevents memory feedback loops.
+type TurnProvenance struct {
+	OriginClass     MemoryOriginClass
+	SessionKind     MemorySessionKind
+	Taint           MemoryTaint
+	RecalledContent bool
+}
+
 // MemoryRecord is the typed, lifecycle-aware memory model used by the unified
 // memory layer. Existing state.MemoryDoc values are adapted into this shape so
 // older persistence paths can coexist during migration.
 type MemoryRecord struct {
-	ID               string         `json:"id"`
-	Type             string         `json:"type"`
-	Scope            string         `json:"scope"`
-	Subject          string         `json:"subject"`
-	Text             string         `json:"text"`
-	Summary          string         `json:"summary,omitempty"`
-	Keywords         []string       `json:"keywords,omitempty"`
-	Tags             []string       `json:"tags,omitempty"`
-	Confidence       float64        `json:"confidence"`
-	Salience         float64        `json:"salience"`
-	Source           MemorySource   `json:"source"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	ValidFrom        time.Time      `json:"valid_from,omitempty"`
-	ValidUntil       *time.Time     `json:"valid_until,omitempty"`
-	Pinned           bool           `json:"pinned,omitempty"`
-	Supersedes       []string       `json:"supersedes,omitempty"`
-	SupersededBy     string         `json:"superseded_by,omitempty"`
-	DeletedAt        *time.Time     `json:"deleted_at,omitempty"`
-	EmbeddingModel   string         `json:"embedding_model,omitempty"`
-	EmbeddingVersion string         `json:"embedding_version,omitempty"`
-	Metadata         map[string]any `json:"metadata,omitempty"`
+	ID               string            `json:"id"`
+	Type             string            `json:"type"`
+	Scope            string            `json:"scope"`
+	Subject          string            `json:"subject"`
+	Text             string            `json:"text"`
+	Summary          string            `json:"summary,omitempty"`
+	Keywords         []string          `json:"keywords,omitempty"`
+	Tags             []string          `json:"tags,omitempty"`
+	Confidence       float64           `json:"confidence"`
+	Salience         float64           `json:"salience"`
+	Source           MemorySource      `json:"source"`
+	OriginClass      MemoryOriginClass `json:"origin_class"`
+	SessionKind      MemorySessionKind `json:"session_kind"`
+	Taint            MemoryTaint       `json:"taint"`
+	RecalledContent  bool              `json:"recalled_content,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+	ValidFrom        time.Time         `json:"valid_from,omitempty"`
+	ValidUntil       *time.Time        `json:"valid_until,omitempty"`
+	Pinned           bool              `json:"pinned,omitempty"`
+	Supersedes       []string          `json:"supersedes,omitempty"`
+	SupersededBy     string            `json:"superseded_by,omitempty"`
+	DeletedAt        *time.Time        `json:"deleted_at,omitempty"`
+	EmbeddingModel   string            `json:"embedding_model,omitempty"`
+	EmbeddingVersion string            `json:"embedding_version,omitempty"`
+	Metadata         map[string]any    `json:"metadata,omitempty"`
 }
 
 type MemorySource struct {
@@ -183,10 +224,27 @@ func NormalizeMemoryRecord(r MemoryRecord) (MemoryRecord, error) {
 	if r.Salience > 1 {
 		r.Salience = 1
 	}
-	if r.Source.Kind == "" {
+	sourceWasEmpty := strings.TrimSpace(r.Source.Kind) == ""
+	if sourceWasEmpty {
 		r.Source.Kind = MemorySourceKindManual
 	}
 	r.Source.Kind = strings.TrimSpace(strings.ToLower(r.Source.Kind))
+	if r.OriginClass == "" {
+		r.OriginClass = conservativeOriginForSource(r.Source.Kind)
+	}
+	if !IsMemoryOriginClassValid(r.OriginClass) {
+		return MemoryRecord{}, fmt.Errorf("invalid memory origin class %q", r.OriginClass)
+	}
+	if r.SessionKind == "" {
+		r.SessionKind = MemorySessionInteractive
+	}
+	if !IsMemorySessionKindValid(r.SessionKind) {
+		return MemoryRecord{}, fmt.Errorf("invalid memory session kind %q", r.SessionKind)
+	}
+	// Taint is monotonic: externally-derived content is always untrusted.
+	if r.Taint.ExternalTool || r.Taint.Network {
+		r.OriginClass = MemoryOriginUntrusted
+	}
 	now := time.Now().UTC()
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = now
@@ -216,6 +274,122 @@ func NormalizeMemoryRecord(r MemoryRecord) (MemoryRecord, error) {
 		r.Metadata = map[string]any{}
 	}
 	return r, nil
+}
+
+// NormalizeMemoryDocProvenance applies the same closed-set admission policy to
+// legacy MemoryDoc paths before any backend stores them.
+func NormalizeMemoryDocProvenance(doc state.MemoryDoc) (state.MemoryDoc, error) {
+	if strings.TrimSpace(doc.OriginClass) == "" {
+		doc.OriginClass = string(conservativeOriginForDoc(doc))
+	}
+	origin := MemoryOriginClass(strings.ToLower(strings.TrimSpace(doc.OriginClass)))
+	if !IsMemoryOriginClassValid(origin) {
+		return state.MemoryDoc{}, fmt.Errorf("invalid memory origin class %q", doc.OriginClass)
+	}
+	doc.OriginClass = string(origin)
+	if strings.TrimSpace(doc.SessionKind) == "" {
+		doc.SessionKind = string(MemorySessionInteractive)
+	}
+	sessionKind := MemorySessionKind(strings.ToLower(strings.TrimSpace(doc.SessionKind)))
+	if !IsMemorySessionKindValid(sessionKind) {
+		return state.MemoryDoc{}, fmt.Errorf("invalid memory session kind %q", doc.SessionKind)
+	}
+	doc.SessionKind = string(sessionKind)
+	if doc.ExternalToolTaint || doc.NetworkTaint {
+		doc.OriginClass = string(MemoryOriginUntrusted)
+	}
+	return doc, nil
+}
+
+func conservativeOriginForDoc(doc state.MemoryDoc) MemoryOriginClass {
+	if strings.EqualFold(strings.TrimSpace(doc.Source), state.MemorySourceSystem) {
+		return MemoryOriginSystem
+	}
+	return MemoryOriginUntrusted
+}
+
+func conservativeOriginForSource(source string) MemoryOriginClass {
+	if strings.EqualFold(strings.TrimSpace(source), state.MemorySourceSystem) {
+		return MemoryOriginSystem
+	}
+	return MemoryOriginUntrusted
+}
+
+func IsMemoryOriginClassValid(origin MemoryOriginClass) bool {
+	switch origin {
+	case MemoryOriginOwner, MemoryOriginAgent, MemoryOriginUntrusted, MemoryOriginSystem:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsMemorySessionKindValid(kind MemorySessionKind) bool {
+	switch kind {
+	case MemorySessionInteractive, MemorySessionCron, MemorySessionHeartbeat, MemorySessionSubagent:
+		return true
+	default:
+		return false
+	}
+}
+
+func InferMemorySessionKind(sessionID string) MemorySessionKind {
+	normalized := strings.ToLower(strings.TrimSpace(sessionID))
+	switch {
+	case strings.HasPrefix(normalized, "cron:"):
+		return MemorySessionCron
+	case strings.HasPrefix(normalized, "heartbeat:"):
+		return MemorySessionHeartbeat
+	case strings.HasPrefix(normalized, "subagent:"), strings.HasPrefix(normalized, "acp:"):
+		return MemorySessionSubagent
+	default:
+		return MemorySessionInteractive
+	}
+}
+
+func memoryProvenanceEligible(origin MemoryOriginClass, sessionKind MemorySessionKind, taint MemoryTaint, recalled bool) bool {
+	if origin != MemoryOriginOwner && origin != MemoryOriginAgent {
+		return false
+	}
+	if sessionKind != MemorySessionInteractive {
+		return false
+	}
+	return !taint.ExternalTool && !taint.Network && !recalled
+}
+
+// IsMemoryPromotionEligible is the deterministic durable-promotion boundary.
+func IsMemoryPromotionEligible(rec MemoryRecord) bool {
+	return memoryProvenanceEligible(rec.OriginClass, rec.SessionKind, rec.Taint, rec.RecalledContent)
+}
+
+// IsIndexedMemoryPromotionEligible checks legacy/index-backed candidates.
+func IsIndexedMemoryPromotionEligible(mem IndexedMemory) bool {
+	return memoryProvenanceEligible(
+		MemoryOriginClass(mem.OriginClass),
+		MemorySessionKind(mem.SessionKind),
+		MemoryTaint{ExternalTool: mem.ExternalToolTaint, Network: mem.NetworkTaint},
+		mem.RecalledContent,
+	)
+}
+
+// IsMemoryInjectionEligible is the deterministic automatic prompt-injection boundary.
+func IsMemoryInjectionEligible(mem IndexedMemory) bool {
+	return memoryProvenanceEligible(
+		MemoryOriginClass(mem.OriginClass),
+		MemorySessionKind(mem.SessionKind),
+		MemoryTaint{ExternalTool: mem.ExternalToolTaint, Network: mem.NetworkTaint},
+		mem.RecalledContent,
+	)
+}
+
+func FilterMemoryInjectionEligible(in []IndexedMemory) []IndexedMemory {
+	out := make([]IndexedMemory, 0, len(in))
+	for _, mem := range in {
+		if IsMemoryInjectionEligible(mem) {
+			out = append(out, mem)
+		}
+	}
+	return out
 }
 
 func NormalizeMemoryRecordType(t string) string {
@@ -287,11 +461,15 @@ func MemoryRecordFromDoc(doc state.MemoryDoc) MemoryRecord {
 			SessionID: doc.SessionID,
 			EventID:   doc.SourceRef,
 		},
-		CreatedAt:    created,
-		UpdatedAt:    created,
-		ValidFrom:    created,
-		SupersededBy: doc.SupersededBy,
-		Metadata:     cloneMetadata(doc.Meta),
+		OriginClass:     MemoryOriginClass(doc.OriginClass),
+		SessionKind:     MemorySessionKind(doc.SessionKind),
+		Taint:           MemoryTaint{ExternalTool: doc.ExternalToolTaint, Network: doc.NetworkTaint},
+		RecalledContent: doc.RecalledContent,
+		CreatedAt:       created,
+		UpdatedAt:       created,
+		ValidFrom:       created,
+		SupersededBy:    doc.SupersededBy,
+		Metadata:        cloneMetadata(doc.Meta),
 	}
 	if doc.ExpiresAt > 0 {
 		v := time.Unix(doc.ExpiresAt, 0).UTC()
@@ -310,19 +488,24 @@ func (r MemoryRecord) ToDoc() state.MemoryDoc {
 		unix = time.Now().Unix()
 	}
 	doc := state.MemoryDoc{
-		Version:      1,
-		MemoryID:     r.ID,
-		Type:         legacyDocType(r.Type),
-		SessionID:    r.Source.SessionID,
-		SourceRef:    firstNonEmpty(r.Source.Ref, r.Source.EventID, r.Source.FilePath, r.Source.NostrEventID),
-		Text:         r.Text,
-		Keywords:     append(append([]string(nil), r.Keywords...), r.Tags...),
-		Topic:        r.Subject,
-		Unix:         unix,
-		Meta:         cloneMetadata(r.Metadata),
-		Confidence:   r.Confidence,
-		Source:       r.Source.Kind,
-		SupersededBy: r.SupersededBy,
+		Version:           1,
+		MemoryID:          r.ID,
+		Type:              legacyDocType(r.Type),
+		SessionID:         r.Source.SessionID,
+		SourceRef:         firstNonEmpty(r.Source.Ref, r.Source.EventID, r.Source.FilePath, r.Source.NostrEventID),
+		Text:              r.Text,
+		Keywords:          append(append([]string(nil), r.Keywords...), r.Tags...),
+		Topic:             r.Subject,
+		Unix:              unix,
+		Meta:              cloneMetadata(r.Metadata),
+		Confidence:        r.Confidence,
+		Source:            r.Source.Kind,
+		OriginClass:       string(r.OriginClass),
+		SessionKind:       string(r.SessionKind),
+		ExternalToolTaint: r.Taint.ExternalTool,
+		NetworkTaint:      r.Taint.Network,
+		RecalledContent:   r.RecalledContent,
+		SupersededBy:      r.SupersededBy,
 	}
 	if r.ValidUntil != nil {
 		doc.ExpiresAt = r.ValidUntil.Unix()

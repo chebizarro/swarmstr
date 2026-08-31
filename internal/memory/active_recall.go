@@ -266,6 +266,7 @@ func FormatActiveRecallContext(hits []IndexedMemory, maxChars int) string {
 }
 
 func FormatActiveRecallContextWithCitations(hits []IndexedMemory, maxChars int, mode CitationsMode) string {
+	hits = FilterMemoryInjectionEligible(hits)
 	if len(hits) == 0 || maxChars == 0 {
 		return ""
 	}

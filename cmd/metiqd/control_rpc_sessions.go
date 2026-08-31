@@ -152,8 +152,12 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 		created := false
 		session, getErr := docsRepo.GetSession(ctx, key)
 		if getErr != nil {
+			requirement, err := sessionSandboxRequirement(cfg, "operator")
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
 			meta := map[string]any{"agent_id": req.AgentID, "label": req.Label, "model": req.Model, "thinking_level": req.ThinkingLevel, "incognito": req.Incognito, "visibility": req.Visibility, "catalog_id": req.CatalogID, "parent_session_key": req.ParentSessionKey, "spawn_depth": req.SpawnDepth, "forked": req.Fork, "task": req.Task}
-			session = state.SessionDoc{Version: 1, SessionID: key, LastInboundAt: time.Now().Unix(), Meta: meta}
+			session = state.SessionDoc{Version: 1, SessionID: key, LastInboundAt: time.Now().Unix(), SandboxRequirement: requirement, Meta: meta}
 			if _, err := docsRepo.PutSession(ctx, key, session); err != nil {
 				return nostruntime.ControlRPCResult{}, true, err
 			}

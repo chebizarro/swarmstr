@@ -385,20 +385,22 @@ func MemoryWriteTool(store memory.Store) agent.ToolFunc {
 			subject = topic
 		}
 		rec := memory.MemoryRecord{
-			ID:         memory.NewMemoryRecordID(),
-			Type:       memType,
-			Scope:      scope,
-			Subject:    subject,
-			Text:       text,
-			Tags:       tags,
-			Confidence: confidence,
-			Salience:   decision.Score,
-			Source:     src,
-			CreatedAt:  time.Now().UTC(),
-			UpdatedAt:  time.Now().UTC(),
-			Pinned:     pinned,
-			Supersedes: parseStringList(args["supersedes"]),
-			Metadata:   map[string]any{"salience_reason": decision.Reason, "durable": durable},
+			ID:          memory.NewMemoryRecordID(),
+			Type:        memType,
+			Scope:       scope,
+			Subject:     subject,
+			Text:        text,
+			Tags:        tags,
+			Confidence:  confidence,
+			Salience:    decision.Score,
+			Source:      src,
+			OriginClass: memory.MemoryOriginAgent,
+			SessionKind: memory.InferMemorySessionKind(src.SessionID),
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+			Pinned:      pinned,
+			Supersedes:  parseStringList(args["supersedes"]),
+			Metadata:    map[string]any{"salience_reason": decision.Reason, "durable": durable},
 		}
 		if err := memory.WriteMemoryRecord(ctx, store, rec); err != nil {
 			return "", err

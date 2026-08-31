@@ -377,3 +377,20 @@ exports.invoke = function() {
 		t.Fatalf("unexpected expanded SDK result: %#v", m)
 	}
 }
+
+func TestPermissionsForTrustGatesSensitiveNamespaces(t *testing.T) {
+	requested := sdk.Permissions{
+		All: true, Config: true, Storage: true, Agent: true, Session: true,
+		Task: true, Memory: true, Security: true, ExecApproval: true,
+		Nostr: &sdk.NostrPermission{Encrypt: true, Sign: true},
+	}
+	denied := permissionsForTrust(requested, "untrusted")
+	if denied.All || denied.Config || denied.Storage || denied.Agent || denied.Session || denied.Task || denied.Memory || denied.Security || denied.ExecApproval || denied.Nostr.Encrypt || denied.Nostr.Sign {
+		t.Fatalf("untrusted plugin retained sensitive permissions: %+v", denied)
+	}
+	trustedRequest := sdk.Permissions{Config: true, Storage: true, Security: true, Nostr: &sdk.NostrPermission{Sign: true}}
+	allowed := permissionsForTrust(trustedRequest, "trusted")
+	if !allowed.Config || !allowed.Storage || !allowed.Security || !allowed.Nostr.Sign {
+		t.Fatalf("operator-trusted source lost requested permissions: %+v", allowed)
+	}
+}

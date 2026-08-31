@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"metiq/internal/gateway/methods"
+	"metiq/internal/security/commandanalysis"
 )
 
 func TestDurableApprovalOwnersSurviveRestartAndKeepTerminalHistory(t *testing.T) {
@@ -64,6 +65,55 @@ func TestDurableApprovalOwnersSurviveRestartAndKeepTerminalHistory(t *testing.T)
 	history, err := applyApprovalList(reopened, methods.ApprovalListRequest{Status: "resolved"})
 	if err != nil || history["count"] != 1 {
 		t.Fatalf("history = %#v, %v", history, err)
+	}
+}
+
+func TestDurableExecPolicyAndExecutionBindingSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "approvals.json")
+	reg, err := newExecApprovalsRegistryAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := map[string]any{"mode": "allowlist", "ask": "on-miss", "allowlist": []any{"sh"}}
+	if _, err := reg.SetGlobalChecked(policy); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd := t.TempDir()
+	execReq := commandanalysis.ExecutionRequest{Argv: []string{"/bin/sh", "-c", "printf ok"}, CWD: cwd}
+	binding, err := commandanalysis.CaptureExecutionBinding(execReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalCWD := binding.CanonicalCWD
+	record, err := reg.RequestDurable(methods.ExecApprovalRequestRequest{
+		Command:           "printf ok",
+		CommandArgv:       append([]string(nil), binding.Argv...),
+		CWD:               &canonicalCWD,
+		TimeoutMS:         60_000,
+		ExecutionBinding:  &binding,
+		PolicyFingerprint: "sha256:test-policy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := newExecApprovalsRegistryAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.GetGlobal(); got["mode"] != "allowlist" || got["ask"] != "on-miss" {
+		t.Fatalf("global policy did not survive restart: %#v", got)
+	}
+	got, err := reopened.GetApproval(record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExecutionBinding == nil || got.ExecutionBinding.Fingerprint != binding.Fingerprint || got.PolicyFingerprint != "sha256:test-policy" {
+		t.Fatalf("execution trust did not survive restart: %#v", got)
+	}
+	if err := commandanalysis.RevalidateExecutionBinding(*got.ExecutionBinding, execReq); err != nil {
+		t.Fatalf("reloaded binding did not revalidate: %v", err)
 	}
 }
 

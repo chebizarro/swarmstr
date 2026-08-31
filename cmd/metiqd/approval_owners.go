@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"metiq/internal/gateway/methods"
+	"metiq/internal/security/commandanalysis"
 	"metiq/internal/store/state"
 )
 
@@ -23,6 +24,8 @@ var validApprovalOwners = map[string]struct{}{
 
 type approvalLedgerDocument struct {
 	Version int                         `json:"version"`
+	Global  map[string]any              `json:"global,omitempty"`
+	PerNode map[string]map[string]any   `json:"per_node,omitempty"`
 	Records []execApprovalPendingRecord `json:"records"`
 }
 
@@ -51,6 +54,14 @@ func newExecApprovalsRegistryAt(path string) (*execApprovalsRegistry, error) {
 	if doc.Version != approvalLedgerVersion {
 		return nil, fmt.Errorf("unsupported approval ledger version %d", doc.Version)
 	}
+	if doc.Global != nil {
+		r.global = cloneMapAny(doc.Global)
+	}
+	if doc.PerNode != nil {
+		for nodeID, policy := range doc.PerNode {
+			r.perNode[nodeID] = cloneMapAny(policy)
+		}
+	}
 	for _, rec := range doc.Records {
 		if rec.ID == "" {
 			continue
@@ -66,6 +77,14 @@ func newExecApprovalsRegistryAt(path string) (*execApprovalsRegistry, error) {
 	return r, nil
 }
 
+func cloneExecNodePolicies(src map[string]map[string]any) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(src))
+	for nodeID, policy := range src {
+		out[nodeID] = cloneMapAny(policy)
+	}
+	return out
+}
+
 func cloneExecApprovalRecords(src map[string]execApprovalPendingRecord) map[string]execApprovalPendingRecord {
 	out := make(map[string]execApprovalPendingRecord, len(src))
 	for id, rec := range src {
@@ -78,7 +97,12 @@ func (r *execApprovalsRegistry) persistApprovalsLocked(records map[string]execAp
 	if r.storagePath == "" {
 		return nil
 	}
-	doc := approvalLedgerDocument{Version: approvalLedgerVersion, Records: make([]execApprovalPendingRecord, 0, len(records))}
+	doc := approvalLedgerDocument{
+		Version: approvalLedgerVersion,
+		Global:  cloneMapAny(r.global),
+		PerNode: cloneExecNodePolicies(r.perNode),
+		Records: make([]execApprovalPendingRecord, 0, len(records)),
+	}
 	for _, rec := range records {
 		doc.Records = append(doc.Records, cloneExecApprovalRecord(rec))
 	}
@@ -154,6 +178,8 @@ func (r *execApprovalsRegistry) RequestDurable(req methods.ExecApprovalRequestRe
 		AllowAlwaysAvailable: req.AllowAlwaysAvailable,
 		AllowAlwaysReason:    req.AllowAlwaysReason,
 		ApprovalMode:         req.ApprovalMode,
+		ExecutionBinding:     commandanalysis.CloneExecutionBinding(req.ExecutionBinding),
+		PolicyFingerprint:    req.PolicyFingerprint,
 		TimeoutMS:            req.TimeoutMS,
 		Status:               "pending",
 		Requested:            now,
@@ -253,6 +279,7 @@ func (r *execApprovalsRegistry) terminalizePending(id, reason string) (execAppro
 	}
 	rec.Decision = "deny"
 	rec.Reason = reason
+	rec.GrantScope = "system-expiry"
 	rec.Status = "resolved"
 	rec.ResolvedAt = time.Now().UnixMilli()
 	next := cloneExecApprovalRecords(r.pending)

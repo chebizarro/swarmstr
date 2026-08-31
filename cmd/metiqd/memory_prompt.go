@@ -249,7 +249,7 @@ func buildPinnedKnowledgePrompt(index memory.Store, scope memory.ScopedContext) 
 	if index == nil {
 		return ""
 	}
-	pinned := memory.FilterByScope(index.ListByTopic(pinnedKnowledgeTopic, 50), scope)
+	pinned := memory.FilterMemoryInjectionEligible(memory.FilterByScope(index.ListByTopic(pinnedKnowledgeTopic, 50), scope))
 	if len(pinned) == 0 {
 		return ""
 	}
@@ -715,7 +715,7 @@ func buildIndexedMemoryRecallResult(ctx context.Context, index memory.Store, sco
 		limit = baselineMemoryRecallLimit
 	}
 
-	sessionItems := memory.FilterByScope(memory.SearchSessionDocs(ctx, index, sessionID, userText, limit), scope)
+	sessionItems := memory.FilterMemoryInjectionEligible(memory.FilterByScope(memory.SearchSessionDocs(ctx, index, sessionID, userText, limit), scope))
 	seen := make(map[string]struct{}, len(sessionItems))
 	sessionHits := make([]state.MemoryRecallIndexedHit, 0, len(sessionItems))
 	for _, item := range sessionItems {
@@ -728,7 +728,7 @@ func buildIndexedMemoryRecallResult(ctx context.Context, index memory.Store, sco
 
 	globalItems := []memory.IndexedMemory(nil)
 	if scope.Scope != state.AgentMemoryScopeLocal {
-		globalItems = memory.FilterByScope(memory.SearchDocs(ctx, index, userText, limit), scope)
+		globalItems = memory.FilterMemoryInjectionEligible(memory.FilterByScope(memory.SearchDocs(ctx, index, userText, limit), scope))
 	}
 	crossItems := make([]memory.IndexedMemory, 0, baselineCrossSessionRecallLimit)
 	globalHits := make([]state.MemoryRecallIndexedHit, 0, baselineCrossSessionRecallLimit)

@@ -100,7 +100,8 @@ The reference build script is authoritative; keep these commands aligned with
 `.github/workflows/fips-real-daemon.yml` is the mandatory Linux execution path.
 It runs for relevant pull requests, nightly, and by manual dispatch. The job:
 
-1. checks out `jmcorgan/fips` at the pinned `FIPS_REF`;
+1. checks out `jmcorgan/fips` v0.5.0 at pinned commit
+   `80f8f965aa872296edbce84ade9949ece2596602` (`FIPS_REF`);
 2. caches the Cargo registry, git dependencies, and release build separately
    from the Docker layer cache;
 3. builds all daemon binaries with the FIPS checkout's pinned Rust toolchain;

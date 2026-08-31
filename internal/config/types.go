@@ -15,6 +15,7 @@ type BootstrapConfig struct {
 	TranscriptKind                  int      `json:"transcript_kind,omitempty"`
 	EnableNIP44                     bool     `json:"enable_nip44"`
 	EnableNIP17                     bool     `json:"enable_nip17"`
+	EnableLegacyNIP04               bool     `json:"enable_legacy_nip04,omitempty"`
 	EnableAIHubKinds                bool     `json:"enable_ai_hub_kinds"`
 	AdminListenAddr                 string   `json:"admin_listen_addr,omitempty"`
 	AdminToken                      string   `json:"admin_token,omitempty"`

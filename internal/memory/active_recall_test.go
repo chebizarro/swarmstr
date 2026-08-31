@@ -65,7 +65,7 @@ func TestBuildActiveRecallQueryLatestFirstRoleBudgetsAndNoiseStripping(t *testin
 }
 
 func TestActiveRecallAssemblerCachesAndFormats(t *testing.T) {
-	searcher := &activeRecallTestSearcher{hits: []IndexedMemory{{Text: "User prefers Docker sandbox by default"}}}
+	searcher := &activeRecallTestSearcher{hits: []IndexedMemory{{Text: "User prefers Docker sandbox by default", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}}
 	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, CacheTTL: time.Hour}, searcher)
 	req := ActiveRecallRequest{SessionID: "sess", LatestMessage: "sandbox preference?"}
 	first, err := assembler.Recall(context.Background(), req)
@@ -85,7 +85,7 @@ func TestActiveRecallAssemblerCachesAndFormats(t *testing.T) {
 }
 
 func TestActiveRecallAssemblerTimeout(t *testing.T) {
-	searcher := &activeRecallTestSearcher{delay: 20 * time.Millisecond, hits: []IndexedMemory{{Text: "slow"}}}
+	searcher := &activeRecallTestSearcher{delay: 20 * time.Millisecond, hits: []IndexedMemory{{Text: "slow", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}}
 	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, Timeout: time.Millisecond}, searcher)
 	result, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess", LatestMessage: "slow?"})
 	if err != nil {
@@ -107,7 +107,7 @@ func (s *activeRecallPartialTestSearcher) SearchPartial(ctx context.Context, que
 }
 
 func TestActiveRecallAssemblerStatusPersistence(t *testing.T) {
-	searcher := &activeRecallTestSearcher{hits: []IndexedMemory{{Text: "debug status"}}}
+	searcher := &activeRecallTestSearcher{hits: []IndexedMemory{{Text: "debug status", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}}
 	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true}, searcher)
 	result, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-status", LatestMessage: "status?"})
 	if err != nil {
@@ -141,7 +141,7 @@ func TestActiveRecallAssemblerCircuitBreakerOpenAndCooldown(t *testing.T) {
 }
 
 func TestActiveRecallAssemblerPartialTimeoutReturnsPartial(t *testing.T) {
-	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, Timeout: time.Millisecond}, &activeRecallPartialTestSearcher{hits: []IndexedMemory{{Text: "partial memory"}}})
+	assembler := NewActiveRecallAssembler(ActiveRecallConfig{Enabled: true, Timeout: time.Millisecond}, &activeRecallPartialTestSearcher{hits: []IndexedMemory{{Text: "partial memory", OriginClass: string(MemoryOriginOwner), SessionKind: string(MemorySessionInteractive)}}})
 	result, err := assembler.Recall(context.Background(), ActiveRecallRequest{SessionID: "sess-partial", LatestMessage: "partial?"})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)

@@ -21,12 +21,14 @@ func (f *fakeMemoryEncryptor) EncryptMemoryPayload(plaintext string) (string, st
 func seedPromotableMemory(t *testing.T, b *SQLiteBackend, id, topic, source string, recallUnix int64) {
 	t.Helper()
 	b.Add(memoryDocFromIndexed(IndexedMemory{
-		MemoryID:   id,
-		Text:       "memory " + id,
-		Topic:      topic,
-		Source:     source,
-		Unix:       recallUnix,
-		Confidence: 0.9,
+		MemoryID:    id,
+		Text:        "memory " + id,
+		Topic:       topic,
+		Source:      source,
+		Unix:        recallUnix,
+		Confidence:  0.9,
+		OriginClass: string(MemoryOriginAgent),
+		SessionKind: string(MemorySessionInteractive),
 	}))
 	if _, err := b.db.Exec(`
 		INSERT INTO recall_tracking (memory_id, recall_count, unique_queries, last_recall_unix, first_recall_unix, avg_score)

@@ -15,7 +15,9 @@ import (
 	"metiq/internal/cron"
 	"metiq/internal/gateway/methods"
 	gatewayws "metiq/internal/gateway/ws"
+	"metiq/internal/permissions"
 	"metiq/internal/sandbox"
+	"metiq/internal/security/commandanalysis"
 	"metiq/internal/store/state"
 )
 
@@ -343,7 +345,13 @@ func applyExecApprovalsSet(reg *execApprovalsRegistry, req methods.ExecApprovals
 	if reg == nil {
 		return nil, fmt.Errorf("exec approvals runtime not configured")
 	}
-	approvals := reg.SetGlobal(req.Approvals)
+	if report := permissions.DoctorExecApprovalPolicy(req.Approvals); !report.Valid() {
+		return nil, fmt.Errorf("invalid exec approval policy: %s", execPolicyFindingSummary(report))
+	}
+	approvals, err := reg.SetGlobalChecked(req.Approvals)
+	if err != nil {
+		return nil, fmt.Errorf("persist exec approval policy: %w", err)
+	}
 	return map[string]any{"ok": true, "approvals": approvals, "count": len(approvals)}, nil
 }
 
@@ -359,7 +367,13 @@ func applyExecApprovalsNodeSet(reg *execApprovalsRegistry, req methods.ExecAppro
 	if reg == nil {
 		return nil, fmt.Errorf("exec approvals runtime not configured")
 	}
-	approvals := reg.SetNode(req.NodeID, req.Approvals)
+	if report := permissions.DoctorExecApprovalPolicy(req.Approvals); !report.Valid() {
+		return nil, fmt.Errorf("invalid node exec approval policy: %s", execPolicyFindingSummary(report))
+	}
+	approvals, err := reg.SetNodeChecked(req.NodeID, req.Approvals)
+	if err != nil {
+		return nil, fmt.Errorf("persist node exec approval policy: %w", err)
+	}
 	return map[string]any{"ok": true, "node_id": req.NodeID, "approvals": approvals, "count": len(approvals)}, nil
 }
 
@@ -377,6 +391,27 @@ func applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprov
 func (s *daemonServices) applyExecApprovalRequest(reg *execApprovalsRegistry, req methods.ExecApprovalRequestRequest) (map[string]any, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("exec approvals runtime not configured")
+	}
+	if req.ExecutionBinding == nil && strings.TrimSpace(req.NodeID) == "" {
+		bindingReq := commandanalysis.ExecutionRequest{CommandText: req.Command, Argv: req.CommandArgv, Env: req.Env}
+		if req.CWD != nil {
+			bindingReq.CWD = *req.CWD
+		}
+		if req.SystemRunPlan != nil {
+			bindingReq.Argv = append([]string(nil), req.SystemRunPlan.Argv...)
+			bindingReq.CommandText = req.SystemRunPlan.CommandText
+			if req.SystemRunPlan.CWD != nil {
+				bindingReq.CWD = *req.SystemRunPlan.CWD
+			}
+		}
+		binding, err := commandanalysis.CaptureExecutionBinding(bindingReq)
+		if err != nil {
+			return nil, fmt.Errorf("bind exec approval request: %w", err)
+		}
+		req.ExecutionBinding = &binding
+		req.CommandArgv = append([]string(nil), binding.Argv...)
+		cwd := binding.CanonicalCWD
+		req.CWD = &cwd
 	}
 	rec, err := reg.RequestDurable(req)
 	if err != nil {
@@ -451,7 +486,7 @@ func (s *daemonServices) applyExecApprovalResolve(reg *execApprovalsRegistry, re
 	return map[string]any{"ok": true, "id": rec.ID, "decision": rec.Decision, "resolved": rec}, nil
 }
 
-func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req methods.SandboxRunRequest) (map[string]any, error) {
+func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, docsRepo *state.DocsRepository, req methods.SandboxRunRequest) (map[string]any, error) {
 	if len(req.Cmd) == 0 {
 		return nil, fmt.Errorf("sandbox.run: cmd is required")
 	}
@@ -464,7 +499,29 @@ func applySandboxRun(ctx context.Context, configState *runtimeConfigStore, req m
 		return nil, fmt.Errorf("sandbox.run: driver \"nop\" requires extra.sandbox.driver=\"nop\" and allow_unsafe_nop=true in daemon config")
 	}
 
-	runner, err := sandbox.New(cfg)
+	var requirement sandbox.SessionRequirement
+	if sessionID := strings.TrimSpace(req.SessionID); sessionID != "" {
+		if docsRepo == nil {
+			return nil, fmt.Errorf("sandbox.run: session repository unavailable")
+		}
+		session, err := docsRepo.GetSession(ctx, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox.run: load session requirement: %w", err)
+		}
+		requirement = session.SandboxRequirement
+		if requirement.IsRequired() {
+			cfg.RuntimeScope = "session"
+			cfg.RuntimeKey = sessionID
+		}
+	}
+
+	var runner sandbox.SandboxRunner
+	var err error
+	if requirement.IsZero() {
+		runner, err = sandbox.New(cfg)
+	} else {
+		runner, err = sandbox.NewForSession(cfg, requirement)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sandbox.run: %w", err)
 	}

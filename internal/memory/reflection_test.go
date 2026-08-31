@@ -11,7 +11,7 @@ import (
 func TestMemoryReflectPersistsReviewableCandidatesWithoutAutoPromotion(t *testing.T) {
 	ctx := context.Background()
 	b := newUnifiedTestSQLiteBackend(t)
-	mustWriteRecord(t, b, MemoryRecord{ID: "episode-decision", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: "We decided to require canary rollout before production deploys.", Confidence: 0.8, Salience: 0.6, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-reflect"}})
+	mustWriteTrustedReflectionRecord(t, b, MemoryRecord{ID: "episode-decision", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: "We decided to require canary rollout before production deploys.", Confidence: 0.8, Salience: 0.6, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-reflect"}})
 
 	before, err := b.QueryMemoryRecords(ctx, MemoryQuery{Query: "canary rollout", Types: []string{MemoryRecordTypeDecision}, ExplicitTypes: true, Limit: 5})
 	if err != nil {
@@ -47,7 +47,7 @@ func TestMemoryApplyReflectionPromotesToTypedDurableMarkdown(t *testing.T) {
 	ctx := context.Background()
 	b := newUnifiedTestSQLiteBackend(t)
 	root := filepath.Join(t.TempDir(), ".metiq", "agent-memory")
-	mustWriteRecord(t, b, MemoryRecord{ID: "episode-pref", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeUser, Subject: "style", Text: "User prefers concise answers with no filler.", Confidence: 0.85, Salience: 0.6, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-pref"}})
+	mustWriteTrustedReflectionRecord(t, b, MemoryRecord{ID: "episode-pref", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeUser, Subject: "style", Text: "User prefers concise answers with no filler.", Confidence: 0.85, Salience: 0.6, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-pref"}})
 	result, err := b.MemoryReflect(ctx, MemoryReflectRequest{SessionID: "sess-pref", Scopes: []string{MemoryRecordScopeUser}, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -84,8 +84,8 @@ func TestMemoryApplyReflectionMergeSupersedeAndIgnore(t *testing.T) {
 	ctx := context.Background()
 	b := newUnifiedTestSQLiteBackend(t)
 
-	mustWriteRecord(t, b, MemoryRecord{ID: "pref-style", Type: MemoryRecordTypePreference, Scope: MemoryRecordScopeUser, Subject: "style", Text: "User prefers concise answers.", Confidence: 0.8, Salience: 0.9})
-	mustWriteRecord(t, b, MemoryRecord{ID: "episode-style", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeUser, Subject: "style", Text: "User prefers concise answers and direct summaries.", Confidence: 0.8, Salience: 0.6, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-merge"}})
+	mustWriteTrustedReflectionRecord(t, b, MemoryRecord{ID: "pref-style", Type: MemoryRecordTypePreference, Scope: MemoryRecordScopeUser, Subject: "style", Text: "User prefers concise answers.", Confidence: 0.8, Salience: 0.9})
+	mustWriteTrustedReflectionRecord(t, b, MemoryRecord{ID: "episode-style", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeUser, Subject: "style", Text: "User prefers concise answers and direct summaries.", Confidence: 0.8, Salience: 0.6, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-merge"}})
 	mergeResult, err := b.MemoryReflect(ctx, MemoryReflectRequest{SessionID: "sess-merge", Scopes: []string{MemoryRecordScopeUser}, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -99,8 +99,8 @@ func TestMemoryApplyReflectionMergeSupersedeAndIgnore(t *testing.T) {
 		t.Fatalf("unexpected merge apply: %#v", merged)
 	}
 
-	mustWriteRecord(t, b, MemoryRecord{ID: "decision-deploy-old", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: "Deployment decision: production deploys use blue/green rollout.", Confidence: 0.8, Salience: 0.9})
-	mustWriteRecord(t, b, MemoryRecord{ID: "episode-deploy-correction", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: "Correction to deployment decision: production deploys must use canary rollout instead.", Confidence: 0.85, Salience: 0.7, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-super"}})
+	mustWriteTrustedReflectionRecord(t, b, MemoryRecord{ID: "decision-deploy-old", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: "Deployment decision: production deploys use blue/green rollout.", Confidence: 0.8, Salience: 0.9})
+	mustWriteTrustedReflectionRecord(t, b, MemoryRecord{ID: "episode-deploy-correction", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeProject, Subject: "deploy", Text: "Correction to deployment decision: production deploys must use canary rollout instead.", Confidence: 0.85, Salience: 0.7, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-super"}})
 	supersedeResult, err := b.MemoryReflect(ctx, MemoryReflectRequest{SessionID: "sess-super", Scopes: []string{MemoryRecordScopeProject}, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -118,8 +118,8 @@ func TestMemoryApplyReflectionMergeSupersedeAndIgnore(t *testing.T) {
 		t.Fatalf("old record not superseded: %#v ok=%v err=%v", old, ok, err)
 	}
 
-	mustWriteRecord(t, b, MemoryRecord{ID: "pref-editor", Type: MemoryRecordTypePreference, Scope: MemoryRecordScopeUser, Subject: "editor", Text: "User prefers Vim for quick edits.", Confidence: 0.9, Salience: 0.9})
-	mustWriteRecord(t, b, MemoryRecord{ID: "episode-editor-duplicate", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeUser, Subject: "editor", Text: "User prefers Vim for quick edits.", Confidence: 0.8, Salience: 0.5, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-ignore"}})
+	mustWriteTrustedReflectionRecord(t, b, MemoryRecord{ID: "pref-editor", Type: MemoryRecordTypePreference, Scope: MemoryRecordScopeUser, Subject: "editor", Text: "User prefers Vim for quick edits.", Confidence: 0.9, Salience: 0.9})
+	mustWriteTrustedReflectionRecord(t, b, MemoryRecord{ID: "episode-editor-duplicate", Type: MemoryRecordTypeEpisode, Scope: MemoryRecordScopeUser, Subject: "editor", Text: "User prefers Vim for quick edits.", Confidence: 0.8, Salience: 0.5, Source: MemorySource{Kind: MemorySourceKindTurn, SessionID: "sess-ignore"}})
 	ignoreResult, err := b.MemoryReflect(ctx, MemoryReflectRequest{SessionID: "sess-ignore", Scopes: []string{MemoryRecordScopeUser}, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +132,13 @@ func TestMemoryApplyReflectionMergeSupersedeAndIgnore(t *testing.T) {
 	if !ignored.Applied || ignored.Record != nil || ignored.Candidate.Status != ReflectionCandidateStatusIgnored {
 		t.Fatalf("unexpected ignore apply: %#v", ignored)
 	}
+}
+
+func mustWriteTrustedReflectionRecord(t *testing.T, b *SQLiteBackend, rec MemoryRecord) {
+	t.Helper()
+	rec.OriginClass = MemoryOriginAgent
+	rec.SessionKind = MemorySessionInteractive
+	mustWriteRecord(t, b, rec)
 }
 
 func findReflectionCandidate(t *testing.T, candidates []ReflectionCandidate, action, memType string) ReflectionCandidate {

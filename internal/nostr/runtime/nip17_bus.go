@@ -4,8 +4,8 @@
 //   - Outbound:  rumor event → seal event → gift-wrap event (per NIP-17/NIP-59)
 //   - Inbound:   subscribe to gift-wrap events tagged with our pubkey, unwrap each one
 //   - Encryption: NIP-44 (via fiatjaf.com/nostr/keyer.KeySigner)
-//   - Relay lookup: queries recipient's DM relay list (kind 10050) before falling back
-//     to the configured write relays
+//   - Relay lookup: queries each recipient's DM relay list (kind 10050), including
+//     the sender's backup-copy destination
 //
 // # Per-relay subscription management
 //
@@ -306,21 +306,63 @@ func (b *NIP17Bus) SendReaction(ctx context.Context, room NIP17Room, targetEvent
 	return b.sendNIP17Rumor(ctx, nostr.KindReaction, reaction, room, nostr.Tags{tag})
 }
 
-// DeleteMessages sends a wrapped NIP-09 kind-5 deletion request to the room.
-func (b *NIP17Bus) DeleteMessages(ctx context.Context, room NIP17Room, reason string, eventIDs ...string) error {
-	if len(eventIDs) == 0 {
-		return fmt.Errorf("at least one event id is required")
+// NIP17DeletionTarget identifies a rumor to delete and its actual kind.
+type NIP17DeletionTarget struct {
+	EventID string
+	Kind    nostr.Kind
+}
+
+type nip17DeletionBatch struct {
+	kind nostr.Kind
+	tags nostr.Tags
+}
+
+func buildNIP17DeletionBatches(targets []NIP17DeletionTarget) ([]nip17DeletionBatch, error) {
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("at least one deletion target is required")
 	}
-	tags := make(nostr.Tags, 0, len(eventIDs)+1)
-	for _, eventID := range eventIDs {
-		eventID = strings.TrimSpace(eventID)
+
+	kindOrder := make([]nostr.Kind, 0, 3)
+	tagsByKind := make(map[nostr.Kind]nostr.Tags, 3)
+	for _, target := range targets {
+		eventID := strings.TrimSpace(target.EventID)
 		if _, err := nostr.IDFromHex(eventID); err != nil {
-			return fmt.Errorf("invalid deletion event id: %w", err)
+			return nil, fmt.Errorf("invalid deletion event id: %w", err)
 		}
-		tags = append(tags, nostr.Tag{"e", eventID})
+		switch target.Kind {
+		case nostr.KindDirectMessage, nostr.KindFileMessage, nostr.KindReaction:
+		default:
+			return nil, fmt.Errorf("unsupported deletion rumor kind: %d", target.Kind)
+		}
+		if _, exists := tagsByKind[target.Kind]; !exists {
+			kindOrder = append(kindOrder, target.Kind)
+		}
+		tagsByKind[target.Kind] = append(tagsByKind[target.Kind], nostr.Tag{"e", eventID})
 	}
-	tags = append(tags, nostr.Tag{"k", fmt.Sprint(nostr.KindDirectMessage)})
-	return b.sendNIP17Rumor(ctx, nostr.KindDeletion, reason, room, tags)
+
+	batches := make([]nip17DeletionBatch, 0, len(kindOrder))
+	for _, kind := range kindOrder {
+		tags := append(tagsByKind[kind], nostr.Tag{"k", fmt.Sprint(kind)})
+		batches = append(batches, nip17DeletionBatch{kind: kind, tags: tags})
+	}
+	return batches, nil
+}
+
+// DeleteMessages sends wrapped NIP-09 kind-5 deletion requests to the room.
+// Targets with different rumor kinds are sent in separate deletion events.
+func (b *NIP17Bus) DeleteMessages(ctx context.Context, room NIP17Room, reason string, targets ...NIP17DeletionTarget) error {
+	batches, err := buildNIP17DeletionBatches(targets)
+	if err != nil {
+		return err
+	}
+
+	var failures []error
+	for _, batch := range batches {
+		if err := b.sendNIP17Rumor(ctx, nostr.KindDeletion, reason, room, batch.tags); err != nil {
+			failures = append(failures, fmt.Errorf("delete kind %d rumors: %w", batch.kind, err))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func (b *NIP17Bus) sendNIP17Rumor(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) (err error) {
@@ -393,15 +435,9 @@ func (b *NIP17Bus) publishNIP17Rumor(ctx context.Context, rumor nostr.Event, rec
 	targets := make([]target, 0, len(recipients)+1)
 	allRecipients := append(append([]nostr.PubKey(nil), recipients...), b.public)
 	for _, recipient := range allRecipients {
-		var relays []string
-		if recipient == b.public {
-			relays = b.currentRelays()
-		} else {
-			var err error
-			relays, err = b.lookupDMRelays(ctx, recipient)
-			if err != nil {
-				return fmt.Errorf("resolve DM relays for %s: %w", recipient.Hex(), err)
-			}
+		relays, err := b.lookupDMRelays(ctx, recipient)
+		if err != nil {
+			return fmt.Errorf("resolve DM relays for %s: %w", recipient.Hex(), err)
 		}
 		if len(relays) == 0 {
 			return fmt.Errorf("no DM relays for %s", recipient.Hex())

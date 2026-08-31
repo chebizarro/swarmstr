@@ -78,7 +78,7 @@ func TestDurableMarkdownRoundTripAndIndexGeneration(t *testing.T) {
 	ctx := context.Background()
 	b := newUnifiedTestSQLiteBackend(t)
 	root := filepath.Join(t.TempDir(), ".metiq", "agent-memory")
-	rec := MemoryRecord{ID: "deploy-memory", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deployment", Text: "Production deploys require canaries.", Summary: "Prod deploys require canaries.", Tags: []string{"deployment", "canary"}, Confidence: 0.92, Salience: 0.95, Source: MemorySource{Kind: MemorySourceKindManual}}
+	rec := MemoryRecord{ID: "deploy-memory", Type: MemoryRecordTypeDecision, Scope: MemoryRecordScopeProject, Subject: "deployment", Text: "Production deploys require canaries.", Summary: "Prod deploys require canaries.", Tags: []string{"deployment", "canary"}, Confidence: 0.92, Salience: 0.95, Source: MemorySource{Kind: MemorySourceKindManual}, OriginClass: MemoryOriginOwner, SessionKind: MemorySessionInteractive}
 	path, err := WriteDurableMemoryFile(root, rec)
 	if err != nil {
 		t.Fatal(err)

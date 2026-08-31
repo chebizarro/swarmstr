@@ -103,26 +103,23 @@ func MemoryStoreTool(idx memory.Store) agent.ToolFunc {
 
 		topic := strings.TrimSpace(agent.ArgString(args, "topic"))
 		scope := memory.ScopedContextFromAgent(agent.MemoryScopeFromContext(ctx))
-		id := ""
-		if topic == "" && !scope.Enabled() {
-			id = idx.Store(sessionID, text, tags)
-		} else {
-			allKeywords := append([]string(nil), tags...)
-			if topic != "" {
-				allKeywords = append(allKeywords, topic)
-			}
-			id = memory.GenerateMemoryID()
-			doc := state.MemoryDoc{
-				MemoryID:  id,
-				SessionID: sessionID,
-				Text:      text,
-				Keywords:  allKeywords,
-				Topic:     topic,
-				Unix:      time.Now().Unix(),
-			}
-			doc = memory.ApplyScope(doc, scope)
-			memory.AddDoc(ctx, idx, doc)
+		allKeywords := append([]string(nil), tags...)
+		if topic != "" {
+			allKeywords = append(allKeywords, topic)
 		}
+		id := memory.GenerateMemoryID()
+		doc := state.MemoryDoc{
+			MemoryID:    id,
+			SessionID:   sessionID,
+			Text:        text,
+			Keywords:    allKeywords,
+			Topic:       topic,
+			Unix:        time.Now().Unix(),
+			OriginClass: string(memory.MemoryOriginAgent),
+			SessionKind: string(memory.InferMemorySessionKind(sessionID)),
+		}
+		doc = memory.ApplyScope(doc, scope)
+		memory.AddDoc(ctx, idx, doc)
 		if saveErr := idx.Save(); saveErr != nil {
 			log.Printf("memory_store: index save failed: %v", saveErr)
 		}

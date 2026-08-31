@@ -559,7 +559,8 @@ func (b *VectorBackend) fetchMemories(results []VectorResult) []IndexedMemory {
 			SELECT id, session_id, role, topic, text, keywords, unix,
 			       type, goal_id, task_id, run_id, episode_kind,
 			       confidence, source, reviewed_at, reviewed_by, expires_at,
-			       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason
+			mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+			origin_class, session_kind, external_tool_taint, network_taint, recalled_content
 			FROM chunks
 			WHERE id = ?
 		`, r.MemoryID)
@@ -603,28 +604,33 @@ func (b *VectorBackend) Close() error {
 // memoryDocFromIndexed converts IndexedMemory to state.MemoryDoc.
 func memoryDocFromIndexed(m IndexedMemory) state.MemoryDoc {
 	return state.MemoryDoc{
-		MemoryID:         m.MemoryID,
-		SessionID:        m.SessionID,
-		Role:             m.Role,
-		Topic:            m.Topic,
-		Text:             m.Text,
-		Keywords:         m.Keywords,
-		Unix:             m.Unix,
-		Type:             m.Type,
-		GoalID:           m.GoalID,
-		TaskID:           m.TaskID,
-		RunID:            m.RunID,
-		EpisodeKind:      m.EpisodeKind,
-		Confidence:       m.Confidence,
-		Source:           m.Source,
-		ReviewedAt:       m.ReviewedAt,
-		ReviewedBy:       m.ReviewedBy,
-		ExpiresAt:        m.ExpiresAt,
-		MemStatus:        m.MemStatus,
-		SupersededBy:     m.SupersededBy,
-		InvalidatedAt:    m.InvalidatedAt,
-		InvalidatedBy:    m.InvalidatedBy,
-		InvalidateReason: m.InvalidateReason,
+		MemoryID:          m.MemoryID,
+		SessionID:         m.SessionID,
+		Role:              m.Role,
+		Topic:             m.Topic,
+		Text:              m.Text,
+		Keywords:          m.Keywords,
+		Unix:              m.Unix,
+		Type:              m.Type,
+		GoalID:            m.GoalID,
+		TaskID:            m.TaskID,
+		RunID:             m.RunID,
+		EpisodeKind:       m.EpisodeKind,
+		Confidence:        m.Confidence,
+		Source:            m.Source,
+		OriginClass:       m.OriginClass,
+		SessionKind:       m.SessionKind,
+		ExternalToolTaint: m.ExternalToolTaint,
+		NetworkTaint:      m.NetworkTaint,
+		RecalledContent:   m.RecalledContent,
+		ReviewedAt:        m.ReviewedAt,
+		ReviewedBy:        m.ReviewedBy,
+		ExpiresAt:         m.ExpiresAt,
+		MemStatus:         m.MemStatus,
+		SupersededBy:      m.SupersededBy,
+		InvalidatedAt:     m.InvalidatedAt,
+		InvalidatedBy:     m.InvalidatedBy,
+		InvalidateReason:  m.InvalidateReason,
 	}
 }
 

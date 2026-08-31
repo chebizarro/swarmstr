@@ -16,6 +16,7 @@ import (
 	"metiq/internal/autoreply"
 	ctxengine "metiq/internal/context"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/sandbox"
 	"metiq/internal/store/state"
 )
 
@@ -773,11 +774,16 @@ func mutateSessionDoc(
 		if !createIfMissing {
 			return state.SessionDoc{}, err
 		}
+		requirement, requirementErr := sandbox.NewSessionRequirement("channel", sandbox.CreatorSandboxInherit, "")
+		if requirementErr != nil {
+			return state.SessionDoc{}, requirementErr
+		}
 		session = state.SessionDoc{
-			Version:    1,
-			SessionID:  sessionID,
-			PeerPubKey: strings.TrimSpace(peerPubKey),
-			Meta:       map[string]any{},
+			Version:            1,
+			SessionID:          sessionID,
+			PeerPubKey:         strings.TrimSpace(peerPubKey),
+			SandboxRequirement: requirement,
+			Meta:               map[string]any{},
 		}
 	}
 	if session.Version == 0 {

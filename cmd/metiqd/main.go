@@ -1962,8 +1962,10 @@ func main() {
 				log.Printf("tool %s: no agent ID in context (memory scope may not be set)", call.Name)
 			}
 
-			// ── Permission engine check (new system) ────────────────────
-			// If the permission engine is configured, use it instead of the legacy approval list.
+			// ── Permission + host exec policy evaluation ────────────────
+			// Permission rules constrain tool availability. Exec policy is a second,
+			// execution-host boundary; an allow or full tool profile cannot bypass it.
+			permissionBehavior := permissions.BehaviorAllow
 			if permEngine != nil {
 				// Build permission request - serialize args to string for content matching
 				argsStr := ""
@@ -1979,92 +1981,108 @@ func main() {
 					req = req.WithOrigin(origin, originName)
 				}
 
-				decision := permEngine.Evaluate(ctx, req)
-
-				switch decision.Behavior {
-				case permissions.BehaviorAllow:
-					// Allowed - proceed without approval gate
-					metricspkg.ToolCalls.Inc()
-					return next(ctx, call)
-				case permissions.BehaviorDeny:
-					// Denied - block immediately
+				permissionDecision := permEngine.Evaluate(ctx, req)
+				permissionBehavior = permissionDecision.Behavior
+				if permissionBehavior == permissions.BehaviorDeny {
 					metricspkg.ToolDenied.Inc()
-					return "", fmt.Errorf("tool %q denied by permission rule: %s", call.Name, decision.Reason)
-				case permissions.BehaviorAsk:
-					// Fall through to approval gate below
+					return "", fmt.Errorf("tool %q denied by permission rule: %s", call.Name, permissionDecision.Reason)
 				}
 			}
 
-			// ── Legacy approval gate ────────────────────────────────────
-			// Re-read approval tool list from live config on every call so that
-			// config hot-reload (SIGHUP or file change) takes effect immediately.
-			// If Extra["approvals"]["tools"] is present it REPLACES the startup defaults.
-			liveApprovalTools := approvalTools
-			if aExtra, ok := configState.Get().Extra["approvals"].(map[string]any); ok {
-				if _, hasKey := aExtra["tools"]; hasKey {
-					live := make(map[string]bool)
-					switch v := aExtra["tools"].(type) {
-					case string:
-						for _, t := range strings.Split(v, ",") {
-							if s := strings.TrimSpace(t); s != "" {
-								live[s] = true
-							}
-						}
-					case []any:
-						for _, item := range v {
-							if s, ok := item.(string); ok && s != "" {
-								live[s] = true
-							}
-						}
+			commandText, logicalArgv := approvalCommandDisplay(call.Name, call.Args)
+			analysis := commandanalysis.Analyze(commandText, logicalArgv)
+			executionReq, bindable, bindErr := approvalExecutionRequest(call.Name, call.Args)
+			if bindErr != nil {
+				metricspkg.ToolDenied.Inc()
+				return "", fmt.Errorf("tool %q execution plan denied: %w", call.Name, bindErr)
+			}
+			var binding *commandanalysis.ExecutionBinding
+			if bindable {
+				captured, err := commandanalysis.CaptureExecutionBinding(executionReq)
+				if err != nil {
+					metricspkg.ToolDenied.Inc()
+					return "", fmt.Errorf("tool %q execution binding failed: %w", call.Name, err)
+				}
+				binding = &captured
+			}
+
+			nodeID := approvalNodeID(call.Args)
+			resolveDecision := func(promptAvailable bool) (permissions.ExecPolicyDecision, error) {
+				liveCfg := configState.Get()
+				callerPolicy := callerExecPolicy(liveCfg.Extra["approvals"], approvalTools, fullProfileBypassesLegacy, permissionBehavior, permEngine != nil)
+				hostPolicy := executionHostExecPolicy(execApprovals, nodeID)
+				executablePath := ""
+				if binding != nil {
+					executablePath = binding.Executable.CanonicalPath
+					if binding.CommandExecutable != nil {
+						executablePath = binding.CommandExecutable.CanonicalPath
 					}
-					liveApprovalTools = live
 				}
+				policyArgv := logicalArgv
+				if len(policyArgv) == 0 && len(analysis.Segments) == 1 {
+					policyArgv = analysis.Segments[0].Argv
+				}
+				return permissions.EvaluateExecPolicy(callerPolicy, hostPolicy, permissions.ExecPolicyRequest{
+					Tool: call.Name, AgentID: agentID, Argv: policyArgv, ExecutablePath: executablePath,
+					Signature: analysis.Signature, AllowAlwaysSafe: commandanalysis.IsAllowAlwaysSafe(analysis),
+					Permission: permissionBehavior, PromptAvailable: promptAvailable, DefaultTimeoutMS: approvalTimeoutMS,
+				})
 			}
 
-			if fullProfileBypassesLegacy {
-				log.Printf("tool %s allowed for agent %s (tool_profile=full)", call.Name, agentID)
+			policyDecision, policyErr := resolveDecision(true)
+			if policyErr != nil {
+				metricspkg.ToolDenied.Inc()
+				return "", fmt.Errorf("tool %q denied by invalid exec policy: %w", call.Name, policyErr)
+			}
+			if policyDecision.Behavior == permissions.BehaviorDeny {
+				metricspkg.ToolDenied.Inc()
+				return "", fmt.Errorf("tool %q denied by exec policy: %s", call.Name, policyDecision.Reason)
+			}
+			if policyDecision.Behavior == permissions.BehaviorAllow {
+				if binding != nil {
+					if err := commandanalysis.RevalidateExecutionBinding(*binding, executionReq); err != nil {
+						metricspkg.ToolDenied.Inc()
+						return "", fmt.Errorf("tool %q execution context changed: %w", call.Name, err)
+					}
+				}
+				latest, err := resolveDecision(true)
+				if err != nil || latest.Behavior != permissions.BehaviorAllow {
+					metricspkg.ToolDenied.Inc()
+					if err != nil {
+						return "", fmt.Errorf("tool %q final exec policy invalid: %w", call.Name, err)
+					}
+					return "", fmt.Errorf("tool %q final exec policy no longer allows execution", call.Name)
+				}
 				metricspkg.ToolCalls.Inc()
 				return next(ctx, call)
 			}
 
-			// If permission engine is active and returned "ask", always go to approval gate.
-			// Otherwise, only gate tools in the legacy approval list.
-			needsApproval := permEngine != nil || liveApprovalTools[call.Name]
-			if !needsApproval {
-				metricspkg.ToolCalls.Inc()
-				return next(ctx, call)
-			}
-
-			commandText, commandArgv := approvalCommandDisplay(call.Name, call.Args)
-			analysis := commandanalysis.Analyze(commandText, commandArgv)
-			if commandanalysis.IsAllowAlwaysSafe(analysis) && execApprovalSignatureAllowed(execApprovals.GetGlobal(), analysis.Signature) {
-				log.Printf("exec approval skipped id=allow-always tool=%s signature=%s", call.Name, analysis.Signature)
-				metricspkg.ToolCalls.Inc()
-				return next(ctx, call)
-			}
 			cwd, _ := os.Getwd()
 			host, _ := os.Hostname()
-			approvalMode := "allow_once"
-			allowAlwaysReason := "only available for safe-bin commands without shell wrappers, inline eval, or pipe-to-shell"
-			if analysis.AllowAlways {
-				approvalMode = "allow_once_or_always"
-				allowAlwaysReason = "safe-bin command with stable argv signature"
+			commandArgv := logicalArgv
+			if binding != nil {
+				cwd = binding.CanonicalCWD
+				commandArgv = append([]string(nil), binding.Argv...)
 			}
-
-			// Build an approval request.
+			approvalMode := "allow_once"
+			allowAlwaysReason := "requires an exact, safe command signature"
+			if analysis.AllowAlways && binding != nil {
+				approvalMode = "allow_once_or_always"
+				allowAlwaysReason = "safe-bin command with context-bound argv"
+			}
+			agentIDValue, sessionKeyValue := agentID, agent.SessionIDFromContext(ctx)
 			rec, approvalErr := execApprovals.RequestDurable(methods.ExecApprovalRequestRequest{
-				Command:              commandText,
-				CommandArgv:          commandArgv,
-				Args:                 call.Args,
-				CWD:                  &cwd,
-				Host:                 &host,
+				NodeID: nodeID, Command: commandText, CommandArgv: commandArgv, Args: call.Args,
+				CWD: &cwd, Host: &host, AgentID: &agentIDValue, SessionKey: &sessionKeyValue,
 				AnalysisWarnings:     analysis.Warnings,
 				AnalysisSummary:      analysis.Summary,
 				AnalysisSignature:    analysis.Signature,
-				AllowAlwaysAvailable: analysis.AllowAlways,
+				AllowAlwaysAvailable: analysis.AllowAlways && binding != nil,
 				AllowAlwaysReason:    allowAlwaysReason,
 				ApprovalMode:         approvalMode,
-				TimeoutMS:            approvalTimeoutMS,
+				TimeoutMS:            policyDecision.Effective.TimeoutMS,
+				ExecutionBinding:     binding,
+				PolicyFingerprint:    policyDecision.Effective.Fingerprint,
 			})
 			if approvalErr != nil {
 				return "", fmt.Errorf("persist exec approval tool=%s: %w", call.Name, approvalErr)
@@ -2092,26 +2110,60 @@ func main() {
 			log.Printf("exec approval requested id=%s tool=%s", rec.ID, call.Name)
 
 			// Block until decided, timed out, or context cancelled.
-			decided, resolved, waitErr := execApprovals.WaitForDecision(ctx, rec.ID, approvalTimeoutMS)
+			decided, resolved, waitErr := execApprovals.WaitForDecision(ctx, rec.ID, policyDecision.Effective.TimeoutMS)
 			if waitErr != nil {
 				return "", fmt.Errorf("exec approval wait error tool=%s: %w", call.Name, waitErr)
 			}
-			if !resolved || decided.Decision != "approve" {
+			approved := resolved && decided.Decision == "approve"
+			fallback := false
+			if !approved && ctx.Err() == nil && (!resolved || decided.GrantScope == "system-expiry") {
+				fallbackDecision := permissions.ApplyExecAskFallback(policyDecision)
+				approved = fallbackDecision.Behavior == permissions.BehaviorAllow
+				decided, err = execApprovals.ResolveFallback(rec.ID, approved, fallbackDecision.Reason)
+				if err != nil {
+					metricspkg.ToolDenied.Inc()
+					return "", fmt.Errorf("persist exec approval fallback tool=%s: %w", call.Name, err)
+				}
+				resolved = true
+				fallback = true
+			}
+			if !approved {
 				reason := decided.Reason
 				if reason == "" {
-					if !resolved {
-						reason = "timed out waiting for approval"
-					} else {
-						reason = "denied"
-					}
+					reason = "timed out waiting for approval"
 				}
 				metricspkg.ToolDenied.Inc()
 				log.Printf("exec approval denied id=%s tool=%s reason=%s", rec.ID, call.Name, reason)
 				return "", fmt.Errorf("tool %q execution denied by approval gate: %s", call.Name, reason)
 			}
 
-			if decided.Reason == "always allow selected in web UI" && commandanalysis.IsAllowAlwaysSafe(analysis) {
-				execApprovalRememberSignature(execApprovals, analysis.Signature)
+			if binding != nil {
+				expected := decided.ExecutionBinding
+				if expected == nil {
+					expected = binding
+				}
+				if err := commandanalysis.RevalidateExecutionBinding(*expected, executionReq); err != nil {
+					metricspkg.ToolDenied.Inc()
+					return "", fmt.Errorf("tool %q approved execution context changed: %w", call.Name, err)
+				}
+			}
+			latestDecision, err := resolveDecision(true)
+			if err != nil || latestDecision.Behavior == permissions.BehaviorDeny {
+				metricspkg.ToolDenied.Inc()
+				if err != nil {
+					return "", fmt.Errorf("tool %q final exec policy invalid: %w", call.Name, err)
+				}
+				return "", fmt.Errorf("tool %q denied by policy changed during approval", call.Name)
+			}
+			if fallback && permissions.ApplyExecAskFallback(latestDecision).Behavior != permissions.BehaviorAllow {
+				metricspkg.ToolDenied.Inc()
+				return "", fmt.Errorf("tool %q denied by final approval fallback", call.Name)
+			}
+			if decided.Reason == "always allow selected in web UI" && commandanalysis.IsAllowAlwaysSafe(analysis) && binding != nil {
+				if err := execApprovalRememberSignature(execApprovals, analysis.Signature); err != nil {
+					metricspkg.ToolDenied.Inc()
+					return "", fmt.Errorf("tool %q could not persist allow-always grant: %w", call.Name, err)
+				}
 			}
 			log.Printf("exec approval granted id=%s tool=%s", rec.ID, call.Name)
 			metricspkg.ToolCalls.Inc()
@@ -4567,7 +4619,18 @@ func main() {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 
-		userMemoryDocs := scopedMemoryDocs(memory.ExtractFromTurn(sessionID, "user", entryID, combinedText, createdAt), scopeCtx)
+		turnMemoryOrigin := memory.MemoryOriginUntrusted
+		for _, admin := range configState.Get().Control.Admins {
+			if strings.EqualFold(strings.TrimSpace(admin.PubKey), strings.TrimSpace(senderID)) {
+				turnMemoryOrigin = memory.MemoryOriginOwner
+				break
+			}
+		}
+		turnMemorySessionKind := memory.InferMemorySessionKind(sessionID)
+		userMemoryDocs := scopedMemoryDocs(memory.ExtractFromTurnWithProvenance(sessionID, "user", entryID, combinedText, createdAt, memory.TurnProvenance{
+			OriginClass: turnMemoryOrigin,
+			SessionKind: turnMemorySessionKind,
+		}), scopeCtx)
 		if len(userMemoryDocs) > 0 {
 			go func(docs []state.MemoryDoc) {
 				persistCtx, cancel := context.WithTimeout(context.Background(), cfgTimeouts.MemoryPersist(configState.Get().Timeouts))
@@ -5030,8 +5093,30 @@ func main() {
 			log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
 		}
 		// Also extract assistant reply into memory so both sides of the
-		// conversation are searchable — not just user messages.
-		assistantMemoryDocs := scopedMemoryDocs(memory.ExtractFromTurn(sessionID, "assistant", eventID, turnResult.Text, time.Now().Unix()), scopeCtx)
+		// conversation are searchable — not just user messages. Tool/network
+		// taint and recalled context are structural and cannot be cleared by text.
+		assistantOrigin := memory.MemoryOriginUntrusted
+		if turnMemoryOrigin == memory.MemoryOriginOwner {
+			assistantOrigin = memory.MemoryOriginAgent
+		}
+		assistantTaint := memory.MemoryTaint{}
+		for _, trace := range turnResult.ToolTraces {
+			if _, network := agent.ExternalContentSourceFromToolName(trace.Call.Name); network {
+				assistantTaint.Network = true
+				assistantTaint.ExternalTool = true
+			}
+			kind := trace.Descriptor.Origin.Kind
+			if kind == agent.ToolOriginKindPlugin || kind == agent.ToolOriginKindMCP || kind == agent.ToolOriginKindGRPC {
+				assistantTaint.ExternalTool = true
+			}
+		}
+		recalledContent := memoryRecallSample != nil && memoryRecallSample.InjectedAny
+		assistantMemoryDocs := scopedMemoryDocs(memory.ExtractFromTurnWithProvenance(sessionID, "assistant", eventID, turnResult.Text, time.Now().Unix(), memory.TurnProvenance{
+			OriginClass:     assistantOrigin,
+			SessionKind:     turnMemorySessionKind,
+			Taint:           assistantTaint,
+			RecalledContent: recalledContent,
+		}), scopeCtx)
 		if len(assistantMemoryDocs) > 0 {
 			go func(docs []state.MemoryDoc) {
 				persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -5348,8 +5433,8 @@ func main() {
 		log.Printf("nostr runtime error: %v", err)
 	}
 
-	// Start DM transport: NIP-17 (gift-wrapped) + NIP-04 (legacy) in parallel.
-	// Both buses share the same dmOnMessage handler so any client protocol works.
+	// Start NIP-17 by default. NIP-04 runs in parallel only when legacy
+	// compatibility is explicitly enabled in the bootstrap config.
 	if controlRelaySelector == nil {
 		controlRelaySelector = nostruntime.NewRelaySelector(cfg.Relays, cfg.Relays)
 		toolbuiltin.SetRelaySelector(controlRelaySelector)
@@ -5379,14 +5464,17 @@ func main() {
 		defer nip17bus.Close()
 	}
 	nip04bus, nip04err := nostruntime.StartDMBus(ctx, nostruntime.DMBusOptions{
-		Keyer:     controlKeyer,
-		Hub:       controlHub,
-		Relays:    cfg.Relays,
-		SinceUnix: checkpointSinceUnix(checkpoint.LastUnix),
-		OnMessage: dmOnMessage,
-		OnError:   dmOnError,
+		LegacyCompatibility: cfg.EnableLegacyNIP04,
+		Keyer:               controlKeyer,
+		Hub:                 controlHub,
+		Relays:              cfg.Relays,
+		SinceUnix:           checkpointSinceUnix(checkpoint.LastUnix),
+		OnMessage:           dmOnMessage,
+		OnError:             dmOnError,
 	})
-	if nip04err != nil {
+	if errors.Is(nip04err, nostruntime.ErrLegacyNIP04Disabled) {
+		log.Printf("dm transport: NIP-04 legacy compatibility disabled")
+	} else if nip04err != nil {
 		log.Printf("dm transport: NIP-04 unavailable (%v)", nip04err)
 	} else {
 		controlNIP04Bus = nip04bus
@@ -7539,7 +7627,7 @@ func main() {
 					return applyExecApprovalResolve(execApprovals, req)
 				},
 				SandboxRun: func(ctx context.Context, req methods.SandboxRunRequest) (map[string]any, error) {
-					return applySandboxRun(ctx, configState, req)
+					return applySandboxRun(ctx, configState, docsRepo, req)
 				},
 				MCPList: func(ctx context.Context, req methods.MCPListRequest) (map[string]any, error) {
 					return controlServices.handlers.mcpOps.applyList(ctx, req)

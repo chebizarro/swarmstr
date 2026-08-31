@@ -52,6 +52,10 @@ func configWithPlugin(t *testing.T, pluginID, scriptPath string) state.ConfigDoc
 	if info, err := os.Stat(scriptPath); err == nil && !info.IsDir() {
 		loadRoot = filepath.Dir(scriptPath)
 	}
+	snapshot, err := pluginSourceSnapshot(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return state.ConfigDoc{
 		Version: 1,
 		Extra: map[string]any{
@@ -60,6 +64,9 @@ func configWithPlugin(t *testing.T, pluginID, scriptPath string) state.ConfigDoc
 				"load":    true,
 				"load_paths": []string{
 					loadRoot,
+				},
+				"trust_policy": map[string]any{
+					"trusted_source_identities": []string{"sha256:" + snapshot.Hash},
 				},
 				"entries": map[string]any{
 					pluginID: map[string]any{
@@ -532,6 +539,12 @@ func TestManager_pluginStorageIsIsolatedByPluginID(t *testing.T) {
 	scriptB := writePlugin(t, dirB, "index.js", storagePluginSrc("plugin-b"))
 
 	cfgA := configWithPlugin(t, "plugin-a", scriptA)
+	snapshotB, err := pluginSourceSnapshot(scriptB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := cfgA.Extra["extensions"].(map[string]any)["trust_policy"].(map[string]any)
+	policy["trusted_source_identities"] = append(policy["trusted_source_identities"].([]string), "sha256:"+snapshotB.Hash)
 	cfgA.Extra["extensions"].(map[string]any)["entries"].(map[string]any)["plugin-b"] = map[string]any{
 		"install_path": scriptB,
 		"plugin_type":  "goja",

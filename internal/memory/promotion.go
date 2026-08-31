@@ -443,6 +443,11 @@ func (m *PromotionManager) FindCandidates() ([]PromotionCandidate, error) {
 			continue
 		}
 
+		// Re-check the immutable provenance boundary after loading the candidate.
+		if !IsIndexedMemoryPromotionEligible(*memory) {
+			continue
+		}
+
 		// Compute promotion score with recency decay
 		age := now - record.LastRecallUnix
 		recencyFactor := 1.0
@@ -476,7 +481,8 @@ func (m *PromotionManager) fetchMemory(memoryID string) (*IndexedMemory, error) 
 		SELECT id, session_id, role, topic, text, keywords, unix,
 		       type, goal_id, task_id, run_id, episode_kind,
 		       confidence, source, reviewed_at, reviewed_by, expires_at,
-		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason
+		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+		       origin_class, session_kind, external_tool_taint, network_taint, recalled_content
 		FROM chunks
 		WHERE id = ?
 	`, memoryID).Scan(
@@ -484,6 +490,7 @@ func (m *PromotionManager) fetchMemory(memoryID string) (*IndexedMemory, error) 
 		&mem.Type, &mem.GoalID, &mem.TaskID, &mem.RunID, &mem.EpisodeKind,
 		&mem.Confidence, &mem.Source, &mem.ReviewedAt, &mem.ReviewedBy, &mem.ExpiresAt,
 		&mem.MemStatus, &mem.SupersededBy, &mem.InvalidatedAt, &mem.InvalidatedBy, &mem.InvalidateReason,
+		&mem.OriginClass, &mem.SessionKind, &mem.ExternalToolTaint, &mem.NetworkTaint, &mem.RecalledContent,
 	)
 
 	if err == sql.ErrNoRows {
@@ -626,13 +633,15 @@ func (m *PromotionManager) promoteGroup(topic string, candidates []PromotionCand
 			// Create consolidated memory from summary
 			consolidatedID := GenerateMemoryID()
 			consolidatedMem := IndexedMemory{
-				MemoryID:   consolidatedID,
-				Topic:      topic,
-				Text:       summary,
-				Unix:       timestamp,
-				Type:       "consolidated",
-				Confidence: averageConfidence(candidates),
-				Source:     "promotion",
+				MemoryID:    consolidatedID,
+				Topic:       topic,
+				Text:        summary,
+				Unix:        timestamp,
+				Type:        "consolidated",
+				Confidence:  averageConfidence(candidates),
+				Source:      "promotion",
+				OriginClass: string(MemoryOriginAgent),
+				SessionKind: string(MemorySessionInteractive),
 			}
 
 			// Add to database

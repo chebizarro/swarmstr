@@ -151,11 +151,13 @@ func TestSQLiteCorruptionRebuildsFromMarkdownAndSessionSummariesWithoutBackup(t 
 	workspaceDir := filepath.Join(dir, "workspace")
 	durableRoot := filepath.Join(workspaceDir, ".metiq", "agent-memory", "main")
 	_, err := WriteDurableMemoryFile(durableRoot, MemoryRecord{
-		ID:      "durable-rebuild",
-		Type:    MemoryRecordTypeDecision,
-		Scope:   MemoryRecordScopeProject,
-		Subject: "durable rebuild",
-		Text:    "rebuild this durable markdown memory",
+		ID:          "durable-rebuild",
+		Type:        MemoryRecordTypeDecision,
+		Scope:       MemoryRecordScopeProject,
+		Subject:     "durable rebuild",
+		Text:        "rebuild this durable markdown memory",
+		OriginClass: MemoryOriginAgent,
+		SessionKind: MemorySessionInteractive,
 	})
 	if err != nil {
 		t.Fatalf("write durable file: %v", err)

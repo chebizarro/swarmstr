@@ -512,6 +512,21 @@ func payloadToIndexedMemory(id string, p map[string]any) IndexedMemory {
 	if v, ok := p["source"].(string); ok {
 		m.Source = v
 	}
+	if v, ok := p["origin_class"].(string); ok {
+		m.OriginClass = v
+	}
+	if v, ok := p["session_kind"].(string); ok {
+		m.SessionKind = v
+	}
+	if v, ok := p["external_tool_taint"].(bool); ok {
+		m.ExternalToolTaint = v
+	}
+	if v, ok := p["network_taint"].(bool); ok {
+		m.NetworkTaint = v
+	}
+	if v, ok := p["recalled_content"].(bool); ok {
+		m.RecalledContent = v
+	}
 	if v, ok := p["reviewed_at"].(float64); ok {
 		m.ReviewedAt = int64(v)
 	}
@@ -546,6 +561,11 @@ func (b *QdrantBackend) Add(doc state.MemoryDoc) {
 }
 
 func (b *QdrantBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
+	var err error
+	doc, err = NormalizeMemoryDocProvenance(doc)
+	if err != nil {
+		return
+	}
 	text := strings.TrimSpace(doc.Text)
 	if text == "" {
 		return
@@ -570,10 +590,15 @@ func (b *QdrantBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc)
 		unix = time.Now().Unix()
 	}
 	payload := map[string]any{
-		"text":       text,
-		"session_id": doc.SessionID,
-		"role":       doc.Role,
-		"unix":       unix,
+		"text":                text,
+		"session_id":          doc.SessionID,
+		"role":                doc.Role,
+		"unix":                unix,
+		"origin_class":        doc.OriginClass,
+		"session_kind":        doc.SessionKind,
+		"external_tool_taint": doc.ExternalToolTaint,
+		"network_taint":       doc.NetworkTaint,
+		"recalled_content":    doc.RecalledContent,
 	}
 	if topic := strings.TrimSpace(doc.Topic); topic != "" {
 		payload["topic"] = topic
@@ -646,9 +671,11 @@ func (b *QdrantBackend) Store(sessionID, text string, tags []string) string {
 	}
 	b.recordSuccess(qdrantFailureDomainEmbedding)
 	payload := map[string]any{
-		"text":       text,
-		"session_id": sessionID,
-		"unix":       time.Now().Unix(),
+		"text":         text,
+		"session_id":   sessionID,
+		"unix":         time.Now().Unix(),
+		"origin_class": string(MemoryOriginAgent),
+		"session_kind": string(InferMemorySessionKind(sessionID)),
 	}
 	if len(tags) > 0 {
 		payload["keywords"] = append([]string(nil), tags...)
@@ -1179,11 +1206,13 @@ func (h *HybridIndex) SearchSession(sessionID, query string, limit int) []Indexe
 func (h *HybridIndex) Store(sessionID, text string, tags []string) string {
 	id := GenerateMemoryID()
 	h.AddWithContext(context.Background(), state.MemoryDoc{
-		MemoryID:  id,
-		SessionID: sessionID,
-		Text:      text,
-		Keywords:  append([]string(nil), tags...),
-		Unix:      time.Now().Unix(),
+		MemoryID:    id,
+		SessionID:   sessionID,
+		Text:        text,
+		Keywords:    append([]string(nil), tags...),
+		Unix:        time.Now().Unix(),
+		OriginClass: string(MemoryOriginAgent),
+		SessionKind: string(InferMemorySessionKind(sessionID)),
 	})
 	return id
 }

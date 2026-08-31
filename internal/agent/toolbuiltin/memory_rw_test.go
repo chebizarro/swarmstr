@@ -46,9 +46,13 @@ func TestMemoryStoreTool_Basic(t *testing.T) {
 		t.Error("expected non-empty id")
 	}
 
-	// Verify searchability.
-	if hits := idx.Search("milk", 5); len(hits) == 0 {
-		t.Error("expected stored memory to be searchable")
+	// Verify searchability and trusted interactive provenance.
+	hits := idx.Search("milk", 5)
+	if len(hits) == 0 {
+		t.Fatal("expected stored memory to be searchable")
+	}
+	if !memory.IsMemoryInjectionEligible(hits[0]) {
+		t.Fatalf("interactive memory_store result should be recall eligible: %#v", hits[0])
 	}
 }
 
@@ -71,7 +75,22 @@ func TestMemoryStoreTool_WithSessionID(t *testing.T) {
 
 	hits := idx.ListSession("sess-abc", 10)
 	if len(hits) == 0 {
-		t.Error("expected entry scoped to sess-abc")
+		t.Fatal("expected entry scoped to sess-abc")
+	}
+	if hits[0].OriginClass != string(memory.MemoryOriginAgent) || hits[0].SessionKind != string(memory.MemorySessionInteractive) {
+		t.Fatalf("memory_store provenance = origin %q session %q", hits[0].OriginClass, hits[0].SessionKind)
+	}
+}
+
+func TestMemoryStoreCompatToolStampsProvenance(t *testing.T) {
+	idx := newTestMemoryIndex(t)
+	tool := MemoryStoreCompatTool(idx)
+	if _, err := tool(context.Background(), map[string]any{"text": "user prefers concise status updates", "topic": "user"}); err != nil {
+		t.Fatalf("memory_store compat: %v", err)
+	}
+	hits := idx.Search("concise", 5)
+	if len(hits) == 0 || !memory.IsMemoryInjectionEligible(hits[0]) {
+		t.Fatalf("compat memory should be recall eligible: %#v", hits)
 	}
 }
 

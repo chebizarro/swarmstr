@@ -32,11 +32,16 @@ type IndexedMemory struct {
 	EpisodeKind string `json:"episode_kind,omitempty"`
 
 	// Trust & provenance metadata.
-	Confidence float64 `json:"confidence,omitempty"`
-	Source     string  `json:"source,omitempty"`
-	ReviewedAt int64   `json:"reviewed_at,omitempty"`
-	ReviewedBy string  `json:"reviewed_by,omitempty"`
-	ExpiresAt  int64   `json:"expires_at,omitempty"`
+	Confidence        float64 `json:"confidence,omitempty"`
+	Source            string  `json:"source,omitempty"`
+	OriginClass       string  `json:"origin_class,omitempty"`
+	SessionKind       string  `json:"session_kind,omitempty"`
+	ExternalToolTaint bool    `json:"external_tool_taint,omitempty"`
+	NetworkTaint      bool    `json:"network_taint,omitempty"`
+	RecalledContent   bool    `json:"recalled_content,omitempty"`
+	ReviewedAt        int64   `json:"reviewed_at,omitempty"`
+	ReviewedBy        string  `json:"reviewed_by,omitempty"`
+	ExpiresAt         int64   `json:"expires_at,omitempty"`
 
 	// Invalidation state.
 	MemStatus        string `json:"mem_status,omitempty"`
@@ -105,11 +110,13 @@ func GenerateMemoryID() string {
 func (i *Index) Store(sessionID, text string, tags []string) string {
 	id := GenerateMemoryID()
 	i.Add(state.MemoryDoc{
-		MemoryID:  id,
-		SessionID: sessionID,
-		Text:      text,
-		Keywords:  append([]string(nil), tags...),
-		Unix:      time.Now().Unix(),
+		MemoryID:    id,
+		SessionID:   sessionID,
+		Text:        text,
+		Keywords:    append([]string(nil), tags...),
+		Unix:        time.Now().Unix(),
+		OriginClass: string(MemoryOriginAgent),
+		SessionKind: string(InferMemorySessionKind(sessionID)),
 	})
 	return id
 }
@@ -129,6 +136,11 @@ func (i *Index) Delete(id string) bool {
 }
 
 func (i *Index) Add(doc state.MemoryDoc) {
+	var err error
+	doc, err = NormalizeMemoryDocProvenance(doc)
+	if err != nil {
+		return
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
@@ -136,28 +148,33 @@ func (i *Index) Add(doc state.MemoryDoc) {
 		return
 	}
 	im := IndexedMemory{
-		MemoryID:    doc.MemoryID,
-		SessionID:   doc.SessionID,
-		Role:        doc.Role,
-		Topic:       doc.Topic,
-		Text:        doc.Text,
-		Keywords:    append([]string{}, doc.Keywords...),
-		Unix:        doc.Unix,
-		Type:        doc.Type,
-		GoalID:      doc.GoalID,
-		TaskID:      doc.TaskID,
-		RunID:       doc.RunID,
-		EpisodeKind: doc.EpisodeKind,
-		Confidence:       doc.Confidence,
-		Source:           doc.Source,
-		ReviewedAt:       doc.ReviewedAt,
-		ReviewedBy:       doc.ReviewedBy,
-		ExpiresAt:        doc.ExpiresAt,
-		MemStatus:        doc.MemStatus,
-		SupersededBy:     doc.SupersededBy,
-		InvalidatedAt:    doc.InvalidatedAt,
-		InvalidatedBy:    doc.InvalidatedBy,
-		InvalidateReason: doc.InvalidateReason,
+		MemoryID:          doc.MemoryID,
+		SessionID:         doc.SessionID,
+		Role:              doc.Role,
+		Topic:             doc.Topic,
+		Text:              doc.Text,
+		Keywords:          append([]string{}, doc.Keywords...),
+		Unix:              doc.Unix,
+		Type:              doc.Type,
+		GoalID:            doc.GoalID,
+		TaskID:            doc.TaskID,
+		RunID:             doc.RunID,
+		EpisodeKind:       doc.EpisodeKind,
+		Confidence:        doc.Confidence,
+		Source:            doc.Source,
+		OriginClass:       doc.OriginClass,
+		SessionKind:       doc.SessionKind,
+		ExternalToolTaint: doc.ExternalToolTaint,
+		NetworkTaint:      doc.NetworkTaint,
+		RecalledContent:   doc.RecalledContent,
+		ReviewedAt:        doc.ReviewedAt,
+		ReviewedBy:        doc.ReviewedBy,
+		ExpiresAt:         doc.ExpiresAt,
+		MemStatus:         doc.MemStatus,
+		SupersededBy:      doc.SupersededBy,
+		InvalidatedAt:     doc.InvalidatedAt,
+		InvalidatedBy:     doc.InvalidatedBy,
+		InvalidateReason:  doc.InvalidateReason,
 	}
 	i.docs[im.MemoryID] = im
 	i.rebuildTokenMapLocked()

@@ -32,17 +32,24 @@ func TestNodeSandboxDecision(t *testing.T) {
 }
 
 func TestResolvePluginTrust(t *testing.T) {
-	rawExt := map[string]any{"installs": map[string]any{
-		"remote": map[string]any{"source": "npm"},
-		"local":  map[string]any{"source": "path"},
-	}}
-	if got := resolvePluginTrust(rawExt, "remote", nil); got != trust.LevelUntrusted {
-		t.Fatalf("remote trust=%q", got)
+	identity := trust.NewSourceIdentity("sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	metadataOnly := map[string]any{
+		"installs": map[string]any{"local": map[string]any{"source": "path", "trust": "trusted"}},
 	}
-	if got := resolvePluginTrust(rawExt, "local", nil); got != trust.LevelTrusted {
-		t.Fatalf("local trust=%q", got)
+	if got := resolvePluginTrust(metadataOnly, identity); got != trust.LevelUntrusted {
+		t.Fatalf("plugin/install metadata granted trust=%q", got)
 	}
-	if got := resolvePluginTrust(rawExt, "remote", map[string]any{"trust": "trusted"}); got != trust.LevelTrusted {
-		t.Fatalf("entry override trust=%q", got)
+
+	operatorPolicy := map[string]any{
+		"trust_policy": map[string]any{
+			"trusted_source_identities": []any{identity.String()},
+		},
+	}
+	if got := resolvePluginTrust(operatorPolicy, identity); got != trust.LevelTrusted {
+		t.Fatalf("operator-approved source identity trust=%q", got)
+	}
+	changed := trust.NewSourceIdentity("sha256", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if got := resolvePluginTrust(operatorPolicy, changed); got != trust.LevelUntrusted {
+		t.Fatalf("changed source identity trust=%q", got)
 	}
 }

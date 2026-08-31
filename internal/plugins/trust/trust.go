@@ -1,6 +1,9 @@
 package trust
 
-import "strings"
+import (
+	"encoding/hex"
+	"strings"
+)
 
 // Level classifies whether plugin code is trusted to run with normal host access.
 type Level string
@@ -19,38 +22,66 @@ func (l Level) String() string {
 
 func (l Level) IsTrusted() bool { return l == LevelTrusted }
 
-// FromSource classifies an install source. Local path/development installs are
-// trusted by default; registry/marketplace/remote installs are untrusted.
-func FromSource(source string) Level {
-	switch strings.ToLower(strings.TrimSpace(source)) {
-	case "path", "local", "local-dev", "development", "dev", "file":
-		return LevelTrusted
-	case "npm", "git", "url", "archive", "registry", "marketplace", "clawhub":
-		return LevelUntrusted
-	case "":
-		return LevelUntrusted
-	default:
-		return LevelUntrusted
+// SourceIdentity identifies the exact plugin source snapshot that will execute.
+// Trust decisions must use this immutable identity, never mutable source labels,
+// manifest fields, or install-record metadata.
+type SourceIdentity struct {
+	Algorithm string
+	Digest    string
+}
+
+// NewSourceIdentity returns a normalized source identity. Invalid or unsupported
+// identities remain invalid and therefore cannot match an operator policy.
+func NewSourceIdentity(algorithm, digest string) SourceIdentity {
+	return SourceIdentity{
+		Algorithm: strings.ToLower(strings.TrimSpace(algorithm)),
+		Digest:    strings.ToLower(strings.TrimSpace(digest)),
 	}
 }
 
-// FromInstallRecord classifies a plugin install record or config entry.
-func FromInstallRecord(record map[string]any) Level {
-	if record == nil {
+// String returns the canonical operator-policy key for a valid identity.
+func (i SourceIdentity) String() string {
+	if !i.valid() {
+		return ""
+	}
+	return i.Algorithm + ":" + i.Digest
+}
+
+func (i SourceIdentity) valid() bool {
+	if i.Algorithm != "sha256" || len(i.Digest) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(i.Digest)
+	return err == nil
+}
+
+// Policy is operator-owned trust configuration. Each entry must be the
+// canonical identity of an exact source snapshot (for example sha256:<digest>).
+type Policy struct {
+	TrustedSourceIdentities []string
+}
+
+// FromIdentity grants trust only when the exact source snapshot is present in
+// operator-owned policy. Invalid identities and malformed policy entries fail
+// closed.
+func FromIdentity(identity SourceIdentity, policy Policy) Level {
+	key := identity.String()
+	if key == "" {
 		return LevelUntrusted
 	}
-	if explicit, ok := record["trust"].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(explicit)) {
-		case "trusted", "local", "development", "dev":
+	for _, allowed := range policy.TrustedSourceIdentities {
+		if strings.ToLower(strings.TrimSpace(allowed)) == key {
 			return LevelTrusted
-		case "untrusted", "marketplace", "remote":
-			return LevelUntrusted
-		}
-	}
-	for _, key := range []string{"source", "type"} {
-		if source, ok := record[key].(string); ok && strings.TrimSpace(source) != "" {
-			return FromSource(source)
 		}
 	}
 	return LevelUntrusted
 }
+
+// FromSource is retained for compatibility with persisted install data. Source
+// labels are mutable and are never sufficient to grant trust.
+func FromSource(string) Level { return LevelUntrusted }
+
+// FromInstallRecord is retained for compatibility with old records. Plugin
+// manifests and install metadata are not operator policy and can never grant
+// trust.
+func FromInstallRecord(map[string]any) Level { return LevelUntrusted }

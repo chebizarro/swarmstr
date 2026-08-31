@@ -21,8 +21,8 @@ func TestWindowedEngineAfterTurnAndPromptCacheTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(assembled.Messages) != 2 || assembled.Messages[0].ID != "m2" {
-		t.Fatalf("expected after-turn canonical trim to last 2 messages, got %#v", assembled.Messages)
+	if len(assembled.Messages) != 3 || assembled.Messages[0].ID != "m1" {
+		t.Fatalf("expected after-turn lifecycle to retain unsummarized history, got %#v", assembled.Messages)
 	}
 	if assembled.PromptCache == nil || assembled.ContextProjection == nil {
 		t.Fatalf("expected prompt cache and projection metadata")

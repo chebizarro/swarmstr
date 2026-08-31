@@ -106,8 +106,15 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 				continue
 			}
 		}
-		pluginTrust := resolvePluginTrust(rawExt, pluginID, entry)
-		requireProvenance := !pluginTrust.IsTrusted()
+		snapshot, err := pluginSourceSnapshot(installPath)
+		if err != nil {
+			issues = append(issues, fmt.Sprintf("%s: establish plugin source identity: %v", pluginID, err))
+			m.log.Warn("plugin source identity failed", "plugin", pluginID, "err", err)
+			continue
+		}
+		identity := trust.NewSourceIdentity(snapshot.Algorithm, snapshot.Hash)
+		pluginTrust := resolvePluginTrust(rawExt, identity)
+		requireProvenance := pluginSourceRequiresProvenance(rawExt, pluginID, entry)
 		if err := installer.VerifyPluginIntegrityWithPolicy(installPath, installer.IntegrityPolicy{RequireRecord: requireProvenance, RequireProvenance: requireProvenance}); err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", pluginID, err))
 			m.log.Warn("plugin integrity verification failed", "plugin", pluginID, "err", err)
@@ -490,11 +497,54 @@ func NodeSandboxDecision(level trust.Level, enabled bool, cfg *sandbox.Config) S
 	return SandboxDecision{Action: SandboxActionUse, Reason: "untrusted plugin with docker sandbox configured"}
 }
 
-func resolvePluginTrust(rawExt map[string]any, pluginID string, entry map[string]any) trust.Level {
-	if level := trust.FromInstallRecord(entry); entry != nil && (entry["trust"] != nil || entry["source"] != nil || entry["type"] != nil) {
-		return level
+func pluginSourceSnapshot(installPath string) (installer.PluginIntegrityRecord, error) {
+	root := installPath
+	if info, err := os.Stat(root); err == nil && !info.IsDir() {
+		root = filepath.Dir(root)
 	}
-	return trust.FromInstallRecord(pluginInstallRecord(rawExt, pluginID))
+	return installer.ComputePluginIntegrity(root)
+}
+
+// pluginSourceRequiresProvenance uses source metadata only to increase
+// verification requirements. It never uses the label to grant trust.
+func pluginSourceRequiresProvenance(rawExt map[string]any, pluginID string, entry map[string]any) bool {
+	record := pluginInstallRecord(rawExt, pluginID)
+	source := strings.ToLower(firstNonEmptyString(entry["source"], entry["type"], record["source"], record["type"]))
+	switch source {
+	case "path", "local", "local-dev", "development", "dev", "file":
+		return false
+	default:
+		return true
+	}
+}
+
+func resolvePluginTrust(rawExt map[string]any, identity trust.SourceIdentity) trust.Level {
+	return trust.FromIdentity(identity, pluginTrustPolicy(rawExt))
+}
+
+// pluginTrustPolicy reads the only trust-granting surface: operator-owned daemon
+// configuration. Plugin entries, manifests, and install records are deliberately
+// excluded because plugin-authored metadata cannot authenticate its own code.
+func pluginTrustPolicy(rawExt map[string]any) trust.Policy {
+	if rawExt == nil {
+		return trust.Policy{}
+	}
+	rawPolicy, _ := rawExt["trust_policy"].(map[string]any)
+	if rawPolicy == nil {
+		return trust.Policy{}
+	}
+	var identities []string
+	switch values := rawPolicy["trusted_source_identities"].(type) {
+	case []string:
+		identities = append(identities, values...)
+	case []any:
+		for _, value := range values {
+			if identity := stringValue(value); identity != "" {
+				identities = append(identities, identity)
+			}
+		}
+	}
+	return trust.Policy{TrustedSourceIdentities: identities}
 }
 
 func pluginSandboxConfig(rawExt map[string]any) (*sandbox.Config, bool) {

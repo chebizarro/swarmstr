@@ -26,36 +26,36 @@ Drift concentrates in five places:
 
 Enforcement bugs, not features.
 
-- [ ] **0.1 Exec approval policy enforcement.** Legacy `mode/tools/timeout` fields are accepted
+- [x] **0.1 Exec approval policy enforcement.** Legacy `mode/tools/timeout` fields are accepted
   but only `allow_always_signatures` is enforced (`internal/permissions/doctor.go:43-61`).
   Build one authoritative effective-policy evaluator (mode, ask, fallback, allowlist,
   caller + execution-host merge) per `openclaw/docs/tools/exec-approvals.md:146-214`.
-- [ ] **0.2 Bind approvals to full execution context.** Sign and revalidate canonical cwd, argv,
+- [x] **0.2 Bind approvals to full execution context.** Sign and revalidate canonical cwd, argv,
   sanitized env, executable identity, script/interpreter file content immediately before
   execution (`internal/security/commandanalysis/analysis.go:20-34`; upstream
   `exec-approvals.md:35-50`).
-- [ ] **0.3 Plugin trust hardening.** Local/path installs and install-record strings can elevate
+- [x] **0.3 Plugin trust hardening.** Local/path installs and install-record strings can elevate
   trust (`internal/plugins/trust/trust.go:22-55`). Derive trust from immutable source identity
   + operator-owned policy; never accept plugin-authored metadata as a trust grant.
-- [ ] **0.4 Memory provenance/taint.** Add closed `originClass`/`sessionKind`/taint/recall-origin
+- [x] **0.4 Memory provenance/taint.** Add closed `originClass`/`sessionKind`/taint/recall-origin
   fields to `MemoryRecord` (`internal/memory/record.go:46-88`, `extract.go:23-76`,
   `cmd/metiqd/main.go:4567-4573,5031-5037`); enforce before storage, promotion, or automatic
   injection. This is the memory-poisoning vector.
-- [ ] **0.5 NIP-17 sender copy relay routing.** Sender backup copy uses runtime relays instead of
+- [x] **0.5 NIP-17 sender copy relay routing.** Sender backup copy uses runtime relays instead of
   the sender's own kind 10050 list (`internal/nostr/runtime/nip17_bus.go:392-406` vs
   `nips/17.md:71-88`). Resolve sender's own DM relay list; fail rather than substitute.
-- [ ] **0.6 NIP-17 deletion `k` tag.** Hard-coded to "14" (`nip17_bus.go:310-323`); derive per-rumor
+- [x] **0.6 NIP-17 deletion `k` tag.** Hard-coded to "14" (`nip17_bus.go:310-323`); derive per-rumor
   kind (14/15/7), split deletion events when kinds differ.
-- [ ] **0.7 Silent pre-compaction history loss.** `WindowedEngine.Ingest` retains only most recent
+- [x] **0.7 Silent pre-compaction history loss.** `WindowedEngine.Ingest` retains only most recent
   50 messages independent of token pressure (`internal/context/engine.go:285-318`). Never apply
   the count cap until history has been summarized/checkpointed; use token-derived pressure.
-- [ ] **0.8 Immutable creator-role sandbox requirement.** Persist a creator-derived sandbox
+- [x] **0.8 Immutable creator-role sandbox requirement.** Persist a creator-derived sandbox
   requirement on session creation; fail closed when the backend is unavailable
   (`internal/sandbox/sandbox.go:58-110`; upstream `openclaw/docs/gateway/sandboxing.md:40-64`).
-- [ ] **0.9 FIPS CI pin update.** `.github/workflows/fips-real-daemon.yml:19-22` pins a July 2026
+- [x] **0.9 FIPS CI pin update.** `.github/workflows/fips-real-daemon.yml:19-22` pins a July 2026
   `0.5.0-dev` commit; move to v0.5.0 or reviewed current SHA, run the mandatory real-daemon suite
   (`testing/fips/real-daemon/README.md:100-113`).
-- [ ] **0.10 Gate NIP-04 behind legacy option.** `runtime/dm_bus.go:45-48`; NIP-17 default
+- [x] **0.10 Gate NIP-04 behind legacy option.** `runtime/dm_bus.go:45-48`; NIP-17 default
   everywhere (NIP-04 is deprecated per `nips/04.md:1-12`).
 
 ## Phase 1 — Durability & lifecycle parity

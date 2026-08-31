@@ -14,7 +14,7 @@ func TestDoctorExecApprovalPolicyValidSignature(t *testing.T) {
 	}
 }
 
-func TestDoctorExecApprovalPolicyReportsConflictsAndUnreachableFields(t *testing.T) {
+func TestDoctorExecApprovalPolicyReportsConflictsAndLiveFields(t *testing.T) {
 	report := DoctorExecApprovalPolicy(map[string]any{
 		"mode":                    "deny",
 		"tools":                   []any{"*", "bash", "bash"},
@@ -30,7 +30,7 @@ func TestDoctorExecApprovalPolicyReportsConflictsAndUnreachableFields(t *testing
 		codes = append(codes, finding.Code)
 	}
 	joined := strings.Join(codes, ",")
-	for _, want := range []string{"conflicting-policy", "duplicate-signature", "duplicate-tool", "invalid-timeout", "unknown-policy-field", "unreachable-policy-field", "unsafe-signature", "unsafe-tool-pattern"} {
+	for _, want := range []string{"conflicting-policy", "duplicate-signature", "duplicate-tool", "invalid-timeout", "unknown-policy-field", "unsafe-signature", "unsafe-tool-pattern"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %s in %+v", want, report.Findings)
 		}

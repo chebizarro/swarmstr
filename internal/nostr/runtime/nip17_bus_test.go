@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +231,38 @@ func TestNIP17RumorMetadataPreservesRoomSubjectAndReply(t *testing.T) {
 	}
 }
 
+func TestNIP17DeletionBatchesSplitDifferentRumorKinds(t *testing.T) {
+	messageID := strings.Repeat("d", 64)
+	fileID := strings.Repeat("e", 64)
+	reactionID := strings.Repeat("f", 64)
+	batches, err := buildNIP17DeletionBatches([]NIP17DeletionTarget{
+		{EventID: messageID, Kind: nostr.KindDirectMessage},
+		{EventID: fileID, Kind: nostr.KindFileMessage},
+		{EventID: reactionID, Kind: nostr.KindReaction},
+		{EventID: strings.Repeat("a", 64), Kind: nostr.KindDirectMessage},
+	})
+	if err != nil {
+		t.Fatalf("build deletion batches: %v", err)
+	}
+	if len(batches) != 3 {
+		t.Fatalf("got %d batches, want 3", len(batches))
+	}
+	wantKinds := []nostr.Kind{nostr.KindDirectMessage, nostr.KindFileMessage, nostr.KindReaction}
+	wantEventCounts := []int{2, 1, 1}
+	for i, batch := range batches {
+		if batch.kind != wantKinds[i] {
+			t.Fatalf("batch[%d] kind = %d, want %d", i, batch.kind, wantKinds[i])
+		}
+		if len(batch.tags) != wantEventCounts[i]+1 {
+			t.Fatalf("batch[%d] tags = %v", i, batch.tags)
+		}
+		kindTag := batch.tags[len(batch.tags)-1]
+		if len(kindTag) != 2 || kindTag[0] != "k" || kindTag[1] != fmt.Sprint(batch.kind) {
+			t.Fatalf("batch[%d] k tag = %v", i, kindTag)
+		}
+	}
+}
+
 func TestNIP17HandleRumorDeduplicatesByRumorID(t *testing.T) {
 	bus, _, recipient := newTestNIP17BusIdentity(t)
 	sender := testControlKeyer(t, "2222222222222222222222222222222222222222222222222222222222222222")
@@ -303,6 +336,31 @@ func TestNIP17SendDMRequiresRecipientKind10050(t *testing.T) {
 	err := bus.SendDM(context.Background(), recipientPubKey.Hex(), "hello")
 	if !errors.Is(err, ErrRecipientNotNIP17Ready) {
 		t.Fatalf("SendDM error = %v, want ErrRecipientNotNIP17Ready", err)
+	}
+}
+
+func TestNIP17SendDMRequiresSenderKind10050ForBackupCopy(t *testing.T) {
+	bus, keyer, _ := newTestNIP17BusIdentity(t)
+	recipientPubKey := otherNIP17PubKey(t)
+	bus.kr = keyer
+	bus.pool = NewPoolNIP42(keyer)
+	defer bus.pool.Close("test")
+	bus.relays = []string{"wss://configured-write.example"}
+	lookedUp := make([]nostr.PubKey, 0, 2)
+	bus.testLookupDMRelays = func(_ context.Context, pk nostr.PubKey) []string {
+		lookedUp = append(lookedUp, pk)
+		if pk == bus.public {
+			return nil
+		}
+		return []string{"wss://recipient-dm.example"}
+	}
+
+	err := bus.SendDM(context.Background(), recipientPubKey.Hex(), "hello")
+	if !errors.Is(err, ErrRecipientNotNIP17Ready) {
+		t.Fatalf("SendDM error = %v, want sender readiness error", err)
+	}
+	if len(lookedUp) != 2 || lookedUp[0] != recipientPubKey || lookedUp[1] != bus.public {
+		t.Fatalf("DM relay lookups = %v, want recipient then sender", lookedUp)
 	}
 }
 

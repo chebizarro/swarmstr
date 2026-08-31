@@ -14,6 +14,7 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/gateway/methods"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/security/commandanalysis"
 	"metiq/internal/store/state"
 	"metiq/internal/workspace"
 )
@@ -1368,30 +1369,33 @@ func (r *cronRegistry) Load(ctx context.Context, repo *state.DocsRepository) err
 }
 
 type execApprovalPendingRecord struct {
-	ID                   string         `json:"id"`
-	Kind                 string         `json:"kind"`
-	Presentation         map[string]any `json:"presentation,omitempty"`
-	NodeID               string         `json:"node_id,omitempty"`
-	AgentID              *string        `json:"agent_id,omitempty"`
-	SessionKey           *string        `json:"session_key,omitempty"`
-	Command              string         `json:"command"`
-	CommandArgv          []string       `json:"command_argv,omitempty"`
-	Args                 map[string]any `json:"args,omitempty"`
-	CWD                  *string        `json:"cwd,omitempty"`
-	Host                 *string        `json:"host,omitempty"`
-	AnalysisWarnings     []string       `json:"analysis_warnings,omitempty"`
-	AnalysisSummary      string         `json:"analysis_summary,omitempty"`
-	AnalysisSignature    string         `json:"analysis_signature,omitempty"`
-	AllowAlwaysAvailable bool           `json:"allow_always_available,omitempty"`
-	AllowAlwaysReason    string         `json:"allow_always_reason,omitempty"`
-	ApprovalMode         string         `json:"approval_mode,omitempty"`
-	TimeoutMS            int            `json:"timeout_ms"`
-	Status               string         `json:"status"`
-	Decision             string         `json:"decision,omitempty"`
-	Reason               string         `json:"reason,omitempty"`
-	Requested            int64          `json:"requested_at"`
-	ResolvedAt           int64          `json:"resolved_at,omitempty"`
-	ExpiresAt            int64          `json:"expires_at,omitempty"`
+	ID                   string                            `json:"id"`
+	Kind                 string                            `json:"kind"`
+	Presentation         map[string]any                    `json:"presentation,omitempty"`
+	NodeID               string                            `json:"node_id,omitempty"`
+	AgentID              *string                           `json:"agent_id,omitempty"`
+	SessionKey           *string                           `json:"session_key,omitempty"`
+	Command              string                            `json:"command"`
+	CommandArgv          []string                          `json:"command_argv,omitempty"`
+	Args                 map[string]any                    `json:"args,omitempty"`
+	CWD                  *string                           `json:"cwd,omitempty"`
+	Host                 *string                           `json:"host,omitempty"`
+	AnalysisWarnings     []string                          `json:"analysis_warnings,omitempty"`
+	AnalysisSummary      string                            `json:"analysis_summary,omitempty"`
+	AnalysisSignature    string                            `json:"analysis_signature,omitempty"`
+	AllowAlwaysAvailable bool                              `json:"allow_always_available,omitempty"`
+	AllowAlwaysReason    string                            `json:"allow_always_reason,omitempty"`
+	ApprovalMode         string                            `json:"approval_mode,omitempty"`
+	ExecutionBinding     *commandanalysis.ExecutionBinding `json:"execution_binding,omitempty"`
+	PolicyFingerprint    string                            `json:"policy_fingerprint,omitempty"`
+	GrantScope           string                            `json:"grant_scope,omitempty"`
+	TimeoutMS            int                               `json:"timeout_ms"`
+	Status               string                            `json:"status"`
+	Decision             string                            `json:"decision,omitempty"`
+	Reason               string                            `json:"reason,omitempty"`
+	Requested            int64                             `json:"requested_at"`
+	ResolvedAt           int64                             `json:"resolved_at,omitempty"`
+	ExpiresAt            int64                             `json:"expires_at,omitempty"`
 }
 
 type execApprovalsRegistry struct {
@@ -1428,6 +1432,7 @@ func (r *execApprovalsRegistry) cleanup() {
 			rec.Status = "resolved"
 			rec.Decision = "deny"
 			rec.Reason = "approval expired"
+			rec.GrantScope = "system-expiry"
 			rec.ResolvedAt = now
 			next[id] = rec
 			notifications[id] = rec
@@ -1466,10 +1471,20 @@ func (r *execApprovalsRegistry) GetGlobal() map[string]any {
 }
 
 func (r *execApprovalsRegistry) SetGlobal(next map[string]any) map[string]any {
+	out, _ := r.SetGlobalChecked(next)
+	return out
+}
+
+func (r *execApprovalsRegistry) SetGlobalChecked(next map[string]any) (map[string]any, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	previous := r.global
 	r.global = cloneMapAny(next)
-	return cloneMapAny(r.global)
+	if err := r.persistApprovalsLocked(r.pending); err != nil {
+		r.global = previous
+		return cloneMapAny(previous), err
+	}
+	return cloneMapAny(r.global), nil
 }
 
 func (r *execApprovalsRegistry) GetNode(nodeID string) map[string]any {
@@ -1480,10 +1495,24 @@ func (r *execApprovalsRegistry) GetNode(nodeID string) map[string]any {
 }
 
 func (r *execApprovalsRegistry) SetNode(nodeID string, next map[string]any) map[string]any {
+	out, _ := r.SetNodeChecked(nodeID, next)
+	return out
+}
+
+func (r *execApprovalsRegistry) SetNodeChecked(nodeID string, next map[string]any) (map[string]any, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	previous, existed := r.perNode[nodeID]
 	r.perNode[nodeID] = cloneMapAny(next)
-	return cloneMapAny(r.perNode[nodeID])
+	if err := r.persistApprovalsLocked(r.pending); err != nil {
+		if existed {
+			r.perNode[nodeID] = previous
+		} else {
+			delete(r.perNode, nodeID)
+		}
+		return cloneMapAny(previous), err
+	}
+	return cloneMapAny(r.perNode[nodeID]), nil
 }
 
 func (r *execApprovalsRegistry) Request(req methods.ExecApprovalRequestRequest) execApprovalPendingRecord {
@@ -1503,6 +1532,7 @@ func (r *execApprovalsRegistry) Resolve(req methods.ExecApprovalResolveRequest) 
 	}
 	rec.Decision = req.Decision
 	rec.Reason = req.Reason
+	rec.GrantScope = "reviewer"
 	rec.Status = "resolved"
 	rec.ResolvedAt = time.Now().UnixMilli()
 	next := cloneExecApprovalRecords(r.pending)
@@ -1512,6 +1542,37 @@ func (r *execApprovalsRegistry) Resolve(req methods.ExecApprovalResolveRequest) 
 	}
 	r.pending = next
 	r.notifyWatchers(req.ID, rec)
+	return cloneExecApprovalRecord(rec), nil
+}
+
+// ResolveFallback records the effective policy outcome when no reviewer answer
+// was available. It may replace only the registry's own expiry denial; a human
+// resolution remains immutable.
+func (r *execApprovalsRegistry) ResolveFallback(id string, allowed bool, reason string) (execApprovalPendingRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.pending[id]
+	if !ok {
+		return execApprovalPendingRecord{}, state.ErrNotFound
+	}
+	if rec.Status == "resolved" && rec.GrantScope != "system-expiry" {
+		return execApprovalPendingRecord{}, fmt.Errorf("approval %q already has a reviewer decision", id)
+	}
+	rec.Status = "resolved"
+	rec.Decision = "deny"
+	if allowed {
+		rec.Decision = "approve"
+	}
+	rec.Reason = strings.TrimSpace(reason)
+	rec.GrantScope = "policy-fallback"
+	rec.ResolvedAt = time.Now().UnixMilli()
+	next := cloneExecApprovalRecords(r.pending)
+	next[id] = rec
+	if err := r.persistApprovalsLocked(next); err != nil {
+		return execApprovalPendingRecord{}, err
+	}
+	r.pending = next
+	r.notifyWatchers(id, rec)
 	return cloneExecApprovalRecord(rec), nil
 }
 
@@ -1551,6 +1612,7 @@ func cloneExecApprovalRecord(rec execApprovalPendingRecord) execApprovalPendingR
 	out.Args = cloneMapAny(rec.Args)
 	out.Presentation = cloneMapAny(rec.Presentation)
 	out.AnalysisWarnings = append([]string(nil), rec.AnalysisWarnings...)
+	out.ExecutionBinding = commandanalysis.CloneExecutionBinding(rec.ExecutionBinding)
 	if rec.CWD != nil {
 		cwd := *rec.CWD
 		out.CWD = &cwd

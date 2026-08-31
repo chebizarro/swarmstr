@@ -82,15 +82,19 @@ func MemoryRecordFromIndexed(mem IndexedMemory) MemoryRecord {
 		scope = MemoryRecordScopeSession
 	}
 	rec := MemoryRecord{
-		ID:         mem.MemoryID,
-		Type:       NormalizeMemoryRecordType(mem.Type),
-		Scope:      scope,
-		Subject:    mem.Topic,
-		Text:       mem.Text,
-		Keywords:   append([]string(nil), mem.Keywords...),
-		Tags:       append([]string(nil), mem.Keywords...),
-		Confidence: mem.Confidence,
-		Salience:   0.5,
+		ID:              mem.MemoryID,
+		Type:            NormalizeMemoryRecordType(mem.Type),
+		Scope:           scope,
+		Subject:         mem.Topic,
+		Text:            mem.Text,
+		Keywords:        append([]string(nil), mem.Keywords...),
+		Tags:            append([]string(nil), mem.Keywords...),
+		Confidence:      mem.Confidence,
+		Salience:        0.5,
+		OriginClass:     MemoryOriginClass(mem.OriginClass),
+		SessionKind:     MemorySessionKind(mem.SessionKind),
+		Taint:           MemoryTaint{ExternalTool: mem.ExternalToolTaint, Network: mem.NetworkTaint},
+		RecalledContent: mem.RecalledContent,
 		Source: MemorySource{
 			Kind:      firstNonEmpty(mem.Source, MemorySourceKindTurn),
 			SessionID: mem.SessionID,

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"metiq/internal/gateway/methods"
+	"metiq/internal/sandbox"
 	"metiq/internal/store/state"
 )
 
@@ -88,5 +89,20 @@ func TestSandboxRunRequestCannotEnableUnsafeNop(t *testing.T) {
 	}}, methods.SandboxRunRequest{Driver: "nop", AllowUnsafeNop: &allow})
 	if configuredDriver != "docker" || cfg.Driver != "nop" || cfg.AllowUnsafeNop {
 		t.Fatalf("request enabled unsafe nop: configured=%q cfg=%+v", configuredDriver, cfg)
+	}
+}
+
+func TestSessionSandboxRequirementUsesCreatorRolePolicy(t *testing.T) {
+	requirement, err := sessionSandboxRequirement(state.ConfigDoc{Extra: map[string]any{
+		"sandbox": map[string]any{"driver": "docker"},
+		"gateway": map[string]any{"roles": map[string]any{
+			"operator": map[string]any{"sandbox": "required"},
+		}},
+	}}, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requirement.Policy != sandbox.CreatorSandboxRequired || requirement.Backend != "docker" || requirement.CreatorRole != "operator" {
+		t.Fatalf("unexpected creator requirement: %+v", requirement)
 	}
 }

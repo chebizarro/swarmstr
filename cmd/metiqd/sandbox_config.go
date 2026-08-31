@@ -10,6 +10,24 @@ import (
 	"metiq/internal/store/state"
 )
 
+func sessionSandboxRequirement(daemonCfg state.ConfigDoc, creatorRole string) (sandbox.SessionRequirement, error) {
+	policy := sandbox.CreatorSandboxInherit
+	if rawGateway, ok := daemonCfg.Extra["gateway"].(map[string]any); ok {
+		if rawRoles, ok := rawGateway["roles"].(map[string]any); ok {
+			if rawRole, ok := rawRoles[strings.TrimSpace(creatorRole)].(map[string]any); ok {
+				if configured := strings.TrimSpace(getCfgString(rawRole, "sandbox")); configured != "" {
+					policy = sandbox.CreatorSandboxPolicy(configured)
+				}
+			}
+		}
+	}
+	configuredBackend := ""
+	if rawSandbox, ok := daemonCfg.Extra["sandbox"].(map[string]any); ok {
+		configuredBackend = getCfgString(rawSandbox, "driver")
+	}
+	return sandbox.NewSessionRequirement(creatorRole, policy, configuredBackend)
+}
+
 func sandboxConfigFromDaemonAndRequest(daemonCfg state.ConfigDoc, req methods.SandboxRunRequest) (sandbox.Config, string) {
 	cfg := sandbox.Config{}
 	if daemonCfg.Extra != nil {

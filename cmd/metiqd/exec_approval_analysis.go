@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+
+	"metiq/internal/permissions"
 )
 
 func approvalCommandDisplay(toolName string, args map[string]any) (string, []string) {
@@ -70,19 +73,45 @@ func execApprovalSignatureAllowed(approvals map[string]any, signature string) bo
 	return false
 }
 
-func execApprovalRememberSignature(reg *execApprovalsRegistry, signature string) {
+func execApprovalRememberSignature(reg *execApprovalsRegistry, signature string) error {
 	if reg == nil || signature == "" {
-		return
+		return fmt.Errorf("exec approval registry and signature are required")
 	}
 	approvals := reg.GetGlobal()
 	if execApprovalSignatureAllowed(approvals, signature) {
-		return
+		return nil
 	}
 	next := []any{}
-	if raw, ok := approvals["allow_always_signatures"].([]any); ok {
+	switch raw := approvals["allow_always_signatures"].(type) {
+	case []any:
 		next = append(next, raw...)
+	case []string:
+		for _, item := range raw {
+			next = append(next, item)
+		}
 	}
 	next = append(next, signature)
 	approvals["allow_always_signatures"] = next
-	reg.SetGlobal(approvals)
+	if _, err := reg.SetGlobalChecked(approvals); err != nil {
+		return fmt.Errorf("persist allow-always signature: %w", err)
+	}
+	return nil
+}
+
+func execPolicyFindingSummary(report permissions.ExecApprovalReport) string {
+	parts := make([]string, 0, len(report.Findings))
+	for _, finding := range report.Findings {
+		if finding.Severity != permissions.DiagnosticError {
+			continue
+		}
+		if finding.Field != "" {
+			parts = append(parts, finding.Field+": "+finding.Message)
+		} else {
+			parts = append(parts, finding.Message)
+		}
+	}
+	if len(parts) == 0 {
+		return "policy validation failed"
+	}
+	return strings.Join(parts, "; ")
 }

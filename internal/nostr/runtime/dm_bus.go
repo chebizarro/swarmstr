@@ -20,8 +20,9 @@ import (
 )
 
 var (
-	ErrInvalidPadding   = errors.New("invalid padding")
-	ErrInvalidPlaintext = errors.New("invalid plaintext")
+	ErrInvalidPadding      = errors.New("invalid padding")
+	ErrInvalidPlaintext    = errors.New("invalid plaintext")
+	ErrLegacyNIP04Disabled = errors.New("legacy NIP-04 compatibility is disabled")
 )
 
 type InboundDM struct {
@@ -52,7 +53,9 @@ type NIP04Decrypter interface {
 }
 
 type DMBusOptions struct {
-	PrivateKey string
+	// LegacyCompatibility must be explicitly enabled because NIP-04 is deprecated.
+	LegacyCompatibility bool
+	PrivateKey          string
 	// Keyer is an optional pre-built nostr.Keyer (e.g. a NIP-46 BunkerSigner).
 	// When set, it is used for NIP-42 AUTH signing. PrivateKey is still needed
 	// for NIP-04 encryption/decryption (which requires a raw secret key).
@@ -119,6 +122,9 @@ func (b *DMBus) nip04EncryptKeyer() nostr.Keyer {
 const maxDMPlaintextRunes = maxNIP04OutboundPlaintextRunes
 
 func StartDMBus(parent context.Context, opts DMBusOptions) (*DMBus, error) {
+	if !opts.LegacyCompatibility {
+		return nil, ErrLegacyNIP04Disabled
+	}
 	initialRelays := sanitizeRelayList(opts.Relays)
 	if len(initialRelays) == 0 {
 		return nil, fmt.Errorf("at least one relay is required")

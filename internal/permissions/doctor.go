@@ -40,11 +40,9 @@ func (r ExecApprovalReport) Valid() bool {
 	return true
 }
 
-// DoctorExecApprovalPolicy diagnoses the live exec.approvals policy map. The
-// daemon currently enforces allow_always_signatures; legacy mode/tools/timeout
-// fields are accepted by compatibility APIs but do not participate in runtime
-// authorization, so they are reported as unreachable instead of silently
-// implying enforcement.
+// DoctorExecApprovalPolicy diagnoses the live, authoritative exec-approval
+// policy. The same parser is used by runtime evaluation, so accepted fields are
+// never merely compatibility metadata.
 func DoctorExecApprovalPolicy(policy map[string]any) ExecApprovalReport {
 	var findings []ExecApprovalFinding
 	add := func(severity DiagnosticSeverity, code, field, message string) {
@@ -52,8 +50,18 @@ func DoctorExecApprovalPolicy(policy map[string]any) ExecApprovalReport {
 	}
 
 	known := map[string]bool{
+		"version":                 true,
+		"socket":                  true,
+		"defaults":                true,
+		"agents":                  true,
 		"allow_always_signatures": true,
 		"mode":                    true,
+		"security":                true,
+		"ask":                     true,
+		"askFallback":             true,
+		"ask_fallback":            true,
+		"allowlist":               true,
+		"autoAllowSkills":         true,
 		"tools":                   true,
 		"timeout_ms":              true,
 	}
@@ -72,16 +80,18 @@ func DoctorExecApprovalPolicy(policy map[string]any) ExecApprovalReport {
 	if raw, exists := policy["mode"]; exists {
 		value, ok := raw.(string)
 		mode = strings.ToLower(strings.TrimSpace(value))
-		if !ok || (mode != "ask" && mode != "allow" && mode != "deny") {
-			add(DiagnosticError, "invalid-mode", "mode", "mode must be ask, allow, or deny")
-		} else {
-			add(DiagnosticWarning, "unreachable-policy-field", "mode", "mode is compatibility metadata and is not consulted by runtime authorization")
+		if !ok || (mode != "deny" && mode != "allowlist" && mode != "ask" && mode != "auto" && mode != "full" && mode != "allow") {
+			add(DiagnosticError, "invalid-mode", "mode", "mode must be deny, allowlist, ask, auto, or full")
+		} else if mode == "allow" {
+			add(DiagnosticWarning, "legacy-mode", "mode", "legacy allow mode is accepted as full; prefer the explicit full value")
+		} else if mode == "full" {
+			add(DiagnosticWarning, "open-policy", "mode", "full mode permits matching host execution without approval")
 		}
 	}
 	if raw, exists := policy["tools"]; exists {
 		tools, ok := diagnosticStringSlice(raw)
 		if !ok {
-			add(DiagnosticError, "invalid-tools", "tools", "tools must be an array of non-empty strings")
+			add(DiagnosticError, "invalid-tools", "tools", "tools must be a string or array of non-empty strings")
 		} else {
 			seen := map[string]bool{}
 			for i, tool := range tools {
@@ -94,14 +104,41 @@ func DoctorExecApprovalPolicy(policy map[string]any) ExecApprovalReport {
 				}
 				seen[tool] = true
 			}
-			add(DiagnosticWarning, "unreachable-policy-field", "tools", "tools is compatibility metadata; configure permissions rules or config extra.approvals.tools for enforcement")
 		}
 	}
 	if raw, exists := policy["timeout_ms"]; exists {
 		if n, ok := diagnosticPositiveInt(raw); !ok || n <= 0 {
 			add(DiagnosticError, "invalid-timeout", "timeout_ms", "timeout_ms must be a positive integer")
+		}
+	}
+
+	if _, err := parseExecPolicyLayer(policy, "doctor", "doctor", 5*60*1000); err != nil {
+		add(DiagnosticError, "invalid-effective-policy", "", err.Error())
+	}
+	if raw, exists := policy["askFallback"]; exists {
+		if value, ok := raw.(string); ok && strings.EqualFold(strings.TrimSpace(value), "full") {
+			add(DiagnosticWarning, "open-fallback", "askFallback", "full fallback permits execution when an approval prompt is unavailable or times out")
+		}
+	}
+	if raw, exists := policy["ask_fallback"]; exists {
+		if value, ok := raw.(string); ok && strings.EqualFold(strings.TrimSpace(value), "full") {
+			add(DiagnosticWarning, "open-fallback", "ask_fallback", "full fallback permits execution when an approval prompt is unavailable or times out")
+		}
+	}
+	if raw, exists := policy["allowlist"]; exists {
+		entries, err := parseExecAllowlist(raw)
+		if err != nil {
+			add(DiagnosticError, "invalid-allowlist", "allowlist", err.Error())
 		} else {
-			add(DiagnosticWarning, "unreachable-policy-field", "timeout_ms", "timeout_ms is compatibility metadata and does not set request timeouts")
+			seen := map[string]bool{}
+			for i, entry := range entries {
+				encoded, _ := json.Marshal(entry)
+				key := string(encoded)
+				if seen[key] {
+					add(DiagnosticWarning, "duplicate-allowlist-entry", fmt.Sprintf("allowlist[%d]", i), "duplicate allowlist entry is unreachable")
+				}
+				seen[key] = true
+			}
 		}
 	}
 
@@ -149,6 +186,17 @@ func diagnosticStringSlice(raw any) ([]string, bool) {
 	}
 	var source []any
 	switch values := raw.(type) {
+	case string:
+		for _, value := range strings.Split(values, ",") {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			source = append(source, value)
+		}
+		if len(source) == 0 {
+			return nil, false
+		}
 	case []string:
 		out := make([]string, len(values))
 		for i, value := range values {

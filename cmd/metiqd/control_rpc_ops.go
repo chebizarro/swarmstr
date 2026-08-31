@@ -514,7 +514,7 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		out, err := applySandboxRun(ctx, configState, req)
+		out, err := applySandboxRun(ctx, configState, h.deps.docsRepo, req)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}

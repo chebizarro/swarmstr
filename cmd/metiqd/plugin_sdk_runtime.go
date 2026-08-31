@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"metiq/internal/gateway/methods"
+	"metiq/internal/permissions"
 	pluginmanager "metiq/internal/plugins/manager"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/security/commandanalysis"
@@ -24,11 +25,19 @@ func pluginRuntimeServices(store *secretspkg.Store) pluginmanager.RuntimeService
 			if registry == nil {
 				return nil, fmt.Errorf("exec approval registry is not initialized")
 			}
-			allowed := commandanalysis.IsAllowAlwaysSafe(analysis) && execApprovalSignatureAllowed(registry.GetGlobal(), analysis.Signature)
-			result := map[string]any{"allowed": allowed, "decision": "ask", "analysis": pluginRuntimeMap(analysis)}
-			if allowed {
-				result["decision"] = "allow"
+			callerPolicy := map[string]any{"mode": "ask"}
+			for _, key := range []string{"mode", "security", "ask", "askFallback", "ask_fallback", "allowlist", "timeout_ms"} {
+				if value, exists := request[key]; exists {
+					callerPolicy[key] = value
+				}
 			}
+			decision, err := permissions.EvaluateExecPolicy(callerPolicy, registry.GetGlobal(), permissions.ExecPolicyRequest{
+				Tool: "exec", Signature: analysis.Signature, AllowAlwaysSafe: commandanalysis.IsAllowAlwaysSafe(analysis), PromptAvailable: true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			result := map[string]any{"allowed": decision.Behavior == permissions.BehaviorAllow, "decision": string(decision.Behavior), "reason": decision.Reason, "effective_policy": pluginRuntimeMap(decision.Effective), "analysis": pluginRuntimeMap(analysis)}
 			return result, nil
 		},
 		ExecApprovalRequest: func(_ context.Context, request map[string]any) (map[string]any, error) {
@@ -52,6 +61,18 @@ func pluginRuntimeServices(store *secretspkg.Store) pluginmanager.RuntimeService
 				return nil, fmt.Errorf("exec approval request requires command")
 			}
 			analysis := commandanalysis.Analyze(typed.Command, typed.CommandArgv)
+			executionReq := commandanalysis.ExecutionRequest{CommandText: typed.Command, Argv: typed.CommandArgv, Env: typed.Env}
+			if typed.CWD != nil {
+				executionReq.CWD = *typed.CWD
+			}
+			binding, err := commandanalysis.CaptureExecutionBinding(executionReq)
+			if err != nil {
+				return nil, fmt.Errorf("bind exec approval request: %w", err)
+			}
+			typed.ExecutionBinding = &binding
+			typed.CommandArgv = append([]string(nil), binding.Argv...)
+			cwd := binding.CanonicalCWD
+			typed.CWD = &cwd
 			if typed.AnalysisSignature == "" {
 				typed.AnalysisWarnings = analysis.Warnings
 				typed.AnalysisSummary = analysis.Summary

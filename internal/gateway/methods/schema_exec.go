@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"metiq/internal/security/commandanalysis"
 )
 
 type ExecApprovalsGetRequest struct{}
@@ -86,6 +88,11 @@ type ExecApprovalRequestRequest struct {
 	AllowAlwaysReason    string                     `json:"allow_always_reason,omitempty"`
 	ApprovalMode         string                     `json:"approval_mode,omitempty"`
 	TwoPhase             *bool                      `json:"two_phase,omitempty"`
+	// ExecutionBinding is produced by the execution host after it resolves the
+	// local plan. It is deliberately excluded from RPC decoding so a caller can
+	// never assert its own executable or file identity.
+	ExecutionBinding  *commandanalysis.ExecutionBinding `json:"-"`
+	PolicyFingerprint string                            `json:"-"`
 }
 
 type ExecApprovalWaitDecisionRequest struct {
@@ -181,6 +188,26 @@ func (r ExecApprovalRequestRequest) Normalize() (ExecApprovalRequestRequest, err
 	if r.Args == nil {
 		r.Args = map[string]any{}
 	}
+	for i, arg := range r.CommandArgv {
+		if strings.TrimSpace(arg) == "" || strings.IndexByte(arg, 0) >= 0 {
+			return r, fmt.Errorf("command_argv[%d] must be non-empty and contain no NUL", i)
+		}
+	}
+	for key, value := range r.Env {
+		if key == "" || strings.Contains(key, "=") || strings.IndexByte(key, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
+			return r, fmt.Errorf("env contains an invalid entry for %q", key)
+		}
+	}
+	if r.SystemRunPlan != nil {
+		for i, arg := range r.SystemRunPlan.Argv {
+			if strings.TrimSpace(arg) == "" || strings.IndexByte(arg, 0) >= 0 {
+				return r, fmt.Errorf("system_run_plan.argv[%d] must be non-empty and contain no NUL", i)
+			}
+		}
+		if len(r.CommandArgv) > 0 && !equalExecArgv(r.CommandArgv, r.SystemRunPlan.Argv) {
+			return r, fmt.Errorf("command_argv conflicts with system_run_plan.argv")
+		}
+	}
 	return r, nil
 }
 
@@ -201,6 +228,18 @@ func (r ExecApprovalResolveRequest) Normalize() (ExecApprovalResolveRequest, err
 		return r, fmt.Errorf("id and decision are required")
 	}
 	return r, nil
+}
+
+func equalExecArgv(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func DecodeExecApprovalsGetParams(params json.RawMessage) (ExecApprovalsGetRequest, error) {

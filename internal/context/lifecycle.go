@@ -153,11 +153,9 @@ func (e *WindowedEngine) AfterTurn(ctx stdctx.Context, sessionID string, params 
 	}
 	if len(params.Messages) > 0 {
 		e.mu.Lock()
-		msgs := copyMessages(params.Messages)
-		if len(msgs) > e.maxMsgs {
-			msgs = msgs[len(msgs)-e.maxMsgs:]
-		}
-		e.sessions[sessionID] = msgs
+		// Preserve the full turn history until explicit token-pressure compaction
+		// has summarized/checkpointed the prefix.
+		e.sessions[sessionID] = copyMessages(params.Messages)
 		e.mu.Unlock()
 	}
 	if shouldProactivelyCompact(params) {

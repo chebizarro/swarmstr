@@ -35,26 +35,42 @@ func (m *memoryStoreStub) ListByTopic(topic string, limit int) []memory.IndexedM
 	if topic != pinnedKnowledgeTopic {
 		return nil
 	}
-	if len(m.pinned) > limit {
-		return m.pinned[:limit]
+	items := trustedTestIndexedMemories(m.pinned)
+	if len(items) > limit {
+		return items[:limit]
 	}
-	return m.pinned
+	return items
 }
 func (m *memoryStoreStub) ListByType(memType string, limit int) []memory.IndexedMemory { return nil }
 func (m *memoryStoreStub) ListByTaskID(taskID string, limit int) []memory.IndexedMemory {
 	return nil
 }
 func (m *memoryStoreStub) Search(query string, limit int) []memory.IndexedMemory {
-	if len(m.global) > limit {
-		return m.global[:limit]
+	items := trustedTestIndexedMemories(m.global)
+	if len(items) > limit {
+		return items[:limit]
 	}
-	return m.global
+	return items
 }
 func (m *memoryStoreStub) SearchSession(sessionID, query string, limit int) []memory.IndexedMemory {
-	if len(m.session) > limit {
-		return m.session[:limit]
+	items := trustedTestIndexedMemories(m.session)
+	if len(items) > limit {
+		return items[:limit]
 	}
-	return m.session
+	return items
+}
+
+func trustedTestIndexedMemories(in []memory.IndexedMemory) []memory.IndexedMemory {
+	out := append([]memory.IndexedMemory(nil), in...)
+	for i := range out {
+		if out[i].OriginClass == "" {
+			out[i].OriginClass = string(memory.MemoryOriginOwner)
+		}
+		if out[i].SessionKind == "" {
+			out[i].SessionKind = string(memory.MemorySessionInteractive)
+		}
+	}
+	return out
 }
 
 func testSessionMemoryDocument(body string) string {

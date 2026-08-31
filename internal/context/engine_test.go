@@ -83,7 +83,7 @@ func TestWindowedEngineBootstrap(t *testing.T) {
 	}
 }
 
-func TestWindowedEngineSlidingWindow(t *testing.T) {
+func TestWindowedEngineRetainsHistoryUntilTokenPressure(t *testing.T) {
 	eng, err := ctxengine.NewEngine("windowed", "sess-4", map[string]any{"max_messages": float64(3)})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
@@ -103,8 +103,16 @@ func TestWindowedEngineSlidingWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	if len(assembled.Messages) != 3 {
-		t.Errorf("sliding window: expected 3 messages (capped), got %d", len(assembled.Messages))
+	if len(assembled.Messages) != 5 {
+		t.Errorf("expected all 5 unsummarized messages despite legacy count hint, got %d", len(assembled.Messages))
+	}
+
+	bootstrapped, err := eng.Bootstrap(ctx, "sess-bootstrap-count", assembled.Messages)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if bootstrapped.ImportedMessages != 5 {
+		t.Fatalf("bootstrap discarded history using a count cap: imported=%d", bootstrapped.ImportedMessages)
 	}
 }
 

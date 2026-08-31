@@ -259,6 +259,11 @@ func OpenLanceDBBackendWithProvider(path string, provider MemoryEmbeddingProvide
 func (b *LanceDBBackend) Add(doc state.MemoryDoc) { b.AddWithContext(context.Background(), doc) }
 
 func (b *LanceDBBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
+	var err error
+	doc, err = NormalizeMemoryDocProvenance(doc)
+	if err != nil {
+		return
+	}
 	if strings.TrimSpace(doc.MemoryID) == "" || strings.TrimSpace(doc.Text) == "" {
 		return
 	}
@@ -373,7 +378,14 @@ func (b *LanceDBBackend) Save() error { return b.store.Health(context.Background
 
 func (b *LanceDBBackend) Store(sessionID, text string, tags []string) string {
 	id := GenerateMemoryID()
-	b.Add(state.MemoryDoc{MemoryID: id, SessionID: sessionID, Text: text, Keywords: append([]string(nil), tags...)})
+	b.Add(state.MemoryDoc{
+		MemoryID:    id,
+		SessionID:   sessionID,
+		Text:        text,
+		Keywords:    append([]string(nil), tags...),
+		OriginClass: string(MemoryOriginAgent),
+		SessionKind: string(InferMemorySessionKind(sessionID)),
+	})
 	return id
 }
 
@@ -439,26 +451,31 @@ func (b *LanceDBBackend) allDocs() []lancedb.VectorDocument {
 
 func memoryDocMetadata(doc state.MemoryDoc) map[string]any {
 	return map[string]any{
-		"session_id":        doc.SessionID,
-		"role":              doc.Role,
-		"topic":             doc.Topic,
-		"keywords":          append([]string(nil), doc.Keywords...),
-		"unix":              doc.Unix,
-		"type":              doc.Type,
-		"goal_id":           doc.GoalID,
-		"task_id":           doc.TaskID,
-		"run_id":            doc.RunID,
-		"episode_kind":      doc.EpisodeKind,
-		"confidence":        doc.Confidence,
-		"source":            doc.Source,
-		"reviewed_at":       doc.ReviewedAt,
-		"reviewed_by":       doc.ReviewedBy,
-		"expires_at":        doc.ExpiresAt,
-		"mem_status":        doc.MemStatus,
-		"superseded_by":     doc.SupersededBy,
-		"invalidated_at":    doc.InvalidatedAt,
-		"invalidated_by":    doc.InvalidatedBy,
-		"invalidate_reason": doc.InvalidateReason,
+		"session_id":          doc.SessionID,
+		"role":                doc.Role,
+		"topic":               doc.Topic,
+		"keywords":            append([]string(nil), doc.Keywords...),
+		"unix":                doc.Unix,
+		"type":                doc.Type,
+		"goal_id":             doc.GoalID,
+		"task_id":             doc.TaskID,
+		"run_id":              doc.RunID,
+		"episode_kind":        doc.EpisodeKind,
+		"confidence":          doc.Confidence,
+		"source":              doc.Source,
+		"origin_class":        doc.OriginClass,
+		"session_kind":        doc.SessionKind,
+		"external_tool_taint": doc.ExternalToolTaint,
+		"network_taint":       doc.NetworkTaint,
+		"recalled_content":    doc.RecalledContent,
+		"reviewed_at":         doc.ReviewedAt,
+		"reviewed_by":         doc.ReviewedBy,
+		"expires_at":          doc.ExpiresAt,
+		"mem_status":          doc.MemStatus,
+		"superseded_by":       doc.SupersededBy,
+		"invalidated_at":      doc.InvalidatedAt,
+		"invalidated_by":      doc.InvalidatedBy,
+		"invalidate_reason":   doc.InvalidateReason,
 	}
 }
 
@@ -479,6 +496,11 @@ func vectorDocsToIndexed(docs []lancedb.VectorDocument) []IndexedMemory {
 			m.EpisodeKind = stringMeta(md, "episode_kind")
 			m.Confidence = float64Meta(md, "confidence")
 			m.Source = stringMeta(md, "source")
+			m.OriginClass = stringMeta(md, "origin_class")
+			m.SessionKind = stringMeta(md, "session_kind")
+			m.ExternalToolTaint = boolMeta(md, "external_tool_taint")
+			m.NetworkTaint = boolMeta(md, "network_taint")
+			m.RecalledContent = boolMeta(md, "recalled_content")
 			m.ReviewedAt = int64Meta(md, "reviewed_at")
 			m.ReviewedBy = stringMeta(md, "reviewed_by")
 			m.ExpiresAt = int64Meta(md, "expires_at")
@@ -526,6 +548,19 @@ func float64Meta(md map[string]any, key string) float64 {
 	}
 }
 
+func boolMeta(md map[string]any, key string) bool {
+	switch v := md[key].(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	default:
+		return false
+	}
+}
+
 func stringSliceMeta(md map[string]any, key string) []string {
 	switch v := md[key].(type) {
 	case []string:
@@ -556,6 +591,11 @@ type contextSessionSearcher interface {
 }
 
 func AddDoc(ctx context.Context, store Store, doc state.MemoryDoc) {
+	var err error
+	doc, err = NormalizeMemoryDocProvenance(doc)
+	if err != nil {
+		return
+	}
 	addDocDirect(ctx, store, doc)
 	for _, extracted := range extractModelMemoriesForStoredTurn(ctx, doc) {
 		addDocDirect(ctx, store, extracted)

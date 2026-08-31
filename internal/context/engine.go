@@ -268,8 +268,9 @@ func (NoOpCompact) Compact(_ context.Context, _ string) (CompactResult, error) {
 
 // ─── Built-in: windowed engine ────────────────────────────────────────────────
 
-// WindowedEngine is a simple sliding-window context engine that keeps the last
-// N messages without any compaction.
+// WindowedEngine retains full unsummarized history. Token-budgeted Assemble
+// projections and explicit compaction handle pressure without silently losing
+// messages before they can be summarized/checkpointed.
 type WindowedEngine struct {
 	NoOpCompact
 	mu              sync.Mutex
@@ -281,7 +282,8 @@ type WindowedEngine struct {
 	sessionEnd      map[string]func(context.Context, string)
 }
 
-// NewWindowedEngine creates a WindowedEngine keeping up to maxMsgs messages per session.
+// NewWindowedEngine creates a WindowedEngine. maxMsgs is retained as a legacy
+// configuration hint but is never applied to unsummarized history.
 func NewWindowedEngine(maxMsgs int) *WindowedEngine {
 	if maxMsgs <= 0 {
 		maxMsgs = 50
@@ -308,9 +310,8 @@ func (e *WindowedEngine) Ingest(_ context.Context, sessionID string, msg Message
 		}
 	}
 	msgs = append(msgs, msg)
-	if len(msgs) > e.maxMsgs {
-		msgs = msgs[len(msgs)-e.maxMsgs:]
-	}
+	// Do not apply maxMsgs here: count-based truncation would discard history
+	// before the token-pressure compaction path can summarize/checkpoint it.
 	e.sessions[sessionID] = msgs
 	return IngestResult{Ingested: true}, nil
 }
@@ -404,9 +405,8 @@ func (e *WindowedEngine) Bootstrap(ctx context.Context, sessionID string, messag
 	}
 	msgs := make([]Message, len(messages))
 	copy(msgs, messages)
-	if len(msgs) > e.maxMsgs {
-		msgs = msgs[len(msgs)-e.maxMsgs:]
-	}
+	// Bootstrap must preserve the complete imported transcript until explicit
+	// compaction records a summary/checkpoint.
 	e.sessions[sessionID] = msgs
 	delete(e.summaries, sessionID)
 	delete(e.promptCacheLast, sessionID)

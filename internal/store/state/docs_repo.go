@@ -48,6 +48,13 @@ func (r *DocsRepository) GetConfigWithEvent(ctx context.Context) (ConfigDoc, Eve
 }
 
 func (r *DocsRepository) PutSession(ctx context.Context, sessionID string, doc SessionDoc) (Event, error) {
+	if existing, err := r.GetSession(ctx, sessionID); err == nil {
+		if existing.SandboxRequirement != doc.SandboxRequirement {
+			return Event{}, fmt.Errorf("session sandbox requirement is immutable")
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return Event{}, err
+	}
 	tags := [][]string{{"t", "session"}, {"session", protectedTagValue(sessionID)}}
 	if peer := protectedTagValue(doc.PeerPubKey); peer != "" {
 		tags = append(tags, []string{"peer", peer})

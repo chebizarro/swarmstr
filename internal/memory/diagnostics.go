@@ -523,6 +523,7 @@ func memoryRecordSelectSQL(rankExpr string) string {
 		SELECT r.id, r.type, r.scope, r.subject, r.text, r.summary, r.keywords, r.tags,
 		       r.confidence, r.salience, r.source_kind, r.source_ref, r.source_session_id,
 		       r.source_event_id, r.source_file_path, r.source_nostr_event_id,
+		r.origin_class, r.session_kind, r.external_tool_taint, r.network_taint, r.recalled_content,
 		       r.created_at, r.updated_at, r.valid_from, r.valid_until, r.pinned,
 		       r.supersedes, r.superseded_by, r.deleted_at, r.embedding_model,
 		r.embedding_version, r.metadata, ` + rankExpr + ` AS rank`

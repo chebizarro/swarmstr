@@ -300,13 +300,7 @@ func (b *SQLiteBackend) fetchReflectionSources(req MemoryReflectRequest) ([]Memo
 		}
 	}
 	args = append(args, req.Limit)
-	rows, err := b.db.Query(`
-		SELECT r.id, r.type, r.scope, r.subject, r.text, r.summary, r.keywords, r.tags,
-		r.confidence, r.salience, r.source_kind, r.source_ref, r.source_session_id,
-		r.source_event_id, r.source_file_path, r.source_nostr_event_id,
-		r.created_at, r.updated_at, r.valid_from, r.valid_until, r.pinned,
-		r.supersedes, r.superseded_by, r.deleted_at, r.embedding_model,
-		r.embedding_version, r.metadata, 0.0 AS rank
+	rows, err := b.db.Query(memoryRecordSelectSQL("0.0")+`
 		FROM memory_records r
 		WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY r.updated_at DESC
@@ -331,6 +325,9 @@ func (b *SQLiteBackend) deriveReflectionCandidates(sources []MemoryRecord, req M
 	toolFailures := map[string][]MemoryRecord{}
 
 	for _, rec := range sources {
+		if !IsMemoryPromotionEligible(rec) {
+			continue
+		}
 		text := strings.TrimSpace(firstNonEmpty(rec.Text, rec.Summary))
 		if text == "" {
 			continue
@@ -652,19 +649,21 @@ func (b *SQLiteBackend) updateReflectionCandidateStatus(candidate ReflectionCand
 func (b *SQLiteBackend) applyReflectionPromote(ctx context.Context, candidate ReflectionCandidate, status string, action string, durableRoot string, supersede bool) (MemoryApplyReflectionResult, error) {
 	now := time.Now().UTC()
 	rec := MemoryRecord{
-		ID:         NewMemoryRecordID(),
-		Type:       candidate.Type,
-		Scope:      candidate.Scope,
-		Subject:    candidate.Subject,
-		Text:       candidate.Text,
-		Summary:    candidate.Summary,
-		Tags:       appendUniqueStrings(candidate.Tags, "reflection-approved"),
-		Confidence: candidate.Confidence,
-		Salience:   candidate.Salience,
-		Source:     MemorySource{Kind: "reflection", Ref: candidate.ID, SessionID: candidate.SourceSessionID},
-		CreatedAt:  now,
-		UpdatedAt:  now,
-		Pinned:     candidate.Pinned,
+		ID:          NewMemoryRecordID(),
+		Type:        candidate.Type,
+		Scope:       candidate.Scope,
+		Subject:     candidate.Subject,
+		Text:        candidate.Text,
+		Summary:     candidate.Summary,
+		Tags:        appendUniqueStrings(candidate.Tags, "reflection-approved"),
+		Confidence:  candidate.Confidence,
+		Salience:    candidate.Salience,
+		Source:      MemorySource{Kind: "reflection", Ref: candidate.ID, SessionID: candidate.SourceSessionID},
+		OriginClass: MemoryOriginAgent,
+		SessionKind: MemorySessionInteractive,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Pinned:      candidate.Pinned,
 		Metadata: map[string]any{
 			"durable":                 candidate.Durable,
 			"reflection_candidate_id": candidate.ID,
@@ -722,6 +721,9 @@ func (b *SQLiteBackend) applyReflectionMerge(ctx context.Context, candidate Refl
 	}
 	if !ok {
 		return MemoryApplyReflectionResult{}, fmt.Errorf("memory_apply_reflection: merge target %q not found", candidate.TargetIDs[0])
+	}
+	if !IsMemoryPromotionEligible(target) {
+		return MemoryApplyReflectionResult{}, fmt.Errorf("memory_apply_reflection: merge target %q provenance is not promotion eligible", target.ID)
 	}
 	if !strings.Contains(strings.ToLower(target.Text), strings.ToLower(candidate.Text)) && normalizedTextHash(target.Text) != normalizedTextHash(candidate.Text) {
 		target.Text = strings.TrimSpace(target.Text) + "\n\nReflection note: " + strings.TrimSpace(candidate.Text)

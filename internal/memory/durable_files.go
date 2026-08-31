@@ -15,20 +15,25 @@ import (
 var durableMemoryDirs = []string{"user", "project", "reference", "decisions", "feedback", "tool-lessons"}
 
 type durableMemoryFrontmatter struct {
-	ID          string   `yaml:"id"`
-	Type        string   `yaml:"type"`
-	Scope       string   `yaml:"scope"`
-	Subject     string   `yaml:"subject"`
-	Summary     string   `yaml:"summary,omitempty"`
-	Confidence  float64  `yaml:"confidence"`
-	Salience    float64  `yaml:"salience,omitempty"`
-	CreatedAt   string   `yaml:"created_at"`
-	UpdatedAt   string   `yaml:"updated_at"`
-	Supersedes  []string `yaml:"supersedes"`
-	Tags        []string `yaml:"tags"`
-	Pinned      bool     `yaml:"pinned,omitempty"`
-	Name        string   `yaml:"name,omitempty"`
-	Description string   `yaml:"description,omitempty"`
+	ID                string   `yaml:"id"`
+	Type              string   `yaml:"type"`
+	Scope             string   `yaml:"scope"`
+	Subject           string   `yaml:"subject"`
+	Summary           string   `yaml:"summary,omitempty"`
+	Confidence        float64  `yaml:"confidence"`
+	Salience          float64  `yaml:"salience,omitempty"`
+	CreatedAt         string   `yaml:"created_at"`
+	UpdatedAt         string   `yaml:"updated_at"`
+	Supersedes        []string `yaml:"supersedes"`
+	Tags              []string `yaml:"tags"`
+	Pinned            bool     `yaml:"pinned,omitempty"`
+	OriginClass       string   `yaml:"origin_class,omitempty"`
+	SessionKind       string   `yaml:"session_kind,omitempty"`
+	ExternalToolTaint bool     `yaml:"external_tool_taint,omitempty"`
+	NetworkTaint      bool     `yaml:"network_taint,omitempty"`
+	RecalledContent   bool     `yaml:"recalled_content,omitempty"`
+	Name              string   `yaml:"name,omitempty"`
+	Description       string   `yaml:"description,omitempty"`
 }
 
 func WriteDurableMemoryFile(rootDir string, rec MemoryRecord) (string, error) {
@@ -39,6 +44,9 @@ func WriteDurableMemoryFile(rootDir string, rec MemoryRecord) (string, error) {
 	rec, err := NormalizeMemoryRecord(rec)
 	if err != nil {
 		return "", err
+	}
+	if !IsMemoryPromotionEligible(rec) {
+		return "", fmt.Errorf("memory record %q provenance is not durable-promotion eligible", rec.ID)
 	}
 	category := durableCategory(rec.Type)
 	dir := filepath.Join(rootDir, category)
@@ -58,20 +66,25 @@ func WriteDurableMemoryFile(rootDir string, rec MemoryRecord) (string, error) {
 	}
 	path := filepath.Join(dir, fileName+".md")
 	fm := durableMemoryFrontmatter{
-		ID:          rec.ID,
-		Type:        rec.Type,
-		Scope:       rec.Scope,
-		Subject:     rec.Subject,
-		Summary:     rec.Summary,
-		Confidence:  rec.Confidence,
-		Salience:    rec.Salience,
-		CreatedAt:   rec.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:   rec.UpdatedAt.UTC().Format(time.RFC3339),
-		Supersedes:  append([]string(nil), rec.Supersedes...),
-		Tags:        append([]string(nil), rec.Tags...),
-		Pinned:      rec.Pinned,
-		Name:        rec.Subject,
-		Description: rec.Summary,
+		ID:                rec.ID,
+		Type:              rec.Type,
+		Scope:             rec.Scope,
+		Subject:           rec.Subject,
+		Summary:           rec.Summary,
+		Confidence:        rec.Confidence,
+		Salience:          rec.Salience,
+		CreatedAt:         rec.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:         rec.UpdatedAt.UTC().Format(time.RFC3339),
+		Supersedes:        append([]string(nil), rec.Supersedes...),
+		Tags:              append([]string(nil), rec.Tags...),
+		Pinned:            rec.Pinned,
+		OriginClass:       string(rec.OriginClass),
+		SessionKind:       string(rec.SessionKind),
+		ExternalToolTaint: rec.Taint.ExternalTool,
+		NetworkTaint:      rec.Taint.Network,
+		RecalledContent:   rec.RecalledContent,
+		Name:              rec.Subject,
+		Description:       rec.Summary,
 	}
 	front, err := yaml.Marshal(fm)
 	if err != nil {
@@ -124,23 +137,27 @@ func ParseDurableMemoryFile(path string) (MemoryRecord, bool, error) {
 		updated = created
 	}
 	rec := MemoryRecord{
-		ID:         fm.ID,
-		Type:       fm.Type,
-		Scope:      fm.Scope,
-		Subject:    firstNonEmpty(fm.Subject, fm.Name),
-		Text:       text,
-		Summary:    firstNonEmpty(fm.Summary, fm.Description),
-		Keywords:   extractKeywords(text),
-		Tags:       fm.Tags,
-		Confidence: fm.Confidence,
-		Salience:   fm.Salience,
-		Source:     MemorySource{Kind: MemorySourceKindFile, FilePath: path, Ref: filepath.ToSlash(path)},
-		CreatedAt:  created,
-		UpdatedAt:  updated,
-		ValidFrom:  created,
-		Pinned:     fm.Pinned,
-		Supersedes: fm.Supersedes,
-		Metadata:   map[string]any{"file_path": path},
+		ID:              fm.ID,
+		Type:            fm.Type,
+		Scope:           fm.Scope,
+		Subject:         firstNonEmpty(fm.Subject, fm.Name),
+		Text:            text,
+		Summary:         firstNonEmpty(fm.Summary, fm.Description),
+		Keywords:        extractKeywords(text),
+		Tags:            fm.Tags,
+		Confidence:      fm.Confidence,
+		Salience:        fm.Salience,
+		Source:          MemorySource{Kind: MemorySourceKindFile, FilePath: path, Ref: filepath.ToSlash(path)},
+		OriginClass:     MemoryOriginClass(fm.OriginClass),
+		SessionKind:     MemorySessionKind(fm.SessionKind),
+		Taint:           MemoryTaint{ExternalTool: fm.ExternalToolTaint, Network: fm.NetworkTaint},
+		RecalledContent: fm.RecalledContent,
+		CreatedAt:       created,
+		UpdatedAt:       updated,
+		ValidFrom:       created,
+		Pinned:          fm.Pinned,
+		Supersedes:      fm.Supersedes,
+		Metadata:        map[string]any{"file_path": path},
 	}
 	if rec.Confidence == 0 {
 		rec.Confidence = 0.85
@@ -150,6 +167,14 @@ func ParseDurableMemoryFile(path string) (MemoryRecord, bool, error) {
 	}
 	if rec.Scope == "" {
 		rec.Scope = MemoryRecordScopeProject
+	}
+	// The durable workspace file boundary is trusted; legacy files predate the
+	// provenance frontmatter but are still owner-authored inputs.
+	if rec.OriginClass == "" {
+		rec.OriginClass = MemoryOriginOwner
+	}
+	if rec.SessionKind == "" {
+		rec.SessionKind = MemorySessionInteractive
 	}
 	rec, err = NormalizeMemoryRecord(rec)
 	return rec, err == nil, err

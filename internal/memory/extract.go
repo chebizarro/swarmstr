@@ -21,6 +21,24 @@ var stopwords = map[string]struct{}{
 const minTurnLen = 20
 
 func ExtractFromTurn(sessionID, role, sourceRef, text string, unix int64) []state.MemoryDoc {
+	return ExtractFromTurnWithProvenance(sessionID, role, sourceRef, text, unix, TurnProvenance{
+		OriginClass: MemoryOriginUntrusted,
+		SessionKind: MemorySessionInteractive,
+	})
+}
+
+// ExtractFromTurnWithProvenance classifies the source before any text reaches
+// storage. Callers must never infer trust from model-authored text or metadata.
+func ExtractFromTurnWithProvenance(sessionID, role, sourceRef, text string, unix int64, provenance TurnProvenance) []state.MemoryDoc {
+	if provenance.RecalledContent {
+		return nil
+	}
+	if !IsMemoryOriginClassValid(provenance.OriginClass) || !IsMemorySessionKindValid(provenance.SessionKind) {
+		return nil
+	}
+	if provenance.Taint.ExternalTool || provenance.Taint.Network {
+		provenance.OriginClass = MemoryOriginUntrusted
+	}
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return nil
@@ -54,18 +72,23 @@ func ExtractFromTurn(sessionID, role, sourceRef, text string, unix int64) []stat
 
 	memoryID := fmt.Sprintf("%s:%s:%d", sessionID, sourceRef, unix)
 	return []state.MemoryDoc{{
-		Version:    1,
-		MemoryID:   memoryID,
-		Type:       NormalizeMemoryRecordType(decision.ProposedType),
-		SessionID:  sessionID,
-		Role:       role,
-		SourceRef:  sourceRef,
-		Text:       candidate,
-		Keywords:   keywords,
-		Topic:      topic,
-		Unix:       unix,
-		Confidence: 0.6,
-		Source:     MemorySourceKindTurn,
+		Version:           1,
+		MemoryID:          memoryID,
+		Type:              NormalizeMemoryRecordType(decision.ProposedType),
+		SessionID:         sessionID,
+		Role:              role,
+		SourceRef:         sourceRef,
+		Text:              candidate,
+		Keywords:          keywords,
+		Topic:             topic,
+		Unix:              unix,
+		Confidence:        0.6,
+		Source:            MemorySourceKindTurn,
+		OriginClass:       string(provenance.OriginClass),
+		SessionKind:       string(provenance.SessionKind),
+		ExternalToolTaint: provenance.Taint.ExternalTool,
+		NetworkTaint:      provenance.Taint.Network,
+		RecalledContent:   provenance.RecalledContent,
 		Meta: map[string]any{
 			"salience":        decision.Score,
 			"salience_reason": decision.Reason,

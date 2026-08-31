@@ -279,6 +279,11 @@ func (b *SQLiteBackend) initSchema() error {
 		invalidated_at INTEGER,
 		invalidated_by TEXT,
 		invalidate_reason TEXT,
+		origin_class TEXT NOT NULL DEFAULT 'untrusted',
+		session_kind TEXT NOT NULL DEFAULT 'interactive',
+		external_tool_taint INTEGER NOT NULL DEFAULT 0,
+		network_taint INTEGER NOT NULL DEFAULT 0,
+		recalled_content INTEGER NOT NULL DEFAULT 0,
 		embedding TEXT,
 		hash TEXT,
 		model TEXT,
@@ -358,14 +363,44 @@ func (b *SQLiteBackend) initSchema() error {
 	if err != nil {
 		return fmt.Errorf("exec schema: %w", err)
 	}
+	if err := ensureChunkProvenanceColumns(b.db); err != nil {
+		return fmt.Errorf("ensure chunk provenance: %w", err)
+	}
 
 	// Update schema version
 	_, err = b.db.Exec(`INSERT OR REPLACE INTO schema_version (version) VALUES (?)`, sqliteSchemaVersion)
 	return err
 }
 
+func ensureChunkProvenanceColumns(db *sql.DB) error {
+	columns, err := sqliteTableColumns(db, "chunks")
+	if err != nil {
+		return err
+	}
+	alter := map[string]string{
+		"origin_class":        `ALTER TABLE chunks ADD COLUMN origin_class TEXT NOT NULL DEFAULT 'untrusted'`,
+		"session_kind":        `ALTER TABLE chunks ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'interactive'`,
+		"external_tool_taint": `ALTER TABLE chunks ADD COLUMN external_tool_taint INTEGER NOT NULL DEFAULT 0`,
+		"network_taint":       `ALTER TABLE chunks ADD COLUMN network_taint INTEGER NOT NULL DEFAULT 0`,
+		"recalled_content":    `ALTER TABLE chunks ADD COLUMN recalled_content INTEGER NOT NULL DEFAULT 0`,
+	}
+	for column, stmt := range alter {
+		if !columns[column] {
+			if _, err := db.Exec(stmt); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Add indexes a new memory document.
 func (b *SQLiteBackend) Add(doc state.MemoryDoc) {
+	var err error
+	doc, err = NormalizeMemoryDocProvenance(doc)
+	if err != nil {
+		return
+	}
 	_ = b.ensureUnifiedSchema()
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -390,19 +425,33 @@ func (b *SQLiteBackend) Add(doc state.MemoryDoc) {
 		doc.Unix = now
 	}
 
-	_, err := b.db.Exec(`
+	var existingOrigin, existingSession string
+	var existingExternal, existingNetwork, existingRecalled int
+	existingErr := b.db.QueryRow(`SELECT origin_class, session_kind, external_tool_taint, network_taint, recalled_content FROM chunks WHERE id = ?`, doc.MemoryID).
+		Scan(&existingOrigin, &existingSession, &existingExternal, &existingNetwork, &existingRecalled)
+	if existingErr != nil && existingErr != sql.ErrNoRows {
+		return
+	}
+	if existingErr == nil && (existingOrigin != doc.OriginClass || existingSession != doc.SessionKind ||
+		existingExternal != boolInt(doc.ExternalToolTaint) || existingNetwork != boolInt(doc.NetworkTaint) || existingRecalled != boolInt(doc.RecalledContent)) {
+		return
+	}
+
+	_, err = b.db.Exec(`
 		INSERT OR REPLACE INTO chunks (
 			id, session_id, role, topic, text, keywords, unix,
 			type, goal_id, task_id, run_id, episode_kind,
 			confidence, source, reviewed_at, reviewed_by, expires_at,
 			mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+			origin_class, session_kind, external_tool_taint, network_taint, recalled_content,
 			hash, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		doc.MemoryID, doc.SessionID, doc.Role, doc.Topic, doc.Text, keywords, doc.Unix,
 		doc.Type, doc.GoalID, doc.TaskID, doc.RunID, doc.EpisodeKind,
 		doc.Confidence, doc.Source, doc.ReviewedAt, doc.ReviewedBy, doc.ExpiresAt,
 		doc.MemStatus, doc.SupersededBy, doc.InvalidatedAt, doc.InvalidatedBy, doc.InvalidateReason,
+		doc.OriginClass, doc.SessionKind, boolInt(doc.ExternalToolTaint), boolInt(doc.NetworkTaint), boolInt(doc.RecalledContent),
 		hash, now,
 	)
 	if err != nil {
@@ -548,6 +597,7 @@ func (b *SQLiteBackend) searchFTS(ctx context.Context, ftsQuery, sessionID strin
 			       c.type, c.goal_id, c.task_id, c.run_id, c.episode_kind,
 			       c.confidence, c.source, c.reviewed_at, c.reviewed_by, c.expires_at,
 			       c.mem_status, c.superseded_by, c.invalidated_at, c.invalidated_by, c.invalidate_reason,
+			       c.origin_class, c.session_kind, c.external_tool_taint, c.network_taint, c.recalled_content,
 			       bm25(chunks_fts) AS rank
 			FROM chunks_fts fts
 			JOIN chunks c ON c.id = fts.id
@@ -561,6 +611,7 @@ func (b *SQLiteBackend) searchFTS(ctx context.Context, ftsQuery, sessionID strin
 			       c.type, c.goal_id, c.task_id, c.run_id, c.episode_kind,
 			       c.confidence, c.source, c.reviewed_at, c.reviewed_by, c.expires_at,
 			       c.mem_status, c.superseded_by, c.invalidated_at, c.invalidated_by, c.invalidate_reason,
+			       c.origin_class, c.session_kind, c.external_tool_taint, c.network_taint, c.recalled_content,
 			       bm25(chunks_fts) AS rank
 			FROM chunks_fts fts
 			JOIN chunks c ON c.id = fts.id
@@ -591,7 +642,8 @@ func (b *SQLiteBackend) ListSession(sessionID string, limit int) []IndexedMemory
 		SELECT id, session_id, role, topic, text, keywords, unix,
 		       type, goal_id, task_id, run_id, episode_kind,
 		       confidence, source, reviewed_at, reviewed_by, expires_at,
-		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason
+		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+		       origin_class, session_kind, external_tool_taint, network_taint, recalled_content
 		FROM chunks
 		WHERE session_id = ?
 		ORDER BY unix DESC
@@ -615,7 +667,8 @@ func (b *SQLiteBackend) ListByTopic(topic string, limit int) []IndexedMemory {
 		SELECT id, session_id, role, topic, text, keywords, unix,
 		       type, goal_id, task_id, run_id, episode_kind,
 		       confidence, source, reviewed_at, reviewed_by, expires_at,
-		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason
+		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+		       origin_class, session_kind, external_tool_taint, network_taint, recalled_content
 		FROM chunks
 		WHERE topic = ?
 		ORDER BY unix DESC
@@ -639,7 +692,8 @@ func (b *SQLiteBackend) ListByType(memType string, limit int) []IndexedMemory {
 		SELECT id, session_id, role, topic, text, keywords, unix,
 		       type, goal_id, task_id, run_id, episode_kind,
 		       confidence, source, reviewed_at, reviewed_by, expires_at,
-		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason
+		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+		       origin_class, session_kind, external_tool_taint, network_taint, recalled_content
 		FROM chunks
 		WHERE type = ?
 		ORDER BY unix DESC
@@ -663,7 +717,8 @@ func (b *SQLiteBackend) ListByTaskID(taskID string, limit int) []IndexedMemory {
 		SELECT id, session_id, role, topic, text, keywords, unix,
 		       type, goal_id, task_id, run_id, episode_kind,
 		       confidence, source, reviewed_at, reviewed_by, expires_at,
-		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason
+		       mem_status, superseded_by, invalidated_at, invalidated_by, invalidate_reason,
+		       origin_class, session_kind, external_tool_taint, network_taint, recalled_content
 		FROM chunks
 		WHERE task_id = ?
 		ORDER BY unix DESC
@@ -727,11 +782,13 @@ func (b *SQLiteBackend) Compact(maxEntries int) int {
 func (b *SQLiteBackend) Store(sessionID, text string, tags []string) string {
 	id := GenerateMemoryID()
 	b.Add(state.MemoryDoc{
-		MemoryID:  id,
-		SessionID: sessionID,
-		Text:      text,
-		Keywords:  append([]string(nil), tags...),
-		Unix:      time.Now().Unix(),
+		MemoryID:    id,
+		SessionID:   sessionID,
+		Text:        text,
+		Keywords:    append([]string(nil), tags...),
+		Unix:        time.Now().Unix(),
+		OriginClass: string(MemoryOriginAgent),
+		SessionKind: string(InferMemorySessionKind(sessionID)),
 	})
 	return id
 }
@@ -841,6 +898,7 @@ func (b *SQLiteBackend) scanRows(rows *sql.Rows) ([]IndexedMemory, error) {
 			&m.Type, &m.GoalID, &m.TaskID, &m.RunID, &m.EpisodeKind,
 			&m.Confidence, &m.Source, &m.ReviewedAt, &m.ReviewedBy, &m.ExpiresAt,
 			&m.MemStatus, &m.SupersededBy, &m.InvalidatedAt, &m.InvalidatedBy, &m.InvalidateReason,
+			&m.OriginClass, &m.SessionKind, &m.ExternalToolTaint, &m.NetworkTaint, &m.RecalledContent,
 			&rank,
 		)
 		if err != nil {
@@ -871,6 +929,7 @@ func (b *SQLiteBackend) scanRowsNoRank(rows *sql.Rows) []IndexedMemory {
 			&m.Type, &m.GoalID, &m.TaskID, &m.RunID, &m.EpisodeKind,
 			&m.Confidence, &m.Source, &m.ReviewedAt, &m.ReviewedBy, &m.ExpiresAt,
 			&m.MemStatus, &m.SupersededBy, &m.InvalidatedAt, &m.InvalidatedBy, &m.InvalidateReason,
+			&m.OriginClass, &m.SessionKind, &m.ExternalToolTaint, &m.NetworkTaint, &m.RecalledContent,
 		)
 		if err != nil {
 			continue

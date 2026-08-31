@@ -25,11 +25,13 @@ func createTestSQLiteBackend(t *testing.T) (*SQLiteBackend, string) {
 
 func addTestMemory(backend *SQLiteBackend, id, text, topic string) {
 	backend.Add(memoryDocFromIndexed(IndexedMemory{
-		MemoryID:   id,
-		Text:       text,
-		Topic:      topic,
-		Unix:       time.Now().Unix(),
-		Confidence: 0.8,
+		MemoryID:    id,
+		Text:        text,
+		Topic:       topic,
+		Unix:        time.Now().Unix(),
+		Confidence:  0.8,
+		OriginClass: string(MemoryOriginAgent),
+		SessionKind: string(MemorySessionInteractive),
 	}))
 }
 
@@ -622,8 +624,8 @@ func TestHashQuery(t *testing.T) {
 		same   bool
 	}{
 		{"test query", "test query", true},
-		{"TEST QUERY", "test query", true},      // Case insensitive
-		{"  test query  ", "test query", true},  // Whitespace trimmed
+		{"TEST QUERY", "test query", true},     // Case insensitive
+		{"  test query  ", "test query", true}, // Whitespace trimmed
 		{"test query", "different query", false},
 	}
 

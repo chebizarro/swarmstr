@@ -149,7 +149,7 @@ func productionModelMemoryExtractor() ModelMemoryExtractor {
 }
 
 func extractModelMemoriesForStoredTurn(ctx context.Context, doc state.MemoryDoc) []state.MemoryDoc {
-	if doc.Source != MemorySourceKindTurn || strings.TrimSpace(doc.Text) == "" {
+	if doc.Source != MemorySourceKindTurn || strings.TrimSpace(doc.Text) == "" || doc.RecalledContent {
 		return nil
 	}
 	extractor := productionModelMemoryExtractor()
@@ -167,6 +167,13 @@ func extractModelMemoriesForStoredTurn(ctx context.Context, doc state.MemoryDoc)
 	if result.UsedFallback {
 		// The original heuristic document has already been persisted by AddDoc.
 		return nil
+	}
+	for i := range result.Documents {
+		result.Documents[i].OriginClass = doc.OriginClass
+		result.Documents[i].SessionKind = doc.SessionKind
+		result.Documents[i].ExternalToolTaint = doc.ExternalToolTaint
+		result.Documents[i].NetworkTaint = doc.NetworkTaint
+		result.Documents[i].RecalledContent = doc.RecalledContent
 	}
 	return result.Documents
 }

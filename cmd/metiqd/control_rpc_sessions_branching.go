@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"metiq/internal/sandbox"
 	"metiq/internal/store/state"
 )
 
@@ -298,7 +300,20 @@ func createHistorySession(ctx context.Context, docs *state.DocsRepository, trans
 		return "", state.SessionEntry{}, err
 	}
 	stored, _ := sessions.Get(newKey)
-	doc := state.SessionDoc{Version: 1, SessionID: newSessionID, LastInboundAt: time.Now().Unix(), Meta: map[string]any{"parent_session_key": sourceKey, "history_reason": reason, "history_source_ref": sourceRef}}
+	sourceDoc, sourceErr := docs.GetSession(ctx, source.SessionID)
+	if sourceErr != nil && !errors.Is(sourceErr, state.ErrNotFound) {
+		_ = sessions.Delete(newKey)
+		return "", state.SessionEntry{}, sourceErr
+	}
+	requirement := sourceDoc.SandboxRequirement
+	if requirement.IsZero() {
+		requirement, sourceErr = sandbox.NewSessionRequirement("system", sandbox.CreatorSandboxInherit, "")
+		if sourceErr != nil {
+			_ = sessions.Delete(newKey)
+			return "", state.SessionEntry{}, sourceErr
+		}
+	}
+	doc := state.SessionDoc{Version: 1, SessionID: newSessionID, LastInboundAt: time.Now().Unix(), SandboxRequirement: requirement, Meta: map[string]any{"parent_session_key": sourceKey, "history_reason": reason, "history_source_ref": sourceRef}}
 	if _, err := docs.PutSession(ctx, newSessionID, doc); err != nil {
 		_ = sessions.Delete(newKey)
 		return "", state.SessionEntry{}, err

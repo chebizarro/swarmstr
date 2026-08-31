@@ -9,6 +9,8 @@ import (
 
 // SandboxRunRequest is the request payload for sandbox.run.
 type SandboxRunRequest struct {
+	// SessionID binds execution to the session's immutable creator requirement.
+	SessionID string `json:"session_id,omitempty"`
 	// Cmd is the command and arguments to execute.
 	Cmd []string `json:"cmd"`
 	// Env is a list of "KEY=VALUE" environment overrides.

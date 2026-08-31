@@ -91,6 +91,24 @@ func execApprovalPendingSummary(rec execApprovalPendingRecord) map[string]any {
 	if rec.ApprovalMode != "" {
 		out["approval_mode"] = rec.ApprovalMode
 	}
+	if rec.PolicyFingerprint != "" {
+		out["policy_fingerprint"] = rec.PolicyFingerprint
+	}
+	if binding := rec.ExecutionBinding; binding != nil {
+		out["context_fingerprint"] = binding.Fingerprint
+		out["canonical_cwd"] = binding.CanonicalCWD
+		out["exact_argv"] = append([]string(nil), binding.Argv...)
+		out["sanitized_env_sha256"] = binding.SanitizedEnvSHA256
+		out["executable_path"] = binding.Executable.CanonicalPath
+		out["executable_sha256"] = binding.Executable.SHA256
+		if binding.CommandExecutable != nil {
+			out["command_executable_path"] = binding.CommandExecutable.CanonicalPath
+			out["command_executable_sha256"] = binding.CommandExecutable.SHA256
+		}
+		if binding.ScriptOperand != nil {
+			out["script_operand"] = map[string]any{"argv_index": binding.ScriptOperand.ArgvIndex, "path": binding.ScriptOperand.File.CanonicalPath, "sha256": binding.ScriptOperand.File.SHA256}
+		}
+	}
 	return out
 }
 

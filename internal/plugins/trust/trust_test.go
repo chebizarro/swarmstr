@@ -1,34 +1,46 @@
 package trust
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestFromSource(t *testing.T) {
-	tests := map[string]Level{
-		"path":        LevelTrusted,
-		"local-dev":   LevelTrusted,
-		"development": LevelTrusted,
-		"npm":         LevelUntrusted,
-		"git":         LevelUntrusted,
-		"url":         LevelUntrusted,
-		"registry":    LevelUntrusted,
-		"marketplace": LevelUntrusted,
-		"":            LevelUntrusted,
+func TestMutableMetadataNeverGrantsTrust(t *testing.T) {
+	for _, source := range []string{"path", "local-dev", "development", "npm", "registry", ""} {
+		if got := FromSource(source); got != LevelUntrusted {
+			t.Fatalf("FromSource(%q)=%q want untrusted", source, got)
+		}
 	}
-	for source, want := range tests {
-		if got := FromSource(source); got != want {
-			t.Fatalf("FromSource(%q)=%q want %q", source, got, want)
+	for _, record := range []map[string]any{
+		{"source": "path"},
+		{"type": "local"},
+		{"source": "npm", "trust": "trusted"},
+	} {
+		if got := FromInstallRecord(record); got != LevelUntrusted {
+			t.Fatalf("FromInstallRecord(%v)=%q want untrusted", record, got)
 		}
 	}
 }
 
-func TestFromInstallRecord(t *testing.T) {
-	if got := FromInstallRecord(map[string]any{"source": "path"}); got != LevelTrusted {
-		t.Fatalf("path record trust=%q", got)
+func TestFromIdentityRequiresExactOperatorPolicyMatch(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	identity := NewSourceIdentity("SHA256", strings.ToUpper(digest))
+	if got := FromIdentity(identity, Policy{}); got != LevelUntrusted {
+		t.Fatalf("identity without policy=%q", got)
 	}
-	if got := FromInstallRecord(map[string]any{"type": "marketplace"}); got != LevelUntrusted {
-		t.Fatalf("marketplace record trust=%q", got)
+	policy := Policy{TrustedSourceIdentities: []string{"sha256:" + digest}}
+	if got := FromIdentity(identity, policy); got != LevelTrusted {
+		t.Fatalf("operator-approved identity=%q", got)
 	}
-	if got := FromInstallRecord(map[string]any{"source": "npm", "trust": "trusted"}); got != LevelTrusted {
-		t.Fatalf("explicit trust override=%q", got)
+	changed := NewSourceIdentity("sha256", strings.Repeat("b", 64))
+	if got := FromIdentity(changed, policy); got != LevelUntrusted {
+		t.Fatalf("changed source snapshot=%q", got)
+	}
+}
+
+func TestFromIdentityRejectsMalformedIdentity(t *testing.T) {
+	policy := Policy{TrustedSourceIdentities: []string{"sha256:not-a-digest"}}
+	if got := FromIdentity(NewSourceIdentity("sha256", "not-a-digest"), policy); got != LevelUntrusted {
+		t.Fatalf("malformed identity=%q", got)
 	}
 }

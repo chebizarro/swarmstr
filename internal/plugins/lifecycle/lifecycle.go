@@ -144,7 +144,8 @@ type InstallSource struct {
 	// Checksum is the archive checksum (for archive installs).
 	Checksum string `json:"checksum,omitempty"`
 
-	// Trust optionally overrides the default trust classification.
+	// Trust is retained for state compatibility but is never used as a trust
+	// grant. Runtime trust comes from immutable source identity + operator policy.
 	Trust trust.Level `json:"trust,omitempty"`
 }
 
@@ -455,10 +456,9 @@ func (m *Manager) Install(ctx context.Context, mf manifest.Manifest, installPath
 	}
 
 	now := time.Now()
-	pluginTrust := opts.Source.Trust
-	if pluginTrust == "" {
-		pluginTrust = trust.FromSource(opts.Source.Type)
-	}
+	// Install requests and source labels are plugin-controlled metadata, not a
+	// trust grant. Runtime policy may approve the installed source snapshot later.
+	pluginTrust := trust.LevelUntrusted
 	plugin := &InstalledPlugin{
 		PluginID:     mf.ID,
 		Scope:        opts.Scope,
@@ -1142,9 +1142,7 @@ func (m *Manager) loadPluginsFromConfigLifecycleLocked(rawLifecycle map[string]a
 		if cp.State == "" {
 			cp.State = StateInstalled
 		}
-		if cp.Trust == "" {
-			cp.Trust = trust.FromSource(cp.Source.Type)
-		}
+		cp.Trust = trust.LevelUntrusted
 		cp.Manifest.Trust = cp.Trust.String()
 		m.putPluginLocked(cp)
 	}
@@ -1224,10 +1222,7 @@ func legacyConfigPlugin(pluginID string, record, entry map[string]any) *Installe
 	if p.Source.Version == "" {
 		p.Source.Version = version
 	}
-	p.Trust = p.Source.Trust
-	if p.Trust == "" {
-		p.Trust = trust.FromSource(p.Source.Type)
-	}
+	p.Trust = trust.LevelUntrusted
 	p.Manifest.Trust = p.Trust.String()
 	if state == StateEnabled {
 		p.EnabledAt = &now
@@ -1274,9 +1269,6 @@ func installRecordFromPlugin(p *InstalledPlugin) map[string]any {
 		record["version"] = p.Source.Version
 	} else if p.Manifest.Version != "" {
 		record["version"] = p.Manifest.Version
-	}
-	if p.Trust != "" {
-		record["trust"] = p.Trust.String()
 	}
 	return record
 }
@@ -1335,9 +1327,7 @@ func (m *Manager) loadPluginsFromDir(dir string, scope Scope) error {
 		}
 		cp := cloneInstalledPlugin(p)
 		cp.Scope = scope
-		if cp.Trust == "" {
-			cp.Trust = trust.FromSource(cp.Source.Type)
-		}
+		cp.Trust = trust.LevelUntrusted
 		cp.Manifest.Trust = cp.Trust.String()
 		m.putPluginLocked(cp)
 	}

@@ -271,6 +271,13 @@ type dmRelayAttempt struct {
 	emitClosed func(dmRelayClose)
 }
 
+func TestStartDMBusRequiresExplicitLegacyCompatibility(t *testing.T) {
+	_, err := StartDMBus(context.Background(), DMBusOptions{})
+	if !errors.Is(err, ErrLegacyNIP04Disabled) {
+		t.Fatalf("StartDMBus error = %v, want ErrLegacyNIP04Disabled", err)
+	}
+}
+
 func TestStartDMBusRejectsMismatchedHubPubKey(t *testing.T) {
 	hubKey := newNIP04KeyerAdapter(mustSecretKey(t, "1111111111111111111111111111111111111111111111111111111111111111"))
 	hub, err := NewHub(context.Background(), hubKey, nil)
@@ -280,9 +287,10 @@ func TestStartDMBusRejectsMismatchedHubPubKey(t *testing.T) {
 	defer hub.Close()
 
 	_, err = StartDMBus(context.Background(), DMBusOptions{
-		PrivateKey: "2222222222222222222222222222222222222222222222222222222222222222",
-		Relays:     []string{"wss://relay.example"},
-		Hub:        hub,
+		LegacyCompatibility: true,
+		PrivateKey:          "2222222222222222222222222222222222222222222222222222222222222222",
+		Relays:              []string{"wss://relay.example"},
+		Hub:                 hub,
 	})
 	if err == nil || err.Error() != "dm bus: hub pubkey does not match bus pubkey" {
 		t.Fatalf("expected hub mismatch error, got %v", err)

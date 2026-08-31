@@ -62,7 +62,15 @@ func TestStartDreamingJob_WritesDiaryAndStops(t *testing.T) {
 
 	// Seed one promotable memory via the exported recall tracker.
 	now := time.Now().Unix()
-	be.Add(state.MemoryDoc{MemoryID: "m1", Text: "consolidate me", Topic: "alpha", Unix: now, Confidence: 0.9})
+	be.Add(state.MemoryDoc{
+		MemoryID:    "m1",
+		Text:        "consolidate me",
+		Topic:       "alpha",
+		Unix:        now,
+		Confidence:  0.9,
+		OriginClass: string(memory.MemoryOriginAgent),
+		SessionKind: string(memory.MemorySessionInteractive),
+	})
 	mgr := memory.NewPromotionManager(be, memory.DefaultPromotionConfig())
 	tr := mgr.Tracker()
 	tr.TrackRecall("m1", "query one", 0.9)

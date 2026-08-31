@@ -55,6 +55,113 @@ type SandboxRunner interface {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
+// CreatorSandboxPolicy is the operator-owned sandbox policy attached to the
+// role that creates a session.
+type CreatorSandboxPolicy string
+
+const (
+	CreatorSandboxInherit  CreatorSandboxPolicy = "inherit"
+	CreatorSandboxRequired CreatorSandboxPolicy = "required"
+)
+
+// SessionRequirement is the creator-derived sandbox decision persisted with a
+// session at creation time. Execution code must use NewForSession with this
+// stored value rather than recomputing it from the caller's current role or
+// accepting an elevated/host request override.
+type SessionRequirement struct {
+	Version     int                  `json:"version"`
+	CreatorRole string               `json:"creator_role"`
+	Policy      CreatorSandboxPolicy `json:"policy"`
+	Backend     string               `json:"backend,omitempty"`
+}
+
+const sessionRequirementVersion = 1
+
+// NewSessionRequirement captures the creator role's sandbox policy and the
+// configured backend once, for persistence alongside the new session.
+func NewSessionRequirement(creatorRole string, policy CreatorSandboxPolicy, configuredBackend string) (SessionRequirement, error) {
+	creatorRole = strings.TrimSpace(creatorRole)
+	if creatorRole == "" {
+		return SessionRequirement{}, fmt.Errorf("sandbox creator role is required")
+	}
+	policy = CreatorSandboxPolicy(strings.ToLower(strings.TrimSpace(string(policy))))
+	requirement := SessionRequirement{Version: sessionRequirementVersion, CreatorRole: creatorRole, Policy: policy}
+	switch policy {
+	case CreatorSandboxInherit:
+		return requirement, nil
+	case CreatorSandboxRequired:
+		backend := normalizeDriver(configuredBackend)
+		if backend == "" {
+			backend = DefaultDriver
+		}
+		if backend == "nop" {
+			return SessionRequirement{}, fmt.Errorf("creator role %q requires an isolated sandbox; backend %q is not isolated", creatorRole, backend)
+		}
+		if _, err := ResolveBackend(backend); err != nil {
+			return SessionRequirement{}, fmt.Errorf("creator role %q requires sandbox backend %q: %w", creatorRole, backend, err)
+		}
+		requirement.Backend = backend
+		return requirement, nil
+	default:
+		return SessionRequirement{}, fmt.Errorf("invalid creator sandbox policy %q", policy)
+	}
+}
+
+// IsZero reports whether a legacy session has no persisted creator decision.
+func (r SessionRequirement) IsZero() bool {
+	return r == (SessionRequirement{})
+}
+
+// IsRequired reports whether the persisted creator policy requires isolation.
+func (r SessionRequirement) IsRequired() bool {
+	return r.Policy == CreatorSandboxRequired
+}
+
+func (r SessionRequirement) validate() error {
+	if r.Version != sessionRequirementVersion || strings.TrimSpace(r.CreatorRole) == "" {
+		return fmt.Errorf("invalid persisted sandbox requirement")
+	}
+	switch r.Policy {
+	case CreatorSandboxInherit:
+		if strings.TrimSpace(r.Backend) != "" {
+			return fmt.Errorf("invalid inherited sandbox requirement backend %q", r.Backend)
+		}
+		return nil
+	case CreatorSandboxRequired:
+		backend := normalizeDriver(r.Backend)
+		if backend == "" || backend == "nop" || backend != r.Backend {
+			return fmt.Errorf("invalid required sandbox backend %q", r.Backend)
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid creator sandbox policy %q", r.Policy)
+	}
+}
+
+// NewForSession constructs the runner under the immutable requirement captured
+// at session creation. A required backend replaces any execution-time driver
+// override and construction errors are returned without host fallback.
+func NewForSession(cfg Config, requirement SessionRequirement) (SandboxRunner, error) {
+	if err := requirement.validate(); err != nil {
+		return nil, err
+	}
+	if requirement.Policy == CreatorSandboxRequired {
+		cfg.Driver = requirement.Backend
+		cfg.AllowUnsafeNop = false
+	}
+	runner, err := New(cfg)
+	if err != nil {
+		if requirement.Policy == CreatorSandboxRequired {
+			return nil, fmt.Errorf("required sandbox backend %q unavailable: %w", requirement.Backend, err)
+		}
+		return nil, err
+	}
+	if requirement.Policy == CreatorSandboxRequired && normalizeDriver(runner.Driver()) != requirement.Backend {
+		return nil, fmt.Errorf("required sandbox backend %q resolved to %q", requirement.Backend, runner.Driver())
+	}
+	return runner, nil
+}
+
 // Config holds sandbox configuration.  Zero values activate sane defaults.
 type Config struct {
 	// Driver selects the execution backend: "docker" (default) or "nop".

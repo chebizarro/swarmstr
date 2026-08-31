@@ -18,7 +18,7 @@ concurrency:
 
 env:
   FIPS_REPOSITORY: jmcorgan/fips
-  FIPS_REF: fc8ebd5a06d6f042c57f03107f403116365a16b4
+  FIPS_REF: 80f8f965aa872296edbce84ade9949ece2596602
 
 jobs:
   interop:
