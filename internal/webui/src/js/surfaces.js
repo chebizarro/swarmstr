@@ -271,9 +271,129 @@
     host.appendChild(row);
   }
 
+  function taskIDOf(task) {
+    return task && (task.task_id || task.taskId || task.id);
+  }
+
+  function renderTaskActivityCard() {
+    const card = $('task-activity-card');
+    if (!card) return;
+    const host = card.querySelector('.mgmt-list-host');
+    if (!host) return;
+    host.innerHTML = '';
+    if (!taskActivityEvents.length) {
+      host.innerHTML = '<div class="sidebar-empty">No lifecycle activity observed on this connection yet.</div>';
+      return;
+    }
+    taskActivityEvents.slice().reverse().forEach(item => {
+      const payload = item.payload || {};
+      const row = document.createElement('div'); row.className = 'mgmt-row activity-row';
+      const correlation = payload.task_id || payload.taskId || payload.run_id || payload.runId || payload.session_id || payload.sessionKey || payload.session || '';
+      const status = payload.status || payload.state || payload.action || payload.direction || '';
+      row.innerHTML = `<strong>${escapeHTML(item.event)}</strong><div class="sub">${escapeHTML([status, correlation, new Date(item.at).toLocaleTimeString()].filter(Boolean).join(' · '))}</div>`;
+      const details = document.createElement('details');
+      const summary = document.createElement('summary'); summary.textContent = 'Payload'; details.appendChild(summary);
+      const pre = document.createElement('pre'); pre.className = 'grant-detail'; pre.textContent = formatValue(payload); details.appendChild(pre); row.appendChild(details);
+      host.appendChild(row);
+    });
+  }
+
+  async function loadTaskDetail(taskID) {
+    const card = $('task-detail-card');
+    if (!card || !taskID) return;
+    const host = card.querySelector('.mgmt-list-host');
+    if (!host) return;
+    host.innerHTML = '<div class="sidebar-empty">Loading task details…</div>';
+    const calls = [];
+    if (gatewayMethodAdvertised('tasks.get')) calls.push(callSafe('tasks.get', { task_id: taskID, runs_limit: 50 }).then(value => ['Task + runs', value]));
+    if (gatewayMethodAdvertised('tasks.doctor')) calls.push(callSafe('tasks.doctor', { task_id: taskID }).then(value => ['Doctor', value]));
+    if (gatewayMethodAdvertised('tasks.trace')) calls.push(callSafe('tasks.trace', { task_id: taskID, limit: 100 }).then(value => ['Trace', value]));
+    const results = await Promise.all(calls);
+    if (!document.body.contains(card)) return;
+    host.innerHTML = '';
+    if (!results.length) { host.innerHTML = '<div class="sidebar-empty">No task detail methods are advertised.</div>'; return; }
+    results.forEach(([label, value]) => {
+      const details = document.createElement('details'); details.open = label === 'Task + runs';
+      const summary = document.createElement('summary'); summary.textContent = label; details.appendChild(summary);
+      const pre = document.createElement('pre'); pre.className = 'grant-detail'; pre.textContent = formatValue(value); details.appendChild(pre); host.appendChild(details);
+    });
+  }
+
+  async function loadTaskInventoryCard() {
+    const card = $('task-inventory-card');
+    if (!card) return;
+    const host = card.querySelector('.mgmt-list-host');
+    if (!host) return;
+    if (!gatewayMethodAdvertised('tasks.list')) {
+      host.innerHTML = '<div class="sidebar-empty">tasks.list is not advertised by this gateway.</div>';
+      return;
+    }
+    host.innerHTML = '<div class="sidebar-empty">Loading task inventory…</div>';
+    const res = await callSafe('tasks.list', { limit: 200 });
+    if (!document.body.contains(card)) return;
+    host.innerHTML = '';
+    if (res.error) { host.innerHTML = `<div class="mgmt-error">${escapeHTML(res.error)}</div>`; return; }
+    const tasks = res.tasks || res.items || [];
+    if (!tasks.length) { host.innerHTML = '<div class="sidebar-empty">No tasks in the durable inventory.</div>'; return; }
+    tasks.forEach(task => {
+      const id = taskIDOf(task);
+      const row = document.createElement('div'); row.className = 'mgmt-row task-row';
+      const title = task.title || task.instructions || id || 'task';
+      const status = task.status || 'unknown';
+      const agent = task.assigned_agent || task.assignedAgent || '';
+      const session = task.session_id || task.sessionId || '';
+      const parent = task.parent_task_id || task.parentTaskId || '';
+      row.innerHTML = `<div class="task-row-heading"><strong>${escapeHTML(truncate(title, 100))}</strong><span class="task-status ${escapeHTML(status)}">${escapeHTML(status)}</span></div><div class="sub">${escapeHTML([id, agent && 'agent ' + agent, session && 'session ' + truncate(session, 32), parent && 'child of ' + parent].filter(Boolean).join(' · '))}</div>`;
+      if (id) {
+        const actions = document.createElement('div'); actions.className = 'action-row';
+        const details = document.createElement('button'); details.className = 'mini-btn'; details.textContent = 'Details'; details.addEventListener('click', () => loadTaskDetail(id)); actions.appendChild(details);
+        row.appendChild(actions);
+      }
+      host.appendChild(row);
+    });
+  }
+
+  function queueTaskInventoryRefresh() {
+    if (mainView !== 'tasks') return;
+    if (taskInventoryRefreshInFlight) { taskInventoryRefreshQueued = true; return; }
+    taskInventoryRefreshInFlight = true;
+    Promise.all([loadTaskInventoryCard(), Promise.resolve(renderTaskActivityCard())]).finally(() => {
+      taskInventoryRefreshInFlight = false;
+      if (taskInventoryRefreshQueued) {
+        taskInventoryRefreshQueued = false;
+        queueTaskInventoryRefresh();
+      }
+    });
+  }
+
+  function handleTaskLifecycleEvent(event, payload) {
+    const relevant = ['task.suggestion', 'agent.status', 'chat', 'chat.message', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool'];
+    if (!relevant.includes(event)) return;
+    taskActivityEvents.push({ event, payload: payload || {}, at: Date.now() });
+    if (taskActivityEvents.length > 60) taskActivityEvents = taskActivityEvents.slice(-60);
+    renderTaskActivityCard();
+    if (event !== 'tool.progress') queueTaskInventoryRefresh();
+  }
+
   async function showTasksView(token) {
-    const { grid } = beginManagementView('Tasks & Ops', 'Model-suggested follow-up tasks, pending agent questions, and MCP attach grants.');
+    const { grid } = beginManagementView('Tasks & Ops', 'Live task/subagent inventory, lifecycle activity, suggestions, pending questions, and attach grants.');
     if (!isViewCurrent('tasks', token)) return;
+
+    const inventoryCard = addMgmtCard(grid, 'Task / subagent inventory');
+    inventoryCard.id = 'task-inventory-card';
+    const advertisedEvents = ['task.suggestion', 'agent.status', 'chat', 'chat.message', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool'].filter(gatewayEventAdvertised);
+    const inventoryStatus = document.createElement('div'); inventoryStatus.className = 'sub';
+    inventoryStatus.textContent = advertisedEvents.length ? `Live refresh events: ${advertisedEvents.join(', ')}` : 'No task/subagent lifecycle events are advertised; inventory is snapshot-only.';
+    inventoryCard.appendChild(inventoryStatus);
+    const inventoryHost = document.createElement('div'); inventoryHost.className = 'mgmt-list-host'; inventoryCard.appendChild(inventoryHost);
+
+    const activityCard = addMgmtCard(grid, 'Live lifecycle activity');
+    activityCard.id = 'task-activity-card';
+    const activityHost = document.createElement('div'); activityHost.className = 'mgmt-list-host'; activityCard.appendChild(activityHost);
+
+    const detailCard = addMgmtCard(grid, 'Task details / runs / trace');
+    detailCard.id = 'task-detail-card'; detailCard.classList.add('mgmt-card-wide');
+    const detailHost = document.createElement('div'); detailHost.className = 'mgmt-list-host'; detailHost.innerHTML = '<div class="sidebar-empty">Choose a task to inspect available details.</div>'; detailCard.appendChild(detailHost);
 
     const suggestionsCard = addMgmtCard(grid, 'Task suggestions');
     suggestionsCard.id = 'task-suggestions-card';
@@ -333,7 +453,8 @@
     });
     mintedAttachGrants.forEach(grant => renderAttachGrantRow(grantsHost, grant));
 
-    await Promise.all([loadTaskSuggestionsCard(), loadPendingQuestionsCard()]);
+    renderTaskActivityCard();
+    await Promise.all([loadTaskInventoryCard(), loadTaskSuggestionsCard(), loadPendingQuestionsCard()]);
   }
 
   // ── Boards view: widget frame host + ticket postMessage bridge ────────────

@@ -436,6 +436,30 @@ header h1 {
 .mini-input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.38rem; padding: 0.35rem 0.5rem; font-size: 0.72rem; min-width: 9rem; }
 .mgmt-error { color: var(--error); font-size: 0.76rem; margin-top: 0.5rem; }
 .mgmt-ok { color: var(--success); font-size: 0.76rem; margin-top: 0.5rem; }
+.mgmt-card-wide { grid-column: 1 / -1; }
+.mini-btn.danger { border-color: rgba(255, 77, 109, 0.65); color: #ff8aa1; background: rgba(255, 77, 109, 0.09); }
+.mini-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+.timeline-section { margin-top: 0.85rem; }
+.timeline-section h4 { color: var(--text-muted); font: 700 0.72rem var(--mono); margin: 0 0 0.45rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.timeline-node {
+  position: relative; margin-left: 0.45rem; padding: 0.55rem 0.65rem 0.55rem 1rem;
+  border-left: 2px solid var(--border); border-bottom: 1px solid rgba(42, 42, 56, 0.45);
+  font-size: 0.74rem;
+}
+.timeline-node::before { content: ''; position: absolute; left: -0.36rem; top: 0.75rem; width: 0.62rem; height: 0.62rem; border-radius: 50%; background: var(--surface); border: 2px solid var(--info); }
+.timeline-node.checkpoint-node::before { border-color: var(--accent); box-shadow: 0 0 8px rgba(176, 38, 255, 0.45); }
+.timeline-node.branch-node::before { border-color: var(--warn); }
+.timeline-node.branch-node.active { border-left-color: var(--success); background: rgba(0, 255, 157, 0.035); }
+.timeline-node.branch-node.active::before { border-color: var(--success); background: var(--success); }
+.timeline-node.transcript-node.user::before { border-color: var(--accent-bright); }
+.timeline-node strong { color: var(--accent-bright); }
+.task-row-heading { display: flex; align-items: center; gap: 0.5rem; justify-content: space-between; }
+.task-status { flex-shrink: 0; border: 1px solid var(--border); border-radius: 999px; padding: 0.12rem 0.42rem; color: var(--text-muted); font: 700 0.62rem var(--mono); }
+.task-status.in_progress, .task-status.running, .task-status.ready { color: var(--warn); border-color: rgba(255, 190, 80, 0.55); }
+.task-status.completed, .task-status.done { color: var(--success); border-color: rgba(0, 255, 157, 0.45); }
+.task-status.failed, .task-status.cancelled, .task-status.blocked { color: var(--error); border-color: rgba(255, 77, 109, 0.55); }
+.activity-row details, #task-detail-card details { margin-top: 0.45rem; color: var(--text-muted); font-size: 0.7rem; }
+.mgmt-list-host { display: flex; flex-direction: column; gap: 0.45rem; margin-top: 0.55rem; }
 
 /* ── Input area ── */
 footer {

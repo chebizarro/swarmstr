@@ -66,6 +66,14 @@
     catch (err) { return { error: err && err.message ? err.message : 'request failed' }; }
   }
 
+  function gatewayMethodAdvertised(method) {
+    return gatewayMethodDescriptors.has(method);
+  }
+
+  function gatewayEventAdvertised(event) {
+    return gatewayAdvertisedEvents.has(event);
+  }
+
   function resultItems(res, key) {
     if (!res || res.error) return [];
     return res[key] || res.items || [];
@@ -293,8 +301,216 @@
     askRow.appendChild(askButton);
   }
 
+  function historyMutationError(err) {
+    const message = err && err.message ? err.message : 'request failed';
+    if (/revision|conflict|stale|compare.?and.?swap|\bcas\b/i.test(message)) {
+      return 'Revision conflict: the session changed before this operation committed. Refresh the timeline and choose again. Gateway detail: ' + message;
+    }
+    return message;
+  }
+
+  async function reloadSessionHistorySurface(grid, sid) {
+    await loadSessions();
+    if (mainView === 'sessions' && document.body.contains(grid)) {
+      // The panel refetches both chat.history and sessions.branches.list, so the
+      // transcript and active branch update together without leaving this view.
+      await showSessionHistoryPanel(grid, sid);
+    } else if (sid === sessionID) {
+      await loadSessionHistory(sid);
+    }
+  }
+
+  async function runHistoryMutation(grid, sid, status, method, params, confirmation) {
+    if (confirmation && !confirm(confirmation)) return;
+    status.className = 'sub';
+    status.textContent = 'Working…';
+    try {
+      const result = await callSafe(method, params);
+      if (result.error) throw { message: result.error };
+      status.className = 'mgmt-ok';
+      status.textContent = 'Completed ' + method + (result && result.key && result.key !== sid ? ' → ' + result.key : '') + '.';
+      await reloadSessionHistorySurface(grid, sid);
+    } catch (err) {
+      status.className = 'mgmt-error';
+      status.textContent = historyMutationError(err);
+    }
+  }
+
+  function appendTimelineMeta(row, text) {
+    const meta = document.createElement('div');
+    meta.className = 'sub';
+    meta.textContent = text;
+    row.appendChild(meta);
+  }
+
+  async function showSessionHistoryPanel(grid, sid) {
+    const previous = document.getElementById('session-history-panel');
+    if (previous) previous.remove();
+    const card = addMgmtCard(grid, 'Checkpoint / rewind timeline');
+    card.id = 'session-history-panel';
+    card.classList.add('mgmt-card-wide');
+    const status = document.createElement('div');
+    status.className = 'sub';
+    status.textContent = 'Loading checkpoints, branches, and transcript…';
+    card.appendChild(status);
+
+    const canCheckpoints = gatewayMethodAdvertised('sessions.compaction.list');
+    const canBranches = gatewayMethodAdvertised('sessions.branches.list');
+    const [checkpointRes, branchRes, historyRes] = await Promise.all([
+      canCheckpoints ? callSafe('sessions.compaction.list', { key: sid }) : Promise.resolve({ error: 'sessions.compaction.list is not advertised' }),
+      canBranches ? callSafe('sessions.branches.list', { sessionKey: sid }) : Promise.resolve({ error: 'sessions.branches.list is not advertised' }),
+      callSafe('chat.history', { session_id: sid, limit: 200 }),
+    ]);
+    if (!document.body.contains(card)) return;
+    status.textContent = sid;
+
+    const checkpoints = checkpointRes.checkpoints || [];
+    const checkpointSection = document.createElement('div');
+    checkpointSection.className = 'timeline-section';
+    const checkpointTitle = document.createElement('h4');
+    checkpointTitle.textContent = `Compaction checkpoints (${checkpoints.length})`;
+    checkpointSection.appendChild(checkpointTitle);
+    if (checkpointRes.error) {
+      const error = document.createElement('div'); error.className = 'mgmt-error'; error.textContent = checkpointRes.error; checkpointSection.appendChild(error);
+    } else if (!checkpoints.length) {
+      const empty = document.createElement('div'); empty.className = 'sidebar-empty'; empty.textContent = 'No persisted checkpoints for this session.'; checkpointSection.appendChild(empty);
+    }
+    checkpoints.forEach(checkpoint => {
+      const checkpointID = checkpoint.checkpointId || checkpoint.checkpoint_id;
+      const row = document.createElement('div');
+      row.className = 'timeline-node checkpoint-node';
+      const title = document.createElement('strong');
+      title.textContent = checkpoint.reason || 'Compaction checkpoint';
+      row.appendChild(title);
+      const created = checkpoint.createdAt || checkpoint.created_at;
+      appendTimelineMeta(row, [created ? new Date(created).toLocaleString() : '', checkpointID, checkpoint.tokensBefore ? `${checkpoint.tokensBefore} → ${checkpoint.tokensAfter || '?'} tokens` : ''].filter(Boolean).join(' · '));
+      if (checkpoint.summary) appendTimelineMeta(row, truncate(checkpoint.summary, 220));
+      const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
+      if (gatewayMethodAdvertised('sessions.compaction.get')) {
+        const details = document.createElement('button'); details.className = 'mini-btn'; details.textContent = 'Details';
+        details.addEventListener('click', async () => {
+          const got = await callSafe('sessions.compaction.get', { key: sid, checkpointId: checkpointID });
+          let pre = row.querySelector('pre');
+          if (!pre) { pre = document.createElement('pre'); pre.className = 'grant-detail'; row.appendChild(pre); }
+          pre.textContent = got.error ? got.error : formatValue(got.checkpoint || got);
+        });
+        actions.appendChild(details);
+      }
+      if (gatewayMethodAdvertised('sessions.compaction.branch')) {
+        const branch = document.createElement('button'); branch.className = 'mini-btn'; branch.textContent = 'Branch here';
+        branch.addEventListener('click', () => runHistoryMutation(grid, sid, status, 'sessions.compaction.branch', { key: sid, checkpointId: checkpointID }));
+        actions.appendChild(branch);
+      }
+      if (gatewayMethodAdvertised('sessions.compaction.restore')) {
+        const restore = document.createElement('button'); restore.className = 'mini-btn danger'; restore.textContent = 'Restore';
+        restore.addEventListener('click', () => runHistoryMutation(grid, sid, status, 'sessions.compaction.restore', { key: sid, checkpointId: checkpointID }, 'Restore this checkpoint? The active transcript path will change.'));
+        actions.appendChild(restore);
+      }
+      checkpointSection.appendChild(row);
+    });
+    card.appendChild(checkpointSection);
+
+    const branches = branchRes.branches || [];
+    const branchSection = document.createElement('div'); branchSection.className = 'timeline-section';
+    const branchTitle = document.createElement('h4'); branchTitle.textContent = `Branches (${branches.length})`; branchSection.appendChild(branchTitle);
+    if (branchRes.error) {
+      const error = document.createElement('div'); error.className = 'mgmt-error'; error.textContent = branchRes.error; branchSection.appendChild(error);
+    }
+    branches.forEach(branch => {
+      const leafID = branch.leafEntryId || branch.leaf_entry_id;
+      const row = document.createElement('div'); row.className = 'timeline-node branch-node' + (branch.active ? ' active' : '');
+      const title = document.createElement('strong'); title.textContent = (branch.active ? 'Active · ' : '') + (branch.headline || 'Empty branch'); row.appendChild(title);
+      appendTimelineMeta(row, [leafID, branch.messageCount !== undefined ? `${branch.messageCount} messages` : '', branch.updatedAt || ''].filter(Boolean).join(' · '));
+      if (!branch.active && gatewayMethodAdvertised('sessions.branches.switch')) {
+        const actions = document.createElement('div'); actions.className = 'action-row';
+        const activate = document.createElement('button'); activate.className = 'mini-btn'; activate.textContent = 'Switch branch';
+        activate.addEventListener('click', () => runHistoryMutation(grid, sid, status, 'sessions.branches.switch', { sessionKey: sid, leafEntryId: leafID }));
+        actions.appendChild(activate); row.appendChild(actions);
+      }
+      branchSection.appendChild(row);
+    });
+    card.appendChild(branchSection);
+
+    const entries = historyRes.entries || historyRes.items || historyRes.transcript || [];
+    const transcriptSection = document.createElement('div'); transcriptSection.className = 'timeline-section';
+    const transcriptTitle = document.createElement('h4'); transcriptTitle.textContent = `Active transcript (${entries.length} entries)`; transcriptSection.appendChild(transcriptTitle);
+    if (historyRes.error) {
+      const error = document.createElement('div'); error.className = 'mgmt-error'; error.textContent = historyRes.error; transcriptSection.appendChild(error);
+    }
+    entries.forEach(entry => {
+      const entryID = entry.entry_id || entry.entryId || entry.id;
+      const text = entry.text || entry.content || entry.message || '';
+      const row = document.createElement('div'); row.className = 'timeline-node transcript-node ' + (entry.role || 'unknown');
+      const title = document.createElement('strong'); title.textContent = `${entry.role || 'entry'} · ${truncate(text, 140) || '(no text)'}`; row.appendChild(title);
+      appendTimelineMeta(row, [entryID, entry.parent_entry_id || entry.parentEntryId, entry.unix || entry.created_at || entry.createdAt].filter(Boolean).join(' · '));
+      if (entry.role === 'user' && entryID && gatewayMethodAdvertised('sessions.rewind')) {
+        const actions = document.createElement('div'); actions.className = 'action-row';
+        const rewind = document.createElement('button'); rewind.className = 'mini-btn danger'; rewind.textContent = 'Rewind before message';
+        rewind.addEventListener('click', () => runHistoryMutation(grid, sid, status, 'sessions.rewind', { sessionKey: sid, entryId: entryID }, 'Rewind before this user message? The active transcript path will change and the message will return to the editor.'));
+        actions.appendChild(rewind); row.appendChild(actions);
+      }
+      transcriptSection.appendChild(row);
+    });
+    card.appendChild(transcriptSection);
+  }
+
+  async function showSessionOwnershipPanel(grid, sid) {
+    const previous = document.getElementById('session-ownership-panel');
+    if (previous) previous.remove();
+    const card = addMgmtCard(grid, 'Ownership / recovery');
+    card.id = 'session-ownership-panel';
+    card.classList.add('mgmt-card-wide');
+    const supported = ['sessions.get', 'sessions.resolve', 'sessions.dispatch', 'sessions.reclaim', 'sessions.recover'].filter(gatewayMethodAdvertised);
+    const status = document.createElement('div'); status.className = 'sub';
+    status.textContent = supported.length ? `Advertised methods: ${supported.join(', ')}` : 'This gateway does not advertise ownership/recovery methods.';
+    card.appendChild(status);
+    if (!supported.length) return;
+    const detail = document.createElement('pre'); detail.className = 'grant-detail'; detail.style.display = 'none'; card.appendChild(detail);
+    const showResult = (label, result) => {
+      detail.style.display = '';
+      detail.textContent = label + '\n' + formatValue(result);
+    };
+    if (gatewayMethodAdvertised('sessions.get')) {
+      const result = await callSafe('sessions.get', { key: sid, limit: 20 });
+      showResult(result.error ? 'Session details unavailable' : 'Session details', result);
+    }
+    const actions = document.createElement('div'); actions.className = 'action-row'; card.appendChild(actions);
+    if (gatewayMethodAdvertised('sessions.resolve')) {
+      const resolve = document.createElement('button'); resolve.className = 'mini-btn'; resolve.textContent = 'Resolve identity';
+      resolve.addEventListener('click', async () => { resolve.disabled = true; const result = await callSafe('sessions.resolve', { key: sid, allowMissing: true }); resolve.disabled = false; showResult(result.error ? 'Resolve failed' : 'Resolved session', result); });
+      actions.appendChild(resolve);
+    }
+    if (gatewayMethodAdvertised('sessions.recover')) {
+      const recover = document.createElement('button'); recover.className = 'mini-btn'; recover.textContent = 'Recover';
+      recover.addEventListener('click', async () => { recover.disabled = true; const result = await callSafe('sessions.recover', { key: sid }); recover.disabled = false; showResult(result.error ? 'Recovery failed' : 'Recovery result', result); if (!result.error) await loadSessions(); });
+      actions.appendChild(recover);
+    }
+    if (gatewayMethodAdvertised('sessions.reclaim')) {
+      const reclaim = document.createElement('button'); reclaim.className = 'mini-btn danger'; reclaim.textContent = 'Reclaim locally';
+      reclaim.addEventListener('click', async () => { if (!confirm('Force-reclaim ownership of this session for the current connection?')) return; reclaim.disabled = true; const result = await callSafe('sessions.reclaim', { key: sid }); reclaim.disabled = false; showResult(result.error ? 'Reclaim failed' : 'Reclaim result', result); if (!result.error) await loadSessions(); });
+      actions.appendChild(reclaim);
+    }
+    if (gatewayMethodAdvertised('sessions.dispatch')) {
+      const backend = document.createElement('input'); backend.className = 'mini-input'; backend.placeholder = 'backend / profile id'; actions.appendChild(backend);
+      const dispatch = document.createElement('button'); dispatch.className = 'mini-btn'; dispatch.textContent = 'Dispatch';
+      dispatch.addEventListener('click', async () => {
+        const target = backend.value.trim();
+        if (!target) { status.className = 'mgmt-error'; status.textContent = 'A backend or profile id is required.'; return; }
+        dispatch.disabled = true; const result = await callSafe('sessions.dispatch', { key: sid, backend: target }); dispatch.disabled = false;
+        showResult(result.error ? 'Dispatch failed' : 'Dispatch result', result); if (!result.error) await loadSessions();
+      });
+      actions.appendChild(dispatch);
+    }
+  }
+
+  function handleSessionOrchestrationEvent(event, payload) {
+    if (event === 'session.tool') return;
+    loadSessions();
+    if (mainView === 'sessions') showSessionsView(++viewSeq);
+  }
+
   async function showSessionsView(token) {
-    const { grid } = beginManagementView('Sessions', 'List, detail, delete, export, reset, compact, and prune sessions.');
+    const { grid } = beginManagementView('Sessions', 'Session inventory, checkpoint DAG/rewind controls, and feature-detected ownership recovery.');
     const res = await callSafe('sessions.list', { limit: 100 });
     if (!isViewCurrent('sessions', token)) return;
     const sessions = resultItems(res, 'sessions');
@@ -306,6 +522,8 @@
       addActionButton(actions, 'Open', 'sessions.preview', () => ({ session_id: sid }), async () => { sessionID = sid; localStorage.setItem('metiq_session', sid); mainView='chat'; loadSessionHistory(sid); });
       const filesButton = document.createElement('button'); filesButton.className = 'mini-btn'; filesButton.textContent = 'Files'; filesButton.addEventListener('click', () => showSessionFilesPanel(grid, sid)); actions.appendChild(filesButton);
       const sharingButton = document.createElement('button'); sharingButton.className = 'mini-btn'; sharingButton.textContent = 'Sharing'; sharingButton.addEventListener('click', () => showSessionSharingPanel(grid, sid)); actions.appendChild(sharingButton);
+      const historyButton = document.createElement('button'); historyButton.className = 'mini-btn'; historyButton.textContent = 'Timeline'; historyButton.addEventListener('click', () => showSessionHistoryPanel(grid, sid)); actions.appendChild(historyButton);
+      const ownershipButton = document.createElement('button'); ownershipButton.className = 'mini-btn'; ownershipButton.textContent = 'Ownership'; ownershipButton.addEventListener('click', () => showSessionOwnershipPanel(grid, sid)); actions.appendChild(ownershipButton);
       addActionButton(actions, 'Export', 'sessions.export', () => ({ session_id: sid }));
       addActionButton(actions, 'Reset', 'sessions.reset', () => ({ session_id: sid }), () => showSessionsView(++viewSeq));
       addActionButton(actions, 'Delete', 'sessions.delete', () => ({ session_id: sid }), () => { loadSessions(); showSessionsView(++viewSeq); });

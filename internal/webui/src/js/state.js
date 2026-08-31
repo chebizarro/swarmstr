@@ -55,6 +55,7 @@ const TOKEN   = '{{.Token}}';
   let pendingResolvers = {};
   let gatewayMethodDescriptors = new Map();
   let gatewayScopes = new Set();
+  let gatewayAdvertisedEvents = new Set();
   let seq = 0;
   let sessionID = localStorage.getItem('metiq_session') || null;
   let activeAgentID = 'main';
@@ -75,6 +76,10 @@ const TOKEN   = '{{.Token}}';
   let questionCountdownTimer = null;
   // Operator-minted attach grants (process-local; tokens vanish on reload).
   let mintedAttachGrants = [];
+  // Task/activity state is updated directly from subscribed gateway events.
+  let taskActivityEvents = [];
+  let taskInventoryRefreshInFlight = false;
+  let taskInventoryRefreshQueued = false;
   // Boards view state.
   let boardsSessionKey = null;
   let boardsRefreshTimer = null;

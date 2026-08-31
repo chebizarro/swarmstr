@@ -52,6 +52,52 @@ func TestUISourceManifestFragmentsExist(t *testing.T) {
 	}
 }
 
+func TestUIOrchestrationSurfacesAreCatalogDriven(t *testing.T) {
+	views, err := os.ReadFile("src/js/views.js")
+	if err != nil {
+		t.Fatalf("read views.js: %v", err)
+	}
+	surfaces, err := os.ReadFile("src/js/surfaces.js")
+	if err != nil {
+		t.Fatalf("read surfaces.js: %v", err)
+	}
+	gateway, err := os.ReadFile("src/js/gateway-client.js")
+	if err != nil {
+		t.Fatalf("read gateway-client.js: %v", err)
+	}
+	viewJS, surfaceJS, gatewayJS := string(views), string(surfaces), string(gateway)
+	for _, method := range []string{
+		"sessions.compaction.list", "sessions.compaction.get", "sessions.compaction.branch", "sessions.compaction.restore",
+		"sessions.branches.list", "sessions.branches.switch", "sessions.rewind",
+		"sessions.dispatch", "sessions.reclaim", "sessions.recover", "sessions.resolve",
+	} {
+		if !strings.Contains(viewJS, "gatewayMethodAdvertised('"+method+"')") {
+			t.Errorf("session orchestration method %q is not feature-detected from hello descriptors", method)
+		}
+	}
+	for _, confirmation := range []string{"Restore this checkpoint?", "Rewind before this user message?"} {
+		if !strings.Contains(viewJS, confirmation) {
+			t.Errorf("missing destructive history confirmation %q", confirmation)
+		}
+	}
+	if !strings.Contains(viewJS, "Revision conflict:") || !strings.Contains(viewJS, "await showSessionHistoryPanel(grid, sid)") {
+		t.Error("history mutations must surface revision conflicts and reload transcript/branch state")
+	}
+	for _, method := range []string{"tasks.list", "tasks.get", "tasks.doctor", "tasks.trace"} {
+		if !strings.Contains(surfaceJS, "gatewayMethodAdvertised('"+method+"')") {
+			t.Errorf("task inventory/detail method %q is not feature-detected", method)
+		}
+	}
+	if !strings.Contains(surfaceJS, "handleTaskLifecycleEvent") || !strings.Contains(surfaceJS, "queueTaskInventoryRefresh") {
+		t.Error("task activity panel is not wired for event-driven inventory refresh")
+	}
+	for _, event := range []string{"session.placement", "sessions.changed", "session.operation", "session.tool"} {
+		if !strings.Contains(gatewayJS, "'"+event+"'") {
+			t.Errorf("gateway client does not subscribe/dispatch orchestration event %q", event)
+		}
+	}
+}
+
 // pluginApprovalEvents are dispatched by the webui but not (yet) part of the
 // gateway push-event catalog: the UI only subscribes to advertised events
 // (wanted.filter(advertised.has)), so these subscriptions are inert until the

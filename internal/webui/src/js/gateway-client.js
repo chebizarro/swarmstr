@@ -49,6 +49,7 @@
           if (mainView === 'chat' && payload.status === 'idle' && statusSession === sessionID) {
             if (!streamingBubble) hideThinking();
           }
+          handleTaskLifecycleEvent(event, payload);
         }
         break;
       case 'chat': {
@@ -85,6 +86,7 @@
           setRunActive(false, payload.sessionKey);
           loadSessions();
         }
+        if (payload.state !== 'delta') handleTaskLifecycleEvent(event, payload);
         break;
       }
       case 'session.typing':
@@ -97,19 +99,24 @@
           hideThinking();
           if (payload.text) addMsg(payload.text, 'agent');
         }
+        if (payload && (payload.task_id || payload.run_id)) handleTaskLifecycleEvent(event, payload);
         break;
       case 'tool.start':
         setRunActive(true, payload && payload.session_id);
         if (mainView === 'chat') renderToolActivity(payload, 'started');
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'tool.progress':
         if (mainView === 'chat') renderToolActivity(payload, 'progress');
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'tool.result':
         if (mainView === 'chat') renderToolActivity(payload, 'result');
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'tool.error':
         if (mainView === 'chat') renderToolActivity(payload, 'error');
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'exec.approval.requested':
         if (payload) enqueueApproval(payload, null, 'exec');
@@ -164,6 +171,14 @@
         break;
       case 'task.suggestion':
         handleTaskSuggestionEvent(payload);
+        handleTaskLifecycleEvent(event, payload);
+        break;
+      case 'session.placement':
+      case 'sessions.changed':
+      case 'session.operation':
+      case 'session.tool':
+        handleSessionOrchestrationEvent(event, payload);
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'board.changed':
         handleBoardChanged(payload);
@@ -203,12 +218,13 @@
               try {
                 if (!hello || hello.protocol !== 4) throw new Error('gateway protocol v4 is required');
                 const advertised = new Set((hello.features && hello.features.events) || []);
+                gatewayAdvertisedEvents = advertised;
                 if (!advertised.has('chat')) throw new Error('gateway does not advertise protocol-v4 chat events');
                 const descriptors = (hello.features && hello.features.methodDescriptors) || [];
                 if (!Array.isArray(descriptors) || descriptors.length === 0) throw new Error('gateway does not advertise method descriptors');
                 gatewayMethodDescriptors = new Map(descriptors.filter(item => item && item.name).map(item => [item.name, item]));
                 gatewayScopes = new Set((hello.auth && hello.auth.scopes) || []);
-                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'question.requested', 'question.resolved', 'task.suggestion', 'board.changed', 'mcp.app.viewCreated'];
+                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool', 'question.requested', 'question.resolved', 'task.suggestion', 'board.changed', 'mcp.app.viewCreated'];
                 const events = wanted.filter(name => advertised.has(name));
                 await callMethod('events.subscribe', { events });
                 await reconcilePendingApprovals();
@@ -260,6 +276,7 @@
       connected = false;
       gatewayMethodDescriptors = new Map();
       gatewayScopes = new Set();
+      gatewayAdvertisedEvents = new Set();
       finalizeStreaming();
       setRunActive(false);
       handleTerminalDisconnect();

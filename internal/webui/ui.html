@@ -445,6 +445,30 @@ header h1 {
 .mini-input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.38rem; padding: 0.35rem 0.5rem; font-size: 0.72rem; min-width: 9rem; }
 .mgmt-error { color: var(--error); font-size: 0.76rem; margin-top: 0.5rem; }
 .mgmt-ok { color: var(--success); font-size: 0.76rem; margin-top: 0.5rem; }
+.mgmt-card-wide { grid-column: 1 / -1; }
+.mini-btn.danger { border-color: rgba(255, 77, 109, 0.65); color: #ff8aa1; background: rgba(255, 77, 109, 0.09); }
+.mini-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+.timeline-section { margin-top: 0.85rem; }
+.timeline-section h4 { color: var(--text-muted); font: 700 0.72rem var(--mono); margin: 0 0 0.45rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.timeline-node {
+  position: relative; margin-left: 0.45rem; padding: 0.55rem 0.65rem 0.55rem 1rem;
+  border-left: 2px solid var(--border); border-bottom: 1px solid rgba(42, 42, 56, 0.45);
+  font-size: 0.74rem;
+}
+.timeline-node::before { content: ''; position: absolute; left: -0.36rem; top: 0.75rem; width: 0.62rem; height: 0.62rem; border-radius: 50%; background: var(--surface); border: 2px solid var(--info); }
+.timeline-node.checkpoint-node::before { border-color: var(--accent); box-shadow: 0 0 8px rgba(176, 38, 255, 0.45); }
+.timeline-node.branch-node::before { border-color: var(--warn); }
+.timeline-node.branch-node.active { border-left-color: var(--success); background: rgba(0, 255, 157, 0.035); }
+.timeline-node.branch-node.active::before { border-color: var(--success); background: var(--success); }
+.timeline-node.transcript-node.user::before { border-color: var(--accent-bright); }
+.timeline-node strong { color: var(--accent-bright); }
+.task-row-heading { display: flex; align-items: center; gap: 0.5rem; justify-content: space-between; }
+.task-status { flex-shrink: 0; border: 1px solid var(--border); border-radius: 999px; padding: 0.12rem 0.42rem; color: var(--text-muted); font: 700 0.62rem var(--mono); }
+.task-status.in_progress, .task-status.running, .task-status.ready { color: var(--warn); border-color: rgba(255, 190, 80, 0.55); }
+.task-status.completed, .task-status.done { color: var(--success); border-color: rgba(0, 255, 157, 0.45); }
+.task-status.failed, .task-status.cancelled, .task-status.blocked { color: var(--error); border-color: rgba(255, 77, 109, 0.55); }
+.activity-row details, #task-detail-card details { margin-top: 0.45rem; color: var(--text-muted); font-size: 0.7rem; }
+.mgmt-list-host { display: flex; flex-direction: column; gap: 0.45rem; margin-top: 0.55rem; }
 
 /* ── Input area ── */
 footer {
@@ -847,6 +871,7 @@ const TOKEN   = '{{.Token}}';
   let pendingResolvers = {};
   let gatewayMethodDescriptors = new Map();
   let gatewayScopes = new Set();
+  let gatewayAdvertisedEvents = new Set();
   let seq = 0;
   let sessionID = localStorage.getItem('metiq_session') || null;
   let activeAgentID = 'main';
@@ -867,6 +892,10 @@ const TOKEN   = '{{.Token}}';
   let questionCountdownTimer = null;
   // Operator-minted attach grants (process-local; tokens vanish on reload).
   let mintedAttachGrants = [];
+  // Task/activity state is updated directly from subscribed gateway events.
+  let taskActivityEvents = [];
+  let taskInventoryRefreshInFlight = false;
+  let taskInventoryRefreshQueued = false;
   // Boards view state.
   let boardsSessionKey = null;
   let boardsRefreshTimer = null;
@@ -1388,6 +1417,14 @@ const TOKEN   = '{{.Token}}';
     catch (err) { return { error: err && err.message ? err.message : 'request failed' }; }
   }
 
+  function gatewayMethodAdvertised(method) {
+    return gatewayMethodDescriptors.has(method);
+  }
+
+  function gatewayEventAdvertised(event) {
+    return gatewayAdvertisedEvents.has(event);
+  }
+
   function resultItems(res, key) {
     if (!res || res.error) return [];
     return res[key] || res.items || [];
@@ -1615,8 +1652,216 @@ const TOKEN   = '{{.Token}}';
     askRow.appendChild(askButton);
   }
 
+  function historyMutationError(err) {
+    const message = err && err.message ? err.message : 'request failed';
+    if (/revision|conflict|stale|compare.?and.?swap|\bcas\b/i.test(message)) {
+      return 'Revision conflict: the session changed before this operation committed. Refresh the timeline and choose again. Gateway detail: ' + message;
+    }
+    return message;
+  }
+
+  async function reloadSessionHistorySurface(grid, sid) {
+    await loadSessions();
+    if (mainView === 'sessions' && document.body.contains(grid)) {
+      // The panel refetches both chat.history and sessions.branches.list, so the
+      // transcript and active branch update together without leaving this view.
+      await showSessionHistoryPanel(grid, sid);
+    } else if (sid === sessionID) {
+      await loadSessionHistory(sid);
+    }
+  }
+
+  async function runHistoryMutation(grid, sid, status, method, params, confirmation) {
+    if (confirmation && !confirm(confirmation)) return;
+    status.className = 'sub';
+    status.textContent = 'Working…';
+    try {
+      const result = await callSafe(method, params);
+      if (result.error) throw { message: result.error };
+      status.className = 'mgmt-ok';
+      status.textContent = 'Completed ' + method + (result && result.key && result.key !== sid ? ' → ' + result.key : '') + '.';
+      await reloadSessionHistorySurface(grid, sid);
+    } catch (err) {
+      status.className = 'mgmt-error';
+      status.textContent = historyMutationError(err);
+    }
+  }
+
+  function appendTimelineMeta(row, text) {
+    const meta = document.createElement('div');
+    meta.className = 'sub';
+    meta.textContent = text;
+    row.appendChild(meta);
+  }
+
+  async function showSessionHistoryPanel(grid, sid) {
+    const previous = document.getElementById('session-history-panel');
+    if (previous) previous.remove();
+    const card = addMgmtCard(grid, 'Checkpoint / rewind timeline');
+    card.id = 'session-history-panel';
+    card.classList.add('mgmt-card-wide');
+    const status = document.createElement('div');
+    status.className = 'sub';
+    status.textContent = 'Loading checkpoints, branches, and transcript…';
+    card.appendChild(status);
+
+    const canCheckpoints = gatewayMethodAdvertised('sessions.compaction.list');
+    const canBranches = gatewayMethodAdvertised('sessions.branches.list');
+    const [checkpointRes, branchRes, historyRes] = await Promise.all([
+      canCheckpoints ? callSafe('sessions.compaction.list', { key: sid }) : Promise.resolve({ error: 'sessions.compaction.list is not advertised' }),
+      canBranches ? callSafe('sessions.branches.list', { sessionKey: sid }) : Promise.resolve({ error: 'sessions.branches.list is not advertised' }),
+      callSafe('chat.history', { session_id: sid, limit: 200 }),
+    ]);
+    if (!document.body.contains(card)) return;
+    status.textContent = sid;
+
+    const checkpoints = checkpointRes.checkpoints || [];
+    const checkpointSection = document.createElement('div');
+    checkpointSection.className = 'timeline-section';
+    const checkpointTitle = document.createElement('h4');
+    checkpointTitle.textContent = `Compaction checkpoints (${checkpoints.length})`;
+    checkpointSection.appendChild(checkpointTitle);
+    if (checkpointRes.error) {
+      const error = document.createElement('div'); error.className = 'mgmt-error'; error.textContent = checkpointRes.error; checkpointSection.appendChild(error);
+    } else if (!checkpoints.length) {
+      const empty = document.createElement('div'); empty.className = 'sidebar-empty'; empty.textContent = 'No persisted checkpoints for this session.'; checkpointSection.appendChild(empty);
+    }
+    checkpoints.forEach(checkpoint => {
+      const checkpointID = checkpoint.checkpointId || checkpoint.checkpoint_id;
+      const row = document.createElement('div');
+      row.className = 'timeline-node checkpoint-node';
+      const title = document.createElement('strong');
+      title.textContent = checkpoint.reason || 'Compaction checkpoint';
+      row.appendChild(title);
+      const created = checkpoint.createdAt || checkpoint.created_at;
+      appendTimelineMeta(row, [created ? new Date(created).toLocaleString() : '', checkpointID, checkpoint.tokensBefore ? `${checkpoint.tokensBefore} → ${checkpoint.tokensAfter || '?'} tokens` : ''].filter(Boolean).join(' · '));
+      if (checkpoint.summary) appendTimelineMeta(row, truncate(checkpoint.summary, 220));
+      const actions = document.createElement('div'); actions.className = 'action-row'; row.appendChild(actions);
+      if (gatewayMethodAdvertised('sessions.compaction.get')) {
+        const details = document.createElement('button'); details.className = 'mini-btn'; details.textContent = 'Details';
+        details.addEventListener('click', async () => {
+          const got = await callSafe('sessions.compaction.get', { key: sid, checkpointId: checkpointID });
+          let pre = row.querySelector('pre');
+          if (!pre) { pre = document.createElement('pre'); pre.className = 'grant-detail'; row.appendChild(pre); }
+          pre.textContent = got.error ? got.error : formatValue(got.checkpoint || got);
+        });
+        actions.appendChild(details);
+      }
+      if (gatewayMethodAdvertised('sessions.compaction.branch')) {
+        const branch = document.createElement('button'); branch.className = 'mini-btn'; branch.textContent = 'Branch here';
+        branch.addEventListener('click', () => runHistoryMutation(grid, sid, status, 'sessions.compaction.branch', { key: sid, checkpointId: checkpointID }));
+        actions.appendChild(branch);
+      }
+      if (gatewayMethodAdvertised('sessions.compaction.restore')) {
+        const restore = document.createElement('button'); restore.className = 'mini-btn danger'; restore.textContent = 'Restore';
+        restore.addEventListener('click', () => runHistoryMutation(grid, sid, status, 'sessions.compaction.restore', { key: sid, checkpointId: checkpointID }, 'Restore this checkpoint? The active transcript path will change.'));
+        actions.appendChild(restore);
+      }
+      checkpointSection.appendChild(row);
+    });
+    card.appendChild(checkpointSection);
+
+    const branches = branchRes.branches || [];
+    const branchSection = document.createElement('div'); branchSection.className = 'timeline-section';
+    const branchTitle = document.createElement('h4'); branchTitle.textContent = `Branches (${branches.length})`; branchSection.appendChild(branchTitle);
+    if (branchRes.error) {
+      const error = document.createElement('div'); error.className = 'mgmt-error'; error.textContent = branchRes.error; branchSection.appendChild(error);
+    }
+    branches.forEach(branch => {
+      const leafID = branch.leafEntryId || branch.leaf_entry_id;
+      const row = document.createElement('div'); row.className = 'timeline-node branch-node' + (branch.active ? ' active' : '');
+      const title = document.createElement('strong'); title.textContent = (branch.active ? 'Active · ' : '') + (branch.headline || 'Empty branch'); row.appendChild(title);
+      appendTimelineMeta(row, [leafID, branch.messageCount !== undefined ? `${branch.messageCount} messages` : '', branch.updatedAt || ''].filter(Boolean).join(' · '));
+      if (!branch.active && gatewayMethodAdvertised('sessions.branches.switch')) {
+        const actions = document.createElement('div'); actions.className = 'action-row';
+        const activate = document.createElement('button'); activate.className = 'mini-btn'; activate.textContent = 'Switch branch';
+        activate.addEventListener('click', () => runHistoryMutation(grid, sid, status, 'sessions.branches.switch', { sessionKey: sid, leafEntryId: leafID }));
+        actions.appendChild(activate); row.appendChild(actions);
+      }
+      branchSection.appendChild(row);
+    });
+    card.appendChild(branchSection);
+
+    const entries = historyRes.entries || historyRes.items || historyRes.transcript || [];
+    const transcriptSection = document.createElement('div'); transcriptSection.className = 'timeline-section';
+    const transcriptTitle = document.createElement('h4'); transcriptTitle.textContent = `Active transcript (${entries.length} entries)`; transcriptSection.appendChild(transcriptTitle);
+    if (historyRes.error) {
+      const error = document.createElement('div'); error.className = 'mgmt-error'; error.textContent = historyRes.error; transcriptSection.appendChild(error);
+    }
+    entries.forEach(entry => {
+      const entryID = entry.entry_id || entry.entryId || entry.id;
+      const text = entry.text || entry.content || entry.message || '';
+      const row = document.createElement('div'); row.className = 'timeline-node transcript-node ' + (entry.role || 'unknown');
+      const title = document.createElement('strong'); title.textContent = `${entry.role || 'entry'} · ${truncate(text, 140) || '(no text)'}`; row.appendChild(title);
+      appendTimelineMeta(row, [entryID, entry.parent_entry_id || entry.parentEntryId, entry.unix || entry.created_at || entry.createdAt].filter(Boolean).join(' · '));
+      if (entry.role === 'user' && entryID && gatewayMethodAdvertised('sessions.rewind')) {
+        const actions = document.createElement('div'); actions.className = 'action-row';
+        const rewind = document.createElement('button'); rewind.className = 'mini-btn danger'; rewind.textContent = 'Rewind before message';
+        rewind.addEventListener('click', () => runHistoryMutation(grid, sid, status, 'sessions.rewind', { sessionKey: sid, entryId: entryID }, 'Rewind before this user message? The active transcript path will change and the message will return to the editor.'));
+        actions.appendChild(rewind); row.appendChild(actions);
+      }
+      transcriptSection.appendChild(row);
+    });
+    card.appendChild(transcriptSection);
+  }
+
+  async function showSessionOwnershipPanel(grid, sid) {
+    const previous = document.getElementById('session-ownership-panel');
+    if (previous) previous.remove();
+    const card = addMgmtCard(grid, 'Ownership / recovery');
+    card.id = 'session-ownership-panel';
+    card.classList.add('mgmt-card-wide');
+    const supported = ['sessions.get', 'sessions.resolve', 'sessions.dispatch', 'sessions.reclaim', 'sessions.recover'].filter(gatewayMethodAdvertised);
+    const status = document.createElement('div'); status.className = 'sub';
+    status.textContent = supported.length ? `Advertised methods: ${supported.join(', ')}` : 'This gateway does not advertise ownership/recovery methods.';
+    card.appendChild(status);
+    if (!supported.length) return;
+    const detail = document.createElement('pre'); detail.className = 'grant-detail'; detail.style.display = 'none'; card.appendChild(detail);
+    const showResult = (label, result) => {
+      detail.style.display = '';
+      detail.textContent = label + '\n' + formatValue(result);
+    };
+    if (gatewayMethodAdvertised('sessions.get')) {
+      const result = await callSafe('sessions.get', { key: sid, limit: 20 });
+      showResult(result.error ? 'Session details unavailable' : 'Session details', result);
+    }
+    const actions = document.createElement('div'); actions.className = 'action-row'; card.appendChild(actions);
+    if (gatewayMethodAdvertised('sessions.resolve')) {
+      const resolve = document.createElement('button'); resolve.className = 'mini-btn'; resolve.textContent = 'Resolve identity';
+      resolve.addEventListener('click', async () => { resolve.disabled = true; const result = await callSafe('sessions.resolve', { key: sid, allowMissing: true }); resolve.disabled = false; showResult(result.error ? 'Resolve failed' : 'Resolved session', result); });
+      actions.appendChild(resolve);
+    }
+    if (gatewayMethodAdvertised('sessions.recover')) {
+      const recover = document.createElement('button'); recover.className = 'mini-btn'; recover.textContent = 'Recover';
+      recover.addEventListener('click', async () => { recover.disabled = true; const result = await callSafe('sessions.recover', { key: sid }); recover.disabled = false; showResult(result.error ? 'Recovery failed' : 'Recovery result', result); if (!result.error) await loadSessions(); });
+      actions.appendChild(recover);
+    }
+    if (gatewayMethodAdvertised('sessions.reclaim')) {
+      const reclaim = document.createElement('button'); reclaim.className = 'mini-btn danger'; reclaim.textContent = 'Reclaim locally';
+      reclaim.addEventListener('click', async () => { if (!confirm('Force-reclaim ownership of this session for the current connection?')) return; reclaim.disabled = true; const result = await callSafe('sessions.reclaim', { key: sid }); reclaim.disabled = false; showResult(result.error ? 'Reclaim failed' : 'Reclaim result', result); if (!result.error) await loadSessions(); });
+      actions.appendChild(reclaim);
+    }
+    if (gatewayMethodAdvertised('sessions.dispatch')) {
+      const backend = document.createElement('input'); backend.className = 'mini-input'; backend.placeholder = 'backend / profile id'; actions.appendChild(backend);
+      const dispatch = document.createElement('button'); dispatch.className = 'mini-btn'; dispatch.textContent = 'Dispatch';
+      dispatch.addEventListener('click', async () => {
+        const target = backend.value.trim();
+        if (!target) { status.className = 'mgmt-error'; status.textContent = 'A backend or profile id is required.'; return; }
+        dispatch.disabled = true; const result = await callSafe('sessions.dispatch', { key: sid, backend: target }); dispatch.disabled = false;
+        showResult(result.error ? 'Dispatch failed' : 'Dispatch result', result); if (!result.error) await loadSessions();
+      });
+      actions.appendChild(dispatch);
+    }
+  }
+
+  function handleSessionOrchestrationEvent(event, payload) {
+    if (event === 'session.tool') return;
+    loadSessions();
+    if (mainView === 'sessions') showSessionsView(++viewSeq);
+  }
+
   async function showSessionsView(token) {
-    const { grid } = beginManagementView('Sessions', 'List, detail, delete, export, reset, compact, and prune sessions.');
+    const { grid } = beginManagementView('Sessions', 'Session inventory, checkpoint DAG/rewind controls, and feature-detected ownership recovery.');
     const res = await callSafe('sessions.list', { limit: 100 });
     if (!isViewCurrent('sessions', token)) return;
     const sessions = resultItems(res, 'sessions');
@@ -1628,6 +1873,8 @@ const TOKEN   = '{{.Token}}';
       addActionButton(actions, 'Open', 'sessions.preview', () => ({ session_id: sid }), async () => { sessionID = sid; localStorage.setItem('metiq_session', sid); mainView='chat'; loadSessionHistory(sid); });
       const filesButton = document.createElement('button'); filesButton.className = 'mini-btn'; filesButton.textContent = 'Files'; filesButton.addEventListener('click', () => showSessionFilesPanel(grid, sid)); actions.appendChild(filesButton);
       const sharingButton = document.createElement('button'); sharingButton.className = 'mini-btn'; sharingButton.textContent = 'Sharing'; sharingButton.addEventListener('click', () => showSessionSharingPanel(grid, sid)); actions.appendChild(sharingButton);
+      const historyButton = document.createElement('button'); historyButton.className = 'mini-btn'; historyButton.textContent = 'Timeline'; historyButton.addEventListener('click', () => showSessionHistoryPanel(grid, sid)); actions.appendChild(historyButton);
+      const ownershipButton = document.createElement('button'); ownershipButton.className = 'mini-btn'; ownershipButton.textContent = 'Ownership'; ownershipButton.addEventListener('click', () => showSessionOwnershipPanel(grid, sid)); actions.appendChild(ownershipButton);
       addActionButton(actions, 'Export', 'sessions.export', () => ({ session_id: sid }));
       addActionButton(actions, 'Reset', 'sessions.reset', () => ({ session_id: sid }), () => showSessionsView(++viewSeq));
       addActionButton(actions, 'Delete', 'sessions.delete', () => ({ session_id: sid }), () => { loadSessions(); showSessionsView(++viewSeq); });
@@ -2597,9 +2844,129 @@ const TOKEN   = '{{.Token}}';
     host.appendChild(row);
   }
 
+  function taskIDOf(task) {
+    return task && (task.task_id || task.taskId || task.id);
+  }
+
+  function renderTaskActivityCard() {
+    const card = $('task-activity-card');
+    if (!card) return;
+    const host = card.querySelector('.mgmt-list-host');
+    if (!host) return;
+    host.innerHTML = '';
+    if (!taskActivityEvents.length) {
+      host.innerHTML = '<div class="sidebar-empty">No lifecycle activity observed on this connection yet.</div>';
+      return;
+    }
+    taskActivityEvents.slice().reverse().forEach(item => {
+      const payload = item.payload || {};
+      const row = document.createElement('div'); row.className = 'mgmt-row activity-row';
+      const correlation = payload.task_id || payload.taskId || payload.run_id || payload.runId || payload.session_id || payload.sessionKey || payload.session || '';
+      const status = payload.status || payload.state || payload.action || payload.direction || '';
+      row.innerHTML = `<strong>${escapeHTML(item.event)}</strong><div class="sub">${escapeHTML([status, correlation, new Date(item.at).toLocaleTimeString()].filter(Boolean).join(' · '))}</div>`;
+      const details = document.createElement('details');
+      const summary = document.createElement('summary'); summary.textContent = 'Payload'; details.appendChild(summary);
+      const pre = document.createElement('pre'); pre.className = 'grant-detail'; pre.textContent = formatValue(payload); details.appendChild(pre); row.appendChild(details);
+      host.appendChild(row);
+    });
+  }
+
+  async function loadTaskDetail(taskID) {
+    const card = $('task-detail-card');
+    if (!card || !taskID) return;
+    const host = card.querySelector('.mgmt-list-host');
+    if (!host) return;
+    host.innerHTML = '<div class="sidebar-empty">Loading task details…</div>';
+    const calls = [];
+    if (gatewayMethodAdvertised('tasks.get')) calls.push(callSafe('tasks.get', { task_id: taskID, runs_limit: 50 }).then(value => ['Task + runs', value]));
+    if (gatewayMethodAdvertised('tasks.doctor')) calls.push(callSafe('tasks.doctor', { task_id: taskID }).then(value => ['Doctor', value]));
+    if (gatewayMethodAdvertised('tasks.trace')) calls.push(callSafe('tasks.trace', { task_id: taskID, limit: 100 }).then(value => ['Trace', value]));
+    const results = await Promise.all(calls);
+    if (!document.body.contains(card)) return;
+    host.innerHTML = '';
+    if (!results.length) { host.innerHTML = '<div class="sidebar-empty">No task detail methods are advertised.</div>'; return; }
+    results.forEach(([label, value]) => {
+      const details = document.createElement('details'); details.open = label === 'Task + runs';
+      const summary = document.createElement('summary'); summary.textContent = label; details.appendChild(summary);
+      const pre = document.createElement('pre'); pre.className = 'grant-detail'; pre.textContent = formatValue(value); details.appendChild(pre); host.appendChild(details);
+    });
+  }
+
+  async function loadTaskInventoryCard() {
+    const card = $('task-inventory-card');
+    if (!card) return;
+    const host = card.querySelector('.mgmt-list-host');
+    if (!host) return;
+    if (!gatewayMethodAdvertised('tasks.list')) {
+      host.innerHTML = '<div class="sidebar-empty">tasks.list is not advertised by this gateway.</div>';
+      return;
+    }
+    host.innerHTML = '<div class="sidebar-empty">Loading task inventory…</div>';
+    const res = await callSafe('tasks.list', { limit: 200 });
+    if (!document.body.contains(card)) return;
+    host.innerHTML = '';
+    if (res.error) { host.innerHTML = `<div class="mgmt-error">${escapeHTML(res.error)}</div>`; return; }
+    const tasks = res.tasks || res.items || [];
+    if (!tasks.length) { host.innerHTML = '<div class="sidebar-empty">No tasks in the durable inventory.</div>'; return; }
+    tasks.forEach(task => {
+      const id = taskIDOf(task);
+      const row = document.createElement('div'); row.className = 'mgmt-row task-row';
+      const title = task.title || task.instructions || id || 'task';
+      const status = task.status || 'unknown';
+      const agent = task.assigned_agent || task.assignedAgent || '';
+      const session = task.session_id || task.sessionId || '';
+      const parent = task.parent_task_id || task.parentTaskId || '';
+      row.innerHTML = `<div class="task-row-heading"><strong>${escapeHTML(truncate(title, 100))}</strong><span class="task-status ${escapeHTML(status)}">${escapeHTML(status)}</span></div><div class="sub">${escapeHTML([id, agent && 'agent ' + agent, session && 'session ' + truncate(session, 32), parent && 'child of ' + parent].filter(Boolean).join(' · '))}</div>`;
+      if (id) {
+        const actions = document.createElement('div'); actions.className = 'action-row';
+        const details = document.createElement('button'); details.className = 'mini-btn'; details.textContent = 'Details'; details.addEventListener('click', () => loadTaskDetail(id)); actions.appendChild(details);
+        row.appendChild(actions);
+      }
+      host.appendChild(row);
+    });
+  }
+
+  function queueTaskInventoryRefresh() {
+    if (mainView !== 'tasks') return;
+    if (taskInventoryRefreshInFlight) { taskInventoryRefreshQueued = true; return; }
+    taskInventoryRefreshInFlight = true;
+    Promise.all([loadTaskInventoryCard(), Promise.resolve(renderTaskActivityCard())]).finally(() => {
+      taskInventoryRefreshInFlight = false;
+      if (taskInventoryRefreshQueued) {
+        taskInventoryRefreshQueued = false;
+        queueTaskInventoryRefresh();
+      }
+    });
+  }
+
+  function handleTaskLifecycleEvent(event, payload) {
+    const relevant = ['task.suggestion', 'agent.status', 'chat', 'chat.message', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool'];
+    if (!relevant.includes(event)) return;
+    taskActivityEvents.push({ event, payload: payload || {}, at: Date.now() });
+    if (taskActivityEvents.length > 60) taskActivityEvents = taskActivityEvents.slice(-60);
+    renderTaskActivityCard();
+    if (event !== 'tool.progress') queueTaskInventoryRefresh();
+  }
+
   async function showTasksView(token) {
-    const { grid } = beginManagementView('Tasks & Ops', 'Model-suggested follow-up tasks, pending agent questions, and MCP attach grants.');
+    const { grid } = beginManagementView('Tasks & Ops', 'Live task/subagent inventory, lifecycle activity, suggestions, pending questions, and attach grants.');
     if (!isViewCurrent('tasks', token)) return;
+
+    const inventoryCard = addMgmtCard(grid, 'Task / subagent inventory');
+    inventoryCard.id = 'task-inventory-card';
+    const advertisedEvents = ['task.suggestion', 'agent.status', 'chat', 'chat.message', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool'].filter(gatewayEventAdvertised);
+    const inventoryStatus = document.createElement('div'); inventoryStatus.className = 'sub';
+    inventoryStatus.textContent = advertisedEvents.length ? `Live refresh events: ${advertisedEvents.join(', ')}` : 'No task/subagent lifecycle events are advertised; inventory is snapshot-only.';
+    inventoryCard.appendChild(inventoryStatus);
+    const inventoryHost = document.createElement('div'); inventoryHost.className = 'mgmt-list-host'; inventoryCard.appendChild(inventoryHost);
+
+    const activityCard = addMgmtCard(grid, 'Live lifecycle activity');
+    activityCard.id = 'task-activity-card';
+    const activityHost = document.createElement('div'); activityHost.className = 'mgmt-list-host'; activityCard.appendChild(activityHost);
+
+    const detailCard = addMgmtCard(grid, 'Task details / runs / trace');
+    detailCard.id = 'task-detail-card'; detailCard.classList.add('mgmt-card-wide');
+    const detailHost = document.createElement('div'); detailHost.className = 'mgmt-list-host'; detailHost.innerHTML = '<div class="sidebar-empty">Choose a task to inspect available details.</div>'; detailCard.appendChild(detailHost);
 
     const suggestionsCard = addMgmtCard(grid, 'Task suggestions');
     suggestionsCard.id = 'task-suggestions-card';
@@ -2659,7 +3026,8 @@ const TOKEN   = '{{.Token}}';
     });
     mintedAttachGrants.forEach(grant => renderAttachGrantRow(grantsHost, grant));
 
-    await Promise.all([loadTaskSuggestionsCard(), loadPendingQuestionsCard()]);
+    renderTaskActivityCard();
+    await Promise.all([loadTaskInventoryCard(), loadTaskSuggestionsCard(), loadPendingQuestionsCard()]);
   }
 
   // ── Boards view: widget frame host + ticket postMessage bridge ────────────
@@ -3062,6 +3430,7 @@ const TOKEN   = '{{.Token}}';
           if (mainView === 'chat' && payload.status === 'idle' && statusSession === sessionID) {
             if (!streamingBubble) hideThinking();
           }
+          handleTaskLifecycleEvent(event, payload);
         }
         break;
       case 'chat': {
@@ -3098,6 +3467,7 @@ const TOKEN   = '{{.Token}}';
           setRunActive(false, payload.sessionKey);
           loadSessions();
         }
+        if (payload.state !== 'delta') handleTaskLifecycleEvent(event, payload);
         break;
       }
       case 'session.typing':
@@ -3110,19 +3480,24 @@ const TOKEN   = '{{.Token}}';
           hideThinking();
           if (payload.text) addMsg(payload.text, 'agent');
         }
+        if (payload && (payload.task_id || payload.run_id)) handleTaskLifecycleEvent(event, payload);
         break;
       case 'tool.start':
         setRunActive(true, payload && payload.session_id);
         if (mainView === 'chat') renderToolActivity(payload, 'started');
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'tool.progress':
         if (mainView === 'chat') renderToolActivity(payload, 'progress');
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'tool.result':
         if (mainView === 'chat') renderToolActivity(payload, 'result');
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'tool.error':
         if (mainView === 'chat') renderToolActivity(payload, 'error');
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'exec.approval.requested':
         if (payload) enqueueApproval(payload, null, 'exec');
@@ -3177,6 +3552,14 @@ const TOKEN   = '{{.Token}}';
         break;
       case 'task.suggestion':
         handleTaskSuggestionEvent(payload);
+        handleTaskLifecycleEvent(event, payload);
+        break;
+      case 'session.placement':
+      case 'sessions.changed':
+      case 'session.operation':
+      case 'session.tool':
+        handleSessionOrchestrationEvent(event, payload);
+        handleTaskLifecycleEvent(event, payload);
         break;
       case 'board.changed':
         handleBoardChanged(payload);
@@ -3216,12 +3599,13 @@ const TOKEN   = '{{.Token}}';
               try {
                 if (!hello || hello.protocol !== 4) throw new Error('gateway protocol v4 is required');
                 const advertised = new Set((hello.features && hello.features.events) || []);
+                gatewayAdvertisedEvents = advertised;
                 if (!advertised.has('chat')) throw new Error('gateway does not advertise protocol-v4 chat events');
                 const descriptors = (hello.features && hello.features.methodDescriptors) || [];
                 if (!Array.isArray(descriptors) || descriptors.length === 0) throw new Error('gateway does not advertise method descriptors');
                 gatewayMethodDescriptors = new Map(descriptors.filter(item => item && item.name).map(item => [item.name, item]));
                 gatewayScopes = new Set((hello.auth && hello.auth.scopes) || []);
-                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'question.requested', 'question.resolved', 'task.suggestion', 'board.changed', 'mcp.app.viewCreated'];
+                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool', 'question.requested', 'question.resolved', 'task.suggestion', 'board.changed', 'mcp.app.viewCreated'];
                 const events = wanted.filter(name => advertised.has(name));
                 await callMethod('events.subscribe', { events });
                 await reconcilePendingApprovals();
@@ -3273,6 +3657,7 @@ const TOKEN   = '{{.Token}}';
       connected = false;
       gatewayMethodDescriptors = new Map();
       gatewayScopes = new Set();
+      gatewayAdvertisedEvents = new Set();
       finalizeStreaming();
       setRunActive(false);
       handleTerminalDisconnect();
