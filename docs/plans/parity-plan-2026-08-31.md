@@ -143,7 +143,7 @@ Enforcement bugs, not features.
   deletions (`internal/nostr/runtime/capability.go:1028-1033`); fix "AgentPort is the FSP port"
   doc drift (`fips_transport.go:64-69`). Evaluate — do not adopt yet — the native
   pubkey-datagram API: ACP requires TCP reliability until a versioned reliability layer exists.
-- [ ] **4.2 (OPEN — deferred by priority; detailed UX notes in bd swarmstr-k44e.2) Web UI orchestration surfaces.** Checkpoint/rewind timeline over the existing DAG
+- [x] **4.2 (done; follow-up swarmstr-u6gn.6: wire runtime handlers for advertised sessions.get/resolve/recover) Web UI orchestration surfaces.** Checkpoint/rewind timeline over the existing DAG
   (backend ahead of UI; `internal/gateway/methods/schema_methods.go:442-473`); live
   subagent/task activity panel (`/tasks`-style); session ownership/recovery UX; then routed
   shell, approvals history, push notifications (`internal/webui/src/js/*` vs
