@@ -97,8 +97,12 @@ type RuntimeOptions struct {
 	// Returning false suppresses delivery of one event to one client without
 	// affecting other subscribers. It runs on the broadcast path and must be
 	// fast and non-blocking.
-	EventAuthorizer     func(principal ControlPrincipal, event string, payload any) bool
-	HandleRequest       RequestHandler
+	EventAuthorizer func(principal ControlPrincipal, event string, payload any) bool
+	HandleRequest   RequestHandler
+	// AfterResponse runs after a request response frame has been written. It is
+	// used by the first-run onboarding runtime to transition into normal startup
+	// only after setup.activate has received its acknowledgement.
+	AfterResponse       func(context.Context, protocol.RequestFrame, bool)
 	ValidateDeviceToken DeviceTokenValidator
 	OnDisconnect        func(context.Context, ConnectionInfo)
 	// StartupReady reports whether sidecar-backed methods may be dispatched.
@@ -731,11 +735,17 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 			})
 			continue
 		}
-		reqCtx := contextWithControlConnection(contextWithControlPrincipal(req.Context(), principal), c.id)
+		reqCtx := contextWithLocalConnection(
+			contextWithControlConnection(contextWithControlPrincipal(req.Context(), principal), c.id),
+			isLoopbackRemote(remoteIP),
+		)
 		payload, shape := r.opts.HandleRequest(reqCtx, reqFrame)
 		if shape != nil {
 			c.bumpUnauthorized(shape)
 			_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": false, "error": shape})
+			if r.opts.AfterResponse != nil {
+				r.opts.AfterResponse(reqCtx, reqFrame, false)
+			}
 			if c.shouldClose(r.opts.UnauthorizedBurstMax) {
 				_ = conn.Close(websocket.StatusPolicyViolation, "repeated unauthorized requests")
 				return
@@ -744,6 +754,9 @@ func (r *Runtime) handleWS(w http.ResponseWriter, req *http.Request) {
 		}
 		c.resetUnauthorized()
 		_ = c.writeFrame(req.Context(), r.writeTimeout(), map[string]any{"type": protocol.FrameTypeResponse, "id": reqFrame.ID, "ok": true, "payload": payload})
+		if r.opts.AfterResponse != nil {
+			r.opts.AfterResponse(reqCtx, reqFrame, true)
+		}
 	}
 }
 
@@ -839,6 +852,15 @@ func (r *Runtime) handleInternalRequest(c *client, req protocol.RequestFrame) (b
 	}
 }
 
+// Shutdown stops the HTTP/WebSocket runtime and waits for the listener to
+// release its address.
+func (r *Runtime) Shutdown(ctx context.Context) error {
+	if r == nil || r.srv == nil {
+		return nil
+	}
+	return r.srv.Shutdown(ctx)
+}
+
 func (r *Runtime) snapshot() protocol.Snapshot {
 	r.mu.RLock()
 	presence := make([]protocol.PresenceEntry, 0, len(r.clients))
@@ -893,6 +915,7 @@ type ControlPrincipal struct {
 
 type controlPrincipalContextKey struct{}
 type controlConnectionContextKey struct{}
+type localConnectionContextKey struct{}
 
 func PrincipalFromContext(ctx context.Context) (ControlPrincipal, bool) {
 	if ctx == nil {
@@ -929,6 +952,24 @@ func ConnectionIDFromContext(ctx context.Context) (string, bool) {
 
 func contextWithControlConnection(ctx context.Context, connectionID string) context.Context {
 	return context.WithValue(ctx, controlConnectionContextKey{}, strings.TrimSpace(connectionID))
+}
+
+func contextWithLocalConnection(ctx context.Context, local bool) context.Context {
+	return context.WithValue(ctx, localConnectionContextKey{}, local)
+}
+
+// ContextWithLocalConnection is the exported test seam for the trusted
+// loopback-WebSocket marker. Production derives it only from req.RemoteAddr.
+func ContextWithLocalConnection(ctx context.Context, local bool) context.Context {
+	return contextWithLocalConnection(ctx, local)
+}
+
+func LocalConnectionFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	local, _ := ctx.Value(localConnectionContextKey{}).(bool)
+	return local
 }
 
 func (r *Runtime) evaluateAuth(req *http.Request, connect protocol.ConnectParams) authDecision {

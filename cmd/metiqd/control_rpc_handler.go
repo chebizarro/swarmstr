@@ -68,6 +68,7 @@ type controlRPCDeps struct {
 	surfaceDispatch pluginSurfaceDispatcher
 	startedAt       time.Time
 	bootstrapPath   string
+	onboarding      *onboardingService
 
 	sessionStore       *state.SessionStore
 	sessionCoordinator *sessioncoord.Service
@@ -179,6 +180,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 	configState := h.deps.configState
 
 	method := strings.TrimSpace(in.Method)
+	if isSetupMethod(method) {
+		return h.handleSetupRPC(ctx, in, method)
+	}
 	cfg := configState.Get()
 	internal := in.Internal
 	if !internal && !in.Authenticated && strings.TrimSpace(in.FromPubKey) != "" && !cfg.Control.RequireAuth && in.EventID == "" && in.RequestID == "" && in.RelayURL == "" {

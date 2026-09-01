@@ -12,12 +12,13 @@
     "openclaw_defined_count": 393,
     "openclaw_method_count": 371,
     "hidden_method_count": 22,
-    "implemented": 329,
+    "implemented": 334,
     "partial": 0,
-    "missing": 42,
+    "missing": 37,
     "triage_category_counts": {
-      "accepted-deviation": 28,
-      "implement": 343
+      "accepted-deviation": 23,
+      "implement": 343,
+      "implemented-native-equivalent": 5
     }
   },
   "entries": [
@@ -536,33 +537,37 @@
     },
     {
       "method": "openclaw.setup.detect",
-      "status": "missing",
-      "notes": "Honest UNAVAILABLE (accepted deviation, stays missing). Detects an OpenClaw application install; there is nothing to detect for a nostr-key-native daemon that is not OpenClaw. Left unregistered rather than faking a stub. Product follow-up: swarmstr-nuqy.",
-      "triage": "accepted-deviation",
+      "status": "implemented",
+      "metiq_method": "setup.detect",
+      "notes": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): inspects durable pre-identity onboarding, identity, preparation, verification, and activation readiness state.",
+      "triage": "implemented-native-equivalent",
       "triage_group": "openclaw-branded-control-ui",
       "workstream": "none"
     },
     {
       "method": "openclaw.setup.activate",
-      "status": "missing",
-      "notes": "Honest UNAVAILABLE (accepted deviation, stays missing). Activates an OpenClaw install/license; not meaningful for a nostr daemon whose identity is a nostr keypair. Left unregistered. Product follow-up: swarmstr-nuqy.",
-      "triage": "accepted-deviation",
+      "status": "implemented",
+      "metiq_method": "setup.activate",
+      "notes": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): atomically commits bootstrap/live config, enables normal work acceptance, and permanently seals the setup window.",
+      "triage": "implemented-native-equivalent",
       "triage_group": "openclaw-branded-control-ui",
       "workstream": "none"
     },
     {
       "method": "openclaw.setup.auth.start",
-      "status": "missing",
-      "notes": "Honest UNAVAILABLE (accepted deviation, stays missing). Starts OpenClaw's onboarding auth flow; Metiq identity is nostr-key-based and has no OpenClaw auth handshake. Left unregistered. Product follow-up: swarmstr-nuqy.",
-      "triage": "accepted-deviation",
+      "status": "implemented",
+      "metiq_method": "setup.auth.start",
+      "notes": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): provisions a Nostr identity by generated keypair, imported nsec, or paired NIP-46 signer.",
+      "triage": "implemented-native-equivalent",
       "triage_group": "openclaw-branded-control-ui",
       "workstream": "none"
     },
     {
       "method": "openclaw.setup.prepare.start",
-      "status": "missing",
-      "notes": "Honest UNAVAILABLE (accepted deviation, stays missing). Prepares an OpenClaw environment during onboarding; no equivalent OpenClaw environment exists to prepare. Left unregistered. Product follow-up: swarmstr-nuqy.",
-      "triage": "accepted-deviation",
+      "status": "implemented",
+      "metiq_method": "setup.prepare.start",
+      "notes": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): stages NIP-65 relays, a kind-37195 capability advert, workspace, and provider credentials.",
+      "triage": "implemented-native-equivalent",
       "triage_group": "openclaw-branded-control-ui",
       "workstream": "none"
     },
@@ -2642,9 +2647,10 @@
     },
     {
       "method": "openclaw.setup.verify",
-      "status": "missing",
-      "notes": "Honest UNAVAILABLE (accepted deviation, stays missing). Verifies OpenClaw onboarding completion; there is no OpenClaw setup to verify for a nostr-native daemon. Left unregistered. Product follow-up: swarmstr-nuqy.",
-      "triage": "accepted-deviation",
+      "status": "implemented",
+      "metiq_method": "setup.verify",
+      "notes": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): verifies relay reachability, signing, NIP-65/kind-37195 publication, and provider authentication readiness.",
+      "triage": "implemented-native-equivalent",
       "triage_group": "openclaw-branded-control-ui",
       "workstream": "none"
     },

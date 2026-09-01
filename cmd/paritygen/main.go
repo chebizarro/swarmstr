@@ -47,10 +47,11 @@ type sourceMetadata struct {
 }
 
 type triageConfig struct {
-	SchemaVersion  int               `json:"schema_version"`
-	CategoryValues []string          `json:"category_values"`
-	Groups         []triageGroup     `json:"groups"`
-	MethodNotes    map[string]string `json:"method_notes"`
+	SchemaVersion     int               `json:"schema_version"`
+	CategoryValues    []string          `json:"category_values"`
+	Groups            []triageGroup     `json:"groups"`
+	MethodEquivalents map[string]string `json:"method_equivalents"`
+	MethodNotes       map[string]string `json:"method_notes"`
 }
 
 type triageGroup struct {
@@ -420,18 +421,31 @@ func buildGatewaySnapshot(descriptors []descriptor, source sourceMetadata, captu
 		usedPrefixes[prefix] = struct{}{}
 		status := "missing"
 		metiqMethod := ""
+		triageCategory := group.Category
 		if _, ok := supported[descriptor.Name]; ok {
 			status = "implemented"
 			metiqMethod = descriptor.Name
 			implemented[descriptor.Name] = struct{}{}
 			summary.Implemented++
+		} else if nativeMethod := strings.TrimSpace(triage.MethodEquivalents[descriptor.Name]); nativeMethod != "" {
+			if _, ok := supported[nativeMethod]; !ok {
+				return gatewaySnapshot{}, nil, fmt.Errorf("gateway native equivalent %q -> %q is not supported", descriptor.Name, nativeMethod)
+			}
+			status = "implemented"
+			metiqMethod = nativeMethod
+			triageCategory = "implemented-native-equivalent"
+			implemented[nativeMethod] = struct{}{}
+			summary.Implemented++
 		} else {
 			summary.Missing++
 		}
-		summary.TriageCategoryCounts[group.Category]++
+		if _, ok := validCategories[triageCategory]; !ok {
+			return gatewaySnapshot{}, nil, fmt.Errorf("unknown gateway triage category %q", triageCategory)
+		}
+		summary.TriageCategoryCounts[triageCategory]++
 		entries = append(entries, gatewayEntry{
 			Method: descriptor.Name, Status: status, MetiqMethod: metiqMethod,
-			Notes: triage.MethodNotes[descriptor.Name], Triage: group.Category,
+			Notes: triage.MethodNotes[descriptor.Name], Triage: triageCategory,
 			TriageGroup: group.ID, Workstream: group.Workstream,
 		})
 	}

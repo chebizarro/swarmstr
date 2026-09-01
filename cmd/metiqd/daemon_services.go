@@ -177,5 +177,6 @@ type handlerServices struct {
 	stateEnvelopeCodec *secure.MutableSelfEnvelopeCodec
 	bootstrapPath      string
 	configFilePath     string
+	onboarding         *onboardingService
 	cronExecutorMu     *sync.RWMutex
 }

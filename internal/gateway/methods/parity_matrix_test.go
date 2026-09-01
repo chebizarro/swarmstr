@@ -31,8 +31,9 @@ type methodParityEntry struct {
 }
 
 type gatewayTriageConfig struct {
-	CategoryValues []string `json:"category_values"`
-	Groups         []struct {
+	CategoryValues    []string          `json:"category_values"`
+	MethodEquivalents map[string]string `json:"method_equivalents"`
+	Groups            []struct {
 		ID         string   `json:"id"`
 		Prefixes   []string `json:"prefixes"`
 		Category   string   `json:"category"`
@@ -79,8 +80,12 @@ func TestGatewayMethodParityMatrixIsConsistent(t *testing.T) {
 		switch entry.Status {
 		case "implemented":
 			implemented++
-			if _, ok := supported[entry.Method]; !ok {
-				t.Fatalf("implemented method not supported in metiq: %s", entry.Method)
+			target := entry.Method
+			if entry.MetiqMethod != "" {
+				target = entry.MetiqMethod
+			}
+			if _, ok := supported[target]; !ok {
+				t.Fatalf("implemented method target not supported in metiq: %s -> %s", entry.Method, target)
 			}
 		case "partial":
 			partial++
@@ -165,6 +170,12 @@ func TestGatewayMethodParityTriageMatchesSourceRules(t *testing.T) {
 			t.Fatalf("method %s has no source triage rule", entry.Method)
 		}
 		used[prefix] = struct{}{}
+		if nativeMethod := strings.TrimSpace(cfg.MethodEquivalents[entry.Method]); nativeMethod != "" {
+			want.category = "implemented-native-equivalent"
+			if entry.MetiqMethod != nativeMethod || entry.Status != "implemented" {
+				t.Fatalf("native equivalent drift for %s: got=%+v want_target=%s", entry.Method, entry, nativeMethod)
+			}
+		}
 		if entry.Triage != want.category || entry.TriageGroup != want.group ||
 			entry.Workstream != want.workstream {
 			t.Fatalf("generated triage drift for %s: got=%+v want=%+v", entry.Method, entry, want)

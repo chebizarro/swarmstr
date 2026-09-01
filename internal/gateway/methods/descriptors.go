@@ -123,9 +123,16 @@ var exactMethodScopes = map[string]string{
 	MethodExecApprovalsNodeSet:       protocol.MethodScopeOperatorAdmin,
 	MethodSupportedMethods:           protocol.MethodScopeOperatorRead,
 	MethodHealth:                     protocol.MethodScopeOperatorRead,
-	MethodStatus:                     protocol.MethodScopeOperatorRead,
-	MethodStatusAlias:                protocol.MethodScopeOperatorRead,
-	MethodDoctorMemoryStatus:         protocol.MethodScopeOperatorRead,
+	// setup.* performs its own fail-closed local-WS setup-token admission. Read
+	// scope lets a pre-identity WebSocket reach that stronger bootstrap gate.
+	MethodSetupDetect:        protocol.MethodScopeOperatorRead,
+	MethodSetupAuthStart:     protocol.MethodScopeOperatorRead,
+	MethodSetupPrepareStart:  protocol.MethodScopeOperatorRead,
+	MethodSetupVerify:        protocol.MethodScopeOperatorRead,
+	MethodSetupActivate:      protocol.MethodScopeOperatorRead,
+	MethodStatus:             protocol.MethodScopeOperatorRead,
+	MethodStatusAlias:        protocol.MethodScopeOperatorRead,
+	MethodDoctorMemoryStatus: protocol.MethodScopeOperatorRead,
 	// Memory-maintenance long tail (swarmstr-wvwk): the whole bucket is an
 	// operator.admin maintenance surface. plan is side-effect free but still
 	// admin-gated (it reports the store path/versions and pairs with apply);
@@ -482,6 +489,10 @@ var startupUnavailableMethods = map[string]bool{
 }
 
 var controlPlaneWriteMethods = map[string]bool{
+	MethodSetupAuthStart:          true,
+	MethodSetupPrepareStart:       true,
+	MethodSetupVerify:             true,
+	MethodSetupActivate:           true,
 	MethodConfigApply:             true,
 	MethodConfigPatch:             true,
 	MethodUpdateRun:               true,

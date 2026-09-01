@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "category_values": ["implement", "accepted-deviation", "defer"],
-  "notes": "Every advertised OpenClaw gateway method is classified exactly once by its leading method group. 'implement' includes methods already present in Metiq and methods assigned to a future workstream; this file does not implement those methods.",
+  "category_values": ["implement", "accepted-deviation", "implemented-native-equivalent", "defer"],
+  "notes": "Every advertised OpenClaw gateway method is classified by its leading method group, with explicit method_equivalents for fully implemented Metiq-native shapes that intentionally do not provide OpenClaw client compatibility. 'implement' includes methods already present in Metiq and methods assigned to a future workstream; this file does not implement those methods.",
   "groups": [
     {
       "id": "core-runtime",
@@ -117,7 +117,19 @@
       "rationale": "Opening a host editor is a UI/OS side effect; Metiq already exposes config get/set/apply/patch/schema surfaces."
     }
   ],
+  "method_equivalents": {
+    "openclaw.setup.detect": "setup.detect",
+    "openclaw.setup.activate": "setup.activate",
+    "openclaw.setup.auth.start": "setup.auth.start",
+    "openclaw.setup.prepare.start": "setup.prepare.start",
+    "openclaw.setup.verify": "setup.verify"
+  },
   "method_notes": {
+    "openclaw.setup.detect": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): inspects durable pre-identity onboarding, identity, preparation, verification, and activation readiness state.",
+    "openclaw.setup.activate": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): atomically commits bootstrap/live config, enables normal work acceptance, and permanently seals the setup window.",
+    "openclaw.setup.auth.start": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): provisions a Nostr identity by generated keypair, imported nsec, or paired NIP-46 signer.",
+    "openclaw.setup.prepare.start": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): stages NIP-65 relays, a kind-37195 capability advert, workspace, and provider credentials.",
+    "openclaw.setup.verify": "Metiq-native equivalent (swarmstr-nuqy; intentionally not OpenClaw-client-compatible): verifies relay reachability, signing, NIP-65/kind-37195 publication, and provider authentication readiness.",
     "audit.run.inspect": "Implemented by swarmstr-e9o6: gateway run identity is persisted on permission-audit decisions and inspected through bounded safe-only displays; receipt provenance and richer principal/lineage identity remain explicitly unknown rather than fabricated.",
     "chat.abort": "Operator abort remains unconditional. Busy queue-mode interrupt is tool-aware: it aborts only when active tools are interruptible and otherwise defers newest input as urgent active-run steering.",
     "config.schema.lookup": "Returns schema for a specific config path; full schema when path is empty.",

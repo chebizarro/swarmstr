@@ -3,6 +3,11 @@ package methods
 const (
 	MethodSupportedMethods       = "supportedmethods"
 	MethodHealth                 = "health"
+	MethodSetupDetect            = "setup.detect"
+	MethodSetupAuthStart         = "setup.auth.start"
+	MethodSetupPrepareStart      = "setup.prepare.start"
+	MethodSetupVerify            = "setup.verify"
+	MethodSetupActivate          = "setup.activate"
 	MethodDoctorMemoryStatus     = "doctor.memory.status"
 	MethodLogsTail               = "logs.tail"
 	MethodRuntimeObserve         = "runtime.observe"

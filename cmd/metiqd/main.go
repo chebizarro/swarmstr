@@ -484,9 +484,23 @@ func main() {
 	flag.StringVar(&pidFile, "pid-file", "", "write PID to this file on startup; removed on clean shutdown")
 	flag.Parse()
 
+	resolvedBootstrapPath, resolvedConfigPath, err := resolveFirstRunPaths(bootstrapPath, configFilePath)
+	if err != nil {
+		log.Fatalf("resolve first-run paths: %v", err)
+	}
+	bootstrapPath = resolvedBootstrapPath
+	configFilePath = resolvedConfigPath
 	cfg, err := config.LoadBootstrap(bootstrapPath)
 	if err != nil {
-		log.Fatalf("load bootstrap config: %v", err)
+		draft, _, draftErr := loadBootstrapDraft(bootstrapPath)
+		if draftErr != nil || strings.TrimSpace(draft.PrivateKey) != "" || strings.TrimSpace(draft.SignerURL) != "" {
+			log.Fatalf("load bootstrap config: %v", err)
+		}
+		log.Printf("bootstrap identity unavailable; entering local first-run onboarding: %v", err)
+		cfg, err = runFirstRunOnboarding(bootstrapPath, configFilePath, gatewayWSAddr, gatewayWSToken, gatewayWSPath)
+		if err != nil {
+			log.Fatalf("first-run onboarding: %v", err)
+		}
 	}
 
 	// Register model context overrides from bootstrap config.
@@ -1467,6 +1481,16 @@ func main() {
 			log.Fatalf("invalid --config path: %v", err)
 		}
 		configFilePath = validatedPath
+	}
+	onboarding, _, err := openOnboardingService(onboardingServiceOptions{
+		BootstrapPath:     bootstrapPath,
+		ConfigPath:        configFilePath,
+		Bootstrap:         cfg,
+		Config:            configState.Get(),
+		IdentityCommitted: true,
+	})
+	if err != nil {
+		log.Fatalf("initialize sealed onboarding state: %v", err)
 	}
 
 	// Load Goja (JS) plugins from config and register their tools.
@@ -5692,6 +5716,7 @@ func main() {
 			stateEnvelopeCodec: controlStateEnvelopeCodec,
 			bootstrapPath:      bootstrapPath,
 			configFilePath:     controlConfigFilePath,
+			onboarding:         onboarding,
 			cronExecutorMu:     &controlCronExecutorMu,
 		},
 		runtimeConfig:  controlRuntimeConfig,
@@ -8393,6 +8418,7 @@ func handleControlRPCRequest(
 		surfaceDispatch:   pluginMgr,
 		startedAt:         startedAt,
 		bootstrapPath:     svc.handlers.bootstrapPath,
+		onboarding:        svc.handlers.onboarding,
 
 		sessionStore:       svc.session.sessionStore,
 		sessionCoordinator: svc.session.sessionCoordinator,

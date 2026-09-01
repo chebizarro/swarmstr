@@ -401,6 +401,14 @@ var adminDispatchRegistry = []struct {
 	{AdminDispatchSystem, []string{
 		MethodSupportedMethods,
 		MethodHealth,
+		// Metiq-native first-run onboarding. These names are intentionally not
+		// openclaw.setup.* aliases; handler admission additionally requires the
+		// local-WebSocket setup-token bootstrap boundary.
+		MethodSetupDetect,
+		MethodSetupAuthStart,
+		MethodSetupPrepareStart,
+		MethodSetupVerify,
+		MethodSetupActivate,
 		MethodDoctorMemoryStatus,
 		MethodStatus,
 		MethodStatusAlias,
@@ -493,11 +501,9 @@ var adminDispatchRegistry = []struct {
 	// OpenClaw-branded control-surface compat aliases (swarmstr-i413). Thin
 	// aliases that re-dispatch to native Metiq methods (chat.send / chat.history
 	// / sessions.files.list / approval.list) and return the native, OpenClaw-
-	// modeled response shape. Registering them here flips their parity status to
-	// "implemented"; their triage stays accepted-deviation (prefix-locked to the
-	// openclaw-branded-control-ui group). The five openclaw.setup.* onboarding
-	// methods are deliberately NOT registered — they onboard/activate an OpenClaw
-	// install and stay an honest UNAVAILABLE accepted deviation (swarmstr-nuqy).
+	// modeled response shape. The five OpenClaw setup names remain unregistered:
+	// swarmstr-nuqy maps them in the parity ledger to intentionally different,
+	// Metiq-native setup.* methods rather than adding client-compat aliases.
 	{AdminDispatchOpenclaw, []string{
 		MethodOpenclawChat,
 		MethodOpenclawChatHistory,
