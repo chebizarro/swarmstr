@@ -9,9 +9,11 @@ import (
 
 	"metiq/internal/agent/toolbuiltin"
 	"metiq/internal/gateway/methods"
+	gatewayws "metiq/internal/gateway/ws"
 	hookspkg "metiq/internal/hooks"
 	mcppkg "metiq/internal/mcp"
 	nostruntime "metiq/internal/nostr/runtime"
+	secretspkg "metiq/internal/secrets"
 	"metiq/internal/store/state"
 )
 
@@ -700,6 +702,58 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodSecretsStoreList, methods.MethodSecretsStoreSet, methods.MethodSecretsStoreDelete:
+		if _, ok := gatewayws.ConnectionIDFromContext(ctx); !ok && !in.Internal {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("%s requires an authenticated WebSocket connection", method)
+		}
+		if h.deps.services == nil || h.deps.services.handlers.secretsStore == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("protected secret store unavailable")
+		}
+		store := h.deps.services.handlers.secretsStore
+		switch method {
+		case methods.MethodSecretsStoreList:
+			if _, err := methods.DecodeSecretsStoreListParams(in.Params); err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			records, err := store.ListStoredSecrets()
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			entries := make([]any, 0, len(records))
+			for _, record := range records {
+				if record.Kind == secretspkg.StoredSecretKindEnv {
+					entries = append(entries, methods.SecretsStoreEnvEntry{Name: record.Name, Kind: string(record.Kind), ScopeKind: "team", ScopeID: "", CreatedAtMS: record.CreatedAtMS, UpdatedAtMS: record.UpdatedAtMS, UpdatedBy: record.UpdatedBy, Value: record.Value})
+				} else {
+					entries = append(entries, methods.SecretsStoreSecretEntry{Name: record.Name, Kind: string(record.Kind), ScopeKind: "team", ScopeID: "", CreatedAtMS: record.CreatedAtMS, UpdatedAtMS: record.UpdatedAtMS, UpdatedBy: record.UpdatedBy, AllowedHosts: append([]string(nil), record.AllowedHosts...)})
+				}
+			}
+			return nostruntime.ControlRPCResult{Result: map[string]any{"entries": entries}}, true, nil
+		case methods.MethodSecretsStoreSet:
+			req, err := methods.DecodeSecretsStoreSetParams(in.Params)
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			if req, err = req.Normalize(); err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			if _, err := store.SetStoredSecret(req.Name, req.Value, req.Kind, req.AllowedHosts, in.FromPubKey); err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "reloaded": true, "warningCount": 0}}, true, nil
+		case methods.MethodSecretsStoreDelete:
+			req, err := methods.DecodeSecretsStoreDeleteParams(in.Params)
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			if req, err = req.Normalize(); err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			if _, err := store.DeleteStoredSecret(req.Name); err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "reloaded": true, "warningCount": 0}}, true, nil
+		}
+		return nostruntime.ControlRPCResult{}, true, fmt.Errorf("unsupported secret store method")
 	case methods.MethodSecretsReload:
 		req, err := methods.DecodeSecretsReloadParams(in.Params)
 		if err != nil {

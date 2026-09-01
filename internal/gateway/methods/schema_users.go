@@ -45,6 +45,24 @@ type UsersSetAvatarRequest struct {
 	AvatarBase64 string `json:"avatarBase64"`
 }
 
+// UsersPrefsGetRequest returns all durable preferences or the selected keys.
+type UsersPrefsGetRequest struct {
+	Keys []string `json:"keys,omitempty"`
+}
+
+// UsersPrefsSetRequest applies a bounded PATCH to the caller's preferences.
+type UsersPrefsSetRequest struct {
+	Entries map[string]any `json:"entries"`
+}
+
+// UsersSetRoleRequest assigns or clears role metadata. role must be present;
+// JSON null clears it.
+type UsersSetRoleRequest struct {
+	ProfileID string  `json:"profileId"`
+	Role      *string `json:"role"`
+	roleSet   bool
+}
+
 func (r UsersListRequest) Normalize() (UsersListRequest, error) { return r, nil }
 
 func (r UsersSelfRequest) Normalize() (UsersSelfRequest, error) { return r, nil }
@@ -96,6 +114,78 @@ func (r *UsersSetDisplayNameRequest) UnmarshalJSON(data []byte) error {
 				return err
 			}
 			r.DisplayName = &name
+		}
+	}
+	return nil
+}
+
+func (r UsersPrefsGetRequest) Normalize() (UsersPrefsGetRequest, error) {
+	if len(r.Keys) > 32 {
+		return r, fmt.Errorf("invalid users.prefs.get params: keys exceeds 32 entries")
+	}
+	seen := make(map[string]struct{}, len(r.Keys))
+	for i, key := range r.Keys {
+		key = strings.TrimSpace(key)
+		if key == "" || len(key) > 256 {
+			return r, fmt.Errorf("invalid users.prefs.get params: key must be 1..256 characters")
+		}
+		if _, ok := seen[key]; ok {
+			return r, fmt.Errorf("invalid users.prefs.get params: duplicate key %q", key)
+		}
+		seen[key] = struct{}{}
+		r.Keys[i] = key
+	}
+	return r, nil
+}
+
+func (r UsersPrefsSetRequest) Normalize() (UsersPrefsSetRequest, error) {
+	if r.Entries == nil {
+		return r, fmt.Errorf("invalid users.prefs.set params: entries is required")
+	}
+	if len(r.Entries) > 32 {
+		return r, fmt.Errorf("invalid users.prefs.set params: entries exceeds 32 keys")
+	}
+	return r, nil
+}
+
+func (r UsersSetRoleRequest) Normalize() (UsersSetRoleRequest, error) {
+	r.ProfileID = strings.TrimSpace(r.ProfileID)
+	if r.ProfileID == "" {
+		return r, fmt.Errorf("invalid users.setRole params: profileId is required")
+	}
+	if !r.roleSet {
+		return r, fmt.Errorf("invalid users.setRole params: role is required")
+	}
+	if r.Role != nil {
+		trimmed := strings.TrimSpace(*r.Role)
+		if trimmed == "" || len(trimmed) > 128 {
+			return r, fmt.Errorf("invalid users.setRole params: role must be 1..128 characters")
+		}
+		r.Role = &trimmed
+	}
+	return r, nil
+}
+
+func (r *UsersSetRoleRequest) UnmarshalJSON(data []byte) error {
+	type alias struct {
+		ProfileID string          `json:"profileId"`
+		Role      json.RawMessage `json:"role"`
+	}
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	r.ProfileID = a.ProfileID
+	if len(a.Role) > 0 {
+		r.roleSet = true
+		if strings.TrimSpace(string(a.Role)) == "null" {
+			r.Role = nil
+		} else {
+			var role string
+			if err := json.Unmarshal(a.Role, &role); err != nil {
+				return err
+			}
+			r.Role = &role
 		}
 	}
 	return nil
@@ -155,4 +245,16 @@ func DecodeUsersSetDisplayNameParams(params json.RawMessage) (UsersSetDisplayNam
 
 func DecodeUsersSetAvatarParams(params json.RawMessage) (UsersSetAvatarRequest, error) {
 	return decodeMethodParams[UsersSetAvatarRequest](params)
+}
+
+func DecodeUsersPrefsGetParams(params json.RawMessage) (UsersPrefsGetRequest, error) {
+	return decodeMethodParams[UsersPrefsGetRequest](params)
+}
+
+func DecodeUsersPrefsSetParams(params json.RawMessage) (UsersPrefsSetRequest, error) {
+	return decodeMethodParams[UsersPrefsSetRequest](params)
+}
+
+func DecodeUsersSetRoleParams(params json.RawMessage) (UsersSetRoleRequest, error) {
+	return decodeMethodParams[UsersSetRoleRequest](params)
 }

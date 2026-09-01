@@ -13,12 +13,16 @@ import (
 )
 
 func usersCall(t *testing.T, h controlRPCHandler, method, params, fromPubKey string) (nostruntime.ControlRPCResult, error) {
+	return usersCallWithConfig(t, h, method, params, fromPubKey, state.ConfigDoc{})
+}
+
+func usersCallWithConfig(t *testing.T, h controlRPCHandler, method, params, fromPubKey string, cfg state.ConfigDoc) (nostruntime.ControlRPCResult, error) {
 	t.Helper()
 	result, handled, err := h.handleUsersRPC(context.Background(), nostruntime.ControlRPCInbound{
 		Method:     method,
 		Params:     json.RawMessage(params),
 		FromPubKey: fromPubKey,
-	}, method, state.ConfigDoc{})
+	}, method, cfg)
 	if !handled {
 		t.Fatalf("method %s was not handled by users dispatch", method)
 	}
@@ -36,6 +40,17 @@ func TestUsersSelfRequiresIdentity(t *testing.T) {
 	h := newControlRPCHandler(controlRPCDeps{userProfiles: userprofilespkg.NewManager()})
 	if _, err := usersCall(t, h, methods.MethodUsersSelf, `{}`, ""); err == nil {
 		t.Fatal("expected error when caller has no pubkey")
+	}
+}
+
+func TestUsersPrefsWithoutDurableIdentity(t *testing.T) {
+	h := newControlRPCHandler(controlRPCDeps{userProfiles: userprofilespkg.NewManager()})
+	res, err := usersCall(t, h, methods.MethodUsersPrefsGet, `{}`, "unknown-pubkey")
+	if err != nil {
+		t.Fatalf("users.prefs.get: %v", err)
+	}
+	if got := res.Result.(map[string]any)["status"]; got != "no_durable_identity" {
+		t.Fatalf("status=%v", got)
 	}
 }
 
@@ -91,6 +106,56 @@ func TestUsersLifecycle(t *testing.T) {
 	profile = res.Result.(map[string]any)["profile"].(userprofilespkg.Profile)
 	if profile.DisplayName == nil || *profile.DisplayName != "Caller" {
 		t.Fatalf("unexpected display name: %+v", profile.DisplayName)
+	}
+
+	// Preferences are caller-scoped and use PATCH semantics.
+	res, err = usersCall(t, h, methods.MethodUsersPrefsSet,
+		`{"entries":{"theme":"dark","dismissed":true}}`, "pubkey-caller")
+	if err != nil {
+		t.Fatalf("users.prefs.set: %v", err)
+	}
+	prefs := res.Result.(map[string]any)
+	if prefs["status"] != "ok" {
+		t.Fatalf("unexpected prefs set result: %+v", prefs)
+	}
+	res, err = usersCall(t, h, methods.MethodUsersPrefsSet,
+		`{"entries":{"dismissed":null}}`, "pubkey-caller")
+	if err != nil {
+		t.Fatalf("users.prefs.set delete: %v", err)
+	}
+	res, err = usersCall(t, h, methods.MethodUsersPrefsGet, `{"keys":["theme"]}`, "pubkey-caller")
+	if err != nil {
+		t.Fatalf("users.prefs.get: %v", err)
+	}
+	prefs = res.Result.(map[string]any)
+	entries := prefs["entries"].(map[string]any)
+	if entries["theme"] != "dark" || len(entries) != 1 {
+		t.Fatalf("unexpected preference projection: %+v", entries)
+	}
+
+	// Role assignment validates configured gateway roles and supports clear.
+	cfg := state.ConfigDoc{Extra: map[string]any{"gateway": map[string]any{"roles": map[string]any{"operator": map[string]any{}}}}}
+	if _, err := usersCallWithConfig(t, h, methods.MethodUsersSetRole,
+		`{"profileId":"pubkey-caller","role":"unknown"}`, "pubkey-caller", cfg); err == nil {
+		t.Fatal("expected unknown role error")
+	}
+	res, err = usersCallWithConfig(t, h, methods.MethodUsersSetRole,
+		`{"profileId":"pubkey-caller","role":"operator"}`, "pubkey-caller", cfg)
+	if err != nil {
+		t.Fatalf("users.setRole: %v", err)
+	}
+	profile = res.Result.(map[string]any)["profile"].(userprofilespkg.Profile)
+	if profile.Role == nil || *profile.Role != "operator" {
+		t.Fatalf("unexpected role: %+v", profile.Role)
+	}
+	res, err = usersCallWithConfig(t, h, methods.MethodUsersSetRole,
+		`{"profileId":"pubkey-caller","role":null}`, "pubkey-caller", cfg)
+	if err != nil {
+		t.Fatalf("users.setRole clear: %v", err)
+	}
+	profile = res.Result.(map[string]any)["profile"].(userprofilespkg.Profile)
+	if profile.Role != nil {
+		t.Fatalf("role was not cleared: %+v", profile.Role)
 	}
 
 	// setAvatar with valid base64.

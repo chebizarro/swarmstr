@@ -16,7 +16,9 @@ func MethodPolicy(method string) Policy {
 		return EventAndRequest
 	}
 	switch method {
-	case "secrets.resolve":
+	case "secrets.resolve", "secrets.store.list", "secrets.store.set", "secrets.store.delete":
+		// Secret responses (including env-kind values) must never enter the
+		// durable control-response replay cache.
 		return None
 	case "supportedmethods",
 		"health",

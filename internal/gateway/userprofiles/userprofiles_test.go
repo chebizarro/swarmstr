@@ -108,6 +108,49 @@ func TestSetDisplayNameSetAndClear(t *testing.T) {
 	}
 }
 
+func TestPreferencesAndRoleAreDurable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	m, err := NewManagerAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.EnsureForIdentity("pk"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := m.SetPreferences("pk", map[string]any{"theme": "dark", "nested": map[string]any{"enabled": true}})
+	if err != nil || entries["theme"] != "dark" {
+		t.Fatalf("set preferences: entries=%v err=%v", entries, err)
+	}
+	entries, err = m.SetPreferences("pk", map[string]any{"theme": nil})
+	if err != nil {
+		t.Fatalf("delete preference: %v", err)
+	}
+	if _, ok := entries["theme"]; ok {
+		t.Fatalf("null patch did not delete theme: %v", entries)
+	}
+	role := "operator"
+	profile, err := m.SetRole("pk", &role)
+	if err != nil || profile.Role == nil || *profile.Role != role {
+		t.Fatalf("set role: profile=%+v err=%v", profile, err)
+	}
+
+	reloaded, err := NewManagerAt(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got, err := reloaded.Preferences("pk", nil)
+	if err != nil {
+		t.Fatalf("preferences after reload: %v", err)
+	}
+	if _, ok := got["nested"]; !ok {
+		t.Fatalf("preference missing after reload: %v", got)
+	}
+	profile, err = reloaded.Get("pk")
+	if err != nil || profile.Role == nil || *profile.Role != role {
+		t.Fatalf("role missing after reload: profile=%+v err=%v", profile, err)
+	}
+}
+
 func TestSetAvatarValidationAndDurability(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	m, err := NewManagerAt(path)

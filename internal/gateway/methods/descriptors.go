@@ -228,6 +228,12 @@ var exactMethodScopes = map[string]string{
 	MethodUsersLinkEmail:      protocol.MethodScopeOperatorAdmin,
 	MethodUsersSetDisplayName: protocol.MethodScopeOperatorAdmin,
 	MethodUsersSetAvatar:      protocol.MethodScopeOperatorAdmin,
+	MethodUsersPrefsGet:       protocol.MethodScopeOperatorRead,
+	MethodUsersPrefsSet:       protocol.MethodScopeOperatorWrite,
+	MethodUsersSetRole:        protocol.MethodScopeOperatorAdmin,
+	MethodSecretsStoreList:    protocol.MethodScopeOperatorAdmin,
+	MethodSecretsStoreSet:     protocol.MethodScopeOperatorAdmin,
+	MethodSecretsStoreDelete:  protocol.MethodScopeOperatorAdmin,
 	// Gateway lifecycle (swarmstr-iiot): preflight is a read-only readiness
 	// snapshot (OpenClaw scopes it operator.read); request triggers a restart.
 	MethodGatewayRestartPreflight: protocol.MethodScopeOperatorRead,
@@ -487,4 +493,6 @@ var controlPlaneWriteMethods = map[string]bool{
 	MethodAttachGrant:             true,
 	MethodEnvironmentsCreate:      true,
 	MethodEnvironmentsDestroy:     true,
+	MethodSecretsStoreSet:         true,
+	MethodSecretsStoreDelete:      true,
 }

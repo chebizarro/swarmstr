@@ -3,8 +3,10 @@ package methods
 import "testing"
 
 func TestControlMethodReplayPolicy(t *testing.T) {
-	if got := ControlMethodReplayPolicy(MethodSecretsResolve); got != ControlReplayNone {
-		t.Fatalf("secrets.resolve replay policy = %v, want none", got)
+	for _, method := range []string{MethodSecretsResolve, MethodSecretsStoreList, MethodSecretsStoreSet, MethodSecretsStoreDelete} {
+		if got := ControlMethodReplayPolicy(method); got != ControlReplayNone {
+			t.Fatalf("%s replay policy = %v, want none", method, got)
+		}
 	}
 	if got := ControlMethodReplayPolicy(MethodConfigGet); got != ControlReplayEventAndRequest {
 		t.Fatalf("config.get replay policy = %v, want event+request", got)

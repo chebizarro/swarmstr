@@ -40,6 +40,7 @@ type VaultBackend struct {
 }
 
 var _ ListableSecretBackend = (*VaultBackend)(nil)
+var _ ProtectedSecretBackend = (*VaultBackend)(nil)
 
 // NewVaultBackend validates cfg and returns a fail-closed Vault backend.
 func NewVaultBackend(cfg VaultConfig) (*VaultBackend, error) {
@@ -112,7 +113,8 @@ func NewVaultBackend(cfg VaultConfig) (*VaultBackend, error) {
 	}, nil
 }
 
-func (b *VaultBackend) Name() string { return "vault" }
+func (b *VaultBackend) Name() string          { return "vault" }
+func (b *VaultBackend) ProtectedAtRest() bool { return true }
 
 func (b *VaultBackend) Get(key string) (string, bool, error) {
 	endpoint, err := b.endpoint(key, "data")

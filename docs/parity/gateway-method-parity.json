@@ -16,8 +16,8 @@
     "partial": 0,
     "missing": 7,
     "triage_category_counts": {
-      "implement": 308,
-      "accepted-deviation": 16
+      "implement": 313,
+      "accepted-deviation": 11
     }
   },
   "entries": [
@@ -971,7 +971,7 @@
       "status": "implemented",
       "metiq_method": "users.list",
       "notes": "",
-      "triage": "accepted-deviation",
+      "triage": "implement",
       "triage_group": "nostr-user-identity",
       "workstream": "Nostr identity"
     },
@@ -980,7 +980,7 @@
       "status": "implemented",
       "metiq_method": "users.self",
       "notes": "",
-      "triage": "accepted-deviation",
+      "triage": "implement",
       "triage_group": "nostr-user-identity",
       "workstream": "Nostr identity"
     },
@@ -989,7 +989,7 @@
       "status": "implemented",
       "metiq_method": "users.linkEmail",
       "notes": "",
-      "triage": "accepted-deviation",
+      "triage": "implement",
       "triage_group": "nostr-user-identity",
       "workstream": "Nostr identity"
     },
@@ -998,7 +998,7 @@
       "status": "implemented",
       "metiq_method": "users.setDisplayName",
       "notes": "",
-      "triage": "accepted-deviation",
+      "triage": "implement",
       "triage_group": "nostr-user-identity",
       "workstream": "Nostr identity"
     },
@@ -1007,7 +1007,7 @@
       "status": "implemented",
       "metiq_method": "users.setAvatar",
       "notes": "",
-      "triage": "accepted-deviation",
+      "triage": "implement",
       "triage_group": "nostr-user-identity",
       "workstream": "Nostr identity"
     },

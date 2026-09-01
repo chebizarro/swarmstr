@@ -48,9 +48,9 @@
     {
       "id": "nostr-user-identity",
       "prefixes": ["users"],
-      "category": "accepted-deviation",
+      "category": "implement",
       "workstream": "Nostr identity",
-      "rationale": "OpenClaw durable local user profiles and email aliases differ from Metiq's Nostr-pubkey identity and event-derived profile model."
+      "rationale": "Metiq implements durable profiles, preferences, and configured role metadata keyed by authenticated Nostr pubkey; email-primary account semantics remain an explicit identity adaptation."
     },
     {
       "id": "openclaw-branded-control-ui",
@@ -65,6 +65,45 @@
       "category": "implement",
       "workstream": "WS-A/A7",
       "rationale": "Terminal PTY sessions (including the attach/list/text/upload helpers), attach.* MCP-loopback grants, workspace-rooted fs.listDir, the git worktree lifecycle, the per-session board store (including the view-ticket surface and sandboxed frame host), gateway conversations, the durable question.* operator-question lifecycle, the ephemeral taskSuggestions.* registry, and the mcp.app.* MCP-App view surface are implemented as WS-native gateway surfaces in the A7 pass."
+    }
+  ],
+  "non_advertised_divergence_note": "OpenClaw also defines product-specific methods that are hidden (advertise: false) or absent from the pinned descriptor catalog, so they never become triage-group entries above. swarmstr-u6gn.8 classified those long-tail families as intentional divergences; the authoritative per-method list lives in docs/parity/gateway-long-tail-2026-08.json and the family/rationale summary is mirrored here.",
+  "non_advertised_divergences": [
+    {
+      "family": "browser-push-and-vapid",
+      "rationale": "Metiq has no browser-push service, VAPID key lifecycle, or push subscription store; notifications flow through Nostr/channel events."
+    },
+    {
+      "family": "managed-projects-and-github",
+      "rationale": "Metiq does not own GitHub OAuth, hosted project search, or a GitHub publication lifecycle; repositories and worktrees are operator-managed."
+    },
+    {
+      "family": "desktop-workers",
+      "rationale": "Metiq is a daemon and has no OpenClaw desktop worker host/process model."
+    },
+    {
+      "family": "portals",
+      "rationale": "There is no portal process/window lifecycle in Metiq."
+    },
+    {
+      "family": "progress-cards",
+      "rationale": "Metiq exposes durable tasks and lifecycle gateway events instead of an OpenClaw progress-card projection."
+    },
+    {
+      "family": "control-ui-previews",
+      "rationale": "These bind to OpenClaw's Control UI and GitHub preview model; Metiq has its own Web UI, board, artifact, and worktree surfaces."
+    },
+    {
+      "family": "host-login-and-native-hooks",
+      "rationale": "Metiq authenticates with Nostr identities/device pairing and invokes its internal hook manager directly; it has no web-login or native-hook relay RPC."
+    },
+    {
+      "family": "transport-bypasses",
+      "rationale": "WebSocket connection establishment is a transport handshake, not an RPC. chat.inject bypasses authenticated Nostr/session ingress and violates Metiq's event-driven routing contract."
+    },
+    {
+      "family": "host-config-editor",
+      "rationale": "Opening a host editor is a UI/OS side effect; Metiq already exposes config get/set/apply/patch/schema surfaces."
     }
   ],
   "method_notes": {

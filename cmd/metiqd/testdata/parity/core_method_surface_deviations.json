@@ -61,6 +61,9 @@
     "relay.policy.get",
     "runtime.observe",
     "sandbox.run",
+    "secrets.store.delete",
+    "secrets.store.list",
+    "secrets.store.set",
     "security.audit",
     "session.get",
     "sessions.assignOwner",
@@ -99,7 +102,10 @@
     "tasks.summary",
     "tasks.trace",
     "tools.profile.get",
-    "tools.profile.set"
+    "tools.profile.set",
+    "users.prefs.get",
+    "users.prefs.set",
+    "users.setRole"
   ],
   "accepted_deviations": [
     {

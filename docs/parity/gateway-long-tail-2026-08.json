@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "source": "/Users/bizarro/Documents/Dev/openclaw/src/gateway/methods/core-descriptors.ts",
+  "issue": "swarmstr-u6gn.8",
+  "policy": "Every long-tail method reviewed by swarmstr-u6gn.8 is pinned as implemented, intentionally divergent, or deferred to a dedicated bead. Methods in the latter two states must not be advertised by Metiq.",
+  "implemented": [
+    {
+      "family": "durable-user-preferences-and-roles",
+      "methods": ["users.prefs.get", "users.prefs.set", "users.setRole"],
+      "semantics": "Preferences are caller-scoped to the authenticated Nostr pubkey, use bounded PATCH semantics, and persist in the versioned user-profile ledger. Role metadata is durable, nullable, and restricted to configured gateway.roles definitions."
+    },
+    {
+      "family": "protected-secrets-store",
+      "methods": ["secrets.store.list", "secrets.store.set", "secrets.store.delete"],
+      "semantics": "CRUD is backed only by a ProtectedSecretBackend and produces structured store SecretRefs. Secret-kind values are never listed; env-kind values follow the upstream list contract. All three methods are authenticated WebSocket/internal-only and non-replayable so values cannot enter Nostr events or durable response caches."
+    }
+  ],
+  "deferred": [
+    {
+      "family": "session-goals",
+      "methods": ["sessions.goal.update", "sessions.goal.clear"],
+      "issue": "swarmstr-s2td",
+      "rationale": "Needs durable goal lifecycle state, mutation fences, receipts, and resume integration; SessionDoc metadata alone would be a partial implementation."
+    },
+    {
+      "family": "session-usage-history",
+      "methods": ["sessions.usage", "sessions.usage.timeseries", "sessions.usage.logs"],
+      "issue": "swarmstr-ks3v",
+      "rationale": "Current state has aggregate counters and last-turn data, not the durable per-turn history required for honest timeseries and logs."
+    },
+    {
+      "family": "skills-proposal-events",
+      "methods": ["skills.proposals.events.list", "skills.proposals.evaluate"],
+      "issue": "swarmstr-t4wf",
+      "rationale": "Existing proposal CRUD/history does not provide upstream event-history and evaluation semantics."
+    },
+    {
+      "family": "hooks-live-status",
+      "methods": ["hooks.status"],
+      "issue": "swarmstr-1guw",
+      "rationale": "The global hook manager list is not equivalent to the upstream per-agent workspace/plugin live report."
+    },
+    {
+      "family": "audit-run-inspection",
+      "methods": ["audit.run.inspect"],
+      "issue": "swarmstr-e9o6",
+      "rationale": "Existing permission audit list/activity lacks durable run-scoped correlation."
+    },
+    {
+      "family": "diagnostics-lanes",
+      "methods": ["diagnostics.lanes"],
+      "issue": "swarmstr-fiwr",
+      "rationale": "Metiq needs a deliberate runtime lane model; unrelated task/job counters must not be presented as lane state."
+    }
+  ],
+  "intentional_divergences": [
+    {
+      "family": "browser-push-and-vapid",
+      "methods": ["push.web.preferences.get", "push.web.preferences.set", "push.test", "push.web.vapidPublicKey", "push.web.subscribe", "push.web.unsubscribe", "push.web.test"],
+      "rationale": "Metiq has no browser-push service, VAPID key lifecycle, or push subscription store; notifications flow through Nostr/channel events."
+    },
+    {
+      "family": "managed-projects-and-github",
+      "methods": ["projects.list", "projects.register", "projects.remove", "projects.add", "projects.searchRemote", "tools.github.status", "tools.github.configure", "tools.github.authorize.start", "tools.github.authorize.poll", "tools.github.authorize.cancel", "sessions.github.publish"],
+      "rationale": "Metiq does not own GitHub OAuth, hosted project search, or a GitHub publication lifecycle; repositories and worktrees are operator-managed."
+    },
+    {
+      "family": "desktop-workers",
+      "methods": ["worker.desktop.observe", "worker.desktop.launch", "desktop.observe", "desktop.launch"],
+      "rationale": "Metiq is a daemon and has no OpenClaw desktop worker host/process model."
+    },
+    {
+      "family": "portals",
+      "methods": ["portal.list", "portal.open", "portal.close"],
+      "rationale": "There is no portal process/window lifecycle in Metiq."
+    },
+    {
+      "family": "progress-cards",
+      "methods": ["progressCard.get", "progressCard.put"],
+      "rationale": "Metiq exposes durable tasks and lifecycle gateway events instead of an OpenClaw progress-card projection."
+    },
+    {
+      "family": "control-ui-previews",
+      "methods": ["controlUi.githubPreview", "controlUi.sessionPullRequests.subscribe", "controlUi.sessionPreview"],
+      "rationale": "These bind to OpenClaw's Control UI and GitHub preview model; Metiq has its own Web UI, board, artifact, and worktree surfaces."
+    },
+    {
+      "family": "host-login-and-native-hooks",
+      "methods": ["web.login.start", "web.login.wait", "nativeHook.invoke"],
+      "rationale": "Metiq authenticates with Nostr identities/device pairing and invokes its internal hook manager directly; it has no web-login or native-hook relay RPC."
+    },
+    {
+      "family": "transport-bypasses",
+      "methods": ["connect", "chat.inject"],
+      "rationale": "WebSocket connection establishment is a transport handshake, not an RPC. chat.inject bypasses authenticated Nostr/session ingress and violates Metiq's event-driven routing contract."
+    },
+    {
+      "family": "host-config-editor",
+      "methods": ["config.openFile"],
+      "rationale": "Opening a host editor is a UI/OS side effect; Metiq already exposes config get/set/apply/patch/schema surfaces."
+    }
+  ],
+  "fixture_follow_up": "swarmstr-c7j8"
+}

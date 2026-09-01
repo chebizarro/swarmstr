@@ -171,6 +171,23 @@ func (l *Lifecycle) ResolveRef(ctx context.Context, ref SecretRef) (string, erro
 		l.store.mu.RLock()
 		primary, fallback := l.store.backend, l.store.fallback
 		l.store.mu.RUnlock()
+		// Gateway-managed values are written only to a backend that guarantees
+		// protection at rest. Never consult the plaintext fallback for this
+		// provider, even if the primary backend becomes unavailable.
+		if ref.Provider == gatewayStoreProvider {
+			protected, ok := primary.(ProtectedSecretBackend)
+			if !ok || protected == nil || !protected.ProtectedAtRest() {
+				return "", ErrProtectedBackendUnavailable
+			}
+			value, found, err := protected.Get(key)
+			if err != nil {
+				return "", errors.New("protected secret store read failed")
+			}
+			if !found {
+				return "", errSecretNotFound
+			}
+			return value, nil
+		}
 		var primaryFailed bool
 		if primary != nil {
 			if value, ok, err := primary.Get(key); err != nil {

@@ -199,6 +199,9 @@ var adminDispatchRegistry = []struct {
 		MethodMCPAuthClear,
 		MethodSecretsReload,
 		MethodSecretsResolve,
+		MethodSecretsStoreList,
+		MethodSecretsStoreSet,
+		MethodSecretsStoreDelete,
 	}},
 	{AdminDispatchMedia, []string{
 		MethodTalkConfig,
@@ -371,6 +374,9 @@ var adminDispatchRegistry = []struct {
 		MethodUsersLinkEmail,
 		MethodUsersSetDisplayName,
 		MethodUsersSetAvatar,
+		MethodUsersPrefsGet,
+		MethodUsersPrefsSet,
+		MethodUsersSetRole,
 	}},
 	{AdminDispatchTasks, []string{
 		MethodTasksCreate,

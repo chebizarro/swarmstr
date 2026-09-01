@@ -231,6 +231,9 @@ const (
 	MethodUsersLinkEmail      = "users.linkEmail"
 	MethodUsersSetDisplayName = "users.setDisplayName"
 	MethodUsersSetAvatar      = "users.setAvatar"
+	MethodUsersPrefsGet       = "users.prefs.get"
+	MethodUsersPrefsSet       = "users.prefs.set"
+	MethodUsersSetRole        = "users.setRole"
 	// Gateway lifecycle (swarmstr-iiot / swarmstr-ngrd). restart.preflight
 	// reports restart readiness (in-flight agent runs + active sessions);
 	// restart.request triggers the real restart scheduler (restartCh).
@@ -331,6 +334,9 @@ const (
 	MethodSecretsReload            = "secrets.reload"
 	MethodSandboxRun               = "sandbox.run"
 	MethodSecretsResolve           = "secrets.resolve"
+	MethodSecretsStoreList         = "secrets.store.list"
+	MethodSecretsStoreSet          = "secrets.store.set"
+	MethodSecretsStoreDelete       = "secrets.store.delete"
 	MethodWizardStart              = "wizard.start"
 	MethodWizardNext               = "wizard.next"
 	MethodWizardCancel             = "wizard.cancel"

@@ -26,7 +26,14 @@ import (
 	"time"
 )
 
-const ledgerVersion = 1
+const ledgerVersion = 2
+
+const (
+	MaxPreferenceKeys       = 128
+	MaxPreferenceKeyLength  = 256
+	MaxPreferenceValueBytes = 4 << 10
+	MaxRoleLength           = 128
+)
 
 // MaxProfileIDLength mirrors OpenClaw's UserProfileId maxLength.
 const MaxProfileIDLength = 128
@@ -60,18 +67,21 @@ type Profile struct {
 	UpdatedAt   int64    `json:"updatedAt"`
 	Emails      []string `json:"emails"`
 	HasAvatar   bool     `json:"hasAvatar"`
+	Role        *string  `json:"role,omitempty"`
 }
 
 // record is the durable representation (includes the avatar blob, which the
 // wire Profile deliberately omits — clients fetch avatars out of band).
 type record struct {
-	ID          string   `json:"id"`
-	DisplayName *string  `json:"displayName,omitempty"`
-	AvatarMime  *string  `json:"avatarMime,omitempty"`
-	AvatarBytes []byte   `json:"avatarBytes,omitempty"`
-	CreatedAt   int64    `json:"createdAt"`
-	UpdatedAt   int64    `json:"updatedAt"`
-	Emails      []string `json:"emails,omitempty"`
+	ID          string                     `json:"id"`
+	DisplayName *string                    `json:"displayName,omitempty"`
+	AvatarMime  *string                    `json:"avatarMime,omitempty"`
+	AvatarBytes []byte                     `json:"avatarBytes,omitempty"`
+	CreatedAt   int64                      `json:"createdAt"`
+	UpdatedAt   int64                      `json:"updatedAt"`
+	Emails      []string                   `json:"emails,omitempty"`
+	Role        *string                    `json:"role,omitempty"`
+	Preferences map[string]json.RawMessage `json:"preferences,omitempty"`
 }
 
 type ledgerDocument struct {
@@ -116,7 +126,7 @@ func NewManagerAt(path string) (*Manager, error) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("decode user profile ledger: %w", err)
 	}
-	if doc.Version != ledgerVersion {
+	if doc.Version != 1 && doc.Version != ledgerVersion {
 		return nil, fmt.Errorf("unsupported user profile ledger version %d", doc.Version)
 	}
 	for _, rec := range doc.Profiles {
@@ -185,6 +195,117 @@ func (m *Manager) EnsureForIdentity(identity string) (Profile, error) {
 }
 
 // LinkEmail attaches an e-mail alias to an existing profile.
+// Preferences returns a copy of the caller's durable preference entries. An
+// empty keys slice returns every entry; otherwise only requested keys are
+// projected.
+func (m *Manager) Preferences(profileID string, keys []string) (map[string]any, error) {
+	profileID = strings.TrimSpace(profileID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.profiles[profileID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	selected := map[string]struct{}{}
+	for _, key := range keys {
+		selected[key] = struct{}{}
+	}
+	out := make(map[string]any)
+	for key, raw := range rec.Preferences {
+		if len(selected) > 0 {
+			if _, ok := selected[key]; !ok {
+				continue
+			}
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("decode preference %q: %w", key, err)
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+// SetPreferences applies OpenClaw-compatible PATCH semantics: JSON null removes
+// a key and every other value is stored verbatim as JSON. The total durable key
+// count and individual value sizes are bounded.
+func (m *Manager) SetPreferences(profileID string, entries map[string]any) (map[string]any, error) {
+	profileID = strings.TrimSpace(profileID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.profiles[profileID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	previous := cloneRecord(rec)
+	if rec.Preferences == nil {
+		rec.Preferences = map[string]json.RawMessage{}
+	}
+	for key, value := range entries {
+		key = strings.TrimSpace(key)
+		if key == "" || len(key) > MaxPreferenceKeyLength {
+			return nil, fmt.Errorf("preference key must be 1..%d characters", MaxPreferenceKeyLength)
+		}
+		if value == nil {
+			delete(rec.Preferences, key)
+			continue
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("encode preference %q: %w", key, err)
+		}
+		if len(raw) > MaxPreferenceValueBytes {
+			return nil, fmt.Errorf("preference %q exceeds %d bytes", key, MaxPreferenceValueBytes)
+		}
+		rec.Preferences[key] = append(json.RawMessage(nil), raw...)
+	}
+	if len(rec.Preferences) > MaxPreferenceKeys {
+		return nil, fmt.Errorf("preferences exceed %d keys", MaxPreferenceKeys)
+	}
+	rec.UpdatedAt = m.nowMs()
+	m.profiles[profileID] = rec
+	if err := m.persistLocked(); err != nil {
+		m.profiles[profileID] = previous
+		return nil, err
+	}
+	out := make(map[string]any, len(rec.Preferences))
+	for key, raw := range rec.Preferences {
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("decode preference %q: %w", key, err)
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+// SetRole assigns or clears durable role metadata for an existing profile.
+func (m *Manager) SetRole(profileID string, role *string) (Profile, error) {
+	profileID = strings.TrimSpace(profileID)
+	if role != nil {
+		trimmed := strings.TrimSpace(*role)
+		if trimmed == "" || len(trimmed) > MaxRoleLength {
+			return Profile{}, fmt.Errorf("role must be 1..%d characters", MaxRoleLength)
+		}
+		role = &trimmed
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.profiles[profileID]
+	if !ok {
+		return Profile{}, ErrNotFound
+	}
+	previous := cloneRecord(rec)
+	rec.Role = role
+	rec.UpdatedAt = m.nowMs()
+	m.profiles[profileID] = rec
+	if err := m.persistLocked(); err != nil {
+		m.profiles[profileID] = previous
+		return Profile{}, err
+	}
+	return toProfile(rec), nil
+}
+
 func (m *Manager) LinkEmail(email, targetProfileID string) (Profile, error) {
 	email = strings.TrimSpace(email)
 	targetProfileID = strings.TrimSpace(targetProfileID)
@@ -344,6 +465,16 @@ func cloneRecord(rec record) record {
 	if rec.Emails != nil {
 		out.Emails = append([]string{}, rec.Emails...)
 	}
+	if rec.Role != nil {
+		v := *rec.Role
+		out.Role = &v
+	}
+	if rec.Preferences != nil {
+		out.Preferences = make(map[string]json.RawMessage, len(rec.Preferences))
+		for key, raw := range rec.Preferences {
+			out.Preferences[key] = append(json.RawMessage(nil), raw...)
+		}
+	}
 	return out
 }
 
@@ -368,6 +499,10 @@ func toProfile(rec record) Profile {
 	if rec.AvatarMime != nil {
 		v := *rec.AvatarMime
 		p.AvatarMime = &v
+	}
+	if rec.Role != nil {
+		v := *rec.Role
+		p.Role = &v
 	}
 	return p
 }
