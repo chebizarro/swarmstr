@@ -169,6 +169,9 @@
       case 'question.resolved':
         if (payload && payload.id) dropQuestion(payload.id);
         break;
+      case 'task':
+        handleTaskLifecycleEvent(event, payload);
+        break;
       case 'task.suggestion':
         handleTaskSuggestionEvent(payload);
         handleTaskLifecycleEvent(event, payload);
@@ -224,7 +227,7 @@
                 if (!Array.isArray(descriptors) || descriptors.length === 0) throw new Error('gateway does not advertise method descriptors');
                 gatewayMethodDescriptors = new Map(descriptors.filter(item => item && item.name).map(item => [item.name, item]));
                 gatewayScopes = new Set((hello.auth && hello.auth.scopes) || []);
-                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool', 'question.requested', 'question.resolved', 'task.suggestion', 'board.changed', 'mcp.app.viewCreated'];
+                const wanted = ['chat', 'agent.status', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'exec.approval.requested', 'exec.approval.resolved', 'plugin.approval.requested', 'plugin.approval.resolved', 'config.updated', 'channel.message', 'node.invoke.progress', 'session.typing', 'session.suggestion', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool', 'question.requested', 'question.resolved', 'task', 'task.suggestion', 'board.changed', 'mcp.app.viewCreated'];
                 const events = wanted.filter(name => advertised.has(name));
                 await callMethod('events.subscribe', { events });
                 await reconcilePendingApprovals();

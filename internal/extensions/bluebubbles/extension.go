@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -38,6 +39,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -83,10 +85,7 @@ func (p *BlueBubblesPlugin) ConfigSchema() map[string]any {
 }
 
 func (p *BlueBubblesPlugin) Capabilities() sdk.ChannelCapabilities {
-	// The current BlueBubbles transport implements text and Tapbacks. Do not
-	// advertise OpenClaw's native macOS media/reply surface until equivalent
-	// BlueBubbles REST operations are implemented here.
-	return sdk.ChannelCapabilities{Reactions: true, MultiAccount: true}
+	return sdk.ChannelCapabilities{Reactions: true, Media: true, DirectTextMedia: true, MultiAccount: true}
 }
 
 func (p *BlueBubblesPlugin) GatewayMethods() []sdk.GatewayMethod {
@@ -559,8 +558,12 @@ func (b *bbBot) handleSocketPacket(p []byte) {
 
 // Send posts a text message to the BlueBubbles chat via REST API.
 func (b *bbBot) Send(ctx context.Context, text string) error {
+	return b.sendText(ctx, b.chatGUID, text)
+}
+
+func (b *bbBot) sendText(ctx context.Context, chatGUID, text string) error {
 	payload, _ := json.Marshal(map[string]any{
-		"chatGuid": b.chatGUID,
+		"chatGuid": chatGUID,
 		"message":  text,
 		"method":   "apple-script",
 		"tempGuid": fmt.Sprintf("temp-%d", time.Now().UnixNano()),
@@ -579,6 +582,74 @@ func (b *bbBot) Send(ctx context.Context, text string) error {
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("bluebubbles send: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
+// SendMedia uploads staged local files through BlueBubbles' attachment API.
+// Captions are sent as a separate text message because the attachment endpoint
+// has no caption field.
+func (b *bbBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("bluebubbles %s: %w", b.channelID, err)
+	}
+	chatGUID := strings.TrimSpace(payload.To)
+	if chatGUID == "" {
+		chatGUID = b.chatGUID
+	}
+	if strings.TrimSpace(payload.Text) != "" {
+		if err := b.sendText(ctx, chatGUID, payload.Text); err != nil {
+			return err
+		}
+	}
+	for i, item := range payload.Media {
+		if err := b.sendAttachment(ctx, chatGUID, item); err != nil {
+			return fmt.Errorf("bluebubbles %s: media[%d]: %w", b.channelID, i, err)
+		}
+	}
+	return nil
+}
+
+func (b *bbBot) sendAttachment(ctx context.Context, chatGUID string, item sdk.MediaPayloadInput) error {
+	data, filename, _, err := channelmedia.ReadLocalFile(item, channels.DefaultMaxMediaBytes)
+	if err != nil {
+		return err
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chatGuid", chatGUID); err != nil {
+		return err
+	}
+	if err := writer.WriteField("method", "apple-script"); err != nil {
+		return err
+	}
+	if err := writer.WriteField("tempGuid", fmt.Sprintf("temp-%d", time.Now().UnixNano())); err != nil {
+		return err
+	}
+	part, err := writer.CreateFormFile("attachment", filename)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	u := fmt.Sprintf("%s/api/v1/message/attachment?password=%s&chatGuid=%s", b.serverURL, url.QueryEscape(b.password), url.QueryEscape(chatGUID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, &body)
+	if err != nil {
+		return fmt.Errorf("upload attachment: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("upload attachment: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("upload attachment: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	return nil
 }
@@ -615,5 +686,6 @@ func (b *bbBot) RemoveReaction(ctx context.Context, msgGUID, emoji string) error
 	return b.AddReaction(ctx, msgGUID, emoji)
 }
 
-// Ensure bbBot satisfies sdk.ReactionHandle so callers can type-assert it.
+// Ensure bbBot satisfies the optional channel handle contracts.
 var _ sdk.ReactionHandle = (*bbBot)(nil)
+var _ sdk.MediaHandle = (*bbBot)(nil)

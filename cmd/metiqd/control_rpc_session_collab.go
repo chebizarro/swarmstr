@@ -52,6 +52,7 @@ func gatewayPrincipalCollabActor(principal gatewayws.ControlPrincipal) sessionco
 var visibilityScopedSessionMethods = map[string]bool{
 	methods.MethodChatSend:                  true,
 	methods.MethodSessionsSend:              true,
+	methods.MethodSessionsSteer:             true,
 	methods.MethodSessionsAbort:             true,
 	methods.MethodSessionsPatch:             true,
 	methods.MethodSessionsReset:             true,

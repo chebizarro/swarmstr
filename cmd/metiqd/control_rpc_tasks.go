@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"metiq/internal/gateway/methods"
+	gatewayws "metiq/internal/gateway/ws"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/planner"
 	"metiq/internal/store/state"
@@ -91,6 +92,56 @@ func (h controlRPCHandler) handleTaskRPC(ctx context.Context, in nostruntime.Con
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodTasksRetry, methods.MethodTasksDismiss:
+		req, err := methods.DecodeTasksRecoveryParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		var registry *SubagentRegistry
+		if h.deps.services != nil {
+			registry = h.deps.services.session.subagents
+		}
+		if registry == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("subagent task registry unavailable")
+		}
+		results := make([]map[string]any, 0, len(req.TaskIDs))
+		for _, taskID := range req.TaskIDs {
+			row := map[string]any{"taskId": taskID}
+			if method == methods.MethodTasksRetry {
+				record, duplicateRisk, retryErr := registry.RetryCompletion(taskID)
+				if retryErr != nil {
+					row["ok"], row["reason"] = false, retryErr.Error()
+				} else {
+					row["ok"], row["task"] = true, record
+					emitControlWSEvent(gatewayws.EventTaskLifecycle, gatewayws.TaskLifecyclePayload{
+						Action: "upserted", Kind: "subagent", Type: "subagent.delivery.retry",
+						TaskID: record.RunID, RunID: record.RunID, Status: record.Delivery.Status,
+						Source: "gateway", TS: record.UpdatedAt, Task: record,
+					})
+					if duplicateRisk {
+						row["duplicateRisk"] = true
+					}
+				}
+			} else {
+				record, dismissErr := registry.DismissCompletion(taskID)
+				if dismissErr != nil {
+					row["ok"], row["reason"] = false, dismissErr.Error()
+				} else {
+					row["ok"], row["task"] = true, record
+					emitControlWSEvent(gatewayws.EventTaskLifecycle, gatewayws.TaskLifecyclePayload{
+						Action: "upserted", Kind: "subagent", Type: "subagent.delivery.dismiss",
+						TaskID: record.RunID, RunID: record.RunID, Status: record.Delivery.Status,
+						Source: "gateway", TS: record.UpdatedAt, Task: record,
+					})
+				}
+			}
+			results = append(results, row)
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"results": results}}, true, nil
 	case methods.MethodTasksDoctor:
 		req, err := methods.DecodeTasksDoctorParams(in.Params)
 		if err != nil {

@@ -419,6 +419,64 @@ func (r *Registry) DueCompletions(now time.Time, limit int) []SubagentRunRecord 
 	return out
 }
 
+// RetryCompletion makes a terminal completion immediately due again. Retrying
+// a delivered or leased completion is allowed but reports duplicateRisk.
+func (r *Registry) RetryCompletion(runID string) (record SubagentRunRecord, duplicateRisk bool, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := r.runs[strings.TrimSpace(runID)]
+	if rec == nil {
+		return SubagentRunRecord{}, false, fmt.Errorf("run %q not found", runID)
+	}
+	if rec.EndedAt == 0 || rec.Outcome == nil {
+		return SubagentRunRecord{}, false, fmt.Errorf("task is still running")
+	}
+	if !rec.Completion.Required || rec.Delivery.Status == DeliveryNotRequired {
+		return SubagentRunRecord{}, false, fmt.Errorf("completion delivery is not required")
+	}
+	copy := cloneRunRecord(*rec)
+	duplicateRisk = copy.Delivery.Status == DeliveryDelivered || copy.Delivery.Status == DeliveryInProgress
+	copy.Delivery.Status = DeliveryPending
+	copy.Delivery.NextAttemptAt = r.now().UnixMilli()
+	copy.Delivery.LeaseID = ""
+	copy.Delivery.LeaseExpiresAt = 0
+	copy.Delivery.LastError = ""
+	copy.UpdatedAt = r.now().UnixMilli()
+	if err := r.store.Upsert(copy); err != nil {
+		return SubagentRunRecord{}, false, err
+	}
+	*rec = copy
+	return cloneRunRecord(copy), duplicateRisk, nil
+}
+
+// DismissCompletion permanently suppresses a terminal completion delivery. It
+// is idempotent and does not delete the durable task/run audit record.
+func (r *Registry) DismissCompletion(runID string) (SubagentRunRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := r.runs[strings.TrimSpace(runID)]
+	if rec == nil {
+		return SubagentRunRecord{}, fmt.Errorf("run %q not found", runID)
+	}
+	if rec.EndedAt == 0 || rec.Outcome == nil {
+		return SubagentRunRecord{}, fmt.Errorf("task is still running")
+	}
+	copy := cloneRunRecord(*rec)
+	copy.Completion.Required = false
+	copy.SuppressAnnounce = "dismissed"
+	copy.Delivery.Status = DeliveryNotRequired
+	copy.Delivery.NextAttemptAt = 0
+	copy.Delivery.LeaseID = ""
+	copy.Delivery.LeaseExpiresAt = 0
+	copy.Delivery.LastError = ""
+	copy.UpdatedAt = r.now().UnixMilli()
+	if err := r.store.Upsert(copy); err != nil {
+		return SubagentRunRecord{}, err
+	}
+	*rec = copy
+	return cloneRunRecord(copy), nil
+}
+
 func (r *Registry) MarkDeliveryInProgress(runID, leaseID string, expiresAt time.Time) error {
 	return r.mutate(runID, func(rec *SubagentRunRecord) error {
 		if rec.Delivery.Status != DeliveryPending && rec.Delivery.Status != DeliveryFailed {

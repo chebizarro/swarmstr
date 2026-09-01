@@ -1,6 +1,8 @@
 package channelmedia
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -53,6 +55,26 @@ func TestValidateUsesSharedContract(t *testing.T) {
 	}
 	if err := Validate([]sdk.MediaPayloadInput{{Path: " "}}, channels.MediaLimits{}); err == nil {
 		t.Fatal("expected missing path violation")
+	}
+}
+
+func TestReadLocalFileBoundedAndRejectsRemote(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "asset.bin")
+	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, name, contentType, err := ReadLocalFile(sdk.MediaPayloadInput{Path: path}, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "12345" || name != "asset.bin" || contentType != "application/octet-stream" {
+		t.Fatalf("unexpected local media: data=%q name=%q contentType=%q", data, name, contentType)
+	}
+	if _, _, _, err := ReadLocalFile(sdk.MediaPayloadInput{Path: path}, 4); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected bounded read failure, got %v", err)
+	}
+	if _, _, _, err := ReadLocalFile(sdk.MediaPayloadInput{Path: "https://example.test/asset.bin"}, 5); err == nil || !strings.Contains(err.Error(), "stage the file locally") {
+		t.Fatalf("expected remote URL rejection, got %v", err)
 	}
 }
 

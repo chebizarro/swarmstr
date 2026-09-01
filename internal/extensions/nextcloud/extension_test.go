@@ -45,8 +45,11 @@ func TestPlugin_ConfigSchema(t *testing.T) {
 func TestPlugin_Capabilities(t *testing.T) {
 	p := &NextcloudPlugin{}
 	caps := p.Capabilities()
-	if !caps.Reactions {
-		t.Error("expected Reactions capability")
+	if caps.Reactions {
+		t.Error("did not expect undeclared reaction handle support")
+	}
+	if !caps.Media || !caps.DirectTextMedia {
+		t.Error("expected outbound media capabilities")
 	}
 	if !caps.MultiAccount {
 		t.Error("expected MultiAccount capability")

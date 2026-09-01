@@ -237,6 +237,7 @@ func stampOwner(doc *state.SessionSharingDoc, actor Actor) {
 		return
 	}
 	if subject := strings.TrimSpace(actor.Subject); subject != "" {
+		doc.OwnerType = "human"
 		doc.OwnerSubject = subject
 	}
 }
@@ -301,6 +302,36 @@ func (s *Service) SetVisibility(ctx context.Context, key, visibility string, act
 	return visibility, nil
 }
 
+// AssignOwner durably transfers session ownership after manager authorization.
+func (s *Service) AssignOwner(ctx context.Context, key, ownerType, ownerID string, actor Actor) (Identity, error) {
+	key, ownerType, ownerID = strings.TrimSpace(key), strings.TrimSpace(ownerType), strings.TrimSpace(ownerID)
+	if s == nil || s.repo == nil {
+		return Identity{}, fmt.Errorf("session sharing service unavailable")
+	}
+	if key == "" || ownerID == "" || (ownerType != "human" && ownerType != "agent") {
+		return Identity{}, fmt.Errorf("sessionKey and a valid human or agent owner are required")
+	}
+	if len(ownerID) > 128 {
+		return Identity{}, fmt.Errorf("owner id must not exceed 128 characters")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, _, err := s.requireManagerLocked(ctx, key, actor)
+	if err != nil {
+		return Identity{}, err
+	}
+	if doc.OwnerSubject == ownerID && strings.TrimSpace(doc.OwnerType) == ownerType {
+		return Identity{Type: ownerType, ID: ownerID}, nil
+	}
+	doc.OwnerType = ownerType
+	doc.OwnerSubject = ownerID
+	if err := s.putSharingDocLocked(ctx, key, doc); err != nil {
+		return Identity{}, err
+	}
+	s.emitSharingLocked(ctx, key, "owner", actor, "", ownerID)
+	return Identity{Type: ownerType, ID: ownerID}, nil
+}
+
 // Members returns the membership aggregate for a session after manager
 // authorization.
 func (s *Service) Members(ctx context.Context, key string, actor Actor) (MembersListResult, error) {
@@ -333,7 +364,11 @@ func (s *Service) Members(ctx context.Context, key string, actor Actor) (Members
 	owner := strings.TrimSpace(s.ownerSubjectLocked(ctx, key, doc))
 	var ownerIdentity *Identity
 	if owner != "" {
-		ownerIdentity = &Identity{Type: "human", ID: owner}
+		ownerType := strings.TrimSpace(doc.OwnerType)
+		if ownerType == "" {
+			ownerType = "human"
+		}
+		ownerIdentity = &Identity{Type: ownerType, ID: owner}
 		remember(*ownerIdentity)
 	}
 	for _, member := range doc.Members {
@@ -495,8 +530,38 @@ func (s *Service) ObserverVisible(connectionID string) bool {
 	return s.observerVisible[strings.TrimSpace(connectionID)]
 }
 
+// SetViewerSessions replaces the connection-scoped session message audience.
+func (s *Service) SetViewerSessions(connectionID string, keys []string) []string {
+	connectionID = strings.TrimSpace(connectionID)
+	if s == nil || connectionID == "" {
+		return nil
+	}
+	copyKeys := append([]string(nil), keys...)
+	s.mu.Lock()
+	if s.viewerSessions == nil {
+		s.viewerSessions = map[string][]string{}
+	}
+	if len(copyKeys) == 0 {
+		delete(s.viewerSessions, connectionID)
+	} else {
+		s.viewerSessions[connectionID] = copyKeys
+	}
+	s.mu.Unlock()
+	return append([]string(nil), copyKeys...)
+}
+
+// ViewerSessions returns the declared session message audience for a connection.
+func (s *Service) ViewerSessions(connectionID string) []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.viewerSessions[strings.TrimSpace(connectionID)]...)
+}
+
 // DropConnection releases connection-scoped collaboration state (observer
-// visibility declarations) when a WS connection closes.
+// visibility and viewer declarations) when a WS connection closes.
 func (s *Service) DropConnection(connectionID string) {
 	connectionID = strings.TrimSpace(connectionID)
 	if s == nil || connectionID == "" {
@@ -504,6 +569,7 @@ func (s *Service) DropConnection(connectionID string) {
 	}
 	s.mu.Lock()
 	delete(s.observerVisible, connectionID)
+	delete(s.viewerSessions, connectionID)
 	s.dropTypingConnectionLocked(connectionID)
 	s.mu.Unlock()
 }

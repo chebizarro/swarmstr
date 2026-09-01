@@ -47,6 +47,7 @@
     "plugin.surface.changed",
     "question.requested",
     "question.resolved",
+    "task",
     "task.suggestion"
   ]
 }

@@ -34,6 +34,7 @@ const (
 	MethodSessionsUnsubscribe         = "sessions.unsubscribe"
 	MethodSessionsMessagesSubscribe   = "sessions.messages.subscribe"
 	MethodSessionsMessagesUnsubscribe = "sessions.messages.unsubscribe"
+	MethodSessionsViewersSet          = "sessions.viewers.set"
 
 	defaultClientEventBufferSize = 32
 )
@@ -66,23 +67,27 @@ type DeviceTokenDecision struct {
 type DeviceTokenValidator func(protocol.ConnectParams, string) DeviceTokenDecision
 
 type RuntimeOptions struct {
-	Addr                    string
-	Path                    string
-	Token                   string
-	Methods                 []string
-	Events                  []string
-	MethodDescriptors       []protocol.MethodDescriptor
-	Version                 string
-	HandshakeTTL            time.Duration
-	MaxPayloadSize          int64
-	AuthRateLimitPerMin     int
-	UnauthorizedBurstMax    int
-	ControlWriteLimitPerMin int
-	AllowedOrigins          []string
-	TrustedProxies          []string
-	AllowInsecureControlUI  bool
-	DeviceAuthSignatureSkew time.Duration
-	WriteTimeout            time.Duration
+	Addr              string
+	Path              string
+	Token             string
+	Methods           []string
+	Events            []string
+	MethodDescriptors []protocol.MethodDescriptor
+	// InternalMethodDescriptors are dispatchable but intentionally omitted from
+	// hello/catalog feature discovery. They remain subject to descriptor scope
+	// admission and must be named explicitly by trusted internal clients.
+	InternalMethodDescriptors []protocol.MethodDescriptor
+	Version                   string
+	HandshakeTTL              time.Duration
+	MaxPayloadSize            int64
+	AuthRateLimitPerMin       int
+	UnauthorizedBurstMax      int
+	ControlWriteLimitPerMin   int
+	AllowedOrigins            []string
+	TrustedProxies            []string
+	AllowInsecureControlUI    bool
+	DeviceAuthSignatureSkew   time.Duration
+	WriteTimeout              time.Duration
 	// EventBufferSize bounds each client's async broadcast queue. When a
 	// subscribed client cannot keep up and its queue fills, the runtime drops
 	// that client instead of blocking fanout to other subscribers.
@@ -121,6 +126,7 @@ type Runtime struct {
 	rateState         map[string]rateWindow
 	allowedMethods    map[string]struct{}
 	methodDescriptors map[string]protocol.MethodDescriptor
+	internalMethods   map[string]struct{}
 	coalesceMu        sync.Mutex
 	chatCoalesce      map[string]*chatChunkCoalescer
 }
@@ -141,6 +147,7 @@ type client struct {
 	subscriptions      map[string]struct{}
 	watchedSessions    map[string]struct{}
 	allSessionMessages bool
+	watchedSessionsSet bool
 
 	writeMu sync.Mutex
 
@@ -165,6 +172,10 @@ type rateWindow struct {
 
 type eventSubscriptionRequest struct {
 	Events []string `json:"events"`
+}
+
+type sessionViewersSetRequest struct {
+	SessionKeys []string `json:"sessionKeys"`
 }
 
 type sessionMessageSubscriptionRequest struct {
@@ -225,17 +236,33 @@ func Start(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 
-	descriptors, err := buildMethodDescriptors(opts.MethodDescriptors, opts.Methods)
+	allDescriptors := append([]protocol.MethodDescriptor{}, opts.MethodDescriptors...)
+	allDescriptors = append(allDescriptors, opts.InternalMethodDescriptors...)
+	descriptors, err := buildMethodDescriptors(allDescriptors, opts.Methods)
 	if err != nil {
 		return nil, err
+	}
+	internalMethods := make(map[string]struct{}, len(opts.InternalMethodDescriptors))
+	allMethods := append([]string{}, opts.Methods...)
+	for _, descriptor := range opts.InternalMethodDescriptors {
+		name := strings.TrimSpace(descriptor.Name)
+		if name == "" {
+			return nil, fmt.Errorf("internal gateway method descriptor name is required")
+		}
+		if _, duplicate := internalMethods[name]; duplicate {
+			return nil, fmt.Errorf("duplicate internal gateway method descriptor %q", name)
+		}
+		internalMethods[name] = struct{}{}
+		allMethods = append(allMethods, name)
 	}
 
 	r := &Runtime{
 		opts:              opts,
 		clients:           map[string]*client{},
 		rateState:         map[string]rateWindow{},
-		allowedMethods:    buildAllowedMethods(opts.Methods),
+		allowedMethods:    buildAllowedMethods(allMethods),
 		methodDescriptors: descriptors,
+		internalMethods:   internalMethods,
 		chatCoalesce:      map[string]*chatChunkCoalescer{},
 	}
 	mux := http.NewServeMux()
@@ -759,6 +786,33 @@ func (r *Runtime) handleInternalRequest(c *client, req protocol.RequestFrame) (b
 		c.removeSubscriptions(events)
 		c.setAllSessionMessages(false)
 		return true, map[string]any{"subscribed": false, "events": events}, nil
+	case MethodSessionsViewersSet:
+		var viewers sessionViewersSetRequest
+		if err := decodeStrict(req.Params, &viewers); err != nil {
+			return true, nil, protocol.NewError(protocol.ErrorCodeInvalidRequest, "invalid viewers params", nil)
+		}
+		if len(viewers.SessionKeys) > 32 {
+			return true, nil, protocol.NewError(protocol.ErrorCodeInvalidRequest, "sessionKeys must contain at most 32 entries", nil)
+		}
+		seen := make(map[string]struct{}, len(viewers.SessionKeys))
+		keys := make([]string, 0, len(viewers.SessionKeys))
+		for _, raw := range viewers.SessionKeys {
+			key := strings.TrimSpace(raw)
+			if key == "" {
+				return true, nil, protocol.NewError(protocol.ErrorCodeInvalidRequest, "sessionKeys entries must be non-empty", nil)
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			keys = append(keys, key)
+		}
+		c.replaceWatchedSessions(keys)
+		c.setAllSessionMessages(false)
+		if len(keys) > 0 {
+			c.addSubscriptions(availableEventSubset([]string{EventChat, EventChatMessage}, r.opts.Events))
+		}
+		return true, map[string]any{"sessionKeys": keys}, nil
 	case MethodSessionsMessagesSubscribe:
 		var sub sessionMessageSubscriptionRequest
 		if err := decodeStrict(req.Params, &sub); err != nil || strings.TrimSpace(sub.Key) == "" {
@@ -1303,6 +1357,9 @@ func (r *Runtime) listMethodDescriptors() []protocol.MethodDescriptor {
 	}
 	out := make([]protocol.MethodDescriptor, 0, len(r.methodDescriptors))
 	for _, descriptor := range r.methodDescriptors {
+		if _, internal := r.internalMethods[descriptor.Name]; internal {
+			continue
+		}
 		out = append(out, descriptor)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -1437,6 +1494,7 @@ func buildAllowedMethods(methods []string) map[string]struct{} {
 	out[MethodSessionsUnsubscribe] = struct{}{}
 	out[MethodSessionsMessagesSubscribe] = struct{}{}
 	out[MethodSessionsMessagesUnsubscribe] = struct{}{}
+	out[MethodSessionsViewersSet] = struct{}{}
 	return out
 }
 
@@ -1635,6 +1693,16 @@ func (c *client) hasAllSessionMessages() bool {
 	return c.allSessionMessages
 }
 
+func (c *client) replaceWatchedSessions(keys []string) {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	c.watchedSessions = make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		c.watchedSessions[key] = struct{}{}
+	}
+	c.watchedSessionsSet = true
+}
+
 func (c *client) addWatchedSession(key string) {
 	c.subMu.Lock()
 	defer c.subMu.Unlock()
@@ -1642,6 +1710,7 @@ func (c *client) addWatchedSession(key string) {
 		c.watchedSessions = map[string]struct{}{}
 	}
 	c.watchedSessions[strings.TrimSpace(key)] = struct{}{}
+	c.watchedSessionsSet = true
 }
 
 func (c *client) removeWatchedSession(key string) {
@@ -1660,7 +1729,7 @@ func (c *client) acceptsSessionMessagePayload(payload any) bool {
 	key := sessionMessagePayloadKey(payload)
 	c.subMu.RLock()
 	defer c.subMu.RUnlock()
-	if c.allSessionMessages || len(c.watchedSessions) == 0 {
+	if c.allSessionMessages || !c.watchedSessionsSet {
 		return true
 	}
 	_, ok := c.watchedSessions[key]

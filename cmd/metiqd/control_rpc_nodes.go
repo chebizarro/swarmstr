@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"metiq/internal/gateway/methods"
@@ -19,6 +20,33 @@ func (h controlRPCHandler) handleNodeRPC(ctx context.Context, in nostruntime.Con
 	_ = docsRepo
 	_ = configState
 	switch method {
+	case methods.MethodNodeRunnerInventoryUpdate:
+		req, err := methods.DecodeNodeRunnerInventoryUpdateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		nodeID := strings.TrimSpace(in.FromPubKey)
+		if principal, ok := gatewayws.PrincipalFromContext(ctx); ok {
+			if principal.Role != "node" {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("node role required")
+			}
+			nodeID = strings.TrimSpace(principal.Subject)
+		}
+		var record nodeRunnerInventoryRecord
+		err = h.deps.nodeInvocations.WithActiveNode(nodeID, func() error {
+			var updateErr error
+			record, updateErr = h.deps.nodeInvocations.UpdateRunnerInventory(nodeID, req)
+			return updateErr
+		})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		emitControlWSEvent(gatewayws.EventNodeRunnerInventoryChanged, record)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"nodeId": nodeID, "inventory": record}}, true, nil
 	case methods.MethodNodePairRequest:
 		req, err := methods.DecodeNodePairRequestParams(in.Params)
 		if err != nil {

@@ -80,7 +80,12 @@ type responsesStreamEnvelope struct {
 	OutputIndex int                 `json:"output_index"`
 	ItemID      string              `json:"item_id"`
 	Item        responsesStreamItem `json:"item"`
-	Response    struct {
+	Error       *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+	Response struct {
+		ID    string         `json:"id"`
 		Usage responsesUsage `json:"usage"`
 		Error *struct {
 			Code    string `json:"code"`
@@ -106,6 +111,7 @@ type responsesToolState struct {
 func consumeResponsesStream(r io.Reader, emit ProviderStreamEventSink) (ProviderResult, error) {
 	var text strings.Builder
 	var usage ProviderUsage
+	var responseID string
 	tools := map[int]*responsesToolState{}
 	completed := false
 	stateFor := func(index int) *responsesToolState {
@@ -122,6 +128,11 @@ func consumeResponsesStream(r io.Reader, emit ProviderStreamEventSink) (Provider
 			return fmt.Errorf("responses stream decode: %w", err)
 		}
 		switch envelope.Type {
+		case "error":
+			if envelope.Error != nil {
+				return fmt.Errorf("responses websocket error %s: %s", envelope.Error.Code, envelope.Error.Message)
+			}
+			return errors.New("responses websocket error")
 		case "response.output_text.delta":
 			text.WriteString(envelope.Delta)
 			if emit != nil && envelope.Delta != "" {
@@ -159,6 +170,7 @@ func consumeResponsesStream(r io.Reader, emit ProviderStreamEventSink) (Provider
 			}
 		case "response.completed":
 			completed = true
+			responseID = strings.TrimSpace(envelope.Response.ID)
 			next := providerUsageFromResponses(envelope.Response.Usage)
 			if hasProviderUsage(next) && !providerUsageEqual(next, usage) {
 				usage = next
@@ -182,10 +194,10 @@ func consumeResponsesStream(r io.Reader, emit ProviderStreamEventSink) (Provider
 		return nil
 	})
 	if err != nil && !errors.Is(err, errResponsesStreamComplete) {
-		return ProviderResult{Text: text.String(), Usage: usage}, err
+		return ProviderResult{Text: text.String(), Usage: usage, responseID: responseID}, err
 	}
 	if !completed {
-		return ProviderResult{Text: text.String(), Usage: usage}, errors.New("responses stream ended before response.completed")
+		return ProviderResult{Text: text.String(), Usage: usage, responseID: responseID}, errors.New("responses stream ended before response.completed")
 	}
 	indices := make([]int, 0, len(tools))
 	for index := range tools {
@@ -198,12 +210,12 @@ func consumeResponsesStream(r io.Reader, emit ProviderStreamEventSink) (Provider
 		args := map[string]any{}
 		if raw := strings.TrimSpace(state.arguments.String()); raw != "" {
 			if err := json.Unmarshal([]byte(raw), &args); err != nil {
-				return ProviderResult{Text: text.String(), Usage: usage}, fmt.Errorf("responses tool %q arguments: %w", state.name, err)
+				return ProviderResult{Text: text.String(), Usage: usage, responseID: responseID}, fmt.Errorf("responses tool %q arguments: %w", state.name, err)
 			}
 		}
 		toolCalls = append(toolCalls, ToolCall{ID: state.id, Name: state.name, Args: args})
 	}
-	return ProviderResult{Text: text.String(), ToolCalls: toolCalls, Usage: usage}, nil
+	return ProviderResult{Text: text.String(), ToolCalls: toolCalls, Usage: usage, responseID: responseID}, nil
 }
 
 func firstNonEmptyString(values ...string) string {

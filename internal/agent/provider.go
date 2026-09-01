@@ -31,6 +31,9 @@ type Provider interface {
 type ProviderResult struct {
 	Text      string     `json:"text"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// responseID is provider transport state used for Responses continuation.
+	// It intentionally stays internal and is never projected into agent output.
+	responseID string
 	// Usage reports token consumption, populated by providers that support it.
 	Usage ProviderUsage `json:"usage,omitempty"`
 	// HistoryDelta carries the ordered tool-call/tool-result history from

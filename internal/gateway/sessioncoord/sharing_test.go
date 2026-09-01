@@ -171,6 +171,29 @@ func TestDispatchOwnerSubjectSeedsSharingOwner(t *testing.T) {
 	}
 }
 
+func TestAssignOwnerPersistsTypedOwner(t *testing.T) {
+	ctx := context.Background()
+	svc, repo := newSharingTestService(t)
+	if _, err := svc.SetVisibility(ctx, "s1", VisibilityShared, Actor{Subject: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := svc.AssignOwner(ctx, "s1", "agent", "planner", Actor{Subject: "alice"})
+	if err != nil || owner.Type != "agent" || owner.ID != "planner" {
+		t.Fatalf("assign owner: %+v err=%v", owner, err)
+	}
+	doc, err := repo.GetSessionSharing(ctx, "s1")
+	if err != nil || doc.OwnerType != "agent" || doc.OwnerSubject != "planner" {
+		t.Fatalf("persisted owner: %+v err=%v", doc, err)
+	}
+	members, err := svc.Members(ctx, "s1", Actor{Admin: true})
+	if err != nil || members.Owner == nil || members.Owner.Type != "agent" || members.Owner.ID != "planner" {
+		t.Fatalf("projected owner: %+v err=%v", members.Owner, err)
+	}
+	if _, err := svc.AssignOwner(ctx, "s1", "human", "bob", Actor{Subject: "alice"}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("former owner must not reassign: %v", err)
+	}
+}
+
 func TestAllowEventDeliveryVisibilityScoping(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newSharingTestService(t)
@@ -207,11 +230,18 @@ func TestObserverVisibilityConnectionLifecycle(t *testing.T) {
 		t.Fatal("default observer visibility must be false")
 	}
 	svc.SetObserverVisibility("c1", true)
+	svc.SetViewerSessions("c1", []string{"s1", "s2"})
+	if got := svc.ViewerSessions("c1"); len(got) != 2 || got[0] != "s1" {
+		t.Fatalf("viewer sessions must persist per connection: %v", got)
+	}
 	if !svc.ObserverVisible("c1") {
 		t.Fatal("observer visibility must persist per connection")
 	}
 	svc.DropConnection("c1")
 	if svc.ObserverVisible("c1") {
 		t.Fatal("disconnect must clear observer visibility")
+	}
+	if got := svc.ViewerSessions("c1"); len(got) != 0 {
+		t.Fatalf("disconnect must clear viewer sessions: %v", got)
 	}
 }

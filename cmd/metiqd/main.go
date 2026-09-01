@@ -3383,6 +3383,27 @@ func main() {
 	var wsEmitter gatewayws.EventEmitter = newObservedEventEmitter(gatewayws.NoopEmitter{}, eventBuffer)
 	filteredMCPLifecycle := newFilteredMCPLifecycleTracker()
 	setControlWSEmitter(wsEmitter)
+	taskEvents.AddHandler(func(_ context.Context, event taskspkg.Event) {
+		ts := event.Timestamp
+		if ts > 0 && ts < 1_000_000_000_000 {
+			ts *= 1000
+		}
+		if ts == 0 {
+			ts = time.Now().UnixMilli()
+		}
+		emitControlWSEvent(gatewayws.EventTaskLifecycle, gatewayws.TaskLifecyclePayload{
+			Action: "upserted", Kind: "task", Type: string(event.Type),
+			TaskID: event.TaskID, RunID: event.RunID, Status: event.Status,
+			Source: string(event.Source), Reason: event.Reason, TS: ts, Task: event,
+		})
+	})
+	subagents.SetLifecycleEmitter(func(record SubagentRecord) {
+		emitControlWSEvent(gatewayws.EventTaskLifecycle, gatewayws.TaskLifecyclePayload{
+			Action: "upserted", Kind: "subagent", Type: "subagent." + record.Status,
+			TaskID: record.RunID, RunID: record.RunID, Status: record.Status,
+			Source: "subagent", Reason: record.Error, TS: record.UpdatedAt, Task: record,
+		})
+	})
 	if mcpManager != nil {
 		snapshots := mcpManager.SetStateObserverAndSnapshot(func(change mcppkg.StateChange) {
 			emitControlWSEvent(gatewayws.EventMCPLifecycle, buildMCPLifecyclePayload(change, time.Now().UnixMilli()))
@@ -6885,12 +6906,15 @@ func main() {
 			wsPath = "/ws"
 		}
 		wsRuntime, err := gatewayws.Start(ctx, gatewayws.RuntimeOptions{
-			Addr:                    gatewayWSAddr,
-			Path:                    wsPath,
-			Token:                   gatewayWSToken,
-			Methods:                 wsMethods,
-			Events:                  gatewayws.AllPushEvents,
-			MethodDescriptors:       wsDescriptors,
+			Addr:              gatewayWSAddr,
+			Path:              wsPath,
+			Token:             gatewayWSToken,
+			Methods:           wsMethods,
+			Events:            gatewayws.AllPushEvents,
+			MethodDescriptors: wsDescriptors,
+			InternalMethodDescriptors: []gatewayprotocol.MethodDescriptor{
+				methods.MethodDescriptor(methods.MethodNodeRunnerInventoryUpdate),
+			},
 			Version:                 "metiqd",
 			HandshakeTTL:            10 * time.Second,
 			AuthRateLimitPerMin:     120,

@@ -3,6 +3,7 @@ package subagent
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -254,6 +255,40 @@ func TestGetByChildSessionKey_NotFound(t *testing.T) {
 	r := NewRegistry()
 	if r.GetByChildSessionKey("missing") != nil {
 		t.Error("expected nil")
+	}
+}
+
+func TestRetryAndDismissCompletionDelivery(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(SubagentRunRecord{
+		RunID: "run-recovery", ChildSessionKey: "child-recovery",
+		RequesterSessionKey: "parent", Task: "task", Cleanup: "keep",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !r.End("run-recovery", RunOutcome{Status: "ok", Result: "done"}) {
+		t.Fatal("end failed")
+	}
+	retried, duplicateRisk, err := r.RetryCompletion("run-recovery")
+	if err != nil || duplicateRisk || retried.Delivery.Status != DeliveryPending {
+		t.Fatalf("retry: %+v duplicate=%v err=%v", retried.Delivery, duplicateRisk, err)
+	}
+	if err := r.MarkDeliveryInProgress("run-recovery", "lease", r.now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.MarkDeliveryDelivered("run-recovery", "lease"); err != nil {
+		t.Fatal(err)
+	}
+	_, duplicateRisk, err = r.RetryCompletion("run-recovery")
+	if err != nil || !duplicateRisk {
+		t.Fatalf("delivered retry must report duplicate risk: %v %v", duplicateRisk, err)
+	}
+	dismissed, err := r.DismissCompletion("run-recovery")
+	if err != nil || dismissed.Completion.Required || dismissed.Delivery.Status != DeliveryNotRequired || dismissed.SuppressAnnounce != "dismissed" {
+		t.Fatalf("dismiss: %+v err=%v", dismissed, err)
+	}
+	if _, _, err := r.RetryCompletion("run-recovery"); err == nil {
+		t.Fatal("dismissed completion must not retry")
 	}
 }
 

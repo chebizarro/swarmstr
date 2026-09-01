@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"metiq/internal/admin"
 	"metiq/internal/agent"
+	"metiq/internal/autoreply"
 	"metiq/internal/gateway/methods"
 	"metiq/internal/gateway/sessioncoord"
 	gatewayws "metiq/internal/gateway/ws"
@@ -102,6 +104,97 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: result}, true, nil
+	case methods.MethodSessionsSteer:
+		req, err := methods.DecodeSessionsSteerParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if docsRepo == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session repository unavailable")
+		}
+		if _, err := docsRepo.GetSession(ctx, req.Key); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if steeringMailboxes != nil {
+			if mailbox := steeringMailboxes.GetIfExists(req.Key); mailbox != nil {
+				outcome := mailbox.EnqueueWithOutcome(autoreply.SteeringMessage{
+					Text:      req.Message,
+					EventID:   req.IdempotencyKey,
+					SenderID:  in.FromPubKey,
+					AgentID:   req.AgentID,
+					CreatedAt: time.Now().Unix(),
+					Source:    "gateway",
+					Priority:  autoreply.SteeringPriorityUrgent,
+				})
+				if outcome.Overflowed && !outcome.Accepted {
+					return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session steering mailbox is full")
+				}
+				return nostruntime.ControlRPCResult{Result: map[string]any{
+					"ok": true, "key": req.Key, "sessionKey": req.Key, "status": "queued",
+					"accepted": outcome.Accepted, "deduped": outcome.Deduped,
+				}}, true, nil
+			}
+		}
+		params, err := json.Marshal(methods.AgentRequest{SessionID: req.Key, Message: req.Message, AgentID: req.AgentID, IdempotencyKey: req.IdempotencyKey})
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		agentIn := in
+		agentIn.Method = methods.MethodAgent
+		agentIn.Params = params
+		result, _, err := h.handleAgentRPC(ctx, agentIn, methods.MethodAgent, cfg)
+		return result, true, err
+	case methods.MethodSessionsViewersSet:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session viewer service unavailable")
+		}
+		req, err := methods.DecodeSessionsViewersSetParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		connectionID, ok := gatewayws.ConnectionIDFromContext(ctx)
+		if !ok || strings.TrimSpace(connectionID) == "" {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("sessions.viewers.set requires a gateway WS connection")
+		}
+		for _, key := range req.SessionKeys {
+			if docsRepo == nil {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session repository unavailable")
+			}
+			if _, err := docsRepo.GetSession(ctx, key); err != nil {
+				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("unknown session %q: %w", key, err)
+			}
+		}
+		keys := sessionCoordinator.SetViewerSessions(connectionID, req.SessionKeys)
+		return nostruntime.ControlRPCResult{Result: map[string]any{"sessionKeys": keys}}, true, nil
+	case methods.MethodSessionsAssignOwner:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session sharing service unavailable")
+		}
+		req, err := methods.DecodeSessionsAssignOwnerParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		actor := sessionCollabActor(ctx)
+		owner, err := sessionCoordinator.AssignOwner(ctx, req.Key, req.Owner.Type, req.Owner.ID, actor)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{
+			"ok": true, "key": req.Key,
+			"owner": map[string]any{"actor": owner, "assignedBy": actor.Identity(), "assignedAt": time.Now().UnixMilli()},
+		}}, true, nil
 	case methods.MethodChatSend, methods.MethodSessionsSend:
 		req, err := methods.DecodeChatSendParams(in.Params)
 		if err != nil {
@@ -709,6 +802,38 @@ func (h controlRPCHandler) handleSessionRPC(ctx context.Context, in nostruntime.
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "key": req.Key, "sessionId": req.Key, "placement": placement}}, true, nil
+	case methods.MethodSessionsGroupsDefaults:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session group service unavailable")
+		}
+		if _, err := methods.DecodeSessionsGroupsDefaultsParams(in.Params); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		defaults, err := sessionCoordinator.GroupDefaults(ctx)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"defaults": defaults}}, true, nil
+	case methods.MethodSessionsGroupsUpdate:
+		if sessionCoordinator == nil {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session group service unavailable")
+		}
+		req, err := methods.DecodeSessionsGroupsUpdateParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if req.CWD != nil && !filepath.IsAbs(*req.CWD) {
+			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session group cwd must be absolute")
+		}
+		defaults, err := sessionCoordinator.UpdateGroupDefaults(ctx, req.Name, req.CWD, req.Worktree)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "defaults": defaults}}, true, nil
 	case methods.MethodSessionsGroupsList:
 		if sessionCoordinator == nil {
 			return nostruntime.ControlRPCResult{}, true, fmt.Errorf("session group service unavailable")

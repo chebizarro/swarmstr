@@ -326,6 +326,7 @@ type SubagentRegistry struct {
 	records         map[string]*SubagentRecord // key: RunID
 	livenessChecker *agent.SubagentLivenessChecker
 	durable         *subagentstore.Registry
+	onLifecycle     func(SubagentRecord)
 }
 
 func newSubagentRegistry() *SubagentRegistry {
@@ -366,6 +367,15 @@ func newSubagentRegistryWithDurable(durable *subagentstore.Registry) *SubagentRe
 		r.records[stored.RunID] = &SubagentRecord{RunID: stored.RunID, SessionID: stored.ChildSessionKey, ParentSessionID: stored.RequesterSessionKey, Depth: stored.Depth, Status: status, Message: stored.Task, Result: result, Error: errText, StartedAt: stored.StartedAt, UpdatedAt: stored.UpdatedAt}
 	}
 	return r
+}
+
+func (r *SubagentRegistry) SetLifecycleEmitter(fn func(SubagentRecord)) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.onLifecycle = fn
+	r.mu.Unlock()
 }
 
 func (r *SubagentRegistry) Close() error {
@@ -473,8 +483,8 @@ func (r *SubagentRegistry) Spawn(runID, sessionID, parentSessionID string, depth
 		UpdatedAt:       now,
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if maxLive > 0 && r.liveCountLocked() >= maxLive {
+		r.mu.Unlock()
 		return nil, false
 	}
 	if r.durable != nil {
@@ -492,11 +502,17 @@ func (r *SubagentRegistry) Spawn(runID, sessionID, parentSessionID string, depth
 			ExecutionStatus:      subagentstore.ExecutionRunning,
 		}
 		if err := r.durable.Register(stored); err != nil {
+			r.mu.Unlock()
 			return nil, false
 		}
 	}
 	r.records[runID] = rec
 	copy := *rec
+	emit := r.onLifecycle
+	r.mu.Unlock()
+	if emit != nil {
+		emit(copy)
+	}
 	return &copy, true
 }
 
@@ -530,10 +546,13 @@ func (r *SubagentRegistry) Count() int {
 
 // Finish marks a sub-session as done or errored.
 func (r *SubagentRegistry) Finish(runID, result, errStr string) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	rec := r.records[runID]
 	if rec == nil {
+		r.mu.Unlock()
 		return
 	}
 	status := "ok"
@@ -543,6 +562,7 @@ func (r *SubagentRegistry) Finish(runID, result, errStr string) {
 	if r.durable != nil {
 		ended, err := r.durable.EndWithError(runID, subagentstore.RunOutcome{Status: status, Result: result, Error: errStr})
 		if err != nil || !ended {
+			r.mu.Unlock()
 			return
 		}
 	}
@@ -554,6 +574,26 @@ func (r *SubagentRegistry) Finish(runID, result, errStr string) {
 		rec.Result = result
 	}
 	rec.UpdatedAt = time.Now().UnixMilli()
+	copy := *rec
+	emit := r.onLifecycle
+	r.mu.Unlock()
+	if emit != nil {
+		emit(copy)
+	}
+}
+
+func (r *SubagentRegistry) RetryCompletion(runID string) (subagentstore.SubagentRunRecord, bool, error) {
+	if r == nil || r.durable == nil {
+		return subagentstore.SubagentRunRecord{}, false, fmt.Errorf("durable subagent completion registry unavailable")
+	}
+	return r.durable.RetryCompletion(runID)
+}
+
+func (r *SubagentRegistry) DismissCompletion(runID string) (subagentstore.SubagentRunRecord, error) {
+	if r == nil || r.durable == nil {
+		return subagentstore.SubagentRunRecord{}, fmt.Errorf("durable subagent completion registry unavailable")
+	}
+	return r.durable.DismissCompletion(runID)
 }
 
 // Get returns the record for the given run_id, or nil.
@@ -832,17 +872,25 @@ const (
 	wizardTTL           = 2 * time.Hour
 )
 
+type nodeRunnerInventoryRecord struct {
+	NodeID           string                             `json:"nodeId"`
+	ProtocolFeatures []string                           `json:"protocolFeatures"`
+	WorkerHost       *methods.NodeWorkerHostDeclaration `json:"workerHost,omitempty"`
+	UpdatedAtMS      int64                              `json:"updatedAtMs"`
+}
+
 type nodeInvocationRegistry struct {
 	mu             sync.Mutex
 	progressEmitMu sync.Mutex
 	lifecycleMu    sync.RWMutex
 	revokedNodes   map[string]struct{}
 	runs           map[string]nodeInvocationRecord
+	inventories    map[string]nodeRunnerInventoryRecord
 	order          []string
 }
 
 func newNodeInvocationRegistry() *nodeInvocationRegistry {
-	return &nodeInvocationRegistry{revokedNodes: map[string]struct{}{}, runs: map[string]nodeInvocationRecord{}, order: []string{}}
+	return &nodeInvocationRegistry{revokedNodes: map[string]struct{}{}, runs: map[string]nodeInvocationRecord{}, inventories: map[string]nodeRunnerInventoryRecord{}, order: []string{}}
 }
 
 func (r *nodeInvocationRegistry) WithActiveNode(nodeID string, operation func() error) error {
@@ -885,6 +933,7 @@ func (r *nodeInvocationRegistry) AllowNode(nodeID string) {
 func (r *nodeInvocationRegistry) RemoveNode(nodeID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	delete(r.inventories, nodeID)
 	kept := r.order[:0]
 	for _, runID := range r.order {
 		if run, ok := r.runs[runID]; ok && run.NodeID == nodeID {
@@ -894,6 +943,32 @@ func (r *nodeInvocationRegistry) RemoveNode(nodeID string) {
 		kept = append(kept, runID)
 	}
 	r.order = append([]string(nil), kept...)
+}
+
+func (r *nodeInvocationRegistry) UpdateRunnerInventory(nodeID string, req methods.NodeRunnerInventoryUpdateRequest) (nodeRunnerInventoryRecord, error) {
+	if r == nil {
+		return nodeRunnerInventoryRecord{}, fmt.Errorf("node invoke runtime not configured")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nodeRunnerInventoryRecord{}, fmt.Errorf("node identity is required")
+	}
+	var workerHost *methods.NodeWorkerHostDeclaration
+	if req.WorkerHost != nil {
+		copy := *req.WorkerHost
+		workerHost = &copy
+	}
+	record := nodeRunnerInventoryRecord{
+		NodeID: nodeID, ProtocolFeatures: append([]string(nil), req.ProtocolFeatures...),
+		WorkerHost: workerHost, UpdatedAtMS: time.Now().UnixMilli(),
+	}
+	r.mu.Lock()
+	if r.inventories == nil {
+		r.inventories = map[string]nodeRunnerInventoryRecord{}
+	}
+	r.inventories[nodeID] = record
+	r.mu.Unlock()
+	return record, nil
 }
 
 func (r *nodeInvocationRegistry) cleanup() {

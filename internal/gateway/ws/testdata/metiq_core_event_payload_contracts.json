@@ -38,6 +38,9 @@
   "plugin.loaded": {
     "required_keys": ["ts_ms", "plugin_id", "action"]
   },
+  "task": {
+    "required_keys": ["action", "kind", "type", "ts", "task"]
+  },
   "canvas.update": {
     "required_keys": ["ts_ms", "canvas_id", "content_type", "data"]
   }

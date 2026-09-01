@@ -5,8 +5,11 @@
 package channelmedia
 
 import (
+	"fmt"
+	"io"
 	"mime"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -47,6 +50,47 @@ func Validate(media []sdk.MediaPayloadInput, limits channels.MediaLimits) error 
 // media inputs via the shared gateway helper.
 func BuildPayload(media []sdk.MediaPayloadInput, preserveMediaTypeCardinality bool) channels.MediaPayload {
 	return channels.BuildMediaPayload(ToChannelInputs(media), preserveMediaTypeCardinality)
+}
+
+// ReadLocalFile reads one staged local media file with an enforced byte bound.
+// Channel extensions must not fetch remote URLs on behalf of outbound sends.
+func ReadLocalFile(item sdk.MediaPayloadInput, maxBytes int64) ([]byte, string, string, error) {
+	path := strings.TrimSpace(item.Path)
+	if IsHTTPURL(path) {
+		return nil, "", "", fmt.Errorf("remote media URLs are not supported; stage the file locally")
+	}
+	if maxBytes <= 0 {
+		maxBytes = channels.DefaultMaxMediaBytes
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("open media: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("stat media: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "", "", fmt.Errorf("media path is not a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("read media: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, "", "", fmt.Errorf("media exceeds %d byte limit", maxBytes)
+	}
+	contentType := strings.TrimSpace(item.ContentType)
+	if contentType == "" {
+		contentType = mime.TypeByExtension(filepath.Ext(path))
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	} else if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = parsed
+	}
+	return data, filepath.Base(path), contentType, nil
 }
 
 // Kind buckets one media item into image, video, audio, or document using its

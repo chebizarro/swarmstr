@@ -30,6 +30,8 @@ type ProviderCapabilities struct {
 	SupportsVision        bool    `json:"supports_vision,omitempty"`
 	SupportsPromptCaching bool    `json:"supports_prompt_caching,omitempty"`
 	SupportsThinking      bool    `json:"supports_thinking,omitempty"`
+	SupportsWebSocket     bool    `json:"supports_websocket,omitempty"`
+	SupportsContinuation  bool    `json:"supports_continuation,omitempty"`
 	ContextWindowTokens   int     `json:"context_window_tokens,omitempty"`
 	CostPer1KInput        float64 `json:"cost_per_1k_input,omitempty"`
 	CostPer1KOutput       float64 `json:"cost_per_1k_output,omitempty"`
@@ -325,7 +327,8 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 	geminiFlashCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, ContextWindowTokens: 1000000, CostPer1KInput: 0.0003, CostPer1KOutput: 0.0025}
 	openAICompatCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsPromptCaching: true, SupportsThinking: true, InputModalities: "text,image", OutputModalities: "text", Transport: "openai-chat-sse", TokenAccounting: "provider_usage"}
 	mistralCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, ContextWindowTokens: 128000}
-	responsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1047576, InputModalities: "text,image", OutputModalities: "text", Transport: "responses-sse", TokenAccounting: "provider_usage"}
+	openAIResponsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, SupportsWebSocket: true, SupportsContinuation: true, ContextWindowTokens: 1047576, InputModalities: "text,image", OutputModalities: "text", Transport: "responses-auto", TokenAccounting: "provider_usage"}
+	azureResponsesCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, SupportsContinuation: true, ContextWindowTokens: 1047576, InputModalities: "text,image", OutputModalities: "text", Transport: "responses-sse", TokenAccounting: "provider_usage"}
 	vertexCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: true, SupportsThinking: true, ContextWindowTokens: 1000000}
 	bedrockCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: false, SupportsPromptCaching: false, SupportsThinking: true, ContextWindowTokens: 200000}
 	anthropicVertexCaps := ProviderCapabilities{SupportsTools: true, SupportsStreaming: true, SupportsVision: false, SupportsPromptCaching: false, SupportsThinking: true, ContextWindowTokens: 200000}
@@ -427,8 +430,8 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 		return buildOpenAICompatibleProvider(normalizeKimiModelID(model), override, moonshotDesc)
 	}
 
-	openAIResponsesDesc := ProviderDescriptor{ID: "openai-responses", Name: "OpenAI Responses", Aliases: []string{"openai-responses", "responses"}, Prefixes: []string{"responses/"}, BaseURL: "https://api.openai.com/v1", APIKeyEnv: "OPENAI_API_KEY", AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: responsesCaps, ListModels: func(context.Context) ([]ModelInfo, error) {
-		return catalogRowsForProvider("openai-responses", responsesCaps), nil
+	openAIResponsesDesc := ProviderDescriptor{ID: "openai-responses", Name: "OpenAI Responses", Aliases: []string{"openai-responses", "responses"}, Prefixes: []string{"responses/"}, BaseURL: "https://api.openai.com/v1", APIKeyEnv: "OPENAI_API_KEY", AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: openAIResponsesCaps, ListModels: func(context.Context) ([]ModelInfo, error) {
+		return catalogRowsForProvider("openai-responses", openAIResponsesCaps), nil
 	}}
 	openAIResponsesDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
 		baseURL := strings.TrimSpace(override.BaseURL)
@@ -442,8 +445,8 @@ func builtinProviderDescriptors() []ProviderDescriptor {
 		return &OpenAIResponsesProvider{BaseURL: baseURL, APIKey: credential, Model: strings.TrimPrefix(strings.TrimSpace(model), "responses/"), Client: openAIResponsesDesc.HTTPClient(nil)}, nil
 	}
 
-	azureResponsesDesc := ProviderDescriptor{ID: "azure-responses", Name: "Azure OpenAI Responses", Aliases: []string{"azure-responses", "azure"}, Prefixes: []string{"azure/"}, BaseURLEnv: "AZURE_OPENAI_ENDPOINT", APIKeyEnv: "AZURE_OPENAI_API_KEY", AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: responsesCaps, ListModels: func(context.Context) ([]ModelInfo, error) {
-		return catalogRowsForProvider("azure-responses", responsesCaps), nil
+	azureResponsesDesc := ProviderDescriptor{ID: "azure-responses", Name: "Azure OpenAI Responses", Aliases: []string{"azure-responses", "azure"}, Prefixes: []string{"azure/"}, BaseURLEnv: "AZURE_OPENAI_ENDPOINT", APIKeyEnv: "AZURE_OPENAI_API_KEY", AuthMethods: []AuthMethod{AuthMethodAPIKey}, Capabilities: azureResponsesCaps, ListModels: func(context.Context) ([]ModelInfo, error) {
+		return catalogRowsForProvider("azure-responses", azureResponsesCaps), nil
 	}}
 	azureResponsesDesc.Factory = func(model string, override ProviderOverride) (Provider, error) {
 		baseURL := strings.TrimSpace(override.BaseURL)

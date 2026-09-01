@@ -13,15 +13,19 @@ import (
 type OpenAIResponsesProvider struct {
 	BaseURL, APIKey, Model string
 	Client                 *http.Client
+	Transport              ResponsesTransportPolicy
+	transportState         responsesTransportState
 }
 
 type responsesRequest struct {
-	Model           string           `json:"model"`
-	Input           []map[string]any `json:"input"`
-	Tools           []map[string]any `json:"tools,omitempty"`
-	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
-	Reasoning       map[string]any   `json:"reasoning,omitempty"`
-	Stream          bool             `json:"stream,omitempty"`
+	Model              string           `json:"model"`
+	Input              []map[string]any `json:"input"`
+	Tools              []map[string]any `json:"tools,omitempty"`
+	MaxOutputTokens    int              `json:"max_output_tokens,omitempty"`
+	Reasoning          map[string]any   `json:"reasoning,omitempty"`
+	Stream             bool             `json:"stream,omitempty"`
+	Store              bool             `json:"store,omitempty"`
+	PreviousResponseID string           `json:"previous_response_id,omitempty"`
 }
 
 type responsesHTTPConfig struct {
@@ -117,13 +121,11 @@ func (p *OpenAIResponsesProvider) StreamEvents(ctx context.Context, turn Turn, e
 			turn.Tools,
 			chatOptionsFromTurn(turn, disabledPromptCacheProfile()),
 		)
-		request.Stream = true
-		resp, err := executeResponsesRequest(ctx, request, p.requestConfig())
-		if err != nil {
-			return ProviderResult{}, err
+		policy := p.Transport
+		if strings.TrimSpace(string(policy)) == "" {
+			policy = ResponsesTransportPolicy(strings.TrimSpace(getEnvFn("OPENAI_RESPONSES_TRANSPORT")))
 		}
-		defer resp.Body.Close()
-		return consumeResponsesStream(resp.Body, emit)
+		return streamResponsesRequest(ctx, turn, request, p.requestConfig(), policy, true, true, &p.transportState, emit)
 	})
 }
 

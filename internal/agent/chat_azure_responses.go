@@ -12,6 +12,8 @@ import (
 type AzureResponsesProvider struct {
 	BaseURL, APIKey, Model string
 	Client                 *http.Client
+	Transport              ResponsesTransportPolicy
+	transportState         responsesTransportState
 }
 
 func (p *AzureResponsesProvider) endpoint() (string, error) {
@@ -82,12 +84,12 @@ func (p *AzureResponsesProvider) StreamEvents(ctx context.Context, turn Turn, em
 			turn.Tools,
 			chatOptionsFromTurn(turn, disabledPromptCacheProfile()),
 		)
-		request.Stream = true
-		resp, err := executeResponsesRequest(ctx, request, cfg)
-		if err != nil {
-			return ProviderResult{}, err
+		policy := p.Transport
+		if strings.TrimSpace(string(policy)) == "" {
+			policy = ResponsesTransportPolicy(strings.TrimSpace(getEnvFn("AZURE_OPENAI_RESPONSES_TRANSPORT")))
 		}
-		defer resp.Body.Close()
-		return consumeResponsesStream(resp.Body, emit)
+		// Azure's Responses endpoint supports stored continuation, but native
+		// Responses WebSocket is currently restricted to the official OpenAI API.
+		return streamResponsesRequest(ctx, turn, request, cfg, policy, false, true, &p.transportState, emit)
 	})
 }

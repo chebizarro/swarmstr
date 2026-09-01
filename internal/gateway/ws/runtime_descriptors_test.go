@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 
@@ -98,6 +99,44 @@ func TestEvaluateAuthUsesValidatedPairedDeviceToken(t *testing.T) {
 	decision = r.evaluateAuth(req, connect)
 	if decision.OK || decision.Code != "DEVICE_AUTH_TOKEN_MISMATCH" {
 		t.Fatalf("revoked token accepted: %+v", decision)
+	}
+}
+
+func TestInternalMethodDescriptorIsDispatchableButNotAdvertised(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	publicNames := append([]string{}, methods.SupportedMethods()...)
+	publicNames = append(publicNames, MethodEventsList, MethodEventsSubscribe, MethodEventsUnsubscribe)
+	internal := methods.MethodDescriptor(methods.MethodNodeRunnerInventoryUpdate)
+	r, err := Start(ctx, RuntimeOptions{
+		Addr:                      "127.0.0.1:0",
+		Methods:                   publicNames,
+		MethodDescriptors:         methods.MethodDescriptors(publicNames),
+		InternalMethodDescriptors: []protocol.MethodDescriptor{internal},
+	})
+	if err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	if !r.isMethodAllowed(internal.Name) {
+		t.Fatalf("internal method %q is not dispatchable", internal.Name)
+	}
+	for _, name := range r.opts.Methods {
+		if name == internal.Name {
+			t.Fatalf("internal method %q leaked into advertised methods", internal.Name)
+		}
+	}
+	for _, descriptor := range r.listMethodDescriptors() {
+		if descriptor.Name == internal.Name {
+			t.Fatalf("internal method %q leaked into advertised descriptors", internal.Name)
+		}
+	}
+	node := ControlPrincipal{Authenticated: true, Role: "node", ScopesEnforced: true}
+	if shape := r.admitMethod(&client{}, node, internal.Name); shape != nil {
+		t.Fatalf("authenticated node rejected from internal method: %+v", shape)
+	}
+	operator := ControlPrincipal{Authenticated: true, Role: "operator", Scopes: defaultOperatorScopes(), ScopesEnforced: true}
+	if shape := r.admitMethod(&client{}, operator, internal.Name); shape == nil {
+		t.Fatal("operator must not call internal node-scoped method")
 	}
 }
 

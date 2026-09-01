@@ -15,8 +15,8 @@ func TestIMessagePluginAlias(t *testing.T) {
 		t.Fatalf("unexpected type: %s", p.Type())
 	}
 	caps := p.Capabilities()
-	if !caps.Reactions || !caps.MultiAccount {
-		t.Fatalf("expected reactions and multi-account capabilities: %+v", caps)
+	if !caps.Reactions || !caps.Media || !caps.DirectTextMedia || !caps.MultiAccount {
+		t.Fatalf("expected reactions, media, direct text/media, and multi-account capabilities: %+v", caps)
 	}
 	methods := p.GatewayMethods()
 	wantMethods := []string{"imessage.send", "imessage.add_reaction", "imessage.remove_reaction"}

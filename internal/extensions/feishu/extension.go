@@ -33,11 +33,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"metiq/internal/extensions/channelmedia"
+	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
 
@@ -90,7 +93,7 @@ func (p *FeishuPlugin) ConfigSchema() map[string]any {
 }
 
 func (p *FeishuPlugin) Capabilities() sdk.ChannelCapabilities {
-	return sdk.ChannelCapabilities{Reactions: true, Threads: true}
+	return sdk.ChannelCapabilities{Reactions: true, Threads: true, Media: true, DirectTextMedia: true}
 }
 
 func (p *FeishuPlugin) GatewayMethods() []sdk.GatewayMethod { return nil }
@@ -481,10 +484,14 @@ func (b *feishuBot) SendInThread(ctx context.Context, threadID, text string) err
 
 func (b *feishuBot) sendMessage(ctx context.Context, receiveID, receiveIDType, text, replyToMsgID string) error {
 	content, _ := json.Marshal(map[string]string{"text": text})
+	return b.sendTypedMessage(ctx, receiveID, receiveIDType, "text", string(content), replyToMsgID)
+}
+
+func (b *feishuBot) sendTypedMessage(ctx context.Context, receiveID, receiveIDType, msgType, content, replyToMsgID string) error {
 	payload := map[string]any{
 		"receive_id": receiveID,
-		"msg_type":   "text",
-		"content":    string(content),
+		"msg_type":   msgType,
+		"content":    content,
 	}
 	if replyToMsgID != "" {
 		payload["reply_in_thread"] = true
@@ -514,6 +521,114 @@ func (b *feishuBot) sendMessage(ctx context.Context, receiveID, receiveIDType, t
 		return fmt.Errorf("feishu send: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	return nil
+}
+
+// SendMedia uploads each staged local file, then sends the resulting Feishu
+// image_key or file_key to the selected chat.
+func (b *feishuBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("feishu %s: %w", b.channelID, err)
+	}
+	receiveID := strings.TrimSpace(payload.To)
+	if receiveID == "" {
+		receiveID = b.chatID
+	}
+	if strings.TrimSpace(payload.Text) != "" {
+		if err := b.sendMessage(ctx, receiveID, "chat_id", payload.Text, payload.ReplyToID); err != nil {
+			return err
+		}
+	}
+	for i, item := range payload.Media {
+		msgType, key, err := b.uploadMedia(ctx, item)
+		if err != nil {
+			return fmt.Errorf("feishu %s: media[%d]: %w", b.channelID, i, err)
+		}
+		field := "file_key"
+		if msgType == "image" {
+			field = "image_key"
+		}
+		content, _ := json.Marshal(map[string]string{field: key})
+		if err := b.sendTypedMessage(ctx, receiveID, "chat_id", msgType, string(content), payload.ReplyToID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *feishuBot) uploadMedia(ctx context.Context, item sdk.MediaPayloadInput) (string, string, error) {
+	data, filename, _, err := channelmedia.ReadLocalFile(item, channels.DefaultMaxMediaBytes)
+	if err != nil {
+		return "", "", err
+	}
+	msgType := "file"
+	endpoint := "/open-apis/im/v1/files"
+	fileField := "file"
+	var fields map[string]string
+	if channelmedia.Kind(item) == channelmedia.KindImage {
+		msgType = "image"
+		endpoint = "/open-apis/im/v1/images"
+		fileField = "image"
+		fields = map[string]string{"image_type": "message"}
+	} else {
+		fields = map[string]string{"file_type": "stream", "file_name": filename}
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return "", "", err
+		}
+	}
+	part, err := writer.CreateFormFile(fileField, filename)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.baseURL+endpoint, &body)
+	if err != nil {
+		return "", "", fmt.Errorf("build upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+b.getToken())
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("upload: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
+	if err != nil {
+		return "", "", fmt.Errorf("read upload response: %w", err)
+	}
+	if len(raw) > 1<<20 {
+		return "", "", fmt.Errorf("upload response exceeds 1048576 bytes")
+	}
+	var result struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			ImageKey string `json:"image_key"`
+			FileKey  string `json:"file_key"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", "", fmt.Errorf("decode upload response: %w", err)
+	}
+	if resp.StatusCode >= 300 || result.Code != 0 {
+		return "", "", fmt.Errorf("upload rejected: status %d code %d: %s", resp.StatusCode, result.Code, result.Msg)
+	}
+	key := result.Data.FileKey
+	if msgType == "image" {
+		key = result.Data.ImageKey
+	}
+	if strings.TrimSpace(key) == "" {
+		return "", "", fmt.Errorf("upload response omitted %s_key", msgType)
+	}
+	return msgType, key, nil
 }
 
 // AddReaction adds an emoji reaction to a message.
@@ -607,3 +722,4 @@ func (b *feishuBot) findReactionID(ctx context.Context, msgID, emoji string) (st
 // Ensure feishuBot satisfies the optional handle interfaces.
 var _ sdk.ReactionHandle = (*feishuBot)(nil)
 var _ sdk.ThreadHandle = (*feishuBot)(nil)
+var _ sdk.MediaHandle = (*feishuBot)(nil)

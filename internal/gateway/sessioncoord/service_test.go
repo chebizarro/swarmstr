@@ -150,6 +150,11 @@ func TestGroupCatalogRenameAndDelete(t *testing.T) {
 	if err != nil || len(groups) != 2 {
 		t.Fatalf("put groups: %v %v", groups, err)
 	}
+	cwd := filepath.Join(t.TempDir(), "work")
+	defaults, err := svc.UpdateGroupDefaults(ctx, "Work", &cwd, true)
+	if err != nil || len(defaults) != 2 || defaults[0].Name != "Work" || defaults[0].CWD == nil || *defaults[0].CWD != cwd || !defaults[0].Worktree {
+		t.Fatalf("update group defaults: %+v err=%v", defaults, err)
+	}
 	restarted := New(repo, nil)
 	persisted, err := restarted.ListGroups(ctx)
 	if err != nil || len(persisted) != 2 {
@@ -162,11 +167,19 @@ func TestGroupCatalogRenameAndDelete(t *testing.T) {
 	if session.Meta["group"] != "Projects" {
 		t.Fatalf("group not renamed: %+v", session.Meta)
 	}
+	defaults, err = restarted.GroupDefaults(ctx)
+	if err != nil || len(defaults) != 2 || defaults[0].Name != "Projects" || defaults[0].CWD == nil || *defaults[0].CWD != cwd {
+		t.Fatalf("renamed defaults: %+v err=%v", defaults, err)
+	}
 	if updated, err := svc.DeleteGroup(ctx, "Projects"); err != nil || updated != 1 {
 		t.Fatalf("delete: updated=%d err=%v", updated, err)
 	}
 	session, _ = repo.GetSession(ctx, "s1")
 	if _, ok := session.Meta["group"]; ok {
 		t.Fatalf("group not cleared: %+v", session.Meta)
+	}
+	defaults, err = restarted.GroupDefaults(ctx)
+	if err != nil || len(defaults) != 1 || defaults[0].Name != "Later" {
+		t.Fatalf("deleted defaults: %+v err=%v", defaults, err)
 	}
 }

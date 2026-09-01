@@ -9,23 +9,18 @@ import (
 
 func TestPhase2PriorityMethodCatalogAndScopes(t *testing.T) {
 	want := map[string]string{
-		MethodSessionsGet:                protocol.MethodScopeOperatorRead,
-		MethodSessionsResolve:            protocol.MethodScopeOperatorRead,
-		MethodSessionsRecover:            protocol.MethodScopeOperatorWrite,
-		MethodSessionsSteer:              protocol.MethodScopeOperatorWrite,
-		MethodSessionsViewersSet:         protocol.MethodScopeOperatorRead,
-		MethodSessionsAssignOwner:        protocol.MethodScopeOperatorWrite,
-		MethodSessionsGroupsDefaults:     protocol.MethodScopeOperatorWrite,
-		MethodSessionsGroupsUpdate:       protocol.MethodScopeOperatorWrite,
-		MethodTasksRetry:                 protocol.MethodScopeOperatorWrite,
-		MethodTasksDismiss:               protocol.MethodScopeOperatorWrite,
-		MethodDevicePairSetupCode:        protocol.MethodScopeOperatorAdmin,
-		MethodDevicePairSetupStatus:      protocol.MethodScopeOperatorAdmin,
-		MethodDeviceScopesRequestUpgrade: protocol.MethodScopeOperatorRead,
-		MethodDeviceScopesWaitUpgrade:    protocol.MethodScopeOperatorRead,
-		MethodNodeRunnerInventoryUpdate:  protocol.MethodScopeNode,
-		MethodExecApprovalGrantsList:     protocol.MethodScopeOperatorApprovals,
-		MethodExecApprovalGrantsRevoke:   protocol.MethodScopeOperatorApprovals,
+		MethodSessionsGet:              protocol.MethodScopeOperatorRead,
+		MethodSessionsResolve:          protocol.MethodScopeOperatorRead,
+		MethodSessionsRecover:          protocol.MethodScopeOperatorWrite,
+		MethodSessionsSteer:            protocol.MethodScopeOperatorWrite,
+		MethodSessionsViewersSet:       protocol.MethodScopeOperatorRead,
+		MethodSessionsAssignOwner:      protocol.MethodScopeOperatorWrite,
+		MethodSessionsGroupsDefaults:   protocol.MethodScopeOperatorWrite,
+		MethodSessionsGroupsUpdate:     protocol.MethodScopeOperatorWrite,
+		MethodTasksRetry:               protocol.MethodScopeOperatorWrite,
+		MethodTasksDismiss:             protocol.MethodScopeOperatorWrite,
+		MethodExecApprovalGrantsList:   protocol.MethodScopeOperatorApprovals,
+		MethodExecApprovalGrantsRevoke: protocol.MethodScopeOperatorApprovals,
 	}
 	catalog := map[string]bool{}
 	for _, method := range SupportedMethods() {
@@ -37,6 +32,21 @@ func TestPhase2PriorityMethodCatalogAndScopes(t *testing.T) {
 		}
 		if got := MethodDescriptor(method).Scope; got != scope {
 			t.Errorf("%s scope=%q want %q", method, got, scope)
+		}
+	}
+	unadvertised := map[string]string{
+		MethodDevicePairSetupCode:        protocol.MethodScopeOperatorAdmin,
+		MethodDevicePairSetupStatus:      protocol.MethodScopeOperatorAdmin,
+		MethodDeviceScopesRequestUpgrade: protocol.MethodScopeOperatorRead,
+		MethodDeviceScopesWaitUpgrade:    protocol.MethodScopeOperatorRead,
+		MethodNodeRunnerInventoryUpdate:  protocol.MethodScopeNode,
+	}
+	for method, scope := range unadvertised {
+		if catalog[method] {
+			t.Errorf("internal or unavailable method must not be advertised: %q", method)
+		}
+		if got := MethodDescriptor(method).Scope; got != scope {
+			t.Errorf("%s internal scope=%q want %q", method, got, scope)
 		}
 	}
 }

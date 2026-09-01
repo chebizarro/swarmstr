@@ -37,6 +37,7 @@ type Service struct {
 	suggestionCache     map[string]state.SessionSuggestionsDoc
 	suggestionInflight  map[string]struct{}
 	observerVisible     map[string]bool         // connection id -> declared observer visibility
+	viewerSessions      map[string][]string     // connection id -> session message subscriptions
 	typingState         map[string]*typingEntry // subject+session -> live typing accounting
 	discussion          DiscussionProvider
 	observerAskProvider ObserverAskProvider
@@ -280,6 +281,9 @@ func (s *Service) RenameGroup(ctx context.Context, from, to string) (int, error)
 	if err != nil {
 		return 0, err
 	}
+	if err := s.rewriteGroupDefaultsLocked(ctx, from, to); err != nil {
+		return 0, err
+	}
 	if _, err := s.repo.PutList(ctx, groupCatalogName, state.ListDoc{Version: 1, Name: groupCatalogName, Items: groups}); err != nil {
 		return 0, err
 	}
@@ -306,6 +310,9 @@ func (s *Service) DeleteGroup(ctx context.Context, name string) (int, error) {
 	}
 	updated, err := s.rewriteSessionGroupLocked(ctx, name, "")
 	if err != nil {
+		return 0, err
+	}
+	if err := s.rewriteGroupDefaultsLocked(ctx, name, ""); err != nil {
 		return 0, err
 	}
 	if _, err := s.repo.PutList(ctx, groupCatalogName, state.ListDoc{Version: 1, Name: groupCatalogName, Items: kept}); err != nil {

@@ -341,6 +341,34 @@ func (h controlRPCHandler) handleOpsRPC(ctx context.Context, in nostruntime.Cont
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: methods.ApplyCompatResponseAliases(out)}, true, nil
+	case methods.MethodExecApprovalGrantsList:
+		req, err := methods.DecodeExecApprovalGrantsListParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		grants, err := listExecApprovalGrants(h.deps.execApprovals, req.Limit)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"grants": grants}}, true, nil
+	case methods.MethodExecApprovalGrantsRevoke:
+		req, err := methods.DecodeExecApprovalGrantsRevokeParams(in.Params)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		req, err = req.Normalize()
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		outcome, err := revokeExecApprovalGrant(h.deps.execApprovals, req.GrantID)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		return nostruntime.ControlRPCResult{Result: map[string]any{"outcome": outcome}}, true, nil
 	case methods.MethodExecApprovalsGet:
 		req, err := methods.DecodeExecApprovalsGetParams(in.Params)
 		if err != nil {

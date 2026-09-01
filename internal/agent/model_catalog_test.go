@@ -48,13 +48,20 @@ func TestPerModelCapabilitiesAreAuthoritative(t *testing.T) {
 		window                   int
 		vision, thinking         bool
 	}{
-		{"responses/gpt-4.1", "openai-responses", "responses-sse", 1047576, true, true},
+		{"responses/gpt-4.1", "openai-responses", "responses-auto", 1047576, true, true},
 		{"deepseek/deepseek-chat", "deepseek", "openai-chat-sse", 128000, false, false},
 		{"qwen/qwen3.7-plus", "qwen", "openai-chat-sse", 262144, true, true},
 		{"vercel-ai-gateway/anthropic/claude-opus-4.6", "vercel-ai-gateway", "openai-chat-sse", 200000, true, true},
 	}
+	azure, azureOK := reg.ModelInfo("azure/gpt-4.1")
+	if !azureOK || azure.Capabilities.SupportsWebSocket || !azure.Capabilities.SupportsContinuation || azure.Capabilities.Transport != "responses-sse" {
+		t.Fatalf("Azure Responses capabilities must remain SSE continuation only: %+v ok=%v", azure.Capabilities, azureOK)
+	}
 	for _, tc := range cases {
 		info, ok := reg.ModelInfo(tc.ref)
+		if tc.provider == "openai-responses" && (!info.Capabilities.SupportsWebSocket || !info.Capabilities.SupportsContinuation) {
+			t.Errorf("%s: Responses transport capabilities=%+v", tc.ref, info.Capabilities)
+		}
 		if !ok || info.ProviderID != tc.provider || info.Capabilities.ContextWindowTokens != tc.window || info.Capabilities.Transport != tc.transport || info.Capabilities.SupportsVision != tc.vision || info.Capabilities.SupportsThinking != tc.thinking {
 			t.Errorf("%s: info=%+v ok=%v", tc.ref, info, ok)
 		}

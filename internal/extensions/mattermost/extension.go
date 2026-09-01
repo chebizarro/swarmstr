@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -51,6 +52,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -105,10 +107,12 @@ func (p *MattermostPlugin) ConfigSchema() map[string]any {
 
 func (p *MattermostPlugin) Capabilities() sdk.ChannelCapabilities {
 	return sdk.ChannelCapabilities{
-		Reactions:    true,
-		Threads:      true,
-		Edit:         true,
-		MultiAccount: true,
+		Reactions:       true,
+		Threads:         true,
+		Edit:            true,
+		Media:           true,
+		DirectTextMedia: true,
+		MultiAccount:    true,
 	}
 }
 
@@ -692,6 +696,89 @@ func (b *mmBot) Send(ctx context.Context, text string) error {
 	}, nil)
 }
 
+// SendMedia uploads staged local files to Mattermost, then attaches their IDs
+// to one post so text and media share the same provider message.
+func (b *mmBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("mattermost %s: %w", b.channelID, err)
+	}
+	channelID := strings.TrimSpace(payload.To)
+	if channelID == "" {
+		channelID = b.mmChannelID
+	}
+	fileIDs := make([]string, 0, len(payload.Media))
+	for i, item := range payload.Media {
+		fileID, err := b.uploadFile(ctx, channelID, item)
+		if err != nil {
+			return fmt.Errorf("mattermost %s: media[%d]: %w", b.channelID, i, err)
+		}
+		fileIDs = append(fileIDs, fileID)
+	}
+	post := map[string]any{"channel_id": channelID, "message": payload.Text}
+	if len(fileIDs) > 0 {
+		post["file_ids"] = fileIDs
+	}
+	if strings.TrimSpace(payload.ReplyToID) != "" {
+		post["root_id"] = strings.TrimPrefix(payload.ReplyToID, "mm-")
+	}
+	return b.doJSON(ctx, http.MethodPost, "/posts", post, nil)
+}
+
+func (b *mmBot) uploadFile(ctx context.Context, channelID string, item sdk.MediaPayloadInput) (string, error) {
+	data, filename, _, err := channelmedia.ReadLocalFile(item, channels.DefaultMaxMediaBytes)
+	if err != nil {
+		return "", err
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("channel_id", channelID); err != nil {
+		return "", err
+	}
+	part, err := writer.CreateFormFile("files", filename)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL("/files"), &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+b.token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
+	if err != nil {
+		return "", err
+	}
+	if len(raw) > 1<<20 {
+		return "", fmt.Errorf("upload response exceeds 1048576 bytes")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("upload file: status %d", resp.StatusCode)
+	}
+	var result struct {
+		FileInfos []struct {
+			ID string `json:"id"`
+		} `json:"file_infos"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", fmt.Errorf("decode upload response: %w", err)
+	}
+	if len(result.FileInfos) == 0 || strings.TrimSpace(result.FileInfos[0].ID) == "" {
+		return "", fmt.Errorf("upload response omitted file id")
+	}
+	return result.FileInfos[0].ID, nil
+}
+
 // ─── ReactionHandle ───────────────────────────────────────────────────────────
 
 // AddReaction adds an emoji reaction to a post.
@@ -743,3 +830,5 @@ func (b *mmBot) EditMessage(ctx context.Context, eventID, newText string) error 
 		"message": newText,
 	}, nil)
 }
+
+var _ sdk.MediaHandle = (*mmBot)(nil)

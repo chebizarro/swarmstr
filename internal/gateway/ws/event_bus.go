@@ -140,6 +140,8 @@ const (
 	// cancelled, or expired.
 	EventQuestionResolved = "question.resolved"
 
+	// EventTaskLifecycle is the dedicated task/subagent lifecycle stream.
+	EventTaskLifecycle = "task"
 	// EventTaskSuggestion is broadcast when a model-proposed follow-up task
 	// suggestion is created or resolved (accepted/dismissed/expired).
 	EventTaskSuggestion = "task.suggestion"
@@ -225,6 +227,7 @@ var AllPushEvents = []string{
 	EventPluginSurfaceChanged,
 	EventQuestionRequested,
 	EventQuestionResolved,
+	EventTaskLifecycle,
 	EventTaskSuggestion,
 	EventToolStart,
 	EventToolProgress,
@@ -894,6 +897,21 @@ type QuestionResolvedPayload struct {
 	ID      string `json:"id"`
 	Status  string `json:"status"`
 	Answers any    `json:"answers,omitempty"`
+}
+
+// TaskLifecyclePayload is the payload for EventTaskLifecycle events. Action is
+// currently "upserted"; Task carries the authoritative task/run snapshot.
+type TaskLifecyclePayload struct {
+	Action string `json:"action"`
+	Kind   string `json:"kind"`
+	Type   string `json:"type"`
+	TaskID string `json:"taskId,omitempty"`
+	RunID  string `json:"runId,omitempty"`
+	Status string `json:"status,omitempty"`
+	Source string `json:"source,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	TS     int64  `json:"ts"`
+	Task   any    `json:"task"`
 }
 
 // TaskSuggestionPayload is the payload for EventTaskSuggestion events.

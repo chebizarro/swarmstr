@@ -149,8 +149,10 @@ func sampleCanonicalPayloadForEvent(event string) any {
 		return MCPLifecyclePayload{TS: 12, Name: "demo", State: "connected", ToolCount: 1}
 	case EventPluginLoaded:
 		return PluginLoadedPayload{TS: 12, PluginID: "p1", Action: "loaded"}
+	case EventTaskLifecycle:
+		return TaskLifecyclePayload{Action: "upserted", Kind: "task", Type: "task.updated", TaskID: "task-1", Status: "running", TS: 13, Task: map[string]any{"task_id": "task-1"}}
 	case EventCanvasUpdate:
-		return CanvasUpdatePayload{TS: 13, CanvasID: "c1", ContentType: "text/markdown", Data: "# test"}
+		return CanvasUpdatePayload{TS: 14, CanvasID: "c1", ContentType: "text/markdown", Data: "# test"}
 	default:
 		return nil
 	}

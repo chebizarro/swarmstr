@@ -14,6 +14,7 @@ type SessionSharingDoc struct {
 	Version      int                  `json:"version"`
 	SessionID    string               `json:"session_id"`
 	Visibility   string               `json:"visibility,omitempty"` // "" means "shared"
+	OwnerType    string               `json:"owner_type,omitempty"` // "human" (default) | "agent"
 	OwnerSubject string               `json:"owner_subject,omitempty"`
 	Members      []SessionMemberEntry `json:"members,omitempty"`
 	UpdatedAtMS  int64                `json:"updated_at_ms"`

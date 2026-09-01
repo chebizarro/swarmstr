@@ -367,7 +367,7 @@
   }
 
   function handleTaskLifecycleEvent(event, payload) {
-    const relevant = ['task.suggestion', 'agent.status', 'chat', 'chat.message', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool'];
+    const relevant = ['task', 'task.suggestion', 'agent.status', 'chat', 'chat.message', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool'];
     if (!relevant.includes(event)) return;
     taskActivityEvents.push({ event, payload: payload || {}, at: Date.now() });
     if (taskActivityEvents.length > 60) taskActivityEvents = taskActivityEvents.slice(-60);
@@ -381,7 +381,7 @@
 
     const inventoryCard = addMgmtCard(grid, 'Task / subagent inventory');
     inventoryCard.id = 'task-inventory-card';
-    const advertisedEvents = ['task.suggestion', 'agent.status', 'chat', 'chat.message', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool'].filter(gatewayEventAdvertised);
+    const advertisedEvents = ['task', 'task.suggestion', 'agent.status', 'chat', 'chat.message', 'tool.start', 'tool.progress', 'tool.result', 'tool.error', 'session.placement', 'sessions.changed', 'session.operation', 'session.tool'].filter(gatewayEventAdvertised);
     const inventoryStatus = document.createElement('div'); inventoryStatus.className = 'sub';
     inventoryStatus.textContent = advertisedEvents.length ? `Live refresh events: ${advertisedEvents.join(', ')}` : 'No task/subagent lifecycle events are advertised; inventory is snapshot-only.';
     inventoryCard.appendChild(inventoryStatus);

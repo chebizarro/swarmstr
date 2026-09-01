@@ -35,10 +35,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"metiq/internal/extensions/channelmedia"
 	"metiq/internal/gateway/channels"
 	"metiq/internal/plugins/sdk"
 )
@@ -96,7 +98,7 @@ func (p *NextcloudPlugin) ConfigSchema() map[string]any {
 }
 
 func (p *NextcloudPlugin) Capabilities() sdk.ChannelCapabilities {
-	return sdk.ChannelCapabilities{Reactions: true, MultiAccount: true}
+	return sdk.ChannelCapabilities{Media: true, DirectTextMedia: true, MultiAccount: true}
 }
 
 func (p *NextcloudPlugin) GatewayMethods() []sdk.GatewayMethod { return nil }
@@ -340,6 +342,75 @@ func (b *nextcloudBot) handlePush(w http.ResponseWriter, r *http.Request) {
 
 // ─── Send ─────────────────────────────────────────────────────────────────────
 
+// SendMedia uploads staged local files over WebDAV and shares them into the
+// Talk conversation through Nextcloud's file-sharing API.
+func (b *nextcloudBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
+	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
+		return fmt.Errorf("nextcloud-talk %s: %w", b.channelID, err)
+	}
+	roomToken := strings.TrimSpace(payload.To)
+	if roomToken == "" {
+		roomToken = b.roomToken
+	}
+	for i, item := range payload.Media {
+		data, filename, contentType, err := channelmedia.ReadLocalFile(item, channels.DefaultMaxMediaBytes)
+		if err != nil {
+			return fmt.Errorf("nextcloud-talk %s: media[%d]: %w", b.channelID, i, err)
+		}
+		remoteName := fmt.Sprintf("metiq-%d-%s", time.Now().UnixNano(), filename)
+		remotePath := "/Talk/" + remoteName
+		uploadURL := fmt.Sprintf("%s/remote.php/dav/files/%s/Talk/%s", b.baseURL, url.PathEscape(b.username), url.PathEscape(remoteName))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		req.SetBasicAuth(b.username, b.appPassword)
+		req.Header.Set("Content-Type", contentType)
+		resp, err := b.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("nextcloud-talk upload: %w", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("nextcloud-talk upload: status %d", resp.StatusCode)
+		}
+		metadata := map[string]any{}
+		if i == 0 && strings.TrimSpace(payload.Text) != "" {
+			metadata["caption"] = payload.Text
+		}
+		if strings.TrimSpace(payload.ReplyToID) != "" {
+			metadata["replyTo"] = payload.ReplyToID
+		}
+		metaJSON, _ := json.Marshal(metadata)
+		form := url.Values{
+			"shareType":    {"10"},
+			"shareWith":    {roomToken},
+			"path":         {remotePath},
+			"talkMetaData": {string(metaJSON)},
+		}
+		shareURL := b.baseURL + "/ocs/v2.php/apps/files_sharing/api/v1/shares"
+		shareReq, err := http.NewRequestWithContext(ctx, http.MethodPost, shareURL, strings.NewReader(form.Encode()))
+		if err != nil {
+			return err
+		}
+		shareReq.SetBasicAuth(b.username, b.appPassword)
+		shareReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		shareReq.Header.Set("OCS-APIREQUEST", "true")
+		shareResp, err := b.httpClient.Do(shareReq)
+		if err != nil {
+			return fmt.Errorf("nextcloud-talk share: %w", err)
+		}
+		shareResp.Body.Close()
+		if shareResp.StatusCode < 200 || shareResp.StatusCode >= 300 {
+			return fmt.Errorf("nextcloud-talk share: status %d", shareResp.StatusCode)
+		}
+	}
+	if len(payload.Media) == 0 && strings.TrimSpace(payload.Text) != "" {
+		return b.Send(ctx, payload.Text)
+	}
+	return nil
+}
+
 func (b *nextcloudBot) Send(ctx context.Context, text string) error {
 	apiURL := fmt.Sprintf("%s/ocs/v2.php/apps/spreed/api/v1/chat/%s", b.baseURL, b.roomToken)
 	payload, _ := json.Marshal(map[string]any{"message": text})
@@ -360,3 +431,5 @@ func (b *nextcloudBot) Send(ctx context.Context, text string) error {
 	}
 	return nil
 }
+
+var _ sdk.MediaHandle = (*nextcloudBot)(nil)
