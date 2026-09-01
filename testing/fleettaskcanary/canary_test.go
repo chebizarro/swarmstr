@@ -141,9 +141,9 @@ func TestGoFleetTaskAgentToolCanary(t *testing.T) {
 		t.Fatalf("closed evidence=%d want at least %d", len(closed.Task.Evidence), len(fixture.Evidence))
 	}
 
-	// Prepare the Go collection side for the external shared-relay runner. The
-	// current action tool has no collection mutation action, so the full bead
-	// remains open until the TS runtime drives and verifies this coordinate.
+	// Keep deterministic coverage of the Go collection publisher. The tagged
+	// shared-relay canary drives the TS configured collection publisher and
+	// verifies queue/epic resolution plus off-coordinate filtering end to end.
 	if _, err := bridge.PublishCollection(context.Background(), "queue", fixture.Queue, []string{fixture.TaskID}); err != nil {
 		t.Fatalf("publish collection fixture: %v", err)
 	}
