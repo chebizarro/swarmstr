@@ -31,7 +31,8 @@ const (
 
 var (
 	arrayAssignmentRE = regexp.MustCompile(`=\s*\[`)
-	nameRE            = regexp.MustCompile(`name:\s*"([^"]+)"`)
+	objectNameRE      = regexp.MustCompile(`name:\s*"([^"]+)"`)
+	tupleNameRE       = regexp.MustCompile(`(?m)^\s*\[\s*"([^"]+)"`)
 )
 
 type descriptor struct {
@@ -147,6 +148,7 @@ func main() {
 		openclawRoot = flag.String("openclaw-root", "", "path to an OpenClaw checkout")
 		repoRoot     = flag.String("repo-root", ".", "path to the swarmstr checkout")
 		check        = flag.Bool("check", false, "verify generated files without writing")
+		gatewayOnly  = flag.Bool("gateway-only", false, "refresh only gateway and core-method snapshots, preserving CLI parity")
 	)
 	flag.Parse()
 
@@ -154,7 +156,7 @@ func main() {
 		fatal(errors.New("--openclaw-root is required (or use scripts/refresh-parity.sh)"))
 	}
 
-	files, err := generate(filepath.Clean(*repoRoot), filepath.Clean(*openclawRoot))
+	files, err := generate(filepath.Clean(*repoRoot), filepath.Clean(*openclawRoot), *gatewayOnly)
 	if err != nil {
 		fatal(err)
 	}
@@ -176,31 +178,35 @@ func main() {
 	}
 }
 
-func generate(repoRoot, openclawRoot string) ([]outputFile, error) {
+func generate(repoRoot, openclawRoot string, gatewayOnly bool) ([]outputFile, error) {
 	gatewayRaw, err := os.ReadFile(filepath.Join(openclawRoot, gatewayDescriptorPath))
 	if err != nil {
 		return nil, fmt.Errorf("read gateway descriptors: %w", err)
 	}
-	coreCLIRaw, err := os.ReadFile(filepath.Join(openclawRoot, coreCLIDescriptorPath))
-	if err != nil {
-		return nil, fmt.Errorf("read core CLI descriptors: %w", err)
-	}
-	subCLIRaw, err := os.ReadFile(filepath.Join(openclawRoot, subCLIDescriptorPath))
-	if err != nil {
-		return nil, fmt.Errorf("read sub-CLI descriptors: %w", err)
-	}
-
 	gatewayDescriptors, err := parseDescriptorArray(gatewayRaw, "const CORE_GATEWAY_METHOD_SPECS", true)
 	if err != nil {
 		return nil, fmt.Errorf("parse gateway descriptors: %w", err)
 	}
-	coreCLI, err := parseDescriptorArray(coreCLIRaw, "const coreCliCommandCatalog", false)
-	if err != nil {
-		return nil, fmt.Errorf("parse core CLI descriptors: %w", err)
-	}
-	subCLI, err := parseDescriptorArray(subCLIRaw, "const subCliCommandCatalog", false)
-	if err != nil {
-		return nil, fmt.Errorf("parse sub-CLI descriptors: %w", err)
+
+	var coreCLI, subCLI []descriptor
+	var coreCLIRaw, subCLIRaw []byte
+	if !gatewayOnly {
+		coreCLIRaw, err = os.ReadFile(filepath.Join(openclawRoot, coreCLIDescriptorPath))
+		if err != nil {
+			return nil, fmt.Errorf("read core CLI descriptors: %w", err)
+		}
+		subCLIRaw, err = os.ReadFile(filepath.Join(openclawRoot, subCLIDescriptorPath))
+		if err != nil {
+			return nil, fmt.Errorf("read sub-CLI descriptors: %w", err)
+		}
+		coreCLI, err = parseDescriptorArray(coreCLIRaw, "const coreCliCommandCatalog", false)
+		if err != nil {
+			return nil, fmt.Errorf("parse core CLI descriptors: %w", err)
+		}
+		subCLI, err = parseDescriptorArray(subCLIRaw, "const subCliCommandCatalog", false)
+		if err != nil {
+			return nil, fmt.Errorf("parse sub-CLI descriptors: %w", err)
+		}
 	}
 
 	revision, capturedAt, err := gitMetadata(openclawRoot)
@@ -214,22 +220,30 @@ func generate(repoRoot, openclawRoot string) ([]outputFile, error) {
 			gatewayDescriptorPath: sha256Hex(gatewayRaw),
 		},
 	}
-	cliSource := sourceMetadata{
-		Project:  "openclaw",
-		Revision: revision,
-		Files: map[string]string{
-			coreCLIDescriptorPath: sha256Hex(coreCLIRaw),
-			subCLIDescriptorPath:  sha256Hex(subCLIRaw),
-		},
+	var cliSource sourceMetadata
+	if !gatewayOnly {
+		cliSource = sourceMetadata{
+			Project:  "openclaw",
+			Revision: revision,
+			Files: map[string]string{
+				coreCLIDescriptorPath: sha256Hex(coreCLIRaw),
+				subCLIDescriptorPath:  sha256Hex(subCLIRaw),
+			},
+		}
 	}
 
 	var triage triageConfig
 	if err := readJSON(filepath.Join(repoRoot, "docs/parity/gateway-triage.json"), &triage); err != nil {
 		return nil, err
 	}
-	var cliClasses cliClassifications
-	if err := readJSON(filepath.Join(repoRoot, "docs/parity/cli-classifications.json"), &cliClasses); err != nil {
+	if err := preserveGatewayNotes(filepath.Join(repoRoot, "docs/parity/gateway-method-parity.json"), &triage); err != nil {
 		return nil, err
+	}
+	var cliClasses cliClassifications
+	if !gatewayOnly {
+		if err := readJSON(filepath.Join(repoRoot, "docs/parity/cli-classifications.json"), &cliClasses); err != nil {
+			return nil, err
+		}
 	}
 	var deviationDoc coreDeviationDoc
 	if err := readJSON(filepath.Join(repoRoot, "docs/parity/core-deviations.json"), &deviationDoc); err != nil {
@@ -240,9 +254,12 @@ func generate(repoRoot, openclawRoot string) ([]outputFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	cli, err := buildCLISnapshot(coreCLI, subCLI, cliSource, capturedAt, cliClasses)
-	if err != nil {
-		return nil, err
+	var cli cliSnapshot
+	if !gatewayOnly {
+		cli, err = buildCLISnapshot(coreCLI, subCLI, cliSource, capturedAt, cliClasses)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	supported := methods.SupportedMethods()
@@ -265,19 +282,22 @@ func generate(repoRoot, openclawRoot string) ([]outputFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	cliJSON, err := marshalJSON(cli)
-	if err != nil {
-		return nil, err
-	}
 	coreJSON, err := marshalJSON(coreFixture)
 	if err != nil {
 		return nil, err
 	}
-	return []outputFile{
+	files := []outputFile{
 		{Path: filepath.Join(repoRoot, "docs/parity/gateway-method-parity.json"), Data: gatewayJSON},
-		{Path: filepath.Join(repoRoot, "docs/parity/cli-parity.json"), Data: cliJSON},
 		{Path: filepath.Join(repoRoot, "cmd/metiqd/testdata/parity/core_method_surface_deviations.json"), Data: coreJSON},
-	}, nil
+	}
+	if !gatewayOnly {
+		cliJSON, err := marshalJSON(cli)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, outputFile{Path: filepath.Join(repoRoot, "docs/parity/cli-parity.json"), Data: cliJSON})
+	}
+	return files, nil
 }
 
 func parseDescriptorArray(raw []byte, marker string, advertised bool) ([]descriptor, error) {
@@ -305,7 +325,14 @@ func parseDescriptorArray(raw []byte, marker string, advertised bool) ([]descrip
 	}
 	body = body[:end]
 
-	matches := nameRE.FindAllStringSubmatchIndex(body, -1)
+	matches := objectNameRE.FindAllStringSubmatchIndex(body, -1)
+	if len(matches) == 0 {
+		// Current gateway catalogs use tuple rows while older gateway and current
+		// CLI catalogs use object descriptors. A tuple name is always the first
+		// string in a top-level row; anchoring at the start of a line avoids
+		// treating strings in policy objects as descriptors.
+		matches = tupleNameRE.FindAllStringSubmatchIndex(body, -1)
+	}
 	if len(matches) == 0 {
 		return nil, fmt.Errorf("no descriptor names found after %q", marker)
 	}
@@ -328,6 +355,28 @@ func parseDescriptorArray(raw []byte, marker string, advertised bool) ([]descrip
 		})
 	}
 	return out, nil
+}
+
+func preserveGatewayNotes(path string, triage *triageConfig) error {
+	var previous gatewaySnapshot
+	if err := readJSON(path, &previous); err != nil {
+		return fmt.Errorf("load existing gateway notes: %w", err)
+	}
+	if triage.MethodNotes == nil {
+		triage.MethodNotes = map[string]string{}
+	}
+	for _, entry := range previous.Entries {
+		if entry.Notes == "" {
+			continue
+		}
+		// gateway-triage.json is authoritative when it explicitly carries a
+		// method note. Otherwise retain the hand-curated note from the checked-in
+		// snapshot across a baseline refresh.
+		if _, explicit := triage.MethodNotes[entry.Method]; !explicit {
+			triage.MethodNotes[entry.Method] = entry.Notes
+		}
+	}
+	return nil
 }
 
 func buildGatewaySnapshot(descriptors []descriptor, source sourceMetadata, capturedAt string, triage triageConfig) (gatewaySnapshot, map[string]struct{}, error) {

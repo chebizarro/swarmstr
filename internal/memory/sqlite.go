@@ -243,6 +243,10 @@ func openSQLiteBackendWithoutRecovery(path string) (*SQLiteBackend, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialize fts lifecycle: %w", err)
 	}
+	if err := backend.stampSchemaVersion(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("stamp schema version: %w", err)
+	}
 
 	return backend, nil
 }
@@ -366,9 +370,11 @@ func (b *SQLiteBackend) initSchema() error {
 	if err := ensureChunkProvenanceColumns(b.db); err != nil {
 		return fmt.Errorf("ensure chunk provenance: %w", err)
 	}
+	return nil
+}
 
-	// Update schema version
-	_, err = b.db.Exec(`INSERT OR REPLACE INTO schema_version (version) VALUES (?)`, sqliteSchemaVersion)
+func (b *SQLiteBackend) stampSchemaVersion() error {
+	_, err := b.db.Exec(`INSERT OR REPLACE INTO schema_version (version) VALUES (?)`, sqliteSchemaVersion)
 	return err
 }
 
@@ -394,32 +400,45 @@ func ensureChunkProvenanceColumns(db *sql.DB) error {
 	return nil
 }
 
+type sqliteReadWriter interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // Add indexes a new memory document.
 func (b *SQLiteBackend) Add(doc state.MemoryDoc) {
-	var err error
-	doc, err = NormalizeMemoryDocProvenance(doc)
-	if err != nil {
-		return
-	}
 	_ = b.ensureUnifiedSchema()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if strings.TrimSpace(doc.MemoryID) == "" || strings.TrimSpace(doc.Text) == "" {
+	rec, err := b.insertMemoryDocWithExecutor(b.db, doc)
+	if err != nil {
 		return
 	}
+	b.bumpMemoryWriteCountersLocked(rec.UpdatedAt)
+	b.clearCacheLocked()
+}
 
-	// Generate content hash for deduplication
-	hash := contentHash(doc.Text)
-
-	// Serialize keywords as JSON
-	keywords := ""
-	if len(doc.Keywords) > 0 {
-		if data, err := json.Marshal(doc.Keywords); err == nil {
-			keywords = string(data)
-		}
+// insertMemoryDocWithExecutor writes both the legacy chunk and its unified
+// record/source projection through db or tx. Callers hold b.mu.
+func (b *SQLiteBackend) insertMemoryDocWithExecutor(exec sqliteReadWriter, doc state.MemoryDoc) (MemoryRecord, error) {
+	var err error
+	doc, err = NormalizeMemoryDocProvenance(doc)
+	if err != nil {
+		return MemoryRecord{}, err
+	}
+	if strings.TrimSpace(doc.MemoryID) == "" || strings.TrimSpace(doc.Text) == "" {
+		return MemoryRecord{}, fmt.Errorf("memory id and text are required")
 	}
 
+	keywords := ""
+	if len(doc.Keywords) > 0 {
+		data, err := json.Marshal(doc.Keywords)
+		if err != nil {
+			return MemoryRecord{}, err
+		}
+		keywords = string(data)
+	}
 	now := time.Now().Unix()
 	if doc.Unix == 0 {
 		doc.Unix = now
@@ -427,17 +446,17 @@ func (b *SQLiteBackend) Add(doc state.MemoryDoc) {
 
 	var existingOrigin, existingSession string
 	var existingExternal, existingNetwork, existingRecalled int
-	existingErr := b.db.QueryRow(`SELECT origin_class, session_kind, external_tool_taint, network_taint, recalled_content FROM chunks WHERE id = ?`, doc.MemoryID).
+	existingErr := exec.QueryRow(`SELECT origin_class, session_kind, external_tool_taint, network_taint, recalled_content FROM chunks WHERE id = ?`, doc.MemoryID).
 		Scan(&existingOrigin, &existingSession, &existingExternal, &existingNetwork, &existingRecalled)
 	if existingErr != nil && existingErr != sql.ErrNoRows {
-		return
+		return MemoryRecord{}, existingErr
 	}
 	if existingErr == nil && (existingOrigin != doc.OriginClass || existingSession != doc.SessionKind ||
 		existingExternal != boolInt(doc.ExternalToolTaint) || existingNetwork != boolInt(doc.NetworkTaint) || existingRecalled != boolInt(doc.RecalledContent)) {
-		return
+		return MemoryRecord{}, fmt.Errorf("memory %q provenance is immutable", doc.MemoryID)
 	}
 
-	_, err = b.db.Exec(`
+	if _, err := exec.Exec(`
 		INSERT OR REPLACE INTO chunks (
 			id, session_id, role, topic, text, keywords, unix,
 			type, goal_id, task_id, run_id, episode_kind,
@@ -452,15 +471,15 @@ func (b *SQLiteBackend) Add(doc state.MemoryDoc) {
 		doc.Confidence, doc.Source, doc.ReviewedAt, doc.ReviewedBy, doc.ExpiresAt,
 		doc.MemStatus, doc.SupersededBy, doc.InvalidatedAt, doc.InvalidatedBy, doc.InvalidateReason,
 		doc.OriginClass, doc.SessionKind, boolInt(doc.ExternalToolTaint), boolInt(doc.NetworkTaint), boolInt(doc.RecalledContent),
-		hash, now,
-	)
-	if err != nil {
-		// Log error but don't fail - best effort
-		return
+		contentHash(doc.Text), now,
+	); err != nil {
+		return MemoryRecord{}, err
 	}
-	_ = b.writeMemoryRecordLocked(MemoryRecordFromDoc(doc))
-
-	b.clearCacheLocked()
+	rec := MemoryRecordFromDoc(doc)
+	if err := b.writeMemoryRecordWithExecutor(exec, rec); err != nil {
+		return MemoryRecord{}, err
+	}
+	return rec, nil
 }
 
 func (b *SQLiteBackend) AddWithContext(ctx context.Context, doc state.MemoryDoc) {
@@ -754,6 +773,15 @@ func (b *SQLiteBackend) SessionCount() int {
 
 // Compact removes old entries to keep the total below maxEntries.
 func (b *SQLiteBackend) Compact(maxEntries int) int {
+	removed := 0
+	_ = b.WithMaintenanceLock(func() error {
+		removed = b.compact(maxEntries)
+		return nil
+	})
+	return removed
+}
+
+func (b *SQLiteBackend) compact(maxEntries int) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -1051,6 +1079,12 @@ func contentHash(text string) string {
 
 // MigrateFromJSONIndex imports memories from an existing JSON index file.
 func (b *SQLiteBackend) MigrateFromJSONIndex(jsonPath string) error {
+	return b.WithMaintenanceLock(func() error {
+		return b.migrateFromJSONIndex(jsonPath)
+	})
+}
+
+func (b *SQLiteBackend) migrateFromJSONIndex(jsonPath string) error {
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1138,6 +1172,19 @@ func (b *SQLiteBackend) MigrateFromJSONIndex(jsonPath string) error {
 // OpenClaw stores memories in ~/.openclaw/agents/<id>/memory/<id>.sqlite
 // with a different schema that we map to Metiq's format.
 func (b *SQLiteBackend) MigrateFromOpenClaw(srcPath string) (int, error) {
+	imported := 0
+	var migrateErr error
+	gateErr := b.WithMaintenanceLock(func() error {
+		imported, migrateErr = b.migrateFromOpenClaw(srcPath)
+		return migrateErr
+	})
+	if migrateErr != nil {
+		return imported, migrateErr
+	}
+	return imported, gateErr
+}
+
+func (b *SQLiteBackend) migrateFromOpenClaw(srcPath string) (int, error) {
 	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
 		return 0, nil // No source database, nothing to migrate
 	}
@@ -1287,7 +1334,7 @@ func (b *SQLiteBackend) MigrateFromOpenClaw(srcPath string) (int, error) {
 		b.mu.Lock()
 		b.clearCacheLocked()
 		b.mu.Unlock()
-		_ = b.RebuildFTSIndex()
+		_ = b.rebuildFTSIndex()
 	}
 
 	return imported, nil
@@ -1296,6 +1343,10 @@ func (b *SQLiteBackend) MigrateFromOpenClaw(srcPath string) (int, error) {
 // RebuildFTSIndex rebuilds the FTS index from the chunks table.
 // Use this after bulk imports or if the index becomes corrupted.
 func (b *SQLiteBackend) RebuildFTSIndex() error {
+	return b.WithMaintenanceLock(b.rebuildFTSIndex)
+}
+
+func (b *SQLiteBackend) rebuildFTSIndex() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -1311,6 +1362,10 @@ func (b *SQLiteBackend) RebuildFTSIndex() error {
 
 // Vacuum runs VACUUM on the database to reclaim space.
 func (b *SQLiteBackend) Vacuum() error {
+	return b.WithMaintenanceLock(b.vacuum)
+}
+
+func (b *SQLiteBackend) vacuum() error {
 	_, err := b.db.Exec(`VACUUM`)
 	return err
 }

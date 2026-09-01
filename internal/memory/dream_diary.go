@@ -86,6 +86,24 @@ type DreamDiaryStore interface {
 	DreamDiaryEntryExists(ctx context.Context, scope, date string, phase DreamingPhase, synthetic bool) (bool, error)
 }
 
+type dreamDiaryMaintenanceStateStore interface {
+	DreamDiaryMaintenanceState(ctx context.Context, scope string) (string, error)
+}
+
+type pendingDreamDiaryRun struct {
+	RunID     string
+	StartedAt time.Time
+	Scope     string
+	Entries   []DreamDiaryEntry
+}
+
+type dreamDiaryRunJournal interface {
+	beginDreamDiaryRun(ctx context.Context, runID, scope string, startedAt time.Time) error
+	stageDreamDiaryRun(ctx context.Context, runID string, entries []DreamDiaryEntry) error
+	pendingDreamDiaryRuns(ctx context.Context) ([]pendingDreamDiaryRun, error)
+	completeDreamDiaryRun(ctx context.Context, runID string) error
+}
+
 func (b *SQLiteBackend) ensureDreamDiarySchema() error {
 	if b == nil || b.db == nil {
 		return fmt.Errorf("sqlite backend is closed")
@@ -115,7 +133,84 @@ func (b *SQLiteBackend) ensureDreamDiarySchema() error {
 		-- node may dream many times per day.
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_dream_diary_synth_dedupe
 			ON dream_diary(scope, date, phase) WHERE synthetic = 1;
+		CREATE TABLE IF NOT EXISTS dream_diary_runs (
+			run_id TEXT PRIMARY KEY,
+			started_at INTEGER NOT NULL,
+			scope TEXT NOT NULL DEFAULT '',
+			entries_json TEXT,
+			status TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_dream_diary_runs_status ON dream_diary_runs(status, started_at);
 	`)
+	return err
+}
+
+func (b *SQLiteBackend) beginDreamDiaryRun(ctx context.Context, runID, scope string, startedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := b.ensureDreamDiarySchema(); err != nil {
+		return err
+	}
+	_, err := b.db.Exec(`INSERT INTO dream_diary_runs (run_id, started_at, scope, status) VALUES (?, ?, ?, 'started')`, runID, startedAt.Unix(), strings.TrimSpace(scope))
+	return err
+}
+
+func (b *SQLiteBackend) stageDreamDiaryRun(ctx context.Context, runID string, entries []DreamDiaryEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	res, err := b.db.Exec(`UPDATE dream_diary_runs SET entries_json = ?, status = 'staged' WHERE run_id = ? AND status != 'completed'`, string(raw), runID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return fmt.Errorf("dream diary run %q is not pending", runID)
+	}
+	return nil
+}
+
+func (b *SQLiteBackend) pendingDreamDiaryRuns(ctx context.Context) ([]pendingDreamDiaryRun, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := b.ensureDreamDiarySchema(); err != nil {
+		return nil, err
+	}
+	rows, err := b.db.Query(`SELECT run_id, started_at, scope, entries_json FROM dream_diary_runs WHERE status != 'completed' ORDER BY started_at, run_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []pendingDreamDiaryRun
+	for rows.Next() {
+		var run pendingDreamDiaryRun
+		var startedAt int64
+		var entriesJSON sql.NullString
+		if err := rows.Scan(&run.RunID, &startedAt, &run.Scope, &entriesJSON); err != nil {
+			return nil, err
+		}
+		run.StartedAt = time.Unix(startedAt, 0).UTC()
+		if entriesJSON.Valid && strings.TrimSpace(entriesJSON.String) != "" {
+			if err := json.Unmarshal([]byte(entriesJSON.String), &run.Entries); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, run)
+	}
+	return out, rows.Err()
+}
+
+func (b *SQLiteBackend) completeDreamDiaryRun(ctx context.Context, runID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := b.db.Exec(`UPDATE dream_diary_runs SET status = 'completed' WHERE run_id = ?`, runID)
 	return err
 }
 
@@ -422,6 +517,84 @@ func (b *SQLiteBackend) ListDreamDiaryEntries(ctx context.Context, filter DreamD
 // store maintenance lock so it cannot race a concurrent diary-writing dreaming
 // cycle. It does NOT touch the underlying memory records — only the diary
 // artifacts.
+func (b *SQLiteBackend) DreamDiaryMaintenanceState(ctx context.Context, scope string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := b.ensureDreamDiarySchema(); err != nil {
+		return "", err
+	}
+	scope = strings.TrimSpace(scope)
+	b.mu.RLock()
+	rows, err := b.db.Query(`SELECT id, created_at, phase, synthetic FROM dream_diary WHERE (? = '' OR scope = ?) ORDER BY id`, scope, scope)
+	if err != nil {
+		b.mu.RUnlock()
+		return "", err
+	}
+	parts := []string{scope}
+	for rows.Next() {
+		var id, phase string
+		var createdAt int64
+		var synthetic int
+		if err := rows.Scan(&id, &createdAt, &phase, &synthetic); err != nil {
+			rows.Close()
+			b.mu.RUnlock()
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d:%s:%d", id, createdAt, phase, synthetic))
+	}
+	err = rows.Err()
+	rows.Close()
+	b.mu.RUnlock()
+	if err != nil {
+		return "", err
+	}
+	return contentHash(strings.Join(parts, "\x00")), nil
+}
+
+func (h *HybridIndex) beginDreamDiaryRun(ctx context.Context, runID, scope string, startedAt time.Time) error {
+	if journal, ok := h.backend.(dreamDiaryRunJournal); ok {
+		return journal.beginDreamDiaryRun(ctx, runID, scope, startedAt)
+	}
+	return errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) stageDreamDiaryRun(ctx context.Context, runID string, entries []DreamDiaryEntry) error {
+	if journal, ok := h.backend.(dreamDiaryRunJournal); ok {
+		return journal.stageDreamDiaryRun(ctx, runID, entries)
+	}
+	return errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) pendingDreamDiaryRuns(ctx context.Context) ([]pendingDreamDiaryRun, error) {
+	if journal, ok := h.backend.(dreamDiaryRunJournal); ok {
+		return journal.pendingDreamDiaryRuns(ctx)
+	}
+	return nil, errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) completeDreamDiaryRun(ctx context.Context, runID string) error {
+	if journal, ok := h.backend.(dreamDiaryRunJournal); ok {
+		return journal.completeDreamDiaryRun(ctx, runID)
+	}
+	return errNoDreamDiaryStore
+}
+
+func (h *HybridIndex) DreamDiaryMaintenanceState(ctx context.Context, scope string) (string, error) {
+	if stateStore, ok := h.backend.(dreamDiaryMaintenanceStateStore); ok {
+		return stateStore.DreamDiaryMaintenanceState(ctx, scope)
+	}
+	return "", errNoDreamDiaryStore
+}
+
+// DreamDiaryMaintenanceState returns a stable fingerprint for confirmation.
+func DreamDiaryMaintenanceState(ctx context.Context, store Store, scope string) (string, error) {
+	if stateStore, ok := any(store).(dreamDiaryMaintenanceStateStore); ok {
+		return stateStore.DreamDiaryMaintenanceState(ctx, scope)
+	}
+	return "", errNoDreamDiaryStore
+}
+
 func (b *SQLiteBackend) ResetDreamDiary(ctx context.Context, scope string) (int, error) {
 	_ = ctx
 	if b == nil {
@@ -483,13 +656,45 @@ func RunDreamingCycleWithDiary(ctx context.Context, manager *PromotionManager, d
 
 	var result *DreamingResult
 	var entries []DreamDiaryEntry
-	// Hold the maintenance lock across BOTH the promotion sweep and the diary
-	// persistence so promotions and their audit records land as one logical
-	// operation and a concurrent backfill cannot observe promotions before their
-	// live diary entries exist.
+	// Hold the maintenance lock across promotion, run journaling, and diary writes.
+	// A durable started/staged run survives a crash and is reconciled on the next
+	// cycle, closing the crash window between promotion and diary persistence.
 	lockErr := manager.backend.WithMaintenanceLock(func() error {
-		// Already holding the maintenance gate; call the ungated core so we do not
-		// re-enter the non-reentrant maintenanceMu (swarmstr-r34j).
+		journal, journaled := diary.(dreamDiaryRunJournal)
+		if journaled {
+			pending, err := journal.pendingDreamDiaryRuns(ctx)
+			if err != nil {
+				return err
+			}
+			for _, run := range pending {
+				recoveryEntries := run.Entries
+				if len(recoveryEntries) == 0 {
+					recoveryEntries = []DreamDiaryEntry{normalizeDreamDiaryEntry(DreamDiaryEntry{
+						ID: "dream-recovery-" + run.RunID, CreatedAt: run.StartedAt,
+						Phase: DreamingPhaseREM, Scope: run.Scope,
+						Narrative: "Recovered interrupted dreaming run; promotion state may have committed before phase results were staged.",
+						Counts:    map[string]int{"recovered_interrupted_run": 1},
+					})}
+				}
+				for _, entry := range recoveryEntries {
+					if _, err := diary.AppendDreamDiaryEntry(ctx, entry); err != nil {
+						return err
+					}
+				}
+				if err := journal.completeDreamDiaryRun(ctx, run.RunID); err != nil {
+					return err
+				}
+			}
+		}
+
+		runID := ""
+		if journaled {
+			runID = GenerateMemoryID()
+			if err := journal.beginDreamDiaryRun(ctx, runID, opts.Scope, now); err != nil {
+				return err
+			}
+		}
+		// Already holding the maintenance gate; call the ungated core.
 		res, perr := runDreamingPhasesLocked(manager, runCfg, nil)
 		if perr != nil {
 			return perr
@@ -503,27 +708,31 @@ func RunDreamingCycleWithDiary(ctx context.Context, manager *PromotionManager, d
 			if phase.Candidates == 0 && phase.Promoted == 0 {
 				continue
 			}
-			entry := DreamDiaryEntry{
-				CreatedAt:            now,
-				Date:                 opts.Date,
-				Phase:                phase.Phase,
-				Scope:                opts.Scope,
-				CandidatesConsidered: phase.Candidates,
-				CandidateIDs:         phase.CandidateIDs,
-				PromotedRecordIDs:    phase.PromotedIDs,
-				Counts: map[string]int{
-					"considered": phase.Candidates,
-					"promoted":   phase.Promoted,
-				},
-				Narrative:  phase.Narrative,
-				Synthetic:  opts.Synthetic,
+			entries = append(entries, normalizeDreamDiaryEntry(DreamDiaryEntry{
+				CreatedAt: now, Date: opts.Date, Phase: phase.Phase, Scope: opts.Scope,
+				CandidatesConsidered: phase.Candidates, CandidateIDs: phase.CandidateIDs,
+				PromotedRecordIDs: phase.PromotedIDs,
+				Counts:            map[string]int{"considered": phase.Candidates, "promoted": phase.Promoted},
+				Narrative:         phase.Narrative, Synthetic: opts.Synthetic,
 				DurationMS: (phase.EndedUnix - phase.StartedUnix) * 1000,
+			}))
+		}
+		if journaled {
+			if err := journal.stageDreamDiaryRun(ctx, runID, entries); err != nil {
+				return err
 			}
-			saved, appendErr := diary.AppendDreamDiaryEntry(ctx, entry)
-			if appendErr != nil {
-				return appendErr
+		}
+		for i, entry := range entries {
+			saved, err := diary.AppendDreamDiaryEntry(ctx, entry)
+			if err != nil {
+				return err
 			}
-			entries = append(entries, saved)
+			entries[i] = saved
+		}
+		if journaled {
+			if err := journal.completeDreamDiaryRun(ctx, runID); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

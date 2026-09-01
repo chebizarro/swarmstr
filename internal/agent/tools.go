@@ -218,6 +218,9 @@ type ToolExecuteErrorHook func(ctx context.Context, call ToolCall, desc ToolDesc
 // sessionIDKey is the context key for the current session ID.
 type sessionIDKey struct{}
 
+// runIDKey is the context key for the current gateway execution/run ID.
+type runIDKey struct{}
+
 // memoryScopeKey is the context key for the current scoped-memory contract.
 type memoryScopeKey struct{}
 
@@ -236,6 +239,11 @@ func ContextWithSessionID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, sessionIDKey{}, id)
 }
 
+// ContextWithRunID returns a child context carrying the gateway run ID.
+func ContextWithRunID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, runIDKey{}, id)
+}
+
 // ContextWithMemoryScope returns a child context carrying the resolved
 // memory-scope contract for the current turn.
 func ContextWithMemoryScope(ctx context.Context, scope MemoryScopeContext) context.Context {
@@ -246,6 +254,14 @@ func ContextWithMemoryScope(ctx context.Context, scope MemoryScopeContext) conte
 // Returns "" if no session ID is set.
 func SessionIDFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(sessionIDKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// RunIDFromContext extracts the gateway run ID, if one was assigned.
+func RunIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(runIDKey{}).(string); ok {
 		return v
 	}
 	return ""

@@ -88,6 +88,84 @@ func TestMemoryMigrationPlanAndApply(t *testing.T) {
 	}
 }
 
+func TestMemoryMigrationPlanIsReadOnlyAndDetectsMissingObjects(t *testing.T) {
+	backend, _ := createTestSQLiteBackend(t)
+	defer backend.Close()
+	ctx := context.Background()
+	if _, err := backend.db.Exec(`DROP TRIGGER memory_records_ai`); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+
+	plan, err := backend.MemoryMigrationPlan(ctx)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.CurrentVersion != sqliteSchemaVersion || !plan.SchemaPending {
+		t.Fatalf("missing object not detected at target version: %+v", plan)
+	}
+	var triggerCount int
+	if err := backend.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'memory_records_ai'`).Scan(&triggerCount); err != nil {
+		t.Fatalf("query trigger: %v", err)
+	}
+	if triggerCount != 0 {
+		t.Fatal("read-only migration plan recreated the missing trigger")
+	}
+
+	report, err := backend.MemoryMigrationApply(ctx, MemoryMigrationApplyOptions{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if report.After.SchemaPending {
+		t.Fatalf("schema still pending after apply: %+v", report.After)
+	}
+}
+
+func TestInitSchemaDoesNotStampVersion(t *testing.T) {
+	backend, _ := createTestSQLiteBackend(t)
+	defer backend.Close()
+	if _, err := backend.db.Exec(`DELETE FROM schema_version`); err != nil {
+		t.Fatalf("delete version: %v", err)
+	}
+	if err := backend.initSchema(); err != nil {
+		t.Fatalf("initSchema: %v", err)
+	}
+	var count int
+	if err := backend.db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&count); err != nil {
+		t.Fatalf("query version: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("initSchema stamped schema_version before full startup completed")
+	}
+}
+
+func TestBackfillUnifiedFromChunksRollsBackOnWriteFailure(t *testing.T) {
+	backend, _ := createTestSQLiteBackend(t)
+	defer backend.Close()
+	addTestMemory(backend, "m1", "alpha bravo charlie", "topic-a")
+	addTestMemory(backend, "m2", "delta echo foxtrot", "topic-b")
+	if _, err := backend.db.Exec(`DELETE FROM memory_records`); err != nil {
+		t.Fatalf("clear records: %v", err)
+	}
+	if _, err := backend.db.Exec(`CREATE TRIGGER fail_backfill BEFORE INSERT ON memory_records WHEN NEW.id = 'm2' BEGIN SELECT RAISE(ABORT, 'forced backfill failure'); END`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	count, err := backend.BackfillUnifiedFromChunks(context.Background())
+	if err == nil {
+		t.Fatal("expected backfill failure")
+	}
+	if count != 0 {
+		t.Fatalf("backfill reported partial count %d", count)
+	}
+	var records int
+	if err := backend.db.QueryRow(`SELECT COUNT(*) FROM memory_records`).Scan(&records); err != nil {
+		t.Fatalf("count records: %v", err)
+	}
+	if records != 0 {
+		t.Fatalf("partial backfill survived rollback: %d records", records)
+	}
+}
+
 func TestMemoryMigrationApplyRebuildsFTS(t *testing.T) {
 	backend, _ := createTestSQLiteBackend(t)
 	ctx := context.Background()

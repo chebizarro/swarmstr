@@ -11,6 +11,7 @@ import (
 // fakeSource is a test ManifestSource backed by an in-memory manifest map.
 type fakeSource struct {
 	manifests map[string]sdk.Manifest
+	digests   map[string]string
 }
 
 func (f *fakeSource) PluginIDs() []string {
@@ -27,6 +28,16 @@ func (f *fakeSource) PluginManifest(id string) (sdk.Manifest, error) {
 		return sdk.Manifest{}, fmt.Errorf("not found: %s", id)
 	}
 	return mf, nil
+}
+
+func (f *fakeSource) PluginPackageDigest(id string) (string, bool) {
+	if digest, ok := f.digests[id]; ok {
+		return digest, true
+	}
+	if _, ok := f.manifests[id]; ok {
+		return "sha256:test-" + id, true
+	}
+	return "", false
 }
 
 func surfaceManifest(id string, s *pluginmanifest.SurfaceContributions) sdk.Manifest {
@@ -49,8 +60,11 @@ func TestRegistry_AggregatesContributions(t *testing.T) {
 	}}
 	r := New(src)
 
-	if b, ok := r.LookupBinding("dash.stats"); !ok || b.PluginID != "dash" {
-		t.Fatalf("binding not aggregated: %+v ok=%v", b, ok)
+	if b, ok := r.LookupBinding("dash.stats"); !ok || b.PluginID != "dash" || b.PackageDigest != "sha256:test-dash" {
+		t.Fatalf("binding not aggregated with package identity: %+v ok=%v", b, ok)
+	}
+	if identity, ok := r.ResolveGrantIdentity("dash.stats"); !ok || identity.PluginID != "dash" || identity.PackageDigest != "sha256:test-dash" {
+		t.Fatalf("grant identity not resolved: %+v ok=%v", identity, ok)
 	}
 	if v, ok := r.LookupActionVerb("dash.refresh"); !ok || v.PluginID != "dash" {
 		t.Fatalf("action verb not aggregated: %+v ok=%v", v, ok)

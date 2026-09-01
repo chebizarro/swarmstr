@@ -211,11 +211,15 @@ func (h controlRPCHandler) handleMemoryMaintenanceRPC(ctx context.Context, in no
 		if req, err = req.Normalize(); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		confirmation, err := memory.EvaluateMaintenanceConfirmation("resetDreamDiary", req.Scope, req.Confirm)
+		store, err := h.memoryMaintenanceStore()
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		store, err := h.memoryMaintenanceStore()
+		stateVersion, err := memory.DreamDiaryMaintenanceState(ctx, store, req.Scope)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		confirmation, err := memory.EvaluateMaintenanceConfirmation("resetDreamDiary", req.Scope, stateVersion, req.Confirm)
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -237,10 +241,6 @@ func (h controlRPCHandler) handleMemoryMaintenanceRPC(ctx context.Context, in no
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		scopeKey := req.ScopeKey()
-		confirmation, err := memory.EvaluateMaintenanceConfirmation("resetGroundedShortTerm", scopeKey, req.Confirm)
-		if err != nil {
-			return nostruntime.ControlRPCResult{}, true, err
-		}
 		store, err := h.memoryMaintenanceStore()
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
@@ -256,6 +256,14 @@ func (h controlRPCHandler) handleMemoryMaintenanceRPC(ctx context.Context, in no
 		}
 		if req.RequireCitation != nil {
 			opts = opts.WithExplicitCitation(*req.RequireCitation)
+		}
+		stateVersion, err := memory.GroundedShortTermMaintenanceState(ctx, store, opts)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		confirmation, err := memory.EvaluateMaintenanceConfirmation("resetGroundedShortTerm", scopeKey, stateVersion, req.Confirm)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
 		}
 		if !confirmation.Confirmed {
 			return nostruntime.ControlRPCResult{Result: map[string]any{"ok": true, "applied": false, "confirmation": confirmation, "note": "confirmation token required; re-issue with the confirm token to demote the grounded-short-term buffer"}}, true, nil

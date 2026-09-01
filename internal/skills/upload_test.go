@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"sync"
 	"testing"
 
 	"metiq/internal/store/state"
@@ -153,6 +154,49 @@ func TestUploadChunkRejectsOversizeAndUnknown(t *testing.T) {
 	// Unknown upload id resolves to not-found.
 	if _, err := store.Chunk("upl_missing", 0, []byte("x")); err != state.ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestUploadChunkSerializesConcurrentWritersAcrossStoreInstances(t *testing.T) {
+	isolatedWorkspace(t)
+	store := NewUploadStore()
+	begin, err := store.Begin(UploadBeginInput{Kind: "skill-archive", Slug: "tiny", SizeBytes: 2})
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	uploadID := begin["uploadId"].(string)
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := NewUploadStore().Chunk(uploadID, 0, []byte("ok"))
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	succeeded := 0
+	for err := range errs {
+		if err == nil {
+			succeeded++
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("expected exactly one concurrent chunk to succeed, got %d", succeeded)
+	}
+	rec, err := store.loadRecord(uploadID)
+	if err != nil {
+		t.Fatalf("loadRecord: %v", err)
+	}
+	if rec.ReceivedBytes != 2 {
+		t.Fatalf("expected receivedBytes 2, got %d", rec.ReceivedBytes)
 	}
 }
 

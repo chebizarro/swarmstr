@@ -44,10 +44,11 @@ var _ pluginInstance = (*runtime.NodePlugin)(nil)
 
 // GojaPluginManager loads and manages Goja JS (and Node.js compat) plugins.
 type GojaPluginManager struct {
-	mu      sync.RWMutex
-	host    *sdk.Host
-	plugins map[string]pluginInstance // pluginID → plugin
-	log     *slog.Logger
+	mu             sync.RWMutex
+	host           *sdk.Host
+	plugins        map[string]pluginInstance // pluginID → plugin
+	packageDigests map[string]string         // pluginID → algorithm:full-package-hash
+	log            *slog.Logger
 }
 
 // New creates a GojaPluginManager. host is the SDK host bundle shared by all
@@ -57,9 +58,10 @@ func New(host *sdk.Host) *GojaPluginManager {
 		host = &sdk.Host{}
 	}
 	return &GojaPluginManager{
-		host:    host,
-		plugins: map[string]pluginInstance{},
-		log:     slog.Default().With("component", "plugin-manager"),
+		host:           host,
+		plugins:        map[string]pluginInstance{},
+		packageDigests: map[string]string{},
+		log:            slog.Default().With("component", "plugin-manager"),
 	}
 }
 
@@ -75,6 +77,7 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 	if len(entries) == 0 {
 		m.mu.Lock()
 		m.plugins = map[string]pluginInstance{}
+		m.packageDigests = map[string]string{}
 		m.mu.Unlock()
 		return nil
 	}
@@ -82,6 +85,7 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 	rawExt := extensionsConfig(cfg)
 	sandboxCfg, sandboxEnabled := pluginSandboxConfig(rawExt)
 	next := map[string]pluginInstance{}
+	nextDigests := map[string]string{}
 	var issues []string
 
 	for pluginID, entry := range entries {
@@ -179,6 +183,7 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 					m.log.Warn("node plugin manifest mismatch", "plugin", pluginID, "err", err)
 				} else {
 					next[pluginID] = np
+					nextDigests[pluginID] = snapshot.Algorithm + ":" + snapshot.Hash
 					m.log.Info("loaded node.js plugin", "plugin", pluginID, "tools", len(np.Manifest().Tools), "trust", pluginTrust, "sandbox", sandboxDecision.Action)
 					continue
 				}
@@ -213,11 +218,13 @@ func (m *GojaPluginManager) Load(ctx context.Context, cfg state.ConfigDoc) error
 			continue
 		}
 		next[pluginID] = p
+		nextDigests[pluginID] = snapshot.Algorithm + ":" + snapshot.Hash
 		m.log.Info("loaded goja plugin", "plugin", pluginID, "tools", len(p.Manifest().Tools), "trust", pluginTrust, "sandbox", "in-process-deny-sensitive")
 	}
 
 	m.mu.Lock()
 	m.plugins = next
+	m.packageDigests = nextDigests
 	m.mu.Unlock()
 
 	if len(issues) > 0 {
@@ -423,6 +430,16 @@ func (m *GojaPluginManager) PluginManifest(pluginID string) (sdk.Manifest, error
 		return sdk.Manifest{}, fmt.Errorf("plugin %q not loaded", pluginID)
 	}
 	return p.Manifest(), nil
+}
+
+// PluginPackageDigest returns the full-package source identity captured before
+// the plugin VM was loaded. Board capability grants bind to this digest so a
+// same-id code update cannot inherit the prior package's approval.
+func (m *GojaPluginManager) PluginPackageDigest(pluginID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	digest, ok := m.packageDigests[pluginID]
+	return digest, ok && strings.TrimSpace(digest) != ""
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

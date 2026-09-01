@@ -141,15 +141,26 @@ func (c *ChatChannel) Type() string { return "nipc7-chat" }
 
 // Send posts a kind:9 chat message.
 func (c *ChatChannel) Send(ctx context.Context, text string) error {
-	return c.SendWithReply(ctx, text, "", "")
+	_, err := c.SendWithNostrReceipt(ctx, text)
+	return err
+}
+
+// SendWithNostrReceipt posts a targetless kind-9 message and returns its signed identity.
+func (c *ChatChannel) SendWithNostrReceipt(ctx context.Context, text string) (NostrPublishReceipt, error) {
+	return c.sendWithReplyReceipt(ctx, text, "", "")
 }
 
 // SendWithReply posts a kind:9 with an optional `q` tag for threading.
 // parentPubKey is the hex pubkey of the author being replied to.
 func (c *ChatChannel) SendWithReply(ctx context.Context, text, parentEventID, parentPubKey string) error {
+	_, err := c.sendWithReplyReceipt(ctx, text, parentEventID, parentPubKey)
+	return err
+}
+
+func (c *ChatChannel) sendWithReplyReceipt(ctx context.Context, text, parentEventID, parentPubKey string) (NostrPublishReceipt, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return fmt.Errorf("text must not be empty")
+		return NostrPublishReceipt{}, fmt.Errorf("text must not be empty")
 	}
 
 	tags := nostr.Tags{}
@@ -180,7 +191,7 @@ func (c *ChatChannel) SendWithReply(ctx context.Context, text, parentEventID, pa
 		Tags:      tags,
 	}
 	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
-		return fmt.Errorf("sign chat message: %w", err)
+		return NostrPublishReceipt{}, fmt.Errorf("sign chat message: %w", err)
 	}
 
 	var lastErr error
@@ -196,9 +207,11 @@ func (c *ChatChannel) SendWithReply(ctx context.Context, text, parentEventID, pa
 		if lastErr == nil {
 			lastErr = fmt.Errorf("no relay accepted publish")
 		}
-		return lastErr
+		return NostrPublishReceipt{}, lastErr
 	}
-	return nil
+	return NostrPublishReceipt{
+		EventID: evt.ID.Hex(), Relays: append([]string(nil), c.relays...), Kind: int(evt.Kind), PubKey: evt.PubKey.Hex(),
+	}, nil
 }
 
 // Close shuts down the subscription.

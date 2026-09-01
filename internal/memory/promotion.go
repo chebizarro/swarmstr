@@ -604,90 +604,38 @@ func (m *PromotionManager) promoteSweep() (*PromotionResult, error) {
 	return result, nil
 }
 
-// promoteGroup promotes a group of related memories and returns the source
-// memory IDs it actually committed. Each candidate is revalidated and claimed
-// atomically (markPromoted only succeeds when promoted_at is still NULL), so a
-// candidate that was demoted, removed, or already promoted concurrently is
-// skipped rather than mis-attributed to this sweep (swarmstr-r34j). The caller
-// is expected to hold the maintenance gate and PromotionManager.mu.
-//
-// The returned IDs are authoritative: a non-nil error from the (best-effort,
-// non-transactional) promotion-file mirror still returns the IDs that were
-// committed to the database.
+// promoteGroup promotes a group atomically. Claims, topic changes, and any
+// consolidated row/projection commit in one SQLite transaction. The caller holds
+// the maintenance gate and PromotionManager.mu; this method acquires b.mu last.
+// A promotion-file mirror error is still best-effort and occurs after commit.
 func (m *PromotionManager) promoteGroup(topic string, candidates []PromotionCandidate, timestamp int64) ([]string, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
 
-	var promotedIDs []string
-
-	// If summarization is enabled and we have a summarizer, generate summary
 	if m.cfg.EnableSummary && m.summarizer != nil && len(candidates) > 1 {
 		memories := make([]IndexedMemory, len(candidates))
 		for i, c := range candidates {
 			memories[i] = c.Memory
 		}
-
 		summary, err := m.summarizer(memories)
 		if err == nil && summary != "" {
-			// Create consolidated memory from summary
-			consolidatedID := GenerateMemoryID()
-			consolidatedMem := IndexedMemory{
-				MemoryID:    consolidatedID,
-				Topic:       topic,
-				Text:        summary,
-				Unix:        timestamp,
-				Type:        "consolidated",
-				Confidence:  averageConfidence(candidates),
-				Source:      "promotion",
-				OriginClass: string(MemoryOriginAgent),
-				SessionKind: string(MemorySessionInteractive),
-			}
-
-			// Add to database
-			m.backend.Add(memoryDocFromIndexed(consolidatedMem))
-
-			// Claim each source memory. Only successfully claimed sources count.
-			for _, c := range candidates {
-				claimed, err := m.markPromoted(c.Memory.MemoryID, consolidatedID, timestamp)
-				if err != nil || !claimed {
-					continue
-				}
-				promotedIDs = append(promotedIDs, c.Memory.MemoryID)
+			promotedIDs, err := m.promoteSummarizedGroup(topic, summary, candidates, timestamp)
+			if err != nil {
+				return nil, err
 			}
 			if len(promotedIDs) > 0 {
 				if err := m.appendPromotionFile(topic, fmt.Sprintf("Consolidated %s", topic), summary, timestamp); err != nil {
 					return promotedIDs, err
 				}
 			}
-
 			return promotedIDs, nil
 		}
 	}
 
-	// Without summarization, promote individual memories.
-	promotedCandidates := make([]PromotionCandidate, 0, len(candidates))
-	for _, c := range candidates {
-		promotedTopic := topic
-		if promotedTopic == "" {
-			promotedTopic = m.cfg.PromotedTopic
-		}
-
-		// Revalidate + claim atomically BEFORE mutating the topic, so a candidate
-		// removed/promoted concurrently is skipped and its topic is left untouched.
-		claimed, err := m.markPromoted(c.Memory.MemoryID, promotedTopic, timestamp)
-		if err != nil || !claimed {
-			continue
-		}
-
-		// Topic update is best-effort; the promotion claim is authoritative and has
-		// already committed.
-		if c.Memory.Topic != promotedTopic {
-			_, _ = m.db.Exec(`UPDATE chunks SET topic = ? WHERE id = ?`, promotedTopic, c.Memory.MemoryID)
-		}
-
-		promotedIDs = append(promotedIDs, c.Memory.MemoryID)
-		promotedCandidates = append(promotedCandidates, c)
+	promotedIDs, promotedCandidates, err := m.promoteIndividualGroup(topic, candidates, timestamp)
+	if err != nil {
+		return nil, err
 	}
 	if len(promotedCandidates) > 0 {
 		body := formatPromotedMemoryFileBody(promotedCandidates)
@@ -695,8 +643,91 @@ func (m *PromotionManager) promoteGroup(topic string, candidates []PromotionCand
 			return promotedIDs, err
 		}
 	}
-
 	return promotedIDs, nil
+}
+
+func (m *PromotionManager) promoteSummarizedGroup(topic, summary string, candidates []PromotionCandidate, timestamp int64) ([]string, error) {
+	consolidatedID := GenerateMemoryID()
+	consolidatedMem := IndexedMemory{
+		MemoryID: consolidatedID, Topic: topic, Text: summary, Unix: timestamp,
+		Type: "consolidated", Confidence: averageConfidence(candidates), Source: "promotion",
+		OriginClass: string(MemoryOriginAgent), SessionKind: string(MemorySessionInteractive),
+	}
+
+	m.backend.mu.Lock()
+	defer m.backend.mu.Unlock()
+	tx, err := m.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	promotedIDs := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		claimed, err := markPromotedWithExecutor(tx, c.Memory.MemoryID, consolidatedID, timestamp)
+		if err != nil {
+			return nil, err
+		}
+		if claimed {
+			promotedIDs = append(promotedIDs, c.Memory.MemoryID)
+		}
+	}
+	if len(promotedIDs) == 0 {
+		return nil, nil
+	}
+	rec, err := m.backend.insertMemoryDocWithExecutor(tx, memoryDocFromIndexed(consolidatedMem))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	m.backend.bumpMemoryWriteCountersLocked(rec.UpdatedAt)
+	m.backend.clearCacheLocked()
+	return promotedIDs, nil
+}
+
+func (m *PromotionManager) promoteIndividualGroup(topic string, candidates []PromotionCandidate, timestamp int64) ([]string, []PromotionCandidate, error) {
+	m.backend.mu.Lock()
+	defer m.backend.mu.Unlock()
+	tx, err := m.db.Begin()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+
+	promotedIDs := make([]string, 0, len(candidates))
+	promotedCandidates := make([]PromotionCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		promotedTopic := topic
+		if promotedTopic == "" {
+			promotedTopic = m.cfg.PromotedTopic
+		}
+		claimed, err := markPromotedWithExecutor(tx, c.Memory.MemoryID, promotedTopic, timestamp)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !claimed {
+			continue
+		}
+		if c.Memory.Topic != promotedTopic {
+			if _, err := tx.Exec(`UPDATE chunks SET topic = ? WHERE id = ?`, promotedTopic, c.Memory.MemoryID); err != nil {
+				return nil, nil, err
+			}
+			if _, err := tx.Exec(`UPDATE memory_records SET subject = ? WHERE id = ?`, promotedTopic, c.Memory.MemoryID); err != nil {
+				return nil, nil, err
+			}
+		}
+		promotedIDs = append(promotedIDs, c.Memory.MemoryID)
+		promotedCandidates = append(promotedCandidates, c)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	if len(promotedIDs) > 0 {
+		m.backend.clearCacheLocked()
+	}
+	return promotedIDs, promotedCandidates, nil
 }
 
 func (m *PromotionManager) appendPromotionFile(topic, title, body string, timestamp int64) error {
@@ -740,17 +771,14 @@ func formatPromotedMemoryFileBody(candidates []PromotionCandidate) string {
 	return strings.Join(lines, "\n")
 }
 
-// markPromoted atomically claims a memory for promotion, revalidating inside the
-// UPDATE that it has not already been promoted (or removed) concurrently. It
-// returns claimed=true only when THIS call set the promotion marker (the row
-// existed with promoted_at IS NULL); claimed=false means another sweep already
-// promoted it or the candidate is gone, and the caller must not attribute it to
-// this sweep. This is the in-transaction candidate revalidation for r34j.
-func (m *PromotionManager) markPromoted(memoryID, promotedTo string, timestamp int64) (bool, error) {
-	res, err := m.db.Exec(`
+// markPromotedWithExecutor atomically claims a source inside the caller's group
+// transaction. A removed or already-promoted candidate is not claimable.
+func markPromotedWithExecutor(exec sqliteReadWriter, memoryID, promotedTo string, timestamp int64) (bool, error) {
+	res, err := exec.Exec(`
 		UPDATE recall_tracking
 		SET promoted_at = ?, promoted_to = ?
 		WHERE memory_id = ? AND promoted_at IS NULL
+		AND EXISTS (SELECT 1 FROM chunks WHERE id = recall_tracking.memory_id)
 	`, timestamp, promotedTo, memoryID)
 	if err != nil {
 		return false, err
@@ -827,6 +855,12 @@ func (m *PromotionManager) GetPromotionStats() (map[string]any, error) {
 // ResetPromotionStatus clears the promotion status for all memories.
 // Use with caution - primarily for testing.
 func (m *PromotionManager) ResetPromotionStatus() error {
+	return m.runUnderMaintenanceGate(m.resetPromotionStatus)
+}
+
+func (m *PromotionManager) resetPromotionStatus() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	_, err := m.db.Exec(`UPDATE recall_tracking SET promoted_at = NULL, promoted_to = NULL`)
 	return err
 }

@@ -304,7 +304,7 @@ func (h controlRPCHandler) applySoulFactorySideEffect(ctx context.Context, in no
 	}
 	if h.deps.agentRegistry != nil && !doc.Deleted && stateValue == "running" && strings.TrimSpace(doc.Model) != "" {
 		if rt, rtErr := agent.BuildRuntimeForModel(doc.Model, h.deps.tools); rtErr == nil && rt != nil {
-			h.deps.agentRegistry.Set(agentID, rt)
+			h.deps.agentRegistry.Set(agentID, wrapRuntimeForSuspend(rt, h.deps.suspendCoordinator))
 		}
 	}
 

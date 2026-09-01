@@ -174,6 +174,46 @@ func TestDreamDiary_CleartextOutboxWhenNoEncryptor(t *testing.T) {
 	}
 }
 
+func TestRunDreamingCycleWithDiary_RecoversPendingRunJournal(t *testing.T) {
+	b, _ := createTestSQLiteBackend(t)
+	defer b.Close()
+	ctx := context.Background()
+	started := time.Now().UTC().Add(-time.Minute)
+	if err := b.beginDreamDiaryRun(ctx, "run-started", "nodeX", started); err != nil {
+		t.Fatalf("begin started run: %v", err)
+	}
+	if err := b.beginDreamDiaryRun(ctx, "run-staged", "nodeX", started); err != nil {
+		t.Fatalf("begin staged run: %v", err)
+	}
+	staged := normalizeDreamDiaryEntry(DreamDiaryEntry{ID: "staged-entry", CreatedAt: started, Phase: DreamingPhaseREM, Scope: "nodeX", PromotedRecordIDs: []string{"p1"}})
+	if err := b.stageDreamDiaryRun(ctx, "run-staged", []DreamDiaryEntry{staged}); err != nil {
+		t.Fatalf("stage run: %v", err)
+	}
+
+	manager := NewPromotionManager(b, DefaultPromotionConfig())
+	if _, _, err := RunDreamingCycleWithDiary(ctx, manager, b, DreamingConfig{Enabled: true}, DreamDiaryWriteOptions{Scope: "nodeX"}); err != nil {
+		t.Fatalf("recovery cycle: %v", err)
+	}
+	entries, err := b.ListDreamDiaryEntries(ctx, DreamDiaryFilter{Scope: "nodeX", Limit: 20})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		seen[entry.ID] = true
+	}
+	if !seen["staged-entry"] || !seen["dream-recovery-run-started"] {
+		t.Fatalf("pending runs were not reconciled: %#v", seen)
+	}
+	var pending int
+	if err := b.db.QueryRow(`SELECT COUNT(*) FROM dream_diary_runs WHERE status != 'completed'`).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("pending run journal rows after recovery: %d", pending)
+	}
+}
+
 func TestRunDreamingCycleWithDiary_PersistsEntries(t *testing.T) {
 	b, _ := createTestSQLiteBackend(t)
 	defer b.Close()

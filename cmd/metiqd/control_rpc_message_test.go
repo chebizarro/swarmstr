@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,6 +53,42 @@ func messageActionCall(t *testing.T, h controlRPCHandler, params string) (nostru
 	return result, err
 }
 
+type fakeMessageNostrPropagator struct {
+	deletes   []messageNostrRef
+	reactions []messageNostrRef
+	reaction  []string
+	err       error
+}
+
+func (f *fakeMessageNostrPropagator) Delete(_ context.Context, ref messageNostrRef) error {
+	f.deletes = append(f.deletes, ref)
+	return f.err
+}
+
+func (f *fakeMessageNostrPropagator) React(_ context.Context, ref messageNostrRef, reaction string) error {
+	f.reactions = append(f.reactions, ref)
+	f.reaction = append(f.reaction, reaction)
+	return f.err
+}
+
+func setPublishedMessageMeta(t *testing.T, transcripts *state.TranscriptRepository, entryID string) {
+	t.Helper()
+	entry, err := transcripts.GetEntry(context.Background(), "sess-1", entryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Meta = map[string]any{
+		"nostr_event_id":  strings.Repeat("a", 64),
+		"nostr_pubkey":    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+		"nostr_kind":      1,
+		"nostr_transport": "nostr",
+		"nostr_relays":    []string{"wss://relay.example"},
+	}
+	if _, err := transcripts.ReplaceEntry(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMessageAction_Delete(t *testing.T) {
 	h, transcripts := messageActionFixture(t)
 	res, err := messageActionCall(t, h, `{"sessionKey":"sess-1","messageId":"e1","verb":"delete"}`)
@@ -73,6 +111,81 @@ func TestMessageAction_Delete(t *testing.T) {
 		if e.EntryID == "e1" {
 			t.Fatalf("deleted entry still listed: %+v", e)
 		}
+	}
+}
+
+func TestMessageAction_PropagatesPublishedNostrActions(t *testing.T) {
+	t.Run("reaction add is NIP-25 and idempotent", func(t *testing.T) {
+		h, transcripts := messageActionFixture(t)
+		setPublishedMessageMeta(t, transcripts, "e2")
+		publisher := &fakeMessageNostrPropagator{}
+		h.deps.messageNostr = publisher
+
+		params := `{"sessionKey":"sess-1","messageId":"e2","verb":"react","reaction":"+","actor":"alice"}`
+		res, err := messageActionCall(t, h, params)
+		if err != nil {
+			t.Fatalf("react: %v", err)
+		}
+		if len(publisher.reactions) != 1 || publisher.reaction[0] != "+" {
+			t.Fatalf("unexpected reaction publications: refs=%+v reactions=%+v", publisher.reactions, publisher.reaction)
+		}
+		if publisher.reactions[0].EventID != strings.Repeat("a", 64) || publisher.reactions[0].Relays[0] != "wss://relay.example" {
+			t.Fatalf("wrong published-event mapping: %+v", publisher.reactions[0])
+		}
+		if res.Result.(map[string]any)["nostr_propagated"] != true {
+			t.Fatalf("expected propagated result: %+v", res.Result)
+		}
+		if _, err := messageActionCall(t, h, params); err != nil {
+			t.Fatalf("duplicate react: %v", err)
+		}
+		if len(publisher.reactions) != 1 {
+			t.Fatalf("duplicate reaction republished: %d calls", len(publisher.reactions))
+		}
+		if _, err := messageActionCall(t, h, `{"sessionKey":"sess-1","messageId":"e2","verb":"react","reaction":"+","actor":"alice","remove":true}`); err != nil {
+			t.Fatalf("remove react: %v", err)
+		}
+		if len(publisher.reactions) != 1 {
+			t.Fatalf("local removal must not publish another NIP-25 event: %d calls", len(publisher.reactions))
+		}
+	})
+
+	t.Run("delete is NIP-09 before tombstone", func(t *testing.T) {
+		h, transcripts := messageActionFixture(t)
+		setPublishedMessageMeta(t, transcripts, "e2")
+		publisher := &fakeMessageNostrPropagator{}
+		h.deps.messageNostr = publisher
+		res, err := messageActionCall(t, h, `{"sessionKey":"sess-1","messageId":"e2","verb":"delete"}`)
+		if err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if len(publisher.deletes) != 1 || publisher.deletes[0].Kind != 1 {
+			t.Fatalf("unexpected deletion publications: %+v", publisher.deletes)
+		}
+		if res.Result.(map[string]any)["nostr_propagated"] != true {
+			t.Fatalf("expected propagated delete result: %+v", res.Result)
+		}
+	})
+}
+
+func TestMessageAction_NostrPublishFailureDoesNotMutateLocalEntry(t *testing.T) {
+	h, transcripts := messageActionFixture(t)
+	setPublishedMessageMeta(t, transcripts, "e2")
+	h.deps.messageNostr = &fakeMessageNostrPropagator{err: errors.New("relay rejected")}
+	if _, err := messageActionCall(t, h, `{"sessionKey":"sess-1","messageId":"e2","verb":"delete"}`); err == nil {
+		t.Fatal("expected propagation failure")
+	}
+	if _, err := transcripts.GetEntry(context.Background(), "sess-1", "e2"); err != nil {
+		t.Fatalf("entry was tombstoned after failed publish: %v", err)
+	}
+	if _, err := messageActionCall(t, h, `{"sessionKey":"sess-1","messageId":"e2","verb":"react","reaction":"+","actor":"alice"}`); err == nil {
+		t.Fatal("expected reaction propagation failure")
+	}
+	entry, err := transcripts.GetEntry(context.Background(), "sess-1", "e2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := entry.Meta["reactions"]; exists {
+		t.Fatalf("reaction mutated locally after failed publish: %+v", entry.Meta)
 	}
 }
 

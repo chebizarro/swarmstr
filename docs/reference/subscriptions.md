@@ -48,9 +48,11 @@ Receives encrypted DMs addressed to the agent.
 
 ---
 
-## 2. Control RPC Bus
+## 2. ContextVM Control RPC Bus
 
-Receives control-plane RPC requests from authorised callers.
+Receives addressed ContextVM JSON-RPC requests from authorised callers. This is
+the default remote MCP/control transport and is independent of the deprecated
+`extra.dvm.enabled` compatibility flag.
 
 | Field | Value |
 |-------|-------|
@@ -161,9 +163,13 @@ Subscribes to relay-scoped chat messages (kind 9 with `-` tag convention).
 
 ---
 
-## 8. NIP-90 DVM Job Requests
+## 8. Legacy NIP-90 DVM Job Requests (Deprecated)
 
-Subscribes to Data Vending Machine job request events addressed to the agent.
+Disabled by default. During the compatibility window, setting
+`extra.dvm.enabled = true` subscribes to legacy Data Vending Machine job request
+events addressed to the agent. The same flag also exposes the outbound
+`nostr_dvm_request` tool; both surfaces will be removed in the next breaking
+release. New MCP/control workloads should use ContextVM kind `25910`.
 
 | Field | Value |
 |-------|-------|
@@ -172,11 +178,11 @@ Subscribes to Data Vending Machine job request events addressed to the agent.
 | **Tags** | `#p` = `[<own-pubkey-hex>]` |
 | **Since** | — (no since — processes all pending jobs) |
 | **Relays** | Config `relays` |
-| **Lifetime** | Permanent (when `extra.dvm.enabled = true`) |
+| **Lifetime** | Permanent while the deprecated compatibility bundle is enabled |
 | **Concurrency** | Semaphore-bounded (`MaxConcurrentJobs`, default 8) |
 | **Reconnect** | Automatic (pool-level) |
 | **Restart on** | DVM config change, relay list change |
-| **Enabled by** | `extra.dvm.enabled = true` in config |
+| **Enabled by** | Explicit startup opt-in: `extra.dvm.enabled = true` (default `false`; restart required) |
 
 ---
 
@@ -249,9 +255,9 @@ All event kinds the agent subscribes to or produces, for quick reference:
 | `4` | NIP-04 | Read/Write | Encrypted DMs |
 | `9` | NIP-29 / NIP-C7 | Read/Write | Simple group chat / relay chat |
 | `42` | NIP-28 | Read/Write | Public channel message |
-| `5000`–`5999` | NIP-90 | Read | DVM job requests |
-| `6000`–`6999` | NIP-90 | Write | DVM job results |
-| `7000` | NIP-90 | Write | DVM job status |
+| `5000`–`5999` | Legacy NIP-90 | Read (opt-in) | Deprecated DVM job requests (`extra.dvm.enabled=true`) |
+| `6000`–`6999` | Legacy NIP-90 | Write (opt-in) | Deprecated DVM job results |
+| `7000` | Legacy NIP-90 | Write (opt-in) | Deprecated DVM job status |
 | `9734` | NIP-57 | Write | Zap request |
 | `9735` | NIP-57 | Read | Zap receipt |
 | `10000` | NIP-51 | Read | Mute list |

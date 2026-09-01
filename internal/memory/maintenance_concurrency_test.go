@@ -144,6 +144,64 @@ func TestMaintenanceGateSerializesRealOps(t *testing.T) {
 	<-promoteDone
 }
 
+func TestLegacyMaintenanceMethodsShareGate(t *testing.T) {
+	backend, _ := createTestSQLiteBackend(t)
+	defer backend.Close()
+	manager := NewPromotionManager(backend, DefaultPromotionConfig())
+	missingJSON := t.TempDir() + "/missing-index.json"
+	missingOpenClaw := t.TempDir() + "/missing-openclaw.sqlite"
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "Compact", run: func() error { backend.Compact(0); return nil }},
+		{name: "RebuildFTSIndex", run: backend.RebuildFTSIndex},
+		{name: "Vacuum", run: backend.Vacuum},
+		{name: "MigrateFromJSONIndex", run: func() error { return backend.MigrateFromJSONIndex(missingJSON) }},
+		{name: "MigrateFromOpenClaw", run: func() error { _, err := backend.MigrateFromOpenClaw(missingOpenClaw); return err }},
+		{name: "ResetPromotionStatus", run: manager.ResetPromotionStatus},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			held := make(chan struct{})
+			release := make(chan struct{})
+			gateDone := make(chan struct{})
+			go func() {
+				_ = backend.WithMaintenanceLock(func() error {
+					close(held)
+					<-release
+					return nil
+				})
+				close(gateDone)
+			}()
+			<-held
+
+			opDone := make(chan error, 1)
+			go func() { opDone <- tt.run() }()
+			select {
+			case err := <-opDone:
+				close(release)
+				<-gateDone
+				t.Fatalf("operation bypassed maintenance gate: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			close(release)
+			<-gateDone
+			select {
+			case err := <-opDone:
+				if err != nil {
+					t.Fatalf("operation after gate release: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("operation did not complete after gate release")
+			}
+		})
+	}
+}
+
 // TestPromoteAtomicClaimSingleWinner proves candidate revalidation inside the
 // promotion claim: two managers racing the same candidate promote it exactly
 // once — no double-promotion, no lost update.
@@ -245,11 +303,15 @@ func TestMaintenanceConcurrentWritersIntegrity(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		launch(func() { _, _ = NewPromotionManager(backend, cfg).Promote() })
-		launch(func() { _, _ = backend.CompactMemoryRecords(ctx, CompactionConfig{Reason: "storm", SkipDedupe: true, SkipExpireStale: true}) })
+		launch(func() {
+			_, _ = backend.CompactMemoryRecords(ctx, CompactionConfig{Reason: "storm", SkipDedupe: true, SkipExpireStale: true})
+		})
 		launch(func() { _, _ = backend.RepairMemoryHealth(ctx, MemoryHealthRepairOptions{FixAll: true}) })
 		launch(func() { _, _ = backend.MemoryMigrationApply(ctx, MemoryMigrationApplyOptions{RebuildFTS: true}) })
 		launch(func() { _, _ = backend.RunREMHarness(ctx, REMHarnessOptions{Apply: true, Limit: 50}) })
-		launch(func() { _, _ = RunDreamingPhases(NewPromotionManager(backend, cfg), DreamingConfig{Enabled: true}, nil) })
+		launch(func() {
+			_, _ = RunDreamingPhases(NewPromotionManager(backend, cfg), DreamingConfig{Enabled: true}, nil)
+		})
 	}
 
 	finished := make(chan struct{})

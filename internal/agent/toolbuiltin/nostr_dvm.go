@@ -1,7 +1,7 @@
-// Package toolbuiltin nostr_dvm.go — NIP-90 DVM client tools.
+// Package toolbuiltin nostr_dvm.go — deprecated NIP-90 compatibility tool.
 //
-// Lets the agent submit job requests to other Data Vending Machines and
-// optionally poll for results.
+// The legacy requester remains available only when extra.dvm.enabled is true.
+// New MCP/control integrations should use the ContextVM tools.
 package toolbuiltin
 
 import (
@@ -20,7 +20,7 @@ import (
 // NostrDVMRequestDef is the ToolDefinition for nostr_dvm_request.
 var NostrDVMRequestDef = agent.ToolDefinition{
 	Name:        "nostr_dvm_request",
-	Description: "Submit a NIP-90 DVM job request (kind 5000-5999) and optionally wait for the result. The job is published to relays and, if wait=true, the tool polls for a kind:6xxx result or kind:7000 status update.",
+	Description: "DEPRECATED: legacy NIP-90 compatibility, available only when extra.dvm.enabled=true and scheduled for removal in the next breaking release. Prefer contextvm_discover, contextvm_tools_list, and contextvm_call. Submits a kind:5000-5999 request and optionally subscribes for a kind:6xxx result or kind:7000 status update.",
 	Parameters: agent.ToolParameters{
 		Type:     "object",
 		Required: []string{"kind", "input"},
@@ -73,8 +73,10 @@ var NostrDVMRequestDef = agent.ToolDefinition{
 
 // ─── Tool Implementation ─────────────────────────────────────────────────────
 
-// NostrDVMRequestTool returns an agent tool that submits a NIP-90 DVM job
-// request and optionally polls for a result.
+// NostrDVMRequestTool returns the legacy NIP-90 requester tool.
+//
+// Deprecated: available only during the NIP-90 compatibility window. Use
+// RegisterContextVMTools and contextvm_call for new MCP/control integrations.
 func NostrDVMRequestTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		signFn, err := opts.signerFunc()

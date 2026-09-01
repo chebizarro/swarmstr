@@ -1,8 +1,8 @@
-// Package dvm implements a NIP-90 Data Vending Machine handler.
+// Package dvm provides deprecated NIP-90 Data Vending Machine compatibility.
 //
-// The handler subscribes to kind:5000-5999 job request events addressed to the
-// agent pubkey (via #p tag), dispatches each request as an agent turn, and
-// publishes kind:6000-6999 results + kind:7000 status events.
+// The legacy handler subscribes to kind:5000-5999 job request events addressed
+// to the agent pubkey, then publishes kind:6000-6999 results and kind:7000
+// status events. New MCP/control integrations should use ContextVM kind 25910.
 package dvm
 
 import (
@@ -62,7 +62,46 @@ type JobResult struct {
 // single-input callback.
 type JobRequestHandler func(ctx context.Context, request JobRequest) (JobResult, error)
 
-// HandlerOpts configures the DVM handler.
+// CompatibilityRemovalWindow names the announced NIP-90 removal boundary.
+const CompatibilityRemovalWindow = "the next breaking release"
+
+// CompatibilityConfig controls the legacy NIP-90 compatibility bundle.
+// The zero value is disabled so missing or malformed configuration fails closed.
+type CompatibilityConfig struct {
+	Enabled       bool
+	AcceptedKinds []int
+}
+
+// CompatibilityConfigFromExtra parses extra.dvm. Enabling the bundle opts into
+// both the outbound nostr_dvm_request tool and the inbound DVM provider.
+func CompatibilityConfigFromExtra(extra map[string]any) CompatibilityConfig {
+	dvmExtra, ok := extra["dvm"].(map[string]any)
+	if !ok {
+		return CompatibilityConfig{}
+	}
+	enabled, ok := dvmExtra["enabled"].(bool)
+	if !ok || !enabled {
+		return CompatibilityConfig{}
+	}
+
+	cfg := CompatibilityConfig{Enabled: true}
+	switch rawKinds := dvmExtra["kinds"].(type) {
+	case []any:
+		for _, rawKind := range rawKinds {
+			switch kind := rawKind.(type) {
+			case float64:
+				cfg.AcceptedKinds = append(cfg.AcceptedKinds, int(kind))
+			case int:
+				cfg.AcceptedKinds = append(cfg.AcceptedKinds, kind)
+			}
+		}
+	case []int:
+		cfg.AcceptedKinds = append(cfg.AcceptedKinds, rawKinds...)
+	}
+	return cfg
+}
+
+// HandlerOpts configures the legacy DVM handler.
 type HandlerOpts struct {
 	// Keyer is the signing interface used to publish statuses and results.
 	Keyer nostr.Keyer
@@ -105,7 +144,10 @@ type Handler struct {
 	seenCap  int
 }
 
-// Start creates a Handler and begins listening for job requests.
+// Start creates and starts the legacy NIP-90 provider.
+//
+// Deprecated: enable only for the announced compatibility window. New provider
+// integrations should use the ContextVM control bus over kind 25910.
 func Start(ctx context.Context, opts HandlerOpts) (*Handler, error) {
 	if opts.OnJob == nil && opts.OnRequest == nil {
 		return nil, fmt.Errorf("dvm: OnJob or OnRequest handler is required")

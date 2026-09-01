@@ -50,32 +50,37 @@ const (
 )
 
 type session struct {
-	id        string
-	connID    string
-	mode      string
-	transport string
-	provider  string
-	state     sessionState
-	turnSeq   int
-	marks     map[string]bool
-	bridge    realtimevoice.Bridge
-	sttSess   realtimestt.Session
+	id             string
+	connID         string
+	mode           string
+	transport      string
+	provider       string
+	state          sessionState
+	turnSeq        int
+	marks          map[string]bool
+	roomEvents     map[string]bool
+	roomEventOrder []string
+	room           *ManagedRoom
+	opMu           sync.Mutex
+	bridge         realtimevoice.Bridge
+	sttSess        realtimestt.Session
 }
 
-// SessionManager owns server-side (gateway-relay) voice sessions keyed by the
-// owning WS connection, mirroring the terminal-manager ownership pattern. Turn
-// state is tracked in the gateway; audio transport binds to the realtimevoice /
-// realtimestt provider registries and fails honestly when none is registered.
+// SessionManager owns talk sessions keyed by the owning WS connection. Gateway
+// relay sessions bind local realtimevoice/realtimestt providers; managed rooms
+// delegate provisioning and their event-driven turn protocol to an optional
+// ManagedRoomTransport.
 type SessionManager struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	byConn   map[string]map[string]struct{}
 	seq      int
 
-	voice    *realtimevoice.Registry
-	stt      *realtimestt.Registry
-	steering *autoreply.SteeringMailboxRegistry
-	emitter  EventEmitter
+	voice       *realtimevoice.Registry
+	stt         *realtimestt.Registry
+	steering    *autoreply.SteeringMailboxRegistry
+	emitter     EventEmitter
+	managedRoom ManagedRoomTransport
 }
 
 // NewSessionManager constructs a session manager. Any dependency may be nil; a
@@ -103,9 +108,8 @@ type CreateInput struct {
 	SystemPrompt string
 }
 
-// Create opens a new server-owned voice session. managed-room transport is an
-// accepted deviation (ErrUnsupported); gateway-relay resolves an audio provider
-// and returns ErrUnavailable when none is registered.
+// Create opens a new server-owned voice session. Gateway-relay resolves a local
+// audio provider; managed-room provisions through the configured room transport.
 func (m *SessionManager) Create(ctx context.Context, in CreateInput) (map[string]any, error) {
 	if in.ConnID == "" {
 		return nil, fmt.Errorf("talk.session.create requires an owning connection")
@@ -113,34 +117,44 @@ func (m *SessionManager) Create(ctx context.Context, in CreateInput) (map[string
 	switch in.Transport {
 	case TransportGatewayRelay:
 	case TransportManagedRoom:
-		return nil, fmt.Errorf("%w: managed-room transport requires LiveKit infra not available in metiq", ErrUnsupported)
+		if m.managedRoomTransport() == nil {
+			return nil, fmt.Errorf("%w: managed-room transport is not configured", ErrUnavailable)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported talk transport %q", in.Transport)
 	}
 
 	sess := &session{
-		connID:    in.ConnID,
-		mode:      in.Mode,
-		transport: in.Transport,
-		state:     stateIdle,
-		marks:     map[string]bool{},
+		connID:     in.ConnID,
+		mode:       in.Mode,
+		transport:  in.Transport,
+		state:      stateIdle,
+		marks:      map[string]bool{},
+		roomEvents: map[string]bool{},
 	}
 
 	switch in.Mode {
-	case ModeRealtime:
-		provider, err := m.resolveVoice(in.Provider)
-		if err != nil {
-			return nil, err
-		}
-		sess.provider = provider.ID()
-	case ModeTranscription, ModeSTTTTS:
-		provider, err := m.resolveSTT(in.Provider)
-		if err != nil {
-			return nil, err
-		}
-		sess.provider = provider.ID()
+	case ModeRealtime, ModeTranscription, ModeSTTTTS:
 	default:
 		return nil, fmt.Errorf("unsupported talk mode %q", in.Mode)
+	}
+	if in.Transport == TransportManagedRoom {
+		sess.provider = in.Provider
+	} else {
+		switch in.Mode {
+		case ModeRealtime:
+			provider, err := m.resolveVoice(in.Provider)
+			if err != nil {
+				return nil, err
+			}
+			sess.provider = provider.ID()
+		case ModeTranscription, ModeSTTTTS:
+			provider, err := m.resolveSTT(in.Provider)
+			if err != nil {
+				return nil, err
+			}
+			sess.provider = provider.ID()
+		}
 	}
 
 	m.mu.Lock()
@@ -161,21 +175,31 @@ func (m *SessionManager) Create(ctx context.Context, in CreateInput) (map[string
 	m.byConn[in.ConnID][id] = struct{}{}
 	m.mu.Unlock()
 
-	// Bind the audio transport now that the record exists so the OnAudio /
-	// OnTranscript callbacks can stream events to the owning connection. A
-	// binding failure tears the record down and surfaces honestly.
-	if err := m.bind(ctx, sess, in); err != nil {
+	// Bind after the record exists so provider callbacks can target the owner.
+	// A binding failure tears the record down and surfaces honestly.
+	var bindErr error
+	if sess.transport == TransportManagedRoom {
+		bindErr = m.bindManagedRoom(ctx, sess, in)
+	} else {
+		bindErr = m.bind(ctx, sess, in)
+	}
+	if bindErr != nil {
 		m.removeSession(id)
-		return nil, err
+		return nil, bindErr
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"sessionId": id,
 		"mode":      sess.mode,
 		"transport": sess.transport,
 		"provider":  sess.provider,
 		"state":     string(sess.state),
-	}, nil
+	}
+	if sess.room != nil {
+		out["roomId"] = sess.room.RoomID
+		out["roomUrl"] = sess.room.RoomURL
+	}
+	return out, nil
 }
 
 func (m *SessionManager) bind(ctx context.Context, sess *session, in CreateInput) error {
@@ -263,37 +287,59 @@ func (m *SessionManager) resolveSTT(id string) (realtimestt.Provider, error) {
 	return p, nil
 }
 
-// Join is managed-room only, an accepted deviation.
+// Join returns a participant token for a managed-room session.
 func (m *SessionManager) Join(connID, sessionID string) (map[string]any, error) {
-	return nil, fmt.Errorf("%w: talk.session.join is managed-room only", ErrUnsupported)
-}
-
-// StartTurn opens an explicit-commit turn on a gateway-relay session (relay
-// substitute for the managed-room turn protocol).
-func (m *SessionManager) StartTurn(connID, sessionID string) (map[string]any, error) {
-	sess, err := m.owned(connID, sessionID)
+	sess, unlock, err := m.lockOwned(connID, sessionID)
 	if err != nil {
 		return nil, err
 	}
+	defer unlock()
+	if sess.transport != TransportManagedRoom {
+		return nil, fmt.Errorf("%w: talk.session.join is managed-room only", ErrUnsupported)
+	}
+	return m.joinManagedRoom(context.Background(), sess)
+}
+
+// StartTurn opens an explicit-commit turn. Managed-room sessions publish a
+// versioned turn.start command and wait for room events for media/results.
+func (m *SessionManager) StartTurn(connID, sessionID string) (map[string]any, error) {
+	sess, unlock, err := m.lockOwned(connID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	m.mu.Lock()
 	if sess.state == stateListening {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("talk session %q already has an open turn", sessionID)
 	}
+	previousState := sess.state
 	sess.turnSeq++
 	sess.state = stateListening
 	turn := sess.turnSeq
 	m.mu.Unlock()
+	if sess.transport == TransportManagedRoom {
+		if err := m.publishManagedRoomTurn(sess, ManagedRoomCommandTurnStart, turn, nil); err != nil {
+			m.mu.Lock()
+			if sess.turnSeq == turn && sess.state == stateListening {
+				sess.turnSeq--
+				sess.state = previousState
+			}
+			m.mu.Unlock()
+			return nil, err
+		}
+	}
 	m.emitState(sess)
 	return map[string]any{"sessionId": sessionID, "turn": turn, "state": string(stateListening)}, nil
 }
 
 // EndTurn commits an open turn and moves the session into processing.
 func (m *SessionManager) EndTurn(connID, sessionID string) (map[string]any, error) {
-	sess, err := m.owned(connID, sessionID)
+	sess, unlock, err := m.lockOwned(connID, sessionID)
 	if err != nil {
 		return nil, err
 	}
+	defer unlock()
 	m.mu.Lock()
 	if sess.state != stateListening {
 		m.mu.Unlock()
@@ -302,15 +348,29 @@ func (m *SessionManager) EndTurn(connID, sessionID string) (map[string]any, erro
 	sess.state = stateProcessing
 	turn := sess.turnSeq
 	m.mu.Unlock()
+	if sess.transport == TransportManagedRoom {
+		if err := m.publishManagedRoomTurn(sess, ManagedRoomCommandTurnEnd, turn, nil); err != nil {
+			m.mu.Lock()
+			if sess.turnSeq == turn && sess.state == stateProcessing {
+				sess.state = stateListening
+			}
+			m.mu.Unlock()
+			return nil, err
+		}
+	}
 	m.emitState(sess)
 	return map[string]any{"sessionId": sessionID, "turn": turn, "state": string(stateProcessing)}, nil
 }
 
 // AppendAudio forwards a decoded audio chunk to the bound provider transport.
 func (m *SessionManager) AppendAudio(connID, sessionID, audioBase64 string) (map[string]any, error) {
-	sess, err := m.owned(connID, sessionID)
+	sess, unlock, err := m.lockOwned(connID, sessionID)
 	if err != nil {
 		return nil, err
+	}
+	defer unlock()
+	if sess.transport == TransportManagedRoom {
+		return nil, fmt.Errorf("%w: managed-room media travels over the room transport", ErrUnsupported)
 	}
 	data, err := base64.StdEncoding.DecodeString(audioBase64)
 	if err != nil {
@@ -333,11 +393,19 @@ func (m *SessionManager) AppendAudio(connID, sessionID, audioBase64 string) (map
 
 // CancelTurn interrupts the in-flight turn and returns the session to idle.
 func (m *SessionManager) CancelTurn(connID, sessionID string) (map[string]any, error) {
-	sess, err := m.owned(connID, sessionID)
+	sess, unlock, err := m.lockOwned(connID, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if sess.bridge != nil {
+	defer unlock()
+	m.mu.Lock()
+	turn := sess.turnSeq
+	m.mu.Unlock()
+	if sess.transport == TransportManagedRoom {
+		if err := m.publishManagedRoomTurn(sess, ManagedRoomCommandTurnCancel, turn, nil); err != nil {
+			return nil, err
+		}
+	} else if sess.bridge != nil {
 		_ = sess.bridge.Interrupt()
 	}
 	m.mu.Lock()
@@ -349,11 +417,19 @@ func (m *SessionManager) CancelTurn(connID, sessionID string) (map[string]any, e
 
 // CancelOutput interrupts model audio output without ending the turn.
 func (m *SessionManager) CancelOutput(connID, sessionID string) (map[string]any, error) {
-	sess, err := m.owned(connID, sessionID)
+	sess, unlock, err := m.lockOwned(connID, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if sess.bridge != nil {
+	defer unlock()
+	m.mu.Lock()
+	turn := sess.turnSeq
+	m.mu.Unlock()
+	if sess.transport == TransportManagedRoom {
+		if err := m.publishManagedRoomTurn(sess, ManagedRoomCommandOutputCancel, turn, nil); err != nil {
+			return nil, err
+		}
+	} else if sess.bridge != nil {
 		_ = sess.bridge.Interrupt()
 	}
 	return map[string]any{"sessionId": sessionID, "cancelled": true}, nil
@@ -361,9 +437,18 @@ func (m *SessionManager) CancelOutput(connID, sessionID string) (map[string]any,
 
 // AcknowledgeMark records a client-side playback-mark acknowledgement.
 func (m *SessionManager) AcknowledgeMark(connID, sessionID, mark string) (map[string]any, error) {
-	sess, err := m.owned(connID, sessionID)
+	sess, unlock, err := m.lockOwned(connID, sessionID)
 	if err != nil {
 		return nil, err
+	}
+	defer unlock()
+	if sess.transport == TransportManagedRoom {
+		m.mu.Lock()
+		turn := sess.turnSeq
+		m.mu.Unlock()
+		if err := m.publishManagedRoomTurn(sess, ManagedRoomCommandMarkAcknowledge, turn, map[string]any{"mark": mark}); err != nil {
+			return nil, err
+		}
 	}
 	m.mu.Lock()
 	sess.marks[mark] = true
@@ -379,22 +464,32 @@ func (m *SessionManager) AcknowledgeMark(connID, sessionID, mark string) (map[st
 
 // SubmitToolResult forwards a realtime tool-call result to the voice bridge.
 func (m *SessionManager) SubmitToolResult(connID, sessionID, toolCallID string, result json.RawMessage, callErr string) (map[string]any, error) {
-	sess, err := m.owned(connID, sessionID)
+	sess, unlock, err := m.lockOwned(connID, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if sess.bridge == nil {
-		return nil, fmt.Errorf("%w: talk session %q has no realtime tool bridge", ErrUnsupported, sessionID)
-	}
+	defer unlock()
 	envelope := map[string]any{"type": "tool_result", "toolCallId": toolCallID}
 	if callErr != "" {
 		envelope["error"] = callErr
 	} else if len(result) > 0 {
 		envelope["result"] = json.RawMessage(result)
 	}
-	payload, _ := json.Marshal(envelope)
-	if err := sess.bridge.SendText(string(payload)); err != nil {
-		return nil, err
+	if sess.transport == TransportManagedRoom {
+		m.mu.Lock()
+		turn := sess.turnSeq
+		m.mu.Unlock()
+		if err := m.publishManagedRoomTurn(sess, ManagedRoomCommandToolResultSubmit, turn, envelope); err != nil {
+			return nil, err
+		}
+	} else {
+		if sess.bridge == nil {
+			return nil, fmt.Errorf("%w: talk session %q has no realtime tool bridge", ErrUnsupported, sessionID)
+		}
+		payload, _ := json.Marshal(envelope)
+		if err := sess.bridge.SendText(string(payload)); err != nil {
+			return nil, err
+		}
 	}
 	return map[string]any{"sessionId": sessionID, "toolCallId": toolCallID, "submitted": true}, nil
 }
@@ -416,21 +511,39 @@ func (m *SessionManager) Steer(connID, sessionID, text string) (map[string]any, 
 
 // Close tears down a session and its provider transport.
 func (m *SessionManager) Close(connID, sessionID string) (map[string]any, error) {
-	sess, err := m.owned(connID, sessionID)
+	sess, unlock, err := m.lockOwned(connID, sessionID)
 	if err != nil {
 		return nil, err
 	}
+	defer unlock()
 	if sess.bridge != nil {
 		_ = sess.bridge.Close()
 	}
 	if sess.sttSess != nil {
 		_ = sess.sttSess.Close()
 	}
-	m.removeSession(sessionID)
+	if sess.transport == TransportManagedRoom {
+		transport := m.managedRoomTransport()
+		m.mu.Lock()
+		roomID := ""
+		if sess.room != nil {
+			roomID = sess.room.RoomID
+		}
+		m.mu.Unlock()
+		if transport == nil || roomID == "" {
+			return nil, fmt.Errorf("%w: managed-room transport is not configured", ErrUnavailable)
+		}
+		if err := transport.CloseRoom(roomID); err != nil {
+			return nil, fmt.Errorf("%w: close managed room: %v", ErrUnavailable, err)
+		}
+	}
+	removed := m.removeSession(sessionID)
 	if m.steering != nil {
 		m.steering.Delete(sessionID)
 	}
-	m.emit(connID, EventTalkSessionClosed, map[string]any{"sessionId": sessionID})
+	if removed {
+		m.emit(connID, EventTalkSessionClosed, map[string]any{"sessionId": sessionID})
+	}
 	return map[string]any{"sessionId": sessionID, "closed": true}, nil
 }
 
@@ -459,6 +572,23 @@ func (m *SessionManager) ListForConnection(connID string) []string {
 	return ids
 }
 
+func (m *SessionManager) lockOwned(connID, sessionID string) (*session, func(), error) {
+	sess, err := m.owned(connID, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	sess.opMu.Lock()
+	m.mu.Lock()
+	current, ok := m.sessions[sessionID]
+	valid := ok && current == sess && sess.connID == connID && sess.state != stateClosed
+	m.mu.Unlock()
+	if !valid {
+		sess.opMu.Unlock()
+		return nil, nil, fmt.Errorf("unknown talk session %q", sessionID)
+	}
+	return sess, sess.opMu.Unlock, nil
+}
+
 func (m *SessionManager) owned(connID, sessionID string) (*session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -472,12 +602,12 @@ func (m *SessionManager) owned(connID, sessionID string) (*session, error) {
 	return sess, nil
 }
 
-func (m *SessionManager) removeSession(sessionID string) {
+func (m *SessionManager) removeSession(sessionID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sess, ok := m.sessions[sessionID]
 	if !ok {
-		return
+		return false
 	}
 	sess.state = stateClosed
 	delete(m.sessions, sessionID)
@@ -487,6 +617,7 @@ func (m *SessionManager) removeSession(sessionID string) {
 			delete(m.byConn, sess.connID)
 		}
 	}
+	return true
 }
 
 func (m *SessionManager) emitState(sess *session) {

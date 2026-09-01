@@ -258,7 +258,9 @@ func ensureMemoryRecordProvenanceColumns(db *sql.DB) error {
 }
 
 func (b *SQLiteBackend) BackfillUnifiedFromChunks(ctx context.Context) (int, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if err := b.ensureUnifiedSchema(); err != nil {
 		return 0, err
 	}
@@ -275,21 +277,44 @@ func (b *SQLiteBackend) BackfillUnifiedFromChunks(ctx context.Context) (int, err
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
 	mems := b.scanRowsNoRank(rows)
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	records := make([]MemoryRecord, 0, len(mems))
+	for _, mem := range mems {
+		rec, err := NormalizeMemoryRecord(MemoryRecordFromIndexed(mem))
+		if err != nil {
+			return 0, fmt.Errorf("normalize backfill record %q: %w", mem.MemoryID, err)
+		}
+		records = append(records, rec)
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	count := 0
-	for _, mem := range mems {
-		rec, normalizeErr := NormalizeMemoryRecord(MemoryRecordFromIndexed(mem))
-		if normalizeErr != nil {
-			continue
-		}
-		if err := b.writeMemoryRecordLocked(rec); err == nil {
-			count++
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, rec := range records {
+		if err := b.writeMemoryRecordWithExecutor(tx, rec); err != nil {
+			return 0, fmt.Errorf("backfill record %q: %w", rec.ID, err)
 		}
 	}
-	return count, nil
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	for _, rec := range records {
+		b.bumpMemoryWriteCountersLocked(rec.UpdatedAt)
+	}
+	if len(records) > 0 {
+		b.clearCacheLocked()
+	}
+	return len(records), nil
 }
 
 func (b *SQLiteBackend) WriteMemoryRecord(ctx context.Context, rec MemoryRecord) error {
@@ -312,9 +337,18 @@ func (b *SQLiteBackend) WriteMemoryRecord(ctx context.Context, rec MemoryRecord)
 }
 
 func (b *SQLiteBackend) writeMemoryRecordLocked(rec MemoryRecord) error {
+	if err := b.writeMemoryRecordWithExecutor(b.db, rec); err != nil {
+		return err
+	}
+	b.bumpMemoryWriteCountersLocked(rec.UpdatedAt)
+	b.clearCacheLocked()
+	return nil
+}
+
+func (b *SQLiteBackend) writeMemoryRecordWithExecutor(exec sqliteReadWriter, rec MemoryRecord) error {
 	var existingOrigin, existingSession string
 	var existingExternal, existingNetwork, existingRecalled int
-	err := b.db.QueryRow(`SELECT origin_class, session_kind, external_tool_taint, network_taint, recalled_content FROM memory_records WHERE id = ?`, rec.ID).
+	err := exec.QueryRow(`SELECT origin_class, session_kind, external_tool_taint, network_taint, recalled_content FROM memory_records WHERE id = ?`, rec.ID).
 		Scan(&existingOrigin, &existingSession, &existingExternal, &existingNetwork, &existingRecalled)
 	if err != nil && err != sql.ErrNoRows {
 		return err
@@ -323,7 +357,7 @@ func (b *SQLiteBackend) writeMemoryRecordLocked(rec MemoryRecord) error {
 		existingExternal != boolInt(rec.Taint.ExternalTool) || existingNetwork != boolInt(rec.Taint.Network) || existingRecalled != boolInt(rec.RecalledContent)) {
 		return fmt.Errorf("memory record %q provenance is immutable", rec.ID)
 	}
-	_, err = b.db.Exec(`
+	_, err = exec.Exec(`
 		INSERT OR REPLACE INTO memory_records (
 			id, type, scope, subject, text, summary, keywords, tags,
 			confidence, salience, source_kind, source_ref, source_session_id,
@@ -341,10 +375,10 @@ func (b *SQLiteBackend) writeMemoryRecordLocked(rec MemoryRecord) error {
 	if err != nil {
 		return err
 	}
-	_, _ = b.db.Exec(`INSERT OR REPLACE INTO memory_sources (record_id, source_kind, source_ref, session_id, event_id, file_path, nostr_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		rec.ID, rec.Source.Kind, rec.Source.Ref, rec.Source.SessionID, rec.Source.EventID, rec.Source.FilePath, rec.Source.NostrEventID, rec.CreatedAt.Unix())
-	b.bumpMemoryWriteCountersLocked(rec.UpdatedAt)
-	b.clearCacheLocked()
+	if _, err := exec.Exec(`INSERT OR REPLACE INTO memory_sources (record_id, source_kind, source_ref, session_id, event_id, file_path, nostr_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.ID, rec.Source.Kind, rec.Source.Ref, rec.Source.SessionID, rec.Source.EventID, rec.Source.FilePath, rec.Source.NostrEventID, rec.CreatedAt.Unix()); err != nil {
+		return err
+	}
 	return nil
 }
 

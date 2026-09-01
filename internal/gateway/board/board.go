@@ -100,24 +100,32 @@ type Declared struct {
 	Tools      []string `json:"tools,omitempty"`
 }
 
+// PluginGrantIdentity pins one declared plugin capability to the exact package
+// approved by the operator. It is internal store metadata, not a wire field.
+type PluginGrantIdentity struct {
+	PluginID      string
+	PackageDigest string
+}
+
 // Widget is one board widget row in the snapshot.
 type Widget struct {
-	Name            string         `json:"name"`
-	TabID           string         `json:"tabId"`
-	Title           string         `json:"title,omitempty"`
-	ContentKind     string         `json:"contentKind"`
-	PluginKind      string         `json:"pluginKind,omitempty"`
-	Props           map[string]any `json:"props,omitempty"`
-	Presentation    string         `json:"presentation,omitempty"`
-	HeightMode      string         `json:"heightMode,omitempty"`
-	SizeW           int            `json:"sizeW"`
-	SizeH           int            `json:"sizeH"`
-	Position        int            `json:"position"`
-	GrantState      string         `json:"grantState"`
-	Revision        int            `json:"revision"`
-	InstanceID      string         `json:"instanceId,omitempty"`
-	DeclaredSummary []string       `json:"declaredSummary,omitempty"`
-	Declared        *Declared      `json:"declared,omitempty"`
+	Name                  string                         `json:"name"`
+	TabID                 string                         `json:"tabId"`
+	Title                 string                         `json:"title,omitempty"`
+	ContentKind           string                         `json:"contentKind"`
+	PluginKind            string                         `json:"pluginKind,omitempty"`
+	Props                 map[string]any                 `json:"props,omitempty"`
+	Presentation          string                         `json:"presentation,omitempty"`
+	HeightMode            string                         `json:"heightMode,omitempty"`
+	SizeW                 int                            `json:"sizeW"`
+	SizeH                 int                            `json:"sizeH"`
+	Position              int                            `json:"position"`
+	GrantState            string                         `json:"grantState"`
+	Revision              int                            `json:"revision"`
+	InstanceID            string                         `json:"instanceId,omitempty"`
+	DeclaredSummary       []string                       `json:"declaredSummary,omitempty"`
+	Declared              *Declared                      `json:"declared,omitempty"`
+	PluginGrantIdentities map[string]PluginGrantIdentity `json:"-"`
 
 	// View-ticket fields are ephemeral: minted per board.get response by
 	// GetSnapshotWithTickets, never persisted in the store.
@@ -182,6 +190,12 @@ func cloneWidget(w Widget) Widget {
 		out.DeclaredSummary = append([]string(nil), w.DeclaredSummary...)
 	}
 	out.Declared = cloneDeclared(w.Declared)
+	if w.PluginGrantIdentities != nil {
+		out.PluginGrantIdentities = make(map[string]PluginGrantIdentity, len(w.PluginGrantIdentities))
+		for capability, identity := range w.PluginGrantIdentities {
+			out.PluginGrantIdentities[capability] = identity
+		}
+	}
 	return out
 }
 

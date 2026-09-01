@@ -145,17 +145,21 @@ func TestSessionUnavailableAndUnsupported(t *testing.T) {
 		t.Fatalf("want ErrUnavailable, got %v", err)
 	}
 
-	// managed-room transport -> accepted deviation ErrUnsupported.
+	// No managed-room adapter wired -> honest ErrUnavailable.
 	voice := &fakeVoiceProvider{id: "vp", configured: true}
 	mgr2 := NewSessionManager(voiceRegistryWith(voice), nil, newSteering(), &fakeEmitter{})
 	_, err = mgr2.Create(context.Background(), CreateInput{ConnID: "c", Mode: ModeRealtime, Transport: TransportManagedRoom})
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("want ErrUnsupported for managed-room, got %v", err)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("want ErrUnavailable for unwired managed-room, got %v", err)
 	}
 
-	// join is managed-room only -> ErrUnsupported.
-	if _, err := mgr2.Join("c", "whatever"); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("want ErrUnsupported for join, got %v", err)
+	// Join remains unsupported for gateway-relay sessions.
+	created, err := mgr2.Create(context.Background(), CreateInput{ConnID: "c", Mode: ModeRealtime, Transport: TransportGatewayRelay})
+	if err != nil {
+		t.Fatalf("create gateway-relay: %v", err)
+	}
+	if _, err := mgr2.Join("c", created["sessionId"].(string)); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("want ErrUnsupported for gateway-relay join, got %v", err)
 	}
 }
 
@@ -171,6 +175,13 @@ func TestClientStoreLifecycle(t *testing.T) {
 	sid := out["sessionId"].(string)
 	if out["browserSession"] == nil {
 		t.Fatal("want browserSession payload")
+	}
+	if out["provider"] != "vp" {
+		t.Fatalf("resolved provider = %v, want vp", out["provider"])
+	}
+	browserSession := out["browserSession"].(BrowserSession)
+	if browserSession["transport"] != "webrtc" {
+		t.Fatalf("browser transport = %v", browserSession["transport"])
 	}
 
 	// Resume returns the same record.
@@ -214,6 +225,14 @@ func TestClientStoreLifecycle(t *testing.T) {
 	}
 	if _, err := store.Transcript(sid, TranscriptEntry{Text: "x"}); err == nil {
 		t.Fatal("transcript on closed session should error")
+	}
+}
+
+func TestClientCreateRejectsProviderTransportMismatch(t *testing.T) {
+	provider := &mismatchedBrowserVoiceProvider{fakeVoiceProvider: fakeVoiceProvider{id: "vp", configured: true}}
+	store := NewClientStore(voiceRegistryWith(provider), newSteering())
+	if _, err := store.Create(context.Background(), ClientCreateInput{Transport: "webrtc", Provider: "vp"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("want ErrUnavailable for mismatched provider transport, got %v", err)
 	}
 }
 

@@ -40,6 +40,7 @@ import (
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/permissions"
 	pluginmanager "metiq/internal/plugins/manager"
+	pluginregistry "metiq/internal/plugins/registry"
 	pluginsurface "metiq/internal/plugins/surface"
 	"metiq/internal/policy"
 	"metiq/internal/store/state"
@@ -72,6 +73,7 @@ type controlRPCDeps struct {
 	sessionCoordinator *sessioncoord.Service
 	hooksMgr           hooksEventFirer
 	hooksMgrFull       *hookspkg.Manager
+	pluginRegistry     *pluginregistry.UnifiedRegistry
 	mediaTranscriber   mediapkg.Transcriber
 	toolRegistry       *agent.ToolRegistry
 	agentJobs          *agentJobRegistry
@@ -108,6 +110,7 @@ type controlRPCDeps struct {
 	approvePairing  func(context.Context, channels.PairingRequest) error
 	nostrHub        *nostruntime.NostrHub
 	keyer           nostr.Keyer
+	messageNostr    messageActionNostrPropagator
 	secretResolver  channels.ConcordSecretResolver
 	terminalManager *terminalpkg.Manager
 	attachGrants    *attachpkg.Store
@@ -208,6 +211,12 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 	if result, handled, err := h.handleAgentRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
+	if result, handled, err := h.handleSessionUsageRPC(ctx, in, method); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleSessionGoalRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
 	if result, handled, err := h.handleSessionRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
@@ -226,7 +235,13 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 	if result, handled, err := h.handleWorkspaceSurfaceRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
+	if result, handled, err := h.handleSkillProposalEventsRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
 	if result, handled, err := h.handleToolingRPC(ctx, in, method, cfg); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleAuditRunRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
 	if result, handled, err := h.handleIntrospectionRPC(ctx, in, method, cfg); handled {
@@ -266,6 +281,9 @@ func (h controlRPCHandler) Handle(ctx context.Context, in nostruntime.ControlRPC
 		return result, err
 	}
 	if result, handled, err := h.handleNodeSurfaceRPC(ctx, in, method); handled {
+		return result, err
+	}
+	if result, handled, err := h.handleHooksStatusRPC(ctx, in, method, cfg); handled {
 		return result, err
 	}
 	if result, handled, err := h.handleOpsRPC(ctx, in, method, cfg); handled {

@@ -102,6 +102,10 @@ type GroundedShortTermStore interface {
 	ResetGroundedShortTerm(ctx context.Context, opts GroundedShortTermOptions) (GroundedShortTermResetResult, error)
 }
 
+type groundedShortTermMaintenanceStateStore interface {
+	GroundedShortTermMaintenanceState(ctx context.Context, opts GroundedShortTermOptions) (string, error)
+}
+
 type groundedRow struct {
 	item      GroundedShortTermItem
 	sessionID string
@@ -206,6 +210,41 @@ func (b *SQLiteBackend) GroundedShortTerm(ctx context.Context, opts GroundedShor
 		out = append(out, gr.item)
 	}
 	return out, nil
+}
+
+func (b *SQLiteBackend) GroundedShortTermMaintenanceState(ctx context.Context, opts GroundedShortTermOptions) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := b.ensureUnifiedSchema(); err != nil {
+		return "", err
+	}
+	opts = opts.normalized()
+	rows, err := b.queryGroundedRows(opts, true)
+	if err != nil {
+		return "", err
+	}
+	rows = filterGroundedByScope(rows, opts.Scope)
+	scopeJSON, _ := json.Marshal(opts.Scope)
+	parts := []string{fmt.Sprintf("%d:%t:%s", int64(opts.Window.Seconds()), opts.RequireCitation, scopeJSON)}
+	for _, row := range rows {
+		parts = append(parts, fmt.Sprintf("%s:%d:%d", row.item.MemoryID, row.item.LastRecallUnix, row.item.RecallCount))
+	}
+	return contentHash(strings.Join(parts, "\x00")), nil
+}
+
+func (h *HybridIndex) GroundedShortTermMaintenanceState(ctx context.Context, opts GroundedShortTermOptions) (string, error) {
+	if stateStore, ok := h.backend.(groundedShortTermMaintenanceStateStore); ok {
+		return stateStore.GroundedShortTermMaintenanceState(ctx, opts)
+	}
+	return "", errNoGroundedShortTerm
+}
+
+func GroundedShortTermMaintenanceState(ctx context.Context, store Store, opts GroundedShortTermOptions) (string, error) {
+	if stateStore, ok := any(store).(groundedShortTermMaintenanceStateStore); ok {
+		return stateStore.GroundedShortTermMaintenanceState(ctx, opts)
+	}
+	return "", errNoGroundedShortTerm
 }
 
 // ResetGroundedShortTerm demotes (unpromotes) the promoted memories inside the

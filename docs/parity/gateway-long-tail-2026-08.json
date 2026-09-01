@@ -13,47 +13,40 @@
       "family": "protected-secrets-store",
       "methods": ["secrets.store.list", "secrets.store.set", "secrets.store.delete"],
       "semantics": "CRUD is backed only by a ProtectedSecretBackend and produces structured store SecretRefs. Secret-kind values are never listed; env-kind values follow the upstream list contract. All three methods are authenticated WebSocket/internal-only and non-replayable so values cannot enter Nostr events or durable response caches."
-    }
-  ],
-  "deferred": [
+    },
     {
       "family": "session-goals",
       "methods": ["sessions.goal.update", "sessions.goal.clear"],
-      "issue": "swarmstr-s2td",
-      "rationale": "Needs durable goal lifecycle state, mutation fences, receipts, and resume integration; SessionDoc metadata alone would be a partial implementation."
+      "semantics": "Goals and bounded 24-hour idempotency receipts persist atomically in the durable session document. Session and goal identities fence lifecycle changes; conflicting operation reuse is rejected; resume dispatches the real agent/steering path exactly once. Because Metiq has no separate chat goal-start RPC, the first edit transition explicitly creates the goal."
     },
     {
       "family": "session-usage-history",
       "methods": ["sessions.usage", "sessions.usage.timeseries", "sessions.usage.logs"],
-      "issue": "swarmstr-ks3v",
-      "rationale": "Current state has aggregate counters and last-turn data, not the durable per-turn history required for honest timeseries and logs."
+      "semantics": "All four provider token counters are persisted on each terminal transcript turn. Summary, bounded timeseries, and log projections read only that durable history, with UTC date/range filters and no fabricated model, context-weight, or cost data."
     },
     {
       "family": "skills-proposal-events",
       "methods": ["skills.proposals.events.list", "skills.proposals.evaluate"],
-      "issue": "swarmstr-t4wf",
-      "rationale": "Existing proposal CRUD/history does not provide upstream event-history and evaluation semantics."
+      "semantics": "Gateway proposal mutations append sequence-ordered lifecycle events to an atomic workspace ledger. Manual evaluation is revision-fenced and projects the existing immutable proposal static scan into a completed metiq.core evaluator outcome; no external plugin evaluator result is fabricated."
     },
     {
       "family": "hooks-live-status",
       "methods": ["hooks.status"],
-      "issue": "swarmstr-1guw",
-      "rationale": "The global hook manager list is not equivalent to the upstream per-agent workspace/plugin live report."
+      "semantics": "The response resolves the selected agent workspace, scans only that workspace's hooks against the live manager's enable overrides, retains daemon-loaded bundled/managed hooks, and merges registration facts from the active unified plugin registry. The read path never registers or executes a hook."
     },
     {
       "family": "audit-run-inspection",
       "methods": ["audit.run.inspect"],
-      "issue": "swarmstr-e9o6",
-      "rationale": "Existing permission audit list/activity lacks durable run-scoped correlation."
-    },
+      "semantics": "Gateway run identity is propagated into tool execution and persisted as run_id/execution_id on permission-audit records. Inspection returns bounded correlated decision displays with safe-only fields; legacy receipt provenance and the richer principal/lineage identity context are explicitly unknown rather than fabricated."
+    }
+  ],
+  "deferred": [],
+  "intentional_divergences": [
     {
       "family": "diagnostics-lanes",
       "methods": ["diagnostics.lanes"],
-      "issue": "swarmstr-fiwr",
-      "rationale": "Metiq needs a deliberate runtime lane model; unrelated task/job counters must not be presented as lane state."
-    }
-  ],
-  "intentional_divergences": [
+      "rationale": "Metiq has no command-lane scheduler, capacity groups, or queued/active lane accounting. Agent jobs, session mailboxes, and prompt-assembly lanes are different state and must not be projected as OpenClaw command-lane diagnostics."
+    },
     {
       "family": "browser-push-and-vapid",
       "methods": ["push.web.preferences.get", "push.web.preferences.set", "push.test", "push.web.vapidPublicKey", "push.web.subscribe", "push.web.unsubscribe", "push.web.test"],

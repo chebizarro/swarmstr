@@ -907,7 +907,9 @@ func main() {
 	tools.RegisterWithDef("nostr_wot_distance", toolbuiltin.NostrWotDistanceTool(nostrToolOpts), toolbuiltin.NostrWotDistanceDef)
 	tools.RegisterWithDef("nostr_relay_hints", toolbuiltin.NostrRelayHintsTool(nostrToolOpts), toolbuiltin.NostrRelayHintsDef)
 	tools.RegisterWithDef("nostr_relay_list_set", toolbuiltin.NostrRelayListSetTool(nostrToolOpts), toolbuiltin.NostrRelayListSetDef)
-	tools.RegisterWithDef("nostr_dvm_request", toolbuiltin.NostrDVMRequestTool(nostrToolOpts), toolbuiltin.NostrDVMRequestDef)
+	// Resolved after the durable runtime config is loaded below; BootstrapConfig
+	// intentionally has no extra map.
+	var legacyDVMConfig dvm.CompatibilityConfig
 	tools.RegisterWithDef("nostr_publish_batch", toolbuiltin.NostrPublishBatchTool(nostrToolOpts), toolbuiltin.NostrPublishBatchDef)
 	tools.RegisterWithDef("nostr_compose", toolbuiltin.NostrComposeTool(), toolbuiltin.NostrComposeDef)
 	tools.RegisterWithDef("nostr_zap_send", toolbuiltin.NostrZapSendTool(nostrToolOpts), toolbuiltin.NostrZapSendDef)
@@ -1170,33 +1172,30 @@ func main() {
 	tools.RegisterWithDef("chain_define", toolbuiltin.ChainDefineTool(chainReg), toolbuiltin.ChainDefineDef)
 	tools.RegisterWithDef("chain_run", toolbuiltin.ChainRunTool(chainReg, tools), toolbuiltin.ChainRunDef)
 	tools.RegisterWithDef("chain_list", toolbuiltin.ChainListTool(chainReg), toolbuiltin.ChainListDef)
-	// Local task queue: retain it only when peer fleet mode is disabled. The
-	// generic JSON queue is not NIP-CAS state and must not look like a second
-	// mutation path when fleet_tasks is authoritative.
-	fleetTasksEnabled := configState != nil && configState.Get().FleetTasks.Enabled
-	if !fleetTasksEnabled {
-		home, _ := os.UserHomeDir()
-		taskPath := filepath.Join(home, ".metiq", "tasks.json")
-		if err := toolbuiltin.InitTaskStore(taskPath); err != nil {
-			log.Printf("task store init (non-fatal): %v", err)
-		}
-		tools.RegisterWithDef("task_add", toolbuiltin.TaskAddTool, toolbuiltin.TaskAddDef)
-		tools.RegisterWithDef("task_list", toolbuiltin.TaskListTool, toolbuiltin.TaskListDef)
-		tools.RegisterWithDef("task_update", toolbuiltin.TaskUpdateTool, toolbuiltin.TaskUpdateDef)
-		tools.RegisterWithDef("task_remove", toolbuiltin.TaskRemoveTool, toolbuiltin.TaskRemoveDef)
-	} else {
-		log.Printf("local task queue tools suppressed: fleet_tasks peer mode is enabled")
+	// Local JSON scratch queue. It remains registered so private sessions can
+	// use it, but per-turn tool assembly suppresses task_* in fleet sessions.
+	home, _ := os.UserHomeDir()
+	taskPath := filepath.Join(home, ".metiq", "tasks.json")
+	if err := toolbuiltin.InitTaskStore(taskPath); err != nil {
+		log.Printf("task store init (non-fatal): %v", err)
 	}
-	// fleet_tasks: merge-aware NIP-CAS-0006 fleet task lifecycle (list/inspect/
-	// create/claim/checkpoint/block/handoff/close). Late-bound to the fleet
-	// task bridge, which is created only when fleet_tasks is enabled in config;
-	// the tool degrades to a clear error on nodes where the bridge is inactive.
-	tools.RegisterWithDef("fleet_tasks", toolbuiltin.FleetTasksTool(func() *taskspkg.FleetTaskBridge {
-		if controlServices == nil {
-			return nil
-		}
-		return controlServices.tasks.fleetTaskBridge
-	}), toolbuiltin.FleetTasksDef)
+	tools.RegisterWithDef("task_add", toolbuiltin.TaskAddTool, toolbuiltin.TaskAddDef)
+	tools.RegisterWithDef("task_list", toolbuiltin.TaskListTool, toolbuiltin.TaskListDef)
+	tools.RegisterWithDef("task_update", toolbuiltin.TaskUpdateTool, toolbuiltin.TaskUpdateDef)
+	tools.RegisterWithDef("task_remove", toolbuiltin.TaskRemoveTool, toolbuiltin.TaskRemoveDef)
+
+	// fleet_tasks is the sole shared task surface in fleet mode. It is
+	// late-bound because the bridge starts after tool registration; private
+	// sessions remove it from their per-turn tool surface.
+	fleetTasksEnabled := configState != nil && configState.Get().FleetTasks.Enabled
+	if fleetTasksEnabled {
+		tools.RegisterWithDef("fleet_tasks", toolbuiltin.FleetTasksTool(func() *taskspkg.FleetTaskBridge {
+			if controlServices == nil {
+				return nil
+			}
+			return controlServices.tasks.fleetTaskBridge
+		}), toolbuiltin.FleetTasksDef)
+	}
 
 	agentRuntime, err := agent.NewRuntimeFromEnv(tools)
 	if err != nil {
@@ -1240,6 +1239,11 @@ func main() {
 	codec.SetEncrypt(runtimeCfg.StorageEncryptEnabled())
 	configState = newRuntimeConfigStoreWithManaged(runtimeCfg, managedSettings)
 	controlRuntimeConfig = configState
+	legacyDVMConfig = dvm.CompatibilityConfigFromExtra(runtimeCfg.Extra)
+	if legacyDVMConfig.Enabled {
+		log.Printf("DEPRECATED: extra.dvm.enabled enables legacy NIP-90 requester and provider support; it will be removed in %s. Migrate MCP/control workloads to ContextVM", dvm.CompatibilityRemovalWindow)
+		tools.RegisterWithDef("nostr_dvm_request", toolbuiltin.NostrDVMRequestTool(nostrToolOpts), toolbuiltin.NostrDVMRequestDef)
+	}
 	setRuntimeIdentityInfo(runtimeCfg, pubkey)
 	sessionCoordinator.SetObserverAskProvider(newSessionObserverAskProvider(transcriptRepo, configState))
 
@@ -1481,6 +1485,10 @@ func main() {
 	// Reserve the core board-binding ids so no plugin contribution can alias a
 	// host-dispatched core binding (security: swarmstr-qmxu.3).
 	controlPluginSurface.SetReservedIDs(boardCoreDataBindingIDs())
+	controlBoardStore.SetPluginGrantResolver(func(capabilityID string) (boardpkg.PluginGrantIdentity, bool) {
+		identity, ok := controlPluginSurface.ResolveGrantIdentity(capabilityID)
+		return boardpkg.PluginGrantIdentity{PluginID: identity.PluginID, PackageDigest: identity.PackageDigest}, ok
+	})
 
 	// OpenClaw plugin host + service registry (Phase 6: background services).
 	var pluginServiceMgr *pluginservice.ServiceManager
@@ -1514,6 +1522,13 @@ func main() {
 				log.Printf("plugin service auto-start warning: %v", err)
 			}
 		}
+	}
+
+	// Realtime talk providers: native WebSocket transports plus plugin-backed
+	// providers from the unified capability registry (swarmstr-j16a).
+	realtimeVoiceRegistry, realtimeSTTRegistry, realtimeRegistryErr := newDaemonRealtimeProviderRegistries(unifiedPlugins, openClawHost, pluginMgr)
+	if realtimeRegistryErr != nil {
+		log.Printf("realtime provider registration warning: %v", realtimeRegistryErr)
 	}
 
 	// Media generation runtimes (Phase 8): built-in image providers plus OpenClaw plugin-backed providers.
@@ -1807,6 +1822,11 @@ func main() {
 	suspendCoordinator.RegisterPausableWorker("dreaming-promotion-job")
 	suspendCoordinator.RegisterPausableWorker("memory-compaction")
 	controlSuspendCoordinator = suspendCoordinator
+	// Every interactive model turn, including DM/channel/task turns, acquires an
+	// atomic suspension admission lease. Runtime hot-reload paths wrap newly
+	// constructed runtimes with the same coordinator below.
+	agentRuntime = wrapRuntimeForSuspend(agentRuntime, suspendCoordinator)
+	controlAgentRuntime = agentRuntime
 	// Publish to the already-running background memory workers (race-free).
 	suspendGate.Store(suspendCoordinator)
 	if suspendCoordinator.Suspended() {
@@ -1986,9 +2006,11 @@ func main() {
 						argsStr = string(argsBytes)
 					}
 				}
+				runID := agent.RunIDFromContext(ctx)
 				req := permissions.NewToolRequest(call.Name, permissionCategoryForTool(tools, call.Name)).
 					WithContent(argsStr).
-					WithContext("", "", agentID, agent.SessionIDFromContext(ctx))
+					WithContext("", "", agentID, agent.SessionIDFromContext(ctx)).
+					WithExecution(runID, runID)
 				if origin, originName := permissionOriginForTool(tools, call.Name); origin != "" || originName != "" {
 					req = req.WithOrigin(origin, originName)
 				}
@@ -3027,7 +3049,7 @@ func main() {
 				continue
 			}
 			if rt, rtErr := agent.BuildRuntimeForModel(agDoc.Model, tools); rtErr == nil {
-				agentRegistry.Set(agDoc.AgentID, rt)
+				agentRegistry.Set(agDoc.AgentID, wrapRuntimeForSuspend(rt, controlSuspendCoordinator))
 				log.Printf("agent runtime loaded id=%s model=%q", agDoc.AgentID, agDoc.Model)
 			} else {
 				log.Printf("agent runtime build warning id=%s model=%q err=%v", agDoc.AgentID, agDoc.Model, rtErr)
@@ -3133,12 +3155,14 @@ func main() {
 				continue
 			}
 
+			runtime := wrapRuntimeForSuspend(rt, controlSuspendCoordinator)
+
 			if isMain {
 				// Update the registry default so all "main"/"" lookups use this runtime.
-				agentRegistry.SetDefault(rt)
-				controlAgentRuntime = rt
+				agentRegistry.SetDefault(runtime)
+				controlAgentRuntime = runtime
 				if controlServices != nil {
-					controlServices.session.agentRuntime = rt
+					controlServices.session.agentRuntime = runtime
 				}
 				log.Printf("agent config: default runtime updated id=main model=%q provider=%q", model, agCfg.Provider)
 				if agCfg.ContextWindow == 0 {
@@ -3152,7 +3176,7 @@ func main() {
 				}
 				continue
 			}
-			agentRegistry.Set(agentID, rt)
+			agentRegistry.Set(agentID, runtime)
 			log.Printf("agent config auto-provisioned id=%s model=%q provider=%q", agentID, model, agCfg.Provider)
 			// Warn when the context window falls back to 200K for an
 			// unrecognized model. This usually means the operator is
@@ -3834,7 +3858,7 @@ func main() {
 		if len(ephemeralID) > 48 {
 			ephemeralID = ephemeralID[:48]
 		}
-		agentRegistry.Set(ephemeralID, rt)
+		agentRegistry.Set(ephemeralID, wrapRuntimeForSuspend(rt, controlSuspendCoordinator))
 		sessionRouter.Assign(cmd.SessionID, ephemeralID)
 		// Persist model override in session store.
 		if sessionStore != nil {
@@ -3969,7 +3993,7 @@ func main() {
 			if len(ephemeralID) > 48 {
 				ephemeralID = ephemeralID[:48]
 			}
-			agentRegistry.Set(ephemeralID, rt)
+			agentRegistry.Set(ephemeralID, wrapRuntimeForSuspend(rt, controlSuspendCoordinator))
 			sessionRouter.Assign(cmd.SessionID, ephemeralID)
 		case "label":
 			if value == "" {
@@ -4393,6 +4417,8 @@ func main() {
 	// DM debouncer can reply with the combined message via the correct channel.
 	var dmReplyFnsMu sync.Mutex
 	dmReplyFns := make(map[string]func(context.Context, string) error)
+	var dmPublicationReceipts sync.Map // request event ID -> nostruntime.PublishedNostrMessage
+	var dmInboundMessages sync.Map     // event ID -> nostruntime.InboundDM
 
 	// dmRunAgentTurn is the core DM agent-dispatch logic, called either directly
 	// from dmOnMessage (no debounce) or from the dmDebouncer flush.
@@ -4600,12 +4626,15 @@ func main() {
 			entryID = synthesizeInboundEventID(senderID, combinedText, createdAt)
 		}
 		emitPluginMessageReceived(ctx, pluginhooks.MessageReceivedEvent{ChannelID: "nostr", SenderID: senderID, Text: combinedText, EventID: entryID, SessionID: sessionID, AgentID: defaultAgentID(overrideAgentID), CreatedAt: createdAt})
-		if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, nostruntime.InboundDM{
-			EventID:    entryID,
-			FromPubKey: senderID,
-			Text:       combinedText,
-			CreatedAt:  createdAt,
-		}); err != nil {
+		inboundRecord := nostruntime.InboundDM{EventID: entryID, FromPubKey: senderID, Text: combinedText, CreatedAt: createdAt}
+		if stored, ok := dmInboundMessages.LoadAndDelete(eventID); ok {
+			inboundRecord = stored.(nostruntime.InboundDM)
+			inboundRecord.EventID = entryID
+			inboundRecord.FromPubKey = senderID
+			inboundRecord.Text = combinedText
+			inboundRecord.CreatedAt = createdAt
+		}
+		if err := persistInbound(ctx, docsRepo, transcriptRepo, sessionID, inboundRecord); err != nil {
 			log.Printf("persist inbound text failed event=%s err=%v", entryID, err)
 		}
 		// Resolve agent ID and create the per-turn timeout context before any
@@ -5122,8 +5151,17 @@ func main() {
 		usageState.RecordOutbound(turnResult.Text)
 		metricspkg.MessagesOutbound.Inc()
 		logBuffer.Append("info", fmt.Sprintf("dm reply sent to=%s event=%s", senderID, eventID))
-		if err := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, eventID); err != nil {
-			log.Printf("persist assistant failed session=%s err=%v", sessionID, err)
+		assistantEntryID, persistErr := persistAssistant(ctx, docsRepo, transcriptRepo, sessionID, turnResult.Text, eventID)
+		if persistErr != nil {
+			log.Printf("persist assistant failed session=%s err=%v", sessionID, persistErr)
+		} else if receiptValue, ok := dmPublicationReceipts.LoadAndDelete(eventID); ok {
+			receipt := receiptValue.(nostruntime.PublishedNostrMessage)
+			if err := attachNostrPublication(ctx, transcriptRepo, sessionID, assistantEntryID, nostrPublication{
+				EventID: receipt.EventID, Relays: receipt.RelayURLs, Kind: int(receipt.Kind),
+				PubKey: receipt.PubKey, Transport: receipt.Scheme, Recipients: receipt.Recipients,
+			}); err != nil {
+				log.Printf("persist assistant nostr publication failed session=%s err=%v", sessionID, err)
+			}
 		}
 		// Also extract assistant reply into memory so both sides of the
 		// conversation are searchable — not just user messages. Tool/network
@@ -5437,16 +5475,33 @@ func main() {
 		}
 		// ─────────────────────────────────────────────────────────────────
 
+		if msg.EventID != "" {
+			dmInboundMessages.Store(msg.EventID, msg)
+		}
+		turnReply := msg.Reply
+		if msg.ReplyWithReceipt != nil {
+			turnReply = func(replyCtx context.Context, text string) error {
+				receipt, err := msg.ReplyWithReceipt(replyCtx, text)
+				if err == nil {
+					dmPublicationReceipts.Store(msg.EventID, receipt)
+				}
+				return err
+			}
+		}
+
 		// ── DM debounce ───────────────────────────────────────────────────
 		// If a debounce window is configured, coalesce rapid messages from
 		// the same sender and defer agent dispatch until silence.
 		if dmDebouncer != nil {
 			dmReplyFnsMu.Lock()
-			dmReplyFns[msg.FromPubKey] = msg.Reply
+			dmReplyFns[msg.FromPubKey] = turnReply
 			dmReplyFnsMu.Unlock()
 
 			dmEventIDsMu.Lock()
 			if msg.EventID != "" {
+				if previous := dmEventIDs[msg.FromPubKey].ID; previous != "" && previous != msg.EventID {
+					dmInboundMessages.Delete(previous)
+				}
 				dmEventIDs[msg.FromPubKey] = dmEventMeta{ID: msg.EventID, CreatedAt: msg.CreatedAt}
 			}
 			dmEventIDsMu.Unlock()
@@ -5457,7 +5512,7 @@ func main() {
 		// ─────────────────────────────────────────────────────────────────
 
 		// Direct (non-debounced) DM turn execution via shared helper.
-		dmRunAgentTurn(ctx, msg.FromPubKey, msg.Text, msg.EventID, msg.CreatedAt, msg.Reply)
+		dmRunAgentTurn(ctx, msg.FromPubKey, msg.Text, msg.EventID, msg.CreatedAt, turnReply)
 		log.Printf("dm accepted from=%s relay=%s event=%s text=%q", msg.FromPubKey, msg.RelayURL, msg.EventID, msg.Text)
 		return nil
 	}
@@ -5626,6 +5681,7 @@ func main() {
 			secretsStore:       secretsStore,
 			pairingConfigMu:    &sync.Mutex{},
 			hooksMgr:           hooksMgr,
+			pluginRegistry:     unifiedPlugins,
 			pluginMgr:          pluginMgr,
 			pluginServiceMgr:   pluginServiceMgr,
 			mcpOps:             controlMCPOps,
@@ -6123,48 +6179,40 @@ func main() {
 		}
 	}
 
-	// ── NIP-90 DVM handler ─────────────────────────────────────────────────────
-	// Enabled when extra.dvm.enabled = true in config.
-	if dvmExtra, ok := configState.Get().Extra["dvm"].(map[string]any); ok {
-		if enabled, _ := dvmExtra["enabled"].(bool); enabled {
-			// Collect accepted kinds from extra.dvm.kinds (e.g. [5000, 5001]).
-			var acceptedKinds []int
-			if rawKinds, ok := dvmExtra["kinds"].([]any); ok {
-				for _, k := range rawKinds {
-					if f, ok := k.(float64); ok {
-						acceptedKinds = append(acceptedKinds, int(f))
-					}
+	// ── Deprecated NIP-90 compatibility provider ───────────────────────────────
+	// ContextVM remains the default provider/requester transport. This legacy
+	// provider shares the startup-only extra.dvm.enabled compatibility gate with
+	// nostr_dvm_request and is retained only for the breaking-change window.
+	if legacyDVMConfig.Enabled {
+		acceptedKinds := legacyDVMConfig.AcceptedKinds
+		var dvmErr error
+		dvmHandler, dvmErr = dvm.Start(ctx, dvm.HandlerOpts{
+			Keyer:         controlServices.relay.keyer,
+			Relays:        cfg.Relays,
+			AcceptedKinds: acceptedKinds,
+			OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
+				filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(jobCtx, configState.Get(), docsRepo, "dvm:"+jobID, "", agentRuntime, tools, turnToolConstraints{})
+				scopeCtx := resolveMemoryScopeContext(jobCtx, configState.Get(), docsRepo, sessionStore, "dvm:"+jobID, "", "")
+				jobCtx = contextWithMemoryScope(jobCtx, scopeCtx)
+				result, err := filteredRuntime.ProcessTurn(jobCtx, agent.Turn{
+					SessionID:           "dvm:" + jobID,
+					UserText:            input,
+					Tools:               turnTools,
+					Executor:            turnExecutor,
+					ContextWindowTokens: maxContextTokensForAgent(configState.Get(), ""),
+					HookInvoker:         controlHookInvoker,
+				})
+				if err != nil {
+					return "", err
 				}
-			}
-			var dvmErr error
-			dvmHandler, dvmErr = dvm.Start(ctx, dvm.HandlerOpts{
-				Keyer:         controlServices.relay.keyer,
-				Relays:        cfg.Relays,
-				AcceptedKinds: acceptedKinds,
-				OnJob: func(jobCtx context.Context, jobID string, kind int, input string) (string, error) {
-					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(jobCtx, configState.Get(), docsRepo, "dvm:"+jobID, "", agentRuntime, tools, turnToolConstraints{})
-					scopeCtx := resolveMemoryScopeContext(jobCtx, configState.Get(), docsRepo, sessionStore, "dvm:"+jobID, "", "")
-					jobCtx = contextWithMemoryScope(jobCtx, scopeCtx)
-					result, err := filteredRuntime.ProcessTurn(jobCtx, agent.Turn{
-						SessionID:           "dvm:" + jobID,
-						UserText:            input,
-						Tools:               turnTools,
-						Executor:            turnExecutor,
-						ContextWindowTokens: maxContextTokensForAgent(configState.Get(), ""),
-						HookInvoker:         controlHookInvoker,
-					})
-					if err != nil {
-						return "", err
-					}
-					return result.Text, nil
-				},
-			})
-			if dvmErr != nil {
-				log.Printf("warn: DVM handler start failed: %v", dvmErr)
-			} else {
-				defer dvmHandler.Stop()
-				log.Printf("NIP-90 DVM handler active (kinds=%v)", acceptedKinds)
-			}
+				return result.Text, nil
+			},
+		})
+		if dvmErr != nil {
+			log.Printf("warn: deprecated NIP-90 DVM handler start failed: %v", dvmErr)
+		} else {
+			defer dvmHandler.Stop()
+			log.Printf("deprecated NIP-90 DVM compatibility handler active (kinds=%v)", acceptedKinds)
 		}
 	}
 
@@ -6447,10 +6495,9 @@ func main() {
 		if err := persistToolTraces(ctx, transcriptRepo, sessionID, eventID, turnResult.ToolTraces); err != nil {
 			log.Printf("persist tool traces (channel) failed session=%s err=%v", sessionID, err)
 		}
-		// The returned entry IDs are intentionally ignored (swarmstr-sxq0): a
-		// channel turn has no task-result record to link them to, unlike the
-		// ACP/task_runner paths which wire them into a TaskResultRef.
-		persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
+		// Keep entry IDs so a Nostr send receipt can be attached to the final
+		// assistant entry after relay acceptance.
+		turnEntryIDs := persistAndIngestTurnHistory(ctx, transcriptRepo, controlServices.session.contextEngine, sessionID, eventID, turnResult.HistoryDelta, turnResultMetadataPtr(turnResult, nil))
 		sessionMemoryRuntime.ObserveTurn(configState.Get(), runtimeSessionMemoryGenerator{runtime: activeRuntime}, sessionID, activeAgentID, sessionMemoryWorkspaceDir(scopeCtx, workspaceDirForAgent(configState.Get(), activeAgentID)), resolveAgentContextWindow(configState.Get(), activeAgentID), turnResult.HistoryDelta)
 		// Distill structured episodic memory from the completed channel turn.
 		if turnStateDocs := scopedMemoryDocs(distillTurnState(sessionID, eventID, turnResult.ToolTraces, turnResult.HistoryDelta, false), scopeCtx); len(turnStateDocs) > 0 {
@@ -6506,10 +6553,31 @@ func main() {
 				log.Printf("channel reply rejected by hook channel=%s session=%s reason=%s", chID, sessionID, outboundText)
 				return nil
 			}
-			if sendErr := handle.Send(turnCtx, outboundText); sendErr != nil {
+			var (
+				sendErr error
+				receipt *channels.NostrPublishReceipt
+			)
+			if receiptChannel, ok := handle.(channels.NostrReceiptChannel); ok {
+				published, err := receiptChannel.SendWithNostrReceipt(turnCtx, outboundText)
+				sendErr = err
+				if err == nil {
+					receipt = &published
+				}
+			} else {
+				sendErr = handle.Send(turnCtx, outboundText)
+			}
+			if sendErr != nil {
 				emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: chID, SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID, Success: false, Error: sendErr.Error()})
 				log.Printf("channel reply error channel=%s session=%s err=%v", chID, sessionID, sendErr)
 			} else {
+				if receipt != nil {
+					if err := attachNostrPublicationToLastAssistant(turnCtx, transcriptRepo, sessionID, turnEntryIDs, turnResult.HistoryDelta, nostrPublication{
+						EventID: receipt.EventID, Relays: receipt.Relays, Kind: receipt.Kind,
+						PubKey: receipt.PubKey, Transport: chID,
+					}); err != nil {
+						log.Printf("persist channel nostr publication failed channel=%s session=%s err=%v", chID, sessionID, err)
+					}
+				}
 				emitPluginMessageSent(turnCtx, pluginhooks.MessageSentEvent{ChannelID: chID, SenderID: activeAgentID, Recipient: senderID, Text: outboundText, SessionID: sessionID, AgentID: activeAgentID, Success: true})
 				metricspkg.MessagesOutbound.Inc()
 				wsEmitter.Emit(gatewayws.EventChannelMessage, gatewayws.ChannelMessagePayload{
@@ -6976,12 +7044,11 @@ func main() {
 			Emitter: gatewayTerminalEmitter{rt: wsRuntime},
 		})
 		defer controlTerminalManager.Shutdown()
-		// swarmstr-0tfj: talk.session.* streams audio/transcript/state events to
-		// the owning connection. The realtimevoice/realtimestt registries are not
-		// wired into the daemon, so sessions bind to nil registries and fail
-		// honestly (talk.ErrUnavailable) until an audio provider lands.
-		controlTalkSessions = talkpkg.NewSessionManager(nil, nil, steeringMailboxes, gatewayTerminalEmitter{rt: wsRuntime})
-		controlTalkClients = talkpkg.NewClientStore(nil, steeringMailboxes)
+		// swarmstr-j16a: talk.session.* streams audio/transcript/state events to
+		// the owning connection through the daemon's native/plugin realtime
+		// provider registries. Browser-owned sessions use the same voice registry.
+		controlTalkSessions = talkpkg.NewSessionManager(realtimeVoiceRegistry, realtimeSTTRegistry, steeringMailboxes, gatewayTerminalEmitter{rt: wsRuntime})
+		controlTalkClients = talkpkg.NewClientStore(realtimeVoiceRegistry, steeringMailboxes)
 		// WS-A/A7: git worktree lifecycle, rooted under the workspace container.
 		controlWorktrees = worktreespkg.NewService(filepath.Join(workspace.ResolveWorkspaceDir(configState.Get(), ""), ".metiq", "worktrees"))
 	}
@@ -8381,6 +8448,7 @@ func handleControlRPCRequest(
 		talkSessions:       controlTalkSessions,
 		talkClients:        controlTalkClients,
 		talkRouting:        controlTalkRouting,
+		pluginRegistry:     svc.handlers.pluginRegistry,
 	}
 	if svc.handlers.hooksMgr != nil {
 		deps.hooksMgr = svc.handlers.hooksMgr

@@ -1,0 +1,17 @@
+{
+  "schema": "swarmstr.fleet-task-canary.v1",
+  "task_id": "fleet-agent-tool-canary",
+  "title": "Go and TypeScript fleet task agent-tool canary",
+  "queue": "interop",
+  "epic": "cross-runtime",
+  "go_assignee": "go-metiq",
+  "ts_assignee": "ts-openclaw",
+  "checkpoint_note": "Go checkpoint after deterministic claim settlement",
+  "close_note": "Accepted by the cross-runtime canary",
+  "evidence": [
+    "canary:go-tool-surface",
+    "canary:shared-relay"
+  ],
+  "expected_stale_conflict": "Fleet task changed concurrently",
+  "expected_handoff_rejection": "must preserve assignee"
+}

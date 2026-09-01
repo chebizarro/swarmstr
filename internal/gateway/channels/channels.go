@@ -164,6 +164,23 @@ type OutboundTarget struct {
 // TargetedSendResult reports how a target-aware send was represented on wire.
 type TargetedSendResult struct {
 	ConvertedToReaction bool
+	Receipt             *NostrPublishReceipt
+}
+
+// NostrPublishReceipt identifies the signed Nostr event accepted by at least
+// one relay. It is persisted with transcript entries so later message.action
+// calls can publish NIP-09/NIP-25 events against the real wire event.
+type NostrPublishReceipt struct {
+	EventID string
+	Relays  []string
+	Kind    int
+	PubKey  string
+}
+
+// NostrReceiptChannel is an additive capability for public Nostr channels that
+// can return the signed event identity for a targetless send.
+type NostrReceiptChannel interface {
+	SendWithNostrReceipt(context.Context, string) (NostrPublishReceipt, error)
 }
 
 // TargetedChannel is the additive capability implemented by channels that can
@@ -503,8 +520,21 @@ func (c *NIP29GroupChannel) Type() string { return "nip29-group" }
 
 // Send posts a targetless kind-9 message to the group relay.
 func (c *NIP29GroupChannel) Send(ctx context.Context, text string) error {
-	_, err := c.sendTargeted(ctx, text, OutboundTarget{})
+	_, err := c.SendWithNostrReceipt(ctx, text)
 	return err
+}
+
+// SendWithNostrReceipt posts a targetless kind-9 message and returns its signed
+// event identity for durable cross-protocol message actions.
+func (c *NIP29GroupChannel) SendWithNostrReceipt(ctx context.Context, text string) (NostrPublishReceipt, error) {
+	result, err := c.sendTargeted(ctx, text, OutboundTarget{})
+	if err != nil {
+		return NostrPublishReceipt{}, err
+	}
+	if result.Receipt == nil {
+		return NostrPublishReceipt{}, fmt.Errorf("nip29 send did not produce an event receipt")
+	}
+	return *result.Receipt, nil
 }
 
 // SendTargeted posts a reply/thread-aware message, converting a targeted pure
@@ -569,13 +599,15 @@ func (c *NIP29GroupChannel) sendTargeted(ctx context.Context, text string, targe
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		Tags:      tags,
 	}
-	if err := c.signAndPublish(ctx, evt); err != nil {
+	if err := c.signAndPublish(ctx, &evt); err != nil {
 		return TargetedSendResult{}, err
 	}
 	// R7 scorecard: our own delivered room message counts toward the per-room
 	// message-share window (inbound peers are counted at the loop-control gate).
 	metricspkg.RecordRoomMessage(c.roomKey, c.pubkey)
-	return TargetedSendResult{}, nil
+	return TargetedSendResult{Receipt: &NostrPublishReceipt{
+		EventID: evt.ID.Hex(), Relays: []string{c.gad.Relay}, Kind: int(evt.Kind), PubKey: evt.PubKey.Hex(),
+	}}, nil
 }
 
 // sendReply shares the target-aware direct-send path used by channels.send.
@@ -591,7 +623,7 @@ func (c *NIP29GroupChannel) sendReply(ctx context.Context, text, targetEventID, 
 // signAndPublish signs evt and publishes it to the group relay, bounding the
 // wait so a wedged relay cannot hang the send (PublishToAny returns on the first
 // relay OK). Shared by Send, SendReaction, and DeleteEvent.
-func (c *NIP29GroupChannel) signAndPublish(ctx context.Context, evt nostr.Event) (err error) {
+func (c *NIP29GroupChannel) signAndPublish(ctx context.Context, evt *nostr.Event) (err error) {
 	defer func() {
 		outcome := "success"
 		if err != nil {
@@ -600,7 +632,10 @@ func (c *NIP29GroupChannel) signAndPublish(ctx context.Context, evt nostr.Event)
 		metricspkg.RecordPublishOutcome("nip29", outcome)
 	}()
 
-	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
+	if evt == nil {
+		return fmt.Errorf("group event is nil")
+	}
+	if err := c.keyer.SignEvent(ctx, evt); err != nil {
 		return fmt.Errorf("sign group event: %w", err)
 	}
 	publisher := c.publisher
@@ -609,7 +644,7 @@ func (c *NIP29GroupChannel) signAndPublish(ctx context.Context, evt nostr.Event)
 	}
 	pubCtx, cancel := context.WithTimeout(ctx, nip29PublishTimeout)
 	defer cancel()
-	if _, err := okpublish.PublishToAny(pubCtx, publisher, []string{c.gad.Relay}, evt); err != nil {
+	if _, err := okpublish.PublishToAny(pubCtx, publisher, []string{c.gad.Relay}, *evt); err != nil {
 		return fmt.Errorf("nip29 publish to group %s: %w", c.gad, err)
 	}
 	return nil
@@ -624,7 +659,7 @@ func (c *NIP29GroupChannel) SendReaction(ctx context.Context, emoji, targetEvent
 	if err != nil {
 		return err
 	}
-	return c.signAndPublish(ctx, evt)
+	return c.signAndPublish(ctx, &evt)
 }
 
 // DeleteEvent publishes a NIP-29 delete-event (kind:9005) for targetEventID with
@@ -634,7 +669,7 @@ func (c *NIP29GroupChannel) DeleteEvent(ctx context.Context, targetEventID, reas
 	if err != nil {
 		return err
 	}
-	return c.signAndPublish(ctx, evt)
+	return c.signAndPublish(ctx, &evt)
 }
 
 // Capabilities advertises the outbound features this channel supports.
@@ -983,9 +1018,15 @@ func (c *NIP28PublicChannel) Type() string { return "nip28-public" }
 
 // Send posts a kind-42 message to the channel.
 func (c *NIP28PublicChannel) Send(ctx context.Context, text string) error {
+	_, err := c.SendWithNostrReceipt(ctx, text)
+	return err
+}
+
+// SendWithNostrReceipt posts a kind-42 message and returns its signed identity.
+func (c *NIP28PublicChannel) SendWithNostrReceipt(ctx context.Context, text string) (NostrPublishReceipt, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return fmt.Errorf("text must not be empty")
+		return NostrPublishReceipt{}, fmt.Errorf("text must not be empty")
 	}
 
 	evt := nostr.Event{
@@ -997,7 +1038,7 @@ func (c *NIP28PublicChannel) Send(ctx context.Context, text string) error {
 		},
 	}
 	if err := c.keyer.SignEvent(ctx, &evt); err != nil {
-		return fmt.Errorf("sign channel message: %w", err)
+		return NostrPublishReceipt{}, fmt.Errorf("sign channel message: %w", err)
 	}
 
 	var lastErr error
@@ -1013,9 +1054,11 @@ func (c *NIP28PublicChannel) Send(ctx context.Context, text string) error {
 		if lastErr == nil {
 			lastErr = fmt.Errorf("no relay accepted publish")
 		}
-		return fmt.Errorf("nip28 send: %w", lastErr)
+		return NostrPublishReceipt{}, fmt.Errorf("nip28 send: %w", lastErr)
 	}
-	return nil
+	return NostrPublishReceipt{
+		EventID: evt.ID.Hex(), Relays: append([]string(nil), c.relays...), Kind: int(evt.Kind), PubKey: evt.PubKey.Hex(),
+	}, nil
 }
 
 // Close shuts down the subscription.

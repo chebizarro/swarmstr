@@ -431,6 +431,13 @@ type ToolRequest struct {
 	// SessionID identifies the current session.
 	SessionID string `json:"session_id,omitempty"`
 
+	// RunID identifies the externally visible gateway run.
+	RunID string `json:"run_id,omitempty"`
+
+	// ExecutionID identifies the exact execution within the run. Metiq currently
+	// has one gateway execution per run, so production callers set both equally.
+	ExecutionID string `json:"execution_id,omitempty"`
+
 	// Timestamp is when the request was made.
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -470,6 +477,13 @@ func (r *ToolRequest) WithContext(userID, projectID, agentID, sessionID string) 
 	r.ProjectID = projectID
 	r.AgentID = agentID
 	r.SessionID = sessionID
+	return r
+}
+
+// WithExecution correlates the request to a durable gateway run/execution.
+func (r *ToolRequest) WithExecution(runID, executionID string) *ToolRequest {
+	r.RunID = runID
+	r.ExecutionID = executionID
 	return r
 }
 

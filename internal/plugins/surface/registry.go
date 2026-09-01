@@ -35,16 +35,31 @@ type ManifestSource interface {
 	PluginManifest(pluginID string) (sdk.Manifest, error)
 }
 
+// PackageDigestSource is optionally implemented by production manifest sources
+// that retain a full-package source hash. Contribution grants fail closed when
+// this identity is unavailable.
+type PackageDigestSource interface {
+	PluginPackageDigest(pluginID string) (string, bool)
+}
+
+// GrantIdentity pins one contributed capability to the package that owns it.
+type GrantIdentity struct {
+	PluginID      string
+	PackageDigest string
+}
+
 // Binding is an aggregated read-only plugin data binding.
 type Binding struct {
-	PluginID    string
-	ID          string
-	Description string
+	PluginID      string
+	PackageDigest string
+	ID            string
+	Description   string
 }
 
 // Verb is an aggregated plugin action verb or session-action verb.
 type Verb struct {
 	PluginID       string
+	PackageDigest  string
 	ID             string
 	Description    string
 	MutatesSession bool // session-action verbs only
@@ -52,13 +67,14 @@ type Verb struct {
 
 // Widget is an aggregated board-widget UI descriptor.
 type Widget struct {
-	PluginID     string
-	ID           string
-	Title        string
-	Description  string
-	Presentation string
-	DataBindings []string
-	ActionVerbs  []string
+	PluginID      string
+	PackageDigest string
+	ID            string
+	Title         string
+	Description   string
+	Presentation  string
+	DataBindings  []string
+	ActionVerbs   []string
 }
 
 // Registry aggregates plugin UI-surface contributions. Safe for concurrent use.
@@ -148,8 +164,9 @@ func (r *Registry) aggregate(scope string) bool {
 	// Deterministic ordering: sort plugin ids so collision resolution and
 	// descriptor output are stable across refreshes.
 	type pluginManifest struct {
-		id string
-		mf sdk.Manifest
+		id            string
+		packageDigest string
+		mf            sdk.Manifest
 	}
 	var loaded []pluginManifest
 	seen := map[string]struct{}{}
@@ -163,7 +180,11 @@ func (r *Registry) aggregate(scope string) bool {
 				continue
 			}
 			seen[id] = struct{}{}
-			loaded = append(loaded, pluginManifest{id: id, mf: mf})
+			digest := ""
+			if source, ok := src.(PackageDigestSource); ok {
+				digest, _ = source.PluginPackageDigest(id)
+			}
+			loaded = append(loaded, pluginManifest{id: id, packageDigest: strings.TrimSpace(digest), mf: mf})
 		}
 	}
 	sort.Slice(loaded, func(i, j int) bool { return loaded[i].id < loaded[j].id })
@@ -210,17 +231,17 @@ func (r *Registry) aggregate(scope string) bool {
 		}
 		for _, b := range s.DataBindings {
 			if claim(pm.id, b.ID) {
-				bindings[b.ID] = Binding{PluginID: pm.id, ID: b.ID, Description: b.Description}
+				bindings[b.ID] = Binding{PluginID: pm.id, PackageDigest: pm.packageDigest, ID: b.ID, Description: b.Description}
 			}
 		}
 		for _, v := range s.ActionVerbs {
 			if claim(pm.id, v.ID) {
-				verbs[v.ID] = Verb{PluginID: pm.id, ID: v.ID, Description: v.Description}
+				verbs[v.ID] = Verb{PluginID: pm.id, PackageDigest: pm.packageDigest, ID: v.ID, Description: v.Description}
 			}
 		}
 		for _, v := range s.SessionActions {
 			if claim(pm.id, v.ID) {
-				sessions[v.ID] = Verb{PluginID: pm.id, ID: v.ID, Description: v.Description, MutatesSession: v.MutatesSession}
+				sessions[v.ID] = Verb{PluginID: pm.id, PackageDigest: pm.packageDigest, ID: v.ID, Description: v.Description, MutatesSession: v.MutatesSession}
 			}
 		}
 		for _, w := range s.BoardWidgets {
@@ -228,13 +249,14 @@ func (r *Registry) aggregate(scope string) bool {
 				continue
 			}
 			widgets = append(widgets, Widget{
-				PluginID:     pm.id,
-				ID:           w.ID,
-				Title:        w.Title,
-				Description:  w.Description,
-				Presentation: w.Presentation,
-				DataBindings: append([]string(nil), w.DataBindings...),
-				ActionVerbs:  append([]string(nil), w.ActionVerbs...),
+				PluginID:      pm.id,
+				PackageDigest: pm.packageDigest,
+				ID:            w.ID,
+				Title:         w.Title,
+				Description:   w.Description,
+				Presentation:  w.Presentation,
+				DataBindings:  append([]string(nil), w.DataBindings...),
+				ActionVerbs:   append([]string(nil), w.ActionVerbs...),
 			})
 		}
 	}
@@ -276,6 +298,25 @@ func (r *Registry) LookupSessionAction(id string) (Verb, bool) {
 	defer r.mu.RUnlock()
 	v, ok := r.sessions[id]
 	return v, ok
+}
+
+// ResolveGrantIdentity resolves a contributed capability to the exact plugin
+// package that currently owns it. The boolean reports whether the capability is
+// plugin-contributed; callers must reject an empty digest rather than creating
+// an unbound approval.
+func (r *Registry) ResolveGrantIdentity(id string) (GrantIdentity, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if value, ok := r.bindings[id]; ok {
+		return GrantIdentity{PluginID: value.PluginID, PackageDigest: value.PackageDigest}, true
+	}
+	if value, ok := r.verbs[id]; ok {
+		return GrantIdentity{PluginID: value.PluginID, PackageDigest: value.PackageDigest}, true
+	}
+	if value, ok := r.sessions[id]; ok {
+		return GrantIdentity{PluginID: value.PluginID, PackageDigest: value.PackageDigest}, true
+	}
+	return GrantIdentity{}, false
 }
 
 // Widgets returns a copy of the aggregated board-widget descriptors.

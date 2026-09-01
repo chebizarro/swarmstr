@@ -302,6 +302,11 @@ func (h controlRPCHandler) handlePluginSurfaceRPC(ctx context.Context, in nostru
 				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("plugin refresh failed: %w", err)
 			}
 			reloaded = true
+			// Refresh contribution ownership/digests in the same transaction so
+			// board grants observe a same-id package update immediately.
+			if h.deps.pluginSurface != nil {
+				h.deps.pluginSurface.Refresh()
+			}
 		}
 		all := h.buildPluginList(cfg)
 		plugins := make([]map[string]any, 0, len(all))

@@ -252,21 +252,28 @@ func (b *NIP17Bus) SendRoomMessage(ctx context.Context, room NIP17Room, text str
 // SendRoomReply sends a kind-14 direct reply. The e tag is the direct parent
 // message, as specified by NIP-17.
 func (b *NIP17Bus) SendRoomReply(ctx context.Context, room NIP17Room, parentEventID, relayHint, text string) error {
+	_, err := b.SendRoomReplyWithReceipt(ctx, room, parentEventID, relayHint, text)
+	return err
+}
+
+// SendRoomReplyWithReceipt sends a direct reply and returns the signed inner
+// rumor identity for durable cross-protocol actions.
+func (b *NIP17Bus) SendRoomReplyWithReceipt(ctx context.Context, room NIP17Room, parentEventID, relayHint, text string) (PublishedNostrMessage, error) {
 	if _, err := nostr.IDFromHex(strings.TrimSpace(parentEventID)); err != nil {
-		return fmt.Errorf("invalid reply event id: %w", err)
+		return PublishedNostrMessage{}, fmt.Errorf("invalid reply event id: %w", err)
 	}
 	text, err := normalizeOutboundDMText(text)
 	if err != nil {
-		return err
+		return PublishedNostrMessage{}, err
 	}
 	tag := nostr.Tag{"e", strings.TrimSpace(parentEventID)}
 	if hint := strings.TrimSpace(relayHint); hint != "" {
 		tag = append(tag, hint)
 	}
-	return b.sendNIP17Rumor(ctx, nostr.KindDirectMessage, text, room, nostr.Tags{tag})
+	return b.sendNIP17RumorWithReceipt(ctx, nostr.KindDirectMessage, text, room, nostr.Tags{tag})
 }
 
-// SendFileMessage sends a kind-15 encrypted file message.
+// SendFileMessage sends a NIP-17 kind-15 file message, optionally as a direct reply.
 func (b *NIP17Bus) SendFileMessage(ctx context.Context, room NIP17Room, file NIP17FileMessage, parentEventID, relayHint string) error {
 	tags := nostr.Tags{
 		{"file-type", strings.TrimSpace(file.FileType)},
@@ -306,6 +313,11 @@ func (b *NIP17Bus) SendFileMessage(ctx context.Context, room NIP17Room, file NIP
 
 // SendReaction sends a wrapped NIP-25 kind-7 reaction in the room.
 func (b *NIP17Bus) SendReaction(ctx context.Context, room NIP17Room, targetEventID, relayHint, reaction string) error {
+	return b.SendReactionTo(ctx, room, targetEventID, "", relayHint, reaction)
+}
+
+// SendReactionTo also includes the NIP-25 p tag for the target event author.
+func (b *NIP17Bus) SendReactionTo(ctx context.Context, room NIP17Room, targetEventID, targetPubKey, relayHint, reaction string) error {
 	targetEventID = strings.TrimSpace(targetEventID)
 	if _, err := nostr.IDFromHex(targetEventID); err != nil {
 		return fmt.Errorf("invalid reaction target event id: %w", err)
@@ -314,7 +326,14 @@ func (b *NIP17Bus) SendReaction(ctx context.Context, room NIP17Room, targetEvent
 	if hint := strings.TrimSpace(relayHint); hint != "" {
 		tag = append(tag, hint)
 	}
-	return b.sendNIP17Rumor(ctx, nostr.KindReaction, reaction, room, nostr.Tags{tag})
+	tags := nostr.Tags{tag}
+	if targetPubKey = strings.TrimSpace(targetPubKey); targetPubKey != "" {
+		if _, err := nostr.PubKeyFromHex(targetPubKey); err != nil {
+			return fmt.Errorf("invalid reaction target pubkey: %w", err)
+		}
+		tags = append(tags, nostr.Tag{"p", targetPubKey})
+	}
+	return b.sendNIP17Rumor(ctx, nostr.KindReaction, reaction, room, tags)
 }
 
 // NIP17DeletionTarget identifies a rumor to delete and its actual kind.
@@ -377,10 +396,20 @@ func (b *NIP17Bus) DeleteMessages(ctx context.Context, room NIP17Room, reason st
 }
 
 func (b *NIP17Bus) sendNIP17Rumor(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) error {
-	return b.sendNIP17RumorWithWrap(ctx, kind, content, room, extraTags, b.ephemeralGiftWrap)
+	_, err := b.sendNIP17RumorWithReceipt(ctx, kind, content, room, extraTags)
+	return err
 }
 
-func (b *NIP17Bus) sendNIP17RumorWithWrap(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags, ephemeral bool) (err error) {
+func (b *NIP17Bus) sendNIP17RumorWithReceipt(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) (PublishedNostrMessage, error) {
+	return b.sendNIP17RumorWithWrapReceipt(ctx, kind, content, room, extraTags, b.ephemeralGiftWrap)
+}
+
+func (b *NIP17Bus) sendNIP17RumorWithWrap(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags, ephemeral bool) error {
+	_, err := b.sendNIP17RumorWithWrapReceipt(ctx, kind, content, room, extraTags, ephemeral)
+	return err
+}
+
+func (b *NIP17Bus) sendNIP17RumorWithWrapReceipt(ctx context.Context, kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags, ephemeral bool) (receipt PublishedNostrMessage, err error) {
 	defer func() {
 		outcome := "success"
 		if err != nil {
@@ -391,9 +420,19 @@ func (b *NIP17Bus) sendNIP17RumorWithWrap(ctx context.Context, kind nostr.Kind, 
 
 	rumor, recipients, err := b.buildNIP17Rumor(kind, content, room, extraTags)
 	if err != nil {
-		return err
+		return PublishedNostrMessage{}, err
 	}
-	return b.publishNIP17Rumor(ctx, rumor, recipients, ephemeral)
+	if err := b.publishNIP17Rumor(ctx, rumor, recipients, ephemeral); err != nil {
+		return PublishedNostrMessage{}, err
+	}
+	recipientHex := make([]string, 0, len(recipients))
+	for _, recipient := range recipients {
+		recipientHex = append(recipientHex, recipient.Hex())
+	}
+	return PublishedNostrMessage{
+		EventID: rumor.ID.Hex(), RelayURLs: b.currentRelays(), Kind: rumor.Kind,
+		PubKey: rumor.PubKey.Hex(), Scheme: "nip17", Recipients: recipientHex,
+	}, nil
 }
 
 func (b *NIP17Bus) buildNIP17Rumor(kind nostr.Kind, content string, room NIP17Room, extraTags nostr.Tags) (nostr.Event, []nostr.PubKey, error) {
@@ -851,6 +890,9 @@ func (b *NIP17Bus) handleRumor(rumor nostr.Event) {
 		ReplyTo:    replyTo,
 		Reply: func(ctx context.Context, reply string) error {
 			return b.SendRoomReply(ctx, replyRoom, eventID, "", reply)
+		},
+		ReplyWithReceipt: func(ctx context.Context, reply string) (PublishedNostrMessage, error) {
+			return b.SendRoomReplyWithReceipt(ctx, replyRoom, eventID, "", reply)
 		},
 	}
 

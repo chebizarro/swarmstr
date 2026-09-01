@@ -43,6 +43,19 @@ func persistInbound(
 		return err
 	}
 
+	kind := int(msg.Kind)
+	if kind == 0 && strings.EqualFold(strings.TrimSpace(msg.Scheme), "nip04") {
+		kind = 4
+	}
+	meta := map[string]any{"relay": msg.RelayURL}
+	if strings.TrimSpace(msg.Scheme) != "" {
+		meta["nostr_event_id"] = msg.EventID
+		meta["nostr_pubkey"] = msg.FromPubKey
+		meta["nostr_kind"] = kind
+		meta["nostr_transport"] = strings.ToLower(strings.TrimSpace(msg.Scheme))
+		meta["nostr_relays"] = []string{msg.RelayURL}
+		meta["nostr_recipients"] = append([]string(nil), msg.Recipients...)
+	}
 	_, err := transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
 		Version:   1,
 		SessionID: sessionID,
@@ -50,9 +63,7 @@ func persistInbound(
 		Role:      "user",
 		Text:      msg.Text,
 		Unix:      msg.CreatedAt,
-		Meta: map[string]any{
-			"relay": msg.RelayURL,
-		},
+		Meta:      meta,
 	})
 	return err
 }
@@ -64,19 +75,20 @@ func persistAssistant(
 	sessionID string,
 	reply string,
 	requestEventID string,
-) error {
+) (string, error) {
 	now := time.Now().Unix()
 	if err := updateSessionDoc(ctx, docsRepo, sessionID, sessionID, func(session *state.SessionDoc) error {
 		session.LastReplyAt = now
 		return nil
 	}); err != nil {
-		return err
+		return "", err
 	}
 
+	entryID := fmt.Sprintf("reply:%d:%s", now, requestEventID)
 	_, err := transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
 		Version:   1,
 		SessionID: sessionID,
-		EntryID:   fmt.Sprintf("reply:%d:%s", now, requestEventID),
+		EntryID:   entryID,
 		Role:      "assistant",
 		Text:      reply,
 		Unix:      now,
@@ -84,7 +96,48 @@ func persistAssistant(
 			"reply_to_event_id": requestEventID,
 		},
 	})
+	return entryID, err
+}
+
+type nostrPublication struct {
+	EventID    string
+	Relays     []string
+	Kind       int
+	PubKey     string
+	Transport  string
+	Recipients []string
+}
+
+func attachNostrPublication(ctx context.Context, repo *state.TranscriptRepository, sessionID, entryID string, publication nostrPublication) error {
+	if repo == nil || strings.TrimSpace(entryID) == "" || strings.TrimSpace(publication.EventID) == "" {
+		return nil
+	}
+	entry, err := repo.GetEntry(ctx, sessionID, entryID)
+	if err != nil {
+		return err
+	}
+	meta := make(map[string]any, len(entry.Meta)+6)
+	for key, value := range entry.Meta {
+		meta[key] = value
+	}
+	meta["nostr_event_id"] = strings.TrimSpace(publication.EventID)
+	meta["nostr_relays"] = append([]string(nil), publication.Relays...)
+	meta["nostr_kind"] = publication.Kind
+	meta["nostr_pubkey"] = strings.TrimSpace(publication.PubKey)
+	meta["nostr_transport"] = strings.ToLower(strings.TrimSpace(publication.Transport))
+	meta["nostr_recipients"] = append([]string(nil), publication.Recipients...)
+	entry.Meta = meta
+	_, err = repo.ReplaceEntry(ctx, entry)
 	return err
+}
+
+func attachNostrPublicationToLastAssistant(ctx context.Context, repo *state.TranscriptRepository, sessionID string, entryIDs []string, delta []agent.ConversationMessage, publication nostrPublication) error {
+	for i := len(delta) - 1; i >= 0; i-- {
+		if i < len(entryIDs) && strings.EqualFold(strings.TrimSpace(delta[i].Role), "assistant") && strings.TrimSpace(delta[i].Content) != "" {
+			return attachNostrPublication(ctx, repo, sessionID, entryIDs[i], publication)
+		}
+	}
+	return nil
 }
 
 func persistAndIngestInlineChannelSteering(
@@ -507,6 +560,12 @@ func transcriptTurnResultMeta(meta *agent.TurnResultMetadata) map[string]any {
 	}
 	if meta.Usage.OutputTokens > 0 {
 		usage["output_tokens"] = meta.Usage.OutputTokens
+	}
+	if meta.Usage.CacheReadTokens > 0 {
+		usage["cache_read_tokens"] = meta.Usage.CacheReadTokens
+	}
+	if meta.Usage.CacheCreationTokens > 0 {
+		usage["cache_creation_tokens"] = meta.Usage.CacheCreationTokens
 	}
 	if len(usage) > 0 {
 		out["usage"] = usage

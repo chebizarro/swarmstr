@@ -464,6 +464,7 @@ func (c agentRunController) executeAgentRunWithFallbacks(baseCtx context.Context
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
+	baseCtx = agent.ContextWithRunID(baseCtx, runID)
 	attempt := c.runAgentTurnWithFallbacks(baseCtx, req, primary, fallbacks, runtimeLabels, memoryIndex)
 	if attempt.FallbackUsed {
 		jobs.SetFallback(runID, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)

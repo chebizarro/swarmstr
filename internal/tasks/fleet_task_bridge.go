@@ -77,6 +77,7 @@ type FleetTaskBridge struct {
 	ready      chan struct{}
 	once       sync.Once
 	wg         sync.WaitGroup
+	mutationMu sync.Mutex // serializes local tool mutations and ledger projections
 	correcting atomic.Bool
 }
 
@@ -157,7 +158,7 @@ func NewFleetTaskBridge(parent context.Context, opts FleetTaskBridgeOptions) (*F
 		publishTimeout: timeout, claimSettlement: settlement, collectionSources: sources,
 		publish: opts.PublishFunc, subscribe: opts.SubscribeFunc,
 		onTaskTransition: opts.OnTaskTransition,
-		logf: logf, now: now, merger: NewTaskMerger(policy),
+		logf:             logf, now: now, merger: NewTaskMerger(policy),
 		ctx: ctx, cancel: cancel, taskCh: make(chan string, 128), ready: make(chan struct{}),
 	}
 	if bridge.publish == nil {
@@ -246,7 +247,18 @@ func (b *FleetTaskBridge) publishLoop() {
 }
 
 // PublishLedgerTask signs and publishes the current complete ledger snapshot.
+//
+// Ledger lifecycle events do not carry a base event ID, so this path remains an
+// unconditional projection rather than pretending to provide optimistic
+// concurrency. It does share mutationMu with the agent-facing checked path so a
+// local ledger publish cannot interleave between checkBase and relay publish.
 func (b *FleetTaskBridge) PublishLedgerTask(ctx context.Context, taskID string) (string, error) {
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
+	return b.publishLedgerTask(ctx, taskID)
+}
+
+func (b *FleetTaskBridge) publishLedgerTask(ctx context.Context, taskID string) (string, error) {
 	entry, err := b.ledger.SnapshotTask(ctx, strings.TrimSpace(taskID))
 	if err != nil {
 		return "", err

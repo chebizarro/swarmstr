@@ -2,22 +2,22 @@
   "schema_version": 2,
   "source": {
     "project": "openclaw",
-    "revision": "5ff16901ef4a8532844000505a6e6ad0cae74a2a",
+    "revision": "c7cf49ec346d0d2f21627ae6429f775252d9eec2",
     "files": {
-      "src/gateway/methods/core-descriptors.ts": "9cab9c37974dc7b18533ace0205bb5179a460c70b35901dc404986dd5a03312d"
+      "src/gateway/methods/core-descriptors.ts": "cb99a2554dd02c3bb8d615cff660907ff9bde1fb87cf01848e073dc5ebfdbcd3"
     }
   },
-  "captured_at": "2026-07-24",
+  "captured_at": "2026-08-31",
   "summary": {
-    "openclaw_defined_count": 344,
-    "openclaw_method_count": 324,
-    "hidden_method_count": 20,
-    "implemented": 317,
+    "openclaw_defined_count": 393,
+    "openclaw_method_count": 371,
+    "hidden_method_count": 22,
+    "implemented": 329,
     "partial": 0,
-    "missing": 7,
+    "missing": 42,
     "triage_category_counts": {
-      "implement": 313,
-      "accepted-deviation": 11
+      "accepted-deviation": 28,
+      "implement": 343
     }
   },
   "entries": [
@@ -33,11 +33,11 @@
     {
       "method": "diagnostics.stability",
       "status": "implemented",
+      "metiq_method": "diagnostics.stability",
       "notes": "Process stability/health snapshot backed by the Go runtime (goroutines/cpu/memstats/GC), the boot crash/restart recovery outcomes (recoveryStatusSnapshot), and the agent-job registry (in-flight runs) + restart-scheduler readiness.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "diagnostics.stability"
+      "workstream": "WS-A/core"
     },
     {
       "method": "doctor.memory.status",
@@ -87,29 +87,20 @@
     {
       "method": "doctor.memory.repairDreamingArtifacts",
       "status": "implemented",
+      "metiq_method": "doctor.memory.repairDreamingArtifacts",
       "notes": "Repairs consolidated-record integrity via memory.RepairMemoryHealth (supersession/index/dedupe). swarmstr's 'dreaming artifacts' are the promoted/consolidated memory records.",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C",
-      "metiq_method": "doctor.memory.repairDreamingArtifacts"
+      "workstream": "WS-C"
     },
     {
       "method": "doctor.memory.dedupeDreamDiary",
       "status": "implemented",
+      "metiq_method": "doctor.memory.dedupeDreamDiary",
       "notes": "No persisted dream-diary artifact in swarmstr; dedupes the analogous consolidated/promoted memory records via CompactMemoryRecords.",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C",
-      "metiq_method": "doctor.memory.dedupeDreamDiary"
-    },
-    {
-      "method": "doctor.memory.remHarness",
-      "status": "implemented",
-      "notes": "Exercises the real REM dreaming/consolidation phase (RunDreamingPhases/PromotionManager) as a non-committing dry run by default; apply=true promotes.",
-      "triage": "implement",
-      "triage_group": "memory-health",
-      "workstream": "WS-C",
-      "metiq_method": "doctor.memory.remHarness"
+      "workstream": "WS-C"
     },
     {
       "method": "logs.tail",
@@ -391,49 +382,67 @@
       "workstream": "WS-A"
     },
     {
+      "method": "exec.approval.grants.list",
+      "status": "implemented",
+      "metiq_method": "exec.approval.grants.list",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "exec.approval.grants.revoke",
+      "status": "implemented",
+      "metiq_method": "exec.approval.grants.revoke",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
       "method": "question.request",
       "status": "implemented",
+      "metiq_method": "question.request",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "question.request"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "question.waitAnswer",
       "status": "implemented",
+      "metiq_method": "question.waitAnswer",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "question.waitAnswer"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "question.resolve",
       "status": "implemented",
+      "metiq_method": "question.resolve",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "question.resolve"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "question.get",
       "status": "implemented",
+      "metiq_method": "question.get",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "question.get"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "question.list",
       "status": "implemented",
+      "metiq_method": "question.list",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "question.list"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "plugin.approval.list",
@@ -666,46 +675,10 @@
       "workstream": "WS-D/runtime"
     },
     {
-      "method": "talk.session.join",
-      "status": "implemented",
-      "metiq_method": "talk.session.join",
-      "notes": "managed-room only; accepted deviation \u2014 returns unsupported (no LiveKit room infra in metiq).",
-      "triage": "implement",
-      "triage_group": "media-and-messaging",
-      "workstream": "WS-D/runtime"
-    },
-    {
       "method": "talk.session.appendAudio",
       "status": "implemented",
       "metiq_method": "talk.session.appendAudio",
       "notes": "Forwards decoded audio to the bound realtime provider; UNAVAILABLE until a realtime provider is wired.",
-      "triage": "implement",
-      "triage_group": "media-and-messaging",
-      "workstream": "WS-D/runtime"
-    },
-    {
-      "method": "talk.session.startTurn",
-      "status": "implemented",
-      "metiq_method": "talk.session.startTurn",
-      "notes": "Explicit-commit relay turn boundary (relay substitute for the managed-room turn protocol).",
-      "triage": "implement",
-      "triage_group": "media-and-messaging",
-      "workstream": "WS-D/runtime"
-    },
-    {
-      "method": "talk.session.endTurn",
-      "status": "implemented",
-      "metiq_method": "talk.session.endTurn",
-      "notes": "Commits an open relay turn into processing (relay substitute for the managed-room turn protocol).",
-      "triage": "implement",
-      "triage_group": "media-and-messaging",
-      "workstream": "WS-D/runtime"
-    },
-    {
-      "method": "talk.session.cancelTurn",
-      "status": "implemented",
-      "metiq_method": "talk.session.cancelTurn",
-      "notes": "Interrupts the in-flight turn via the provider bridge and returns the session to idle.",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
@@ -776,11 +749,11 @@
     {
       "method": "commands.list",
       "status": "implemented",
-      "notes": "Operator/slash command registry backed by the embedded Web UI command catalog (internal/webui) \u2014 the same surface advertised to clients via /command-catalog.json.",
+      "metiq_method": "commands.list",
+      "notes": "Operator/slash command registry backed by the embedded Web UI command catalog (internal/webui) — the same surface advertised to clients via /command-catalog.json.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "commands.list"
+      "workstream": "WS-A/core"
     },
     {
       "method": "models.list",
@@ -821,87 +794,88 @@
     {
       "method": "tools.effective",
       "status": "implemented",
-      "notes": "Effective tool set for an agent: the tool catalog filtered by the agent's active profile (agent.FilterCatalogByProfile), overlaid \u2014 when the WS-G permission engine is configured \u2014 with each tool's engine decision behavior.",
+      "metiq_method": "tools.effective",
+      "notes": "Effective tool set for an agent: the tool catalog filtered by the agent's active profile (agent.FilterCatalogByProfile), overlaid — when the WS-G permission engine is configured — with each tool's engine decision behavior.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "tools.effective"
+      "workstream": "WS-A/core"
     },
     {
       "method": "tools.invoke",
       "status": "implemented",
+      "metiq_method": "tools.invoke",
       "notes": "Operator-driven single-tool invocation through the live agent.ToolRegistry.Execute path (schema + semantic validation, tool policy, pre/post hooks). OperatorAdmin because it executes.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "tools.invoke"
+      "workstream": "WS-A/core"
     },
     {
       "method": "mcp.app.view",
       "status": "implemented",
+      "metiq_method": "mcp.app.view",
       "notes": "Resolves a minted MCP-App view: html (inline or lazily fetched via resources/read), toolInput/toolResult, expiry; views minted from agent MCP tool calls returning ui:// resources, announced via mcp.app.viewCreated.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "mcp.app.view"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "mcp.app.listTools",
       "status": "implemented",
+      "metiq_method": "mcp.app.listTools",
       "notes": "Lists tools advertised by the view's originating server.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "mcp.app.listTools"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "mcp.app.listResources",
       "status": "implemented",
+      "metiq_method": "mcp.app.listResources",
       "notes": "Proxies resources/list to the view's originating server.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "mcp.app.listResources"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "mcp.app.listResourceTemplates",
       "status": "implemented",
+      "metiq_method": "mcp.app.listResourceTemplates",
       "notes": "Proxies resources/templates/list to the view's originating server.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "mcp.app.listResourceTemplates"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "mcp.app.readResource",
       "status": "implemented",
+      "metiq_method": "mcp.app.readResource",
       "notes": "Proxies resources/read to the view's originating server.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "mcp.app.readResource"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "mcp.app.callTool",
       "status": "implemented",
+      "metiq_method": "mcp.app.callTool",
       "notes": "Calls a tool on the view's originating server; denied for read-only views. Metiq deviation: scoped to server-advertised tools (OpenClaw additionally narrows to app-declared tool names).",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "mcp.app.callTool"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "mcp.app.updateModelContext",
       "status": "implemented",
+      "metiq_method": "mcp.app.updateModelContext",
       "notes": "Metiq deviation: widget model context is delivered as active-run steering at the next model boundary, matching board.event delivery.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "mcp.app.updateModelContext"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "board.get",
       "status": "implemented",
+      "metiq_method": "board.get",
       "notes": "Per-sessionKey tabs/widgets store in internal/gateway/board; mints 2-minute HMAC view tickets (viewTicket/viewTicketTtlMs/viewGeneration/frameUrl) for renderable html widgets, served by the sandboxed frame host at /__metiq__/board/ on the gateway WS HTTP server.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -910,6 +884,7 @@
     {
       "method": "board.update",
       "status": "implemented",
+      "metiq_method": "board.update",
       "notes": "Layout ops (tab_create/update/delete, tabs_reorder, widget_move/resize/remove) with revision counter and board.changed broadcast.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -918,6 +893,7 @@
     {
       "method": "board.widget.put",
       "status": "implemented",
+      "metiq_method": "board.widget.put",
       "notes": "html, plugin, and mcp-app content sources (mcp-app pins the descriptor from an active MCP-App view; interactivity grant-gated via mcp.app.interact); canvas-doc rejected until the canvas-document surface lands. HTML grants frozen to approved bytes.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -926,6 +902,7 @@
     {
       "method": "board.widget.grant",
       "status": "implemented",
+      "metiq_method": "board.widget.grant",
       "notes": "Revision- and instance-checked grant flow over pending capability declarations.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -934,15 +911,16 @@
     {
       "method": "board.widget.appView",
       "status": "implemented",
+      "metiq_method": "board.widget.appView",
       "notes": "Re-mints an MCP-App view from the pinned mcp-app widget descriptor at an exact revision+instance; interactivity requires the granted mcp.app.interact capability, otherwise views mint read-only.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "board.widget.appView"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "board.event",
       "status": "implemented",
+      "metiq_method": "board.event",
       "notes": "Legacy sessionKey+widget variant and ticket-authorized variant, 8KB payload cap and 5s dedupe; notices delivered as active-run steering.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -951,20 +929,20 @@
     {
       "method": "audit.list",
       "status": "implemented",
+      "metiq_method": "audit.list",
       "notes": "Permission-engine audit-log listing backed by the WS-G engine's durable Auditor (internal/permissions) with time/type/tool/limit filters. Returns an honest available:false empty set when permissions are not configured.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "audit.list"
+      "workstream": "WS-A/core"
     },
     {
       "method": "audit.activity.list",
       "status": "implemented",
+      "metiq_method": "audit.activity.list",
       "notes": "Agent/session activity feed projected from the same WS-G permission audit log (decision/override/escalation events carry the acting agent + session). Honest available:false when permissions are not configured.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "audit.activity.list"
+      "workstream": "WS-A/core"
     },
     {
       "method": "users.list",
@@ -1012,6 +990,15 @@
       "workstream": "Nostr identity"
     },
     {
+      "method": "users.setRole",
+      "status": "implemented",
+      "metiq_method": "users.setRole",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "nostr-user-identity",
+      "workstream": "Nostr identity"
+    },
+    {
       "method": "tasks.list",
       "status": "implemented",
       "metiq_method": "tasks.list",
@@ -1041,38 +1028,38 @@
     {
       "method": "taskSuggestions.list",
       "status": "implemented",
+      "metiq_method": "taskSuggestions.list",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "taskSuggestions.list"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "taskSuggestions.create",
       "status": "implemented",
+      "metiq_method": "taskSuggestions.create",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "taskSuggestions.create"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "taskSuggestions.accept",
       "status": "implemented",
+      "metiq_method": "taskSuggestions.accept",
       "notes": "Accept seeds the suggested session via the shared sessions.create path; Metiq sessions.create does not auto-start a run, so acceptance completes when the session entry exists.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "taskSuggestions.accept"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "taskSuggestions.dismiss",
       "status": "implemented",
+      "metiq_method": "taskSuggestions.dismiss",
       "notes": "",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7",
-      "metiq_method": "taskSuggestions.dismiss"
+      "workstream": "WS-A/A7"
     },
     {
       "method": "environments.list",
@@ -1518,11 +1505,11 @@
     {
       "method": "update.status",
       "status": "implemented",
+      "metiq_method": "update.status",
       "notes": "Self-update status backed by the real update.Checker. Read-only: reports the running version plus the last cached GitHub-release check; never forces a network fetch (that stays update.run).",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "update.status"
+      "workstream": "WS-A/core"
     },
     {
       "method": "update.run",
@@ -1579,15 +1566,6 @@
       "workstream": "WS-D/runtime"
     },
     {
-      "method": "voicewake.routing.set",
-      "status": "implemented",
-      "metiq_method": "voicewake.routing.set",
-      "notes": "Persists a validated routing table (max 32 routes, trigger normalization) and broadcasts voicewake.routing.changed.",
-      "triage": "implement",
-      "triage_group": "media-and-messaging",
-      "workstream": "WS-D/runtime"
-    },
-    {
       "method": "sessions.list",
       "status": "implemented",
       "metiq_method": "sessions.list",
@@ -1606,17 +1584,9 @@
       "workstream": "WS-A"
     },
     {
-      "method": "sessions.unsubscribe",
-      "status": "implemented",
-      "metiq_method": "sessions.unsubscribe",
-      "notes": "Removes the connection-scoped session event subscriptions without polling or timer-based completion.",
-      "triage": "implement",
-      "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
-    },
-    {
       "method": "sessions.messages.subscribe",
       "status": "implemented",
+      "metiq_method": "sessions.messages.subscribe",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1625,6 +1595,16 @@
     {
       "method": "sessions.messages.unsubscribe",
       "status": "implemented",
+      "metiq_method": "sessions.messages.unsubscribe",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.viewers.set",
+      "status": "implemented",
+      "metiq_method": "sessions.viewers.set",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1642,6 +1622,7 @@
     {
       "method": "sessions.describe",
       "status": "implemented",
+      "metiq_method": "sessions.describe",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1652,15 +1633,6 @@
       "status": "implemented",
       "metiq_method": "sessions.compaction.list",
       "notes": "Reads persisted per-session checkpoint metadata newest-first.",
-      "triage": "implement",
-      "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
-    },
-    {
-      "method": "sessions.compaction.get",
-      "status": "implemented",
-      "metiq_method": "sessions.compaction.get",
-      "notes": "Reads one persisted checkpoint with gateway-v4 field names.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -1722,6 +1694,16 @@
     {
       "method": "sessions.create",
       "status": "implemented",
+      "metiq_method": "sessions.create",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.recover",
+      "status": "implemented",
+      "metiq_method": "sessions.recover",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1730,6 +1712,7 @@
     {
       "method": "sessions.send",
       "status": "implemented",
+      "metiq_method": "sessions.send",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1738,6 +1721,7 @@
     {
       "method": "sessions.abort",
       "status": "implemented",
+      "metiq_method": "sessions.abort",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -1753,10 +1737,28 @@
       "workstream": "WS-A"
     },
     {
+      "method": "sessions.goal.update",
+      "status": "implemented",
+      "metiq_method": "sessions.goal.update",
+      "notes": "Implemented by swarmstr-s2td with durable lifecycle state, bounded idempotency receipts, identity fences, and exactly-once resume dispatch; first edit creates the Metiq goal because there is no separate chat goal-start RPC.",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.goal.clear",
+      "status": "implemented",
+      "metiq_method": "sessions.goal.clear",
+      "notes": "Implemented by swarmstr-s2td with durable session metadata, bounded idempotency receipts, identity fences, and an atomic clear transition.",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
       "method": "sessions.pluginPatch",
       "status": "implemented",
       "metiq_method": "sessions.pluginPatch",
-      "notes": "Applies a plugin-provided mutation to a session, namespaced under meta.plugins.<pluginId>, after validating the owning plugin against the merged plugin catalog.",
+      "notes": "Applies a plugin-provided mutation to a session, namespaced under meta.plugins.\u003cpluginId\u003e, after validating the owning plugin against the merged plugin catalog.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
@@ -1807,6 +1809,15 @@
       "workstream": "WS-A"
     },
     {
+      "method": "sessions.groups.defaults",
+      "status": "implemented",
+      "metiq_method": "sessions.groups.defaults",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
       "method": "sessions.groups.put",
       "status": "implemented",
       "metiq_method": "sessions.groups.put",
@@ -1819,6 +1830,15 @@
       "method": "sessions.groups.rename",
       "status": "implemented",
       "metiq_method": "sessions.groups.rename",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.groups.update",
+      "status": "implemented",
+      "metiq_method": "sessions.groups.update",
       "notes": "",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
@@ -2224,7 +2244,7 @@
       "method": "message.action",
       "status": "implemented",
       "metiq_method": "message.action",
-      "notes": "Verb-dispatched mutation over one durable transcript entry (swarmstr-ko2f), backed by TranscriptRepository: delete tombstones the entry (DeleteEntry); edit overwrites text in place (ReplaceEntry) non-destructively, preserving prior text in meta.revisions and restricting to user-role entries; react stores an actor->reaction set in meta.reactions (add/remove); retry re-runs the associated agent turn via launchManagedRun with the same idempotent reserve+Begin pattern as skills.proposals.requestRevision. OperatorAdmin. v1 mutates the LOCAL transcript only; cross-protocol propagation (NIP-09 delete / NIP-25 reaction to a published nostr event) is out of scope for v1 (follow-up swarmstr-z80e).",
+      "notes": "Verb-dispatched mutation over one durable transcript entry (swarmstr-ko2f), backed by TranscriptRepository: delete tombstones the entry (DeleteEntry); edit overwrites text in place (ReplaceEntry) non-destructively, preserving prior text in meta.revisions and restricting to user-role entries; react stores an actor-\u003ereaction set in meta.reactions (add/remove); retry re-runs the associated agent turn via launchManagedRun with the same idempotent reserve+Begin pattern as skills.proposals.requestRevision. OperatorAdmin. v1 mutates the LOCAL transcript only; cross-protocol propagation (NIP-09 delete / NIP-25 reaction to a published nostr event) is out of scope for v1 (follow-up swarmstr-z80e).",
       "triage": "implement",
       "triage_group": "media-and-messaging",
       "workstream": "WS-D/runtime"
@@ -2232,6 +2252,7 @@
     {
       "method": "conversations.send",
       "status": "implemented",
+      "metiq_method": "conversations.send",
       "notes": "Reuses channel send internals; media output markers dispatch via the shared outbound media helper. Operation-id dedupe is process-local.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -2240,6 +2261,7 @@
     {
       "method": "conversations.turn",
       "status": "implemented",
+      "metiq_method": "conversations.turn",
       "notes": "Send plus in-process reply correlation on the extension inbound path; correlationPersisted=false (no durable delivery store yet).",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -2248,6 +2270,7 @@
     {
       "method": "conversations.turn.cancel",
       "status": "implemented",
+      "metiq_method": "conversations.turn.cancel",
       "notes": "Cancels the process-local pending turn waiter.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -2425,6 +2448,22 @@
       "workstream": "WS-A/A7"
     },
     {
+      "method": "push.web.preferences.get",
+      "status": "missing",
+      "notes": "Intentional browser-push divergence: Metiq notifications flow through Nostr and channel events.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "push.web.preferences.set",
+      "status": "missing",
+      "notes": "Intentional browser-push divergence: Metiq notifications flow through Nostr and channel events.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
       "method": "terminal.attach",
       "status": "implemented",
       "metiq_method": "terminal.attach",
@@ -2443,15 +2482,6 @@
       "workstream": "WS-A/A7"
     },
     {
-      "method": "terminal.text",
-      "status": "implemented",
-      "metiq_method": "terminal.text",
-      "notes": "",
-      "triage": "implement",
-      "triage_group": "workspace-interactive-surfaces-a7",
-      "workstream": "WS-A/A7"
-    },
-    {
       "method": "controlUi.githubPreview",
       "status": "missing",
       "notes": "Honest UNAVAILABLE (accepted-deviation). swarmstr wires no GitHub/git-forge integration, so PR/branch preview data cannot be produced without a fabricated stub. Left unimplemented consistent with the openclaw-branded-control-ui deviation. Follow-up: swarmstr-uhup.",
@@ -2462,29 +2492,29 @@
     {
       "method": "system.info",
       "status": "implemented",
+      "metiq_method": "system.info",
       "notes": "Daemon identity/health snapshot backed by the build-info globals (version/commit from ldflags), the Go runtime, and live subsystem presence. Reports version, commit, platform (os/arch/go/cpu), pid, uptime, and capability flags (mcp/permissions/channels/node/tasks/sessions/worktrees).",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "system.info"
+      "workstream": "WS-A/core"
     },
     {
       "method": "agents.workspace.list",
       "status": "implemented",
+      "metiq_method": "agents.workspace.list",
       "notes": "Workspace-scoped agent listing over the durable agent-docs surface (DocsRepository.ListAgents), optionally filtered to one workspace; tombstoned agents excluded.",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "agents.workspace.list"
+      "workstream": "WS-A/core"
     },
     {
       "method": "agents.workspace.get",
       "status": "implemented",
+      "metiq_method": "agents.workspace.get",
       "notes": "Single workspace agent detail from the durable agent-docs surface (DocsRepository.GetAgent).",
       "triage": "implement",
       "triage_group": "core-runtime",
-      "workstream": "WS-A/core",
-      "metiq_method": "agents.workspace.get"
+      "workstream": "WS-A/core"
     },
     {
       "method": "tts.speak",
@@ -2526,7 +2556,7 @@
       "method": "plugins.setEnabled",
       "status": "implemented",
       "metiq_method": "plugins.setEnabled",
-      "notes": "Toggles plugins.entries.<id>.enabled via the runtime config mutation commit path.",
+      "notes": "Toggles plugins.entries.\u003cid\u003e.enabled via the runtime config mutation commit path.",
       "triage": "implement",
       "triage_group": "plugin-skill-security",
       "workstream": "WS-G"
@@ -2550,9 +2580,17 @@
       "workstream": "WS-G"
     },
     {
-      "method": "controlUi.sessionPullRequests",
+      "method": "controlUi.sessionPullRequests.subscribe",
       "status": "missing",
-      "notes": "Honest UNAVAILABLE (accepted-deviation). No git-forge integration exists to associate PRs with a session. Left unimplemented consistent with the openclaw-branded-control-ui deviation. Follow-up: swarmstr-uhup.",
+      "notes": "Intentional control-UI divergence: Metiq has no git-forge pull-request subscription source; see swarmstr-uhup.",
+      "triage": "accepted-deviation",
+      "triage_group": "openclaw-branded-control-ui",
+      "workstream": "none"
+    },
+    {
+      "method": "controlUi.sessionPreview",
+      "status": "missing",
+      "notes": "Intentional control-UI divergence: Metiq has no GitHub preview model; see swarmstr-uhup.",
       "triage": "accepted-deviation",
       "triage_group": "openclaw-branded-control-ui",
       "workstream": "none"
@@ -2561,7 +2599,7 @@
       "method": "gateway.suspend.prepare",
       "status": "implemented",
       "metiq_method": "gateway.suspend.prepare",
-      "notes": "Cooperative suspend coordinator (swarmstr-ngrd, internal/gateway/suspend): durable suspension-id lifecycle idle->preparing->suspended->resuming->idle persisted to an atomic JSON ledger. Prepare quiesces by closing a shared accepting-work gate consulted by the cron scheduler, dreaming/promotion job, and memory-compaction worker; in-flight agent runs + sessions are reported (restart.preflight inspector), not killed. Idempotent when already suspended.",
+      "notes": "Cooperative suspend coordinator (swarmstr-ngrd, internal/gateway/suspend): durable suspension-id lifecycle idle-\u003epreparing-\u003esuspended-\u003eresuming-\u003eidle persisted to an atomic JSON ledger. Prepare quiesces by closing a shared accepting-work gate consulted by the cron scheduler, dreaming/promotion job, and memory-compaction worker; in-flight agent runs + sessions are reported (restart.preflight inspector), not killed. Idempotent when already suspended.",
       "triage": "implement",
       "triage_group": "core-runtime",
       "workstream": "WS-A/core"
@@ -2730,38 +2768,38 @@
     {
       "method": "migrations.memory.plan",
       "status": "implemented",
+      "metiq_method": "migrations.memory.plan",
       "notes": "Computes a migration/maintenance plan over the versioned SQLite store (schema_version vs sqliteSchemaVersion, FTS drift, embedding reindex backlog, legacy chunks).",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C",
-      "metiq_method": "migrations.memory.plan"
+      "workstream": "WS-C"
     },
     {
       "method": "migrations.memory.apply",
       "status": "implemented",
+      "metiq_method": "migrations.memory.apply",
       "notes": "Applies the plan: idempotent schema migration + FTS rebuild + legacy backfill; reports before/after.",
       "triage": "implement",
       "triage_group": "memory-health",
-      "workstream": "WS-C",
-      "metiq_method": "migrations.memory.apply"
+      "workstream": "WS-C"
     },
     {
       "method": "ui.command",
       "status": "implemented",
-      "notes": "Executes a UI-originated named command by dispatching the gateway method the embedded Web UI maps that slash command to (e.g. /status\u2192status, /agents\u2192agents.list, /compact\u2192memory.compact). OperatorAdmin.",
+      "metiq_method": "ui.command",
+      "notes": "Executes a UI-originated named command by dispatching the gateway method the embedded Web UI maps that slash command to (e.g. /status→status, /agents→agents.list, /compact→memory.compact). OperatorAdmin.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "ui.command"
+      "workstream": "WS-A"
     },
     {
       "method": "approval.history",
       "status": "implemented",
-      "notes": "Resolved (closed) records from the durable exec/unified approval ledger \u2014 the historical counterpart of approval.list (which defaults to pending), newest-resolved first.",
+      "metiq_method": "approval.history",
+      "notes": "Resolved (closed) records from the durable exec/unified approval ledger — the historical counterpart of approval.list (which defaults to pending), newest-resolved first.",
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A",
-      "metiq_method": "approval.history"
+      "workstream": "WS-A"
     },
     {
       "method": "plugin.surface.refresh",
@@ -2775,6 +2813,7 @@
     {
       "method": "conversations.list",
       "status": "implemented",
+      "metiq_method": "conversations.list",
       "notes": "Process-local conversation registry: observed extension-channel senders plus joined NIP-29 group channels.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
@@ -2820,19 +2859,10 @@
       "method": "board.action",
       "status": "implemented",
       "metiq_method": "board.action",
-      "notes": "Ticket-authorized cron.trigger:<jobId> actions dispatching cron.run; plugin dashboard action verbs deferred with the plugin dashboard registry.",
+      "notes": "Ticket-authorized cron.trigger:\u003cjobId\u003e actions dispatching cron.run; plugin dashboard action verbs deferred with the plugin dashboard registry.",
       "triage": "implement",
       "triage_group": "workspace-interactive-surfaces-a7",
       "workstream": "WS-A/A7"
-    },
-    {
-      "method": "sessions.observer.ask",
-      "status": "implemented",
-      "metiq_method": "sessions.observer.ask",
-      "notes": "Bounded transcript-digest observer ask over the per-session runtime with busy/global/per-connection admission limits.",
-      "triage": "implement",
-      "triage_group": "sessions-chat-v4",
-      "workstream": "WS-A"
     },
     {
       "method": "sessions.observer.visibility",
@@ -2914,6 +2944,379 @@
       "triage": "implement",
       "triage_group": "sessions-chat-v4",
       "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.companion.ask",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.companion.state",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.companion.reset",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "memory.search",
+      "status": "implemented",
+      "metiq_method": "memory.search",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "memory-health",
+      "workstream": "WS-C"
+    },
+    {
+      "method": "skills.proposals.events.list",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.events.list",
+      "notes": "Implemented by swarmstr-t4wf as sequence-ordered replay from an atomic workspace lifecycle-event ledger.",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "skills.proposals.evaluate",
+      "status": "implemented",
+      "metiq_method": "skills.proposals.evaluate",
+      "notes": "Implemented by swarmstr-t4wf as a revision-fenced projection of the immutable Metiq proposal static scan, with a durable evaluation_completed event; external plugin evaluator results are not fabricated.",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "hooks.status",
+      "status": "implemented",
+      "metiq_method": "hooks.status",
+      "notes": "Implemented by swarmstr-1guw: resolves the selected agent workspace, projects daemon-loaded bundled/managed hooks plus that workspace's scanned hooks using live enable overrides, and merges active unified-plugin hook registrations without executing or registering hooks.",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
+    },
+    {
+      "method": "tasks.retry",
+      "status": "implemented",
+      "metiq_method": "tasks.retry",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tasks.dismiss",
+      "status": "implemented",
+      "metiq_method": "tasks.dismiss",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "audit.run.inspect",
+      "status": "implemented",
+      "metiq_method": "audit.run.inspect",
+      "notes": "Implemented by swarmstr-e9o6: gateway run identity is persisted on permission-audit decisions and inspected through bounded safe-only displays; receipt provenance and richer principal/lineage identity remain explicitly unknown rather than fabricated.",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "sessions.patchMany",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "update.hold",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "sessions.catalog.startTerminal",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "worker.desktop.observe",
+      "status": "missing",
+      "notes": "Intentional desktop-worker divergence: Metiq is a daemon with no desktop process host.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "projects.list",
+      "status": "missing",
+      "notes": "Intentional managed-project divergence: Metiq uses operator-managed repositories and worktrees.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "projects.register",
+      "status": "missing",
+      "notes": "Intentional managed-project divergence: Metiq uses operator-managed repositories and worktrees.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "projects.remove",
+      "status": "missing",
+      "notes": "Intentional managed-project divergence: Metiq uses operator-managed repositories and worktrees.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "worker.desktop.launch",
+      "status": "missing",
+      "notes": "Intentional desktop-worker divergence: Metiq is a daemon with no desktop process host.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "secrets.store.list",
+      "status": "implemented",
+      "metiq_method": "secrets.store.list",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "secrets.store.set",
+      "status": "implemented",
+      "metiq_method": "secrets.store.set",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "secrets.store.delete",
+      "status": "implemented",
+      "metiq_method": "secrets.store.delete",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "users.prefs.get",
+      "status": "implemented",
+      "metiq_method": "users.prefs.get",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "nostr-user-identity",
+      "workstream": "Nostr identity"
+    },
+    {
+      "method": "users.prefs.set",
+      "status": "implemented",
+      "metiq_method": "users.prefs.set",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "nostr-user-identity",
+      "workstream": "Nostr identity"
+    },
+    {
+      "method": "projects.add",
+      "status": "missing",
+      "notes": "Intentional managed-project divergence: Metiq uses operator-managed repositories and worktrees.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "projects.searchRemote",
+      "status": "missing",
+      "notes": "Intentional managed-project divergence: Metiq has no hosted project-search or GitHub OAuth lifecycle.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "desktop.observe",
+      "status": "missing",
+      "notes": "Intentional desktop-worker divergence: Metiq is a daemon with no desktop process host.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "desktop.launch",
+      "status": "missing",
+      "notes": "Intentional desktop-worker divergence: Metiq is a daemon with no desktop process host.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "device.scopes.requestUpgrade",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "device.scopes.waitUpgrade",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "gateway-lifecycle",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "portal.list",
+      "status": "missing",
+      "notes": "Intentional product divergence: Metiq has no portal process or window lifecycle.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "portal.open",
+      "status": "missing",
+      "notes": "Intentional product divergence: Metiq has no portal process or window lifecycle.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "portal.close",
+      "status": "missing",
+      "notes": "Intentional product divergence: Metiq has no portal process or window lifecycle.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "sessions.move",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "sessions.assignOwner",
+      "status": "implemented",
+      "metiq_method": "sessions.assignOwner",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "progressCard.get",
+      "status": "missing",
+      "notes": "Intentional product divergence: Metiq exposes durable tasks instead of OpenClaw progress cards.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "progressCard.put",
+      "status": "missing",
+      "notes": "Intentional product divergence: Metiq exposes durable tasks instead of OpenClaw progress cards.",
+      "triage": "accepted-deviation",
+      "triage_group": "product-specific-host-surfaces",
+      "workstream": "none"
+    },
+    {
+      "method": "tools.github.status",
+      "status": "missing",
+      "notes": "Intentional git-forge divergence: Metiq has no GitHub integration to inspect.",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tools.github.configure",
+      "status": "missing",
+      "notes": "Intentional git-forge divergence: Metiq has no GitHub integration to configure.",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tools.github.authorize.start",
+      "status": "missing",
+      "notes": "Intentional git-forge divergence: Metiq has no GitHub OAuth lifecycle.",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tools.github.authorize.poll",
+      "status": "missing",
+      "notes": "Intentional git-forge divergence: Metiq has no GitHub OAuth lifecycle.",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "tools.github.authorize.cancel",
+      "status": "missing",
+      "notes": "Intentional git-forge divergence: Metiq has no GitHub OAuth lifecycle.",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "sessions.github.publish",
+      "status": "missing",
+      "notes": "Intentional git-forge divergence: Metiq has no GitHub publication lifecycle.",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "diagnostics.lanes",
+      "status": "missing",
+      "notes": "Intentional runtime divergence (swarmstr-fiwr): Metiq has no command-lane scheduler or queued/active lane accounting; unrelated agent-job, session-mailbox, and prompt-lane state is not advertised as lane diagnostics.",
+      "triage": "implement",
+      "triage_group": "core-runtime",
+      "workstream": "WS-A/core"
+    },
+    {
+      "method": "session.members.listEvidence",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "sessions-chat-v4",
+      "workstream": "WS-A"
+    },
+    {
+      "method": "plugins.inspect",
+      "status": "missing",
+      "notes": "",
+      "triage": "implement",
+      "triage_group": "plugin-skill-security",
+      "workstream": "WS-G"
     }
   ]
 }

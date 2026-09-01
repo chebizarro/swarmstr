@@ -8,11 +8,9 @@ package main
 // gateway.suspend.prepare/status/resume drive the cooperative suspend
 // coordinator (internal/gateway/suspend): a durable suspension-id lifecycle
 // (idle→preparing→suspended→resuming→idle) that closes a shared accepting-work
-// gate so the cooperative background dispatchers (cron scheduler, dreaming/
-// promotion job, memory compaction) stop dispatching NEW work while a
-// suspension is active, while quiescing in-flight agent runs + sessions (the
-// same readiness inspector as gateway.restart.preflight — in-flight work is
-// reported, never hard-killed).
+// gate so cooperative background dispatchers and interactive model/task turns
+// stop accepting NEW work while a suspension is active. Work admitted before
+// prepare drains under leases and is never hard-killed.
 
 import (
 	"context"
@@ -36,25 +34,28 @@ func (h controlRPCHandler) suspendInFlight() suspendpkg.InFlight {
 	if h.deps.sessionStore != nil {
 		inFlight.ActiveSessions = len(h.deps.sessionStore.List())
 	}
+	if h.deps.suspendCoordinator != nil {
+		inFlight.InteractiveLeases = h.deps.suspendCoordinator.ActiveWork()
+	}
 	return inFlight
 }
 
 // suspendResult renders the wire response shared by prepare/status/resume.
 func suspendResult(rec suspendpkg.Record, inFlight suspendpkg.InFlight, pausedWorkers []string) map[string]any {
 	suspended := rec.State == suspendpkg.StateSuspended
+	active := rec.State != suspendpkg.StateIdle
 	result := map[string]any{
 		"ok":    true,
 		"state": rec.State,
-		// scope documents honestly that this is a COOPERATIVE, background-dispatch
-		// suspension: it pauses the timer-driven background workers (pausedWorkers)
-		// but does NOT gate the interactive surfaces (agent runs, DM turns, task-
-		// runner queued runs). Those keep accepting requests and are reported via
-		// inFlight so an operator can wait for them to drain — never hard-killed.
-		"scope":             "background-dispatch",
-		"interactiveActive": true,
+		// Full-daemon cooperative suspension: background dispatchers pause and
+		// interactive model turns/task enqueues are atomically admission-gated.
+		// Existing leases drain naturally; no in-flight work is hard-killed.
+		"scope":             "full-daemon",
+		"interactiveActive": rec.State == suspendpkg.StateIdle,
 		"inFlight": map[string]any{
-			"agentRuns": inFlight.AgentRuns,
-			"sessions":  inFlight.ActiveSessions,
+			"agentRuns":         inFlight.AgentRuns,
+			"sessions":          inFlight.ActiveSessions,
+			"interactiveLeases": inFlight.InteractiveLeases,
 		},
 		// quiesced == suspended AND no in-flight interactive work remaining. The
 		// background dispatchers are paused regardless (gate closed); this reports
@@ -71,8 +72,8 @@ func suspendResult(rec suspendpkg.Record, inFlight suspendpkg.InFlight, pausedWo
 	if rec.Reason != "" {
 		result["reason"] = rec.Reason
 	}
-	// pausedWorkers is only meaningful while a suspension is active.
-	if suspended && len(pausedWorkers) > 0 {
+	// pausedWorkers is meaningful as soon as prepare closes the admission gate.
+	if active && len(pausedWorkers) > 0 {
 		result["pausedWorkers"] = pausedWorkers
 	} else {
 		result["pausedWorkers"] = []string{}
@@ -81,7 +82,6 @@ func suspendResult(rec suspendpkg.Record, inFlight suspendpkg.InFlight, pausedWo
 }
 
 func (h controlRPCHandler) handleGatewayLifecycleRPC(ctx context.Context, in nostruntime.ControlRPCInbound, method string, cfg state.ConfigDoc) (nostruntime.ControlRPCResult, bool, error) {
-	_ = ctx
 	_ = cfg
 	switch method {
 	case methods.MethodGatewayRestartPreflight:
@@ -182,6 +182,11 @@ func (h controlRPCHandler) handleGatewayLifecycleRPC(ctx context.Context, in nos
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		result := suspendResult(rec, h.suspendInFlight(), h.deps.suspendCoordinator.PausableWorkers())
+		if h.deps.services != nil && h.deps.services.tasks.runner != nil {
+			if resumeErr := h.deps.services.tasks.runner.ResumeQueued(ctx); resumeErr != nil {
+				result["queuedResumeWarning"] = resumeErr.Error()
+			}
+		}
 		return nostruntime.ControlRPCResult{Result: result}, true, nil
 	}
 	return nostruntime.ControlRPCResult{}, false, nil

@@ -166,10 +166,16 @@ exposes this for agents.
 | NIP-57 | Supported | Zap receipts (kind:9735)              |
 | NIP-29 | Planned   | Relay-based groups                    |
 
-## DVM support (NIP-89/90)
+## ContextVM and legacy DVM compatibility
 
-metiq can operate as a **Data Vending Machine** (DVM) — accepting job requests from
-the Nostr network and returning results. Enable in config:
+ContextVM/MCP-over-Nostr is the default integration for remote tools and control
+workloads. It uses addressed kind `25910` events and the `contextvm_discover`,
+`contextvm_tools_list`, and `contextvm_call` agent tools. ContextVM is not a
+drop-in implementation of NIP-90 marketplace, bid, invoice, or status semantics.
+
+NIP-90 requester/provider support is deprecated, disabled by default, and retained
+only through the next breaking release for existing relay counterparties. To opt
+into the complete legacy compatibility bundle:
 
 ```json
 {
@@ -182,7 +188,11 @@ the Nostr network and returning results. Enable in config:
 }
 ```
 
-DVM sessions use `sessionID = "dvm:<jobID>"`.
+`extra.dvm.enabled = true` exposes both the outbound `nostr_dvm_request` tool and
+the inbound provider that accepts addressed kind `5000`–`5999` requests. Enabling
+it therefore increases inbound relay-facing surface; changing it requires a daemon
+restart. Legacy provider sessions use `sessionID = "dvm:<jobID>"`. Migrate new
+MCP/control integrations to ContextVM before the next breaking release.
 
 ## Testing
 

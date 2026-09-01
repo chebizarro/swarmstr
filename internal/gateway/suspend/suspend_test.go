@@ -1,6 +1,7 @@
 package suspend
 
 import (
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -240,6 +241,54 @@ func TestGateGatesDispatch(t *testing.T) {
 	}
 	if dispatched != 2 {
 		t.Fatalf("dispatched=%d, want 2 after resume", dispatched)
+	}
+}
+
+func TestInteractiveAdmissionLeaseDrainsWithoutPolling(t *testing.T) {
+	c := NewCoordinator()
+	lease, err := c.BeginWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ActiveWork() != 1 {
+		t.Fatalf("active work=%d", c.ActiveWork())
+	}
+	rec, err := c.Prepare("maintenance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.State != StatePreparing {
+		t.Fatalf("state=%q, want preparing while lease active", rec.State)
+	}
+	if _, err := c.BeginWork(); !errors.Is(err, ErrAdmissionClosed) {
+		t.Fatalf("expected admission closed, got %v", err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if rec := c.State(); rec.State != StateSuspended || c.ActiveWork() != 0 {
+		t.Fatalf("after drain record=%+v active=%d", rec, c.ActiveWork())
+	}
+}
+
+func TestResumeCanCancelPreparingSuspension(t *testing.T) {
+	c := NewCoordinator()
+	lease, err := c.BeginWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := c.Prepare("maintenance")
+	if err != nil || rec.State != StatePreparing {
+		t.Fatalf("prepare record=%+v err=%v", rec, err)
+	}
+	if _, err := c.Resume(rec.SuspensionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if c.State().State != StateIdle || !c.AcceptingWork() {
+		t.Fatalf("resume did not reopen admission: %+v", c.State())
 	}
 }
 

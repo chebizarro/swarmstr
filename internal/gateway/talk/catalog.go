@@ -1,13 +1,11 @@
 package talk
 
-// Talk session modes advertised by talk.catalog. gateway-relay realtime,
-// transcription-only, and the stt→brain→tts pipeline are the metiq-supported
-// pipelines; managed-room is intentionally absent (accepted deviation).
+// Talk session modes advertised by talk.catalog. Both gateway-relay and an
+// optionally configured managed-room transport use these pipelines.
 var catalogModes = []string{"realtime", "transcription", "stt-tts"}
 
-// Transport availability for talk.catalog. gateway-relay is the live server-
-// owned transport; managed-room needs LiveKit infra metiq does not ship;
-// webrtc / provider-websocket are browser-owned (talk.client.*) and only ready
+// Transport availability for talk.catalog. Managed-room readiness is supplied
+// by the daemon when a room adapter is configured; browser transports are ready
 // once a realtimevoice provider advertises browser-session support.
 type transportDescriptor struct {
 	ID    string `json:"id"`
@@ -36,6 +34,8 @@ type CatalogInput struct {
 	// BrowserRealtime reports whether any realtime provider supports browser-
 	// owned sessions (talk.client.* create). False while unwired.
 	BrowserRealtime bool
+	// ManagedRoom reports whether the daemon configured a managed-room adapter.
+	ManagedRoom bool
 }
 
 // BuildCatalog assembles the talk.catalog payload. The speech section reflects
@@ -57,7 +57,7 @@ func BuildCatalog(in CatalogInput) map[string]any {
 
 	transports := []transportDescriptor{
 		{ID: "gateway-relay", Owner: "server", Ready: true},
-		{ID: "managed-room", Owner: "server", Ready: false, Note: "requires managed-room/LiveKit infra (not available in metiq)"},
+		{ID: "managed-room", Owner: "server", Ready: in.ManagedRoom, Note: managedRoomNote(in.ManagedRoom)},
 		{ID: "webrtc", Owner: "browser", Ready: in.BrowserRealtime, Note: browserNote(in.BrowserRealtime)},
 		{ID: "provider-websocket", Owner: "browser", Ready: in.BrowserRealtime, Note: browserNote(in.BrowserRealtime)},
 	}
@@ -80,6 +80,13 @@ func BuildCatalog(in CatalogInput) map[string]any {
 			"providers": providerList(in.Realtime),
 		},
 	}
+}
+
+func managedRoomNote(ready bool) string {
+	if ready {
+		return ""
+	}
+	return "managed-room adapter is not configured"
 }
 
 func browserNote(ready bool) string {

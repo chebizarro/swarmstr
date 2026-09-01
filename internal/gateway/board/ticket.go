@@ -168,6 +168,7 @@ func (s *Store) GetSnapshotWithTickets(sessionKey string) Snapshot {
 	if !ok {
 		return emptySnapshot(sessionKey)
 	}
+	s.revokeStalePluginGrantsLocked(b)
 	snapshot := CloneSnapshot(b.snapshot)
 	expiresAtMs := s.now().Add(ViewTicketTTL).UnixMilli()
 	for i := range snapshot.Widgets {
@@ -215,6 +216,7 @@ func (s *Store) ResolveViewTicket(ticket string) (AuthorizedView, error) {
 	if !okBoard {
 		return AuthorizedView{}, errInvalid("board widget view ticket is stale")
 	}
+	s.revokeStalePluginGrantsLocked(b)
 	doc := b.documents[claims.Name]
 	if doc == nil ||
 		(doc.GrantState != GrantNone && doc.GrantState != GrantGranted) ||

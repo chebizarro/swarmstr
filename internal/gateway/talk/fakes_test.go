@@ -3,6 +3,7 @@ package talk
 import (
 	"context"
 
+	browserpkg "metiq/internal/browser"
 	"metiq/internal/realtimestt"
 	"metiq/internal/realtimevoice"
 	"metiq/internal/tts"
@@ -67,11 +68,19 @@ type fakeBrowserVoiceProvider struct {
 	fakeVoiceProvider
 }
 
-func (f *fakeBrowserVoiceProvider) CreateBrowserSession(ctx context.Context, cfg BrowserSessionConfig) (map[string]any, error) {
+func (f *fakeBrowserVoiceProvider) CreateBrowserSession(ctx context.Context, cfg BrowserSessionConfig) (browserpkg.Session, error) {
 	if f.browserFail != nil {
 		return nil, f.browserFail
 	}
-	return map[string]any{"offer": "sdp-offer", "voice": cfg.Voice}, nil
+	return browserpkg.Session{"offer": "sdp-offer", "voice": cfg.Voice}, nil
+}
+
+type mismatchedBrowserVoiceProvider struct {
+	fakeVoiceProvider
+}
+
+func (f *mismatchedBrowserVoiceProvider) CreateBrowserSession(context.Context, BrowserSessionConfig) (browserpkg.Session, error) {
+	return browserpkg.Session{"transport": browserpkg.TransportProviderWebSocket}, nil
 }
 
 type fakeBridge struct {

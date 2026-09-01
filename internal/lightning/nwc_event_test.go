@@ -2,10 +2,24 @@ package lightning
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 
 	nostr "fiatjaf.com/nostr"
 )
+
+func TestPinnedNostrVersionKeepsCheckptrWorkaroundUnderReview(t *testing.T) {
+	const unsafePinnedVersion = "v0.0.0-20260611214214-c4534c716026"
+	goMod, err := os.ReadFile("../../go.mod")
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	pinnedLine := "fiatjaf.com/nostr " + unsafePinnedVersion
+	if !strings.Contains(string(goMod), pinnedLine) {
+		t.Fatalf("fiatjaf.com/nostr changed from audited unsafe version %s; re-audit event.go under Go race/checkptr, then remove or update the local NWC serializer workaround", unsafePinnedVersion)
+	}
+}
 
 func TestNWCEventSigningMatchesUpstreamSerialization(t *testing.T) {
 	keyer, err := NewNWCKeyer("1111111111111111111111111111111111111111111111111111111111111111")

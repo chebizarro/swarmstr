@@ -72,6 +72,57 @@ func TestViewTicketRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPluginPackageUpdateRevokesGrantAndStalesTicket(t *testing.T) {
+	s := NewStore()
+	digest := "sha256:package-a"
+	available := true
+	s.SetPluginGrantResolver(func(capabilityID string) (PluginGrantIdentity, bool) {
+		if !available || capabilityID != "dash.stats" {
+			return PluginGrantIdentity{}, false
+		}
+		return PluginGrantIdentity{PluginID: "dash", PackageDigest: digest}, true
+	})
+
+	snap := putHTMLWidget(t, s, "sess", "chart", []string{"dash.stats"})
+	widget := snap.Widgets[0]
+	snap, err := s.Grant("sess", "chart", GrantGranted, widget.Revision, widget.InstanceID)
+	if err != nil {
+		t.Fatalf("grant package a: %v", err)
+	}
+	widget = snap.Widgets[0]
+	if got := widget.PluginGrantIdentities["dash.stats"].PackageDigest; got != digest {
+		t.Fatalf("captured package digest=%q, want %q", got, digest)
+	}
+	oldTicket := ticketFor(t, s, "sess", "chart")
+	oldRevision := widget.Revision
+
+	digest = "sha256:package-b"
+	snap = s.GetSnapshot("sess")
+	widget = snap.Widgets[0]
+	if widget.GrantState != GrantPending || widget.Revision <= oldRevision {
+		t.Fatalf("package update did not revoke grant: %+v", widget)
+	}
+	if _, err := s.ResolveViewTicket(oldTicket); err == nil {
+		t.Fatal("ticket minted for prior package remained authorized")
+	}
+	if snap, err = s.Grant("sess", "chart", GrantGranted, widget.Revision, widget.InstanceID); err != nil {
+		t.Fatalf("re-grant package b: %v", err)
+	}
+	if got := snap.Widgets[0].PluginGrantIdentities["dash.stats"].PackageDigest; got != digest {
+		t.Fatalf("re-grant captured digest=%q, want %q", got, digest)
+	}
+
+	available = false
+	snap = s.GetSnapshot("sess")
+	widget = snap.Widgets[0]
+	if widget.GrantState != GrantPending {
+		t.Fatalf("removed contribution did not revoke grant: %+v", widget)
+	}
+	if _, err := s.Grant("sess", "chart", GrantGranted, widget.Revision, widget.InstanceID); err == nil || !strings.Contains(err.Error(), "no longer available") {
+		t.Fatalf("removed capability re-grant error=%v", err)
+	}
+}
+
 func TestViewTicketGrantLifecycle(t *testing.T) {
 	s := NewStore()
 	snap := putHTMLWidget(t, s, "sess", "chart", []string{"prompt", "health"})

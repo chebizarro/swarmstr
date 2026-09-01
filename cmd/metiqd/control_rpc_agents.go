@@ -197,7 +197,7 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		}
 		if agentRegistry != nil {
 			if rt, rtErr := agent.BuildRuntimeForModel(req.Model, tools); rtErr == nil {
-				agentRegistry.Set(req.AgentID, rt)
+				agentRegistry.Set(req.AgentID, wrapRuntimeForSuspend(rt, controlSuspendCoordinator))
 			} else {
 				log.Printf("agents.create: runtime build warning id=%s model=%q err=%v", req.AgentID, req.Model, rtErr)
 			}
@@ -234,7 +234,7 @@ func (h controlRPCHandler) handleAgentRPC(ctx context.Context, in nostruntime.Co
 		}
 		if agentRegistry != nil && req.Model != "" {
 			if rt, rtErr := agent.BuildRuntimeForModel(doc.Model, tools); rtErr == nil {
-				agentRegistry.Set(req.AgentID, rt)
+				agentRegistry.Set(req.AgentID, wrapRuntimeForSuspend(rt, controlSuspendCoordinator))
 			} else {
 				log.Printf("agents.update: runtime rebuild warning id=%s model=%q err=%v", req.AgentID, doc.Model, rtErr)
 			}

@@ -15,6 +15,39 @@ import (
 	runtime "metiq/internal/nostr/runtime"
 )
 
+func TestCompatibilityConfigFromExtraFailsClosed(t *testing.T) {
+	tests := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{name: "missing"},
+		{name: "wrong section type", extra: map[string]any{"dvm": true}},
+		{name: "missing enabled", extra: map[string]any{"dvm": map[string]any{}}},
+		{name: "false", extra: map[string]any{"dvm": map[string]any{"enabled": false}}},
+		{name: "wrong enabled type", extra: map[string]any{"dvm": map[string]any{"enabled": "true"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CompatibilityConfigFromExtra(tt.extra); got.Enabled || len(got.AcceptedKinds) != 0 {
+				t.Fatalf("CompatibilityConfigFromExtra() = %+v, want disabled zero value", got)
+			}
+		})
+	}
+}
+
+func TestCompatibilityConfigFromExtraEnabledKinds(t *testing.T) {
+	got := CompatibilityConfigFromExtra(map[string]any{"dvm": map[string]any{
+		"enabled": true,
+		"kinds":   []any{float64(5000), "ignored", 5001},
+	}})
+	if !got.Enabled {
+		t.Fatal("expected compatibility bundle enabled")
+	}
+	if len(got.AcceptedKinds) != 2 || got.AcceptedKinds[0] != 5000 || got.AcceptedKinds[1] != 5001 {
+		t.Fatalf("accepted kinds = %v, want [5000 5001]", got.AcceptedKinds)
+	}
+}
+
 func testSigner(t *testing.T) nostr.Keyer {
 	t.Helper()
 	sk := nostr.Generate()

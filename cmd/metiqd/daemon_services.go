@@ -32,6 +32,7 @@ import (
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
 	pluginmanager "metiq/internal/plugins/manager"
+	pluginregistry "metiq/internal/plugins/registry"
 	pluginservice "metiq/internal/plugins/service"
 	secretspkg "metiq/internal/secrets"
 	"metiq/internal/store/state"
@@ -165,6 +166,7 @@ type handlerServices struct {
 	secretsStore       *secretspkg.Store
 	pairingConfigMu    *sync.Mutex
 	hooksMgr           *hookspkg.Manager
+	pluginRegistry     *pluginregistry.UnifiedRegistry
 	pluginMgr          *pluginmanager.GojaPluginManager
 	pluginServiceMgr   *pluginservice.ServiceManager
 	mcpOps             *mcpOpsController

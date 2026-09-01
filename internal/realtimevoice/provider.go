@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	browserpkg "metiq/internal/browser"
 )
 
 type ProviderInvoker interface {
@@ -87,6 +89,54 @@ func (p *PluginProvider) ListVoices(ctx context.Context) ([]VoiceInfo, error) {
 	}
 	return wrap.Voices, nil
 }
+
+// BrowserTransports returns plugin-advertised browser transports when present.
+// Older plugins may implement createBrowserSession without metadata; callers can
+// still select those providers explicitly.
+func (p *PluginProvider) BrowserTransports() []string {
+	if p == nil {
+		return nil
+	}
+	if transports := stringSliceValue(p.raw["transports"]); len(transports) > 0 {
+		return transports
+	}
+	if capabilities := asMap(p.raw["capabilities"]); capabilities != nil {
+		return stringSliceValue(capabilities["transports"])
+	}
+	return nil
+}
+
+// CreateBrowserSession dispatches the optional plugin browser-session method.
+// Camel-case matches the OpenClaw provider contract; snake-case preserves node
+// plugin compatibility with metiq's existing provider method convention.
+func (p *PluginProvider) CreateBrowserSession(ctx context.Context, cfg browserpkg.SessionConfig) (browserpkg.Session, error) {
+	if p == nil || p.host == nil {
+		return nil, fmt.Errorf("voice provider %q has no plugin host", p.providerID)
+	}
+	params := map[string]any{
+		"transport": cfg.Transport,
+		"voice":     cfg.Voice,
+		"language":  cfg.Language,
+		"model":     cfg.Model,
+	}
+	var lastErr error
+	for _, method := range []string{"createBrowserSession", "create_browser_session"} {
+		res, err := p.host.InvokeProvider(ctx, p.providerID, method, params)
+		if err != nil {
+			lastErr = err
+			if isMissingProviderMethod(err) {
+				continue
+			}
+			return nil, err
+		}
+		session := asMap(res)
+		if session == nil {
+			return nil, fmt.Errorf("voice provider %q returned an invalid browser session", p.providerID)
+		}
+		return browserpkg.Session(cloneMap(session)), nil
+	}
+	return nil, fmt.Errorf("voice provider %q does not support browser-owned sessions: %w", p.providerID, lastErr)
+}
 func sessionID(v any) string {
 	if s, ok := v.(string); ok {
 		return s
@@ -135,6 +185,23 @@ func cloneMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func stringSliceValue(v any) []string {
+	switch values := v.(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func asMap(v any) map[string]any {

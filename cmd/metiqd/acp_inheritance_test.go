@@ -343,7 +343,7 @@ func TestResolveAgentTurnToolSurfaceIntersectsPerTurnConstraints(t *testing.T) {
 
 func TestResolveAgentTurnToolSurfaceBlocksFleetWritesInPrivateSession(t *testing.T) {
 	baseTools := agent.NewToolRegistry()
-	for _, name := range []string{"memory_search", "nostr_fetch", "nostr_publish", "nostr_send_dm", "nostr_agent_rpc"} {
+	for _, name := range []string{"memory_search", "nostr_fetch", "nostr_publish", "nostr_send_dm", "nostr_agent_rpc", "fleet_tasks", "task_add", "task_list"} {
 		toolName := name
 		baseTools.RegisterWithDef(toolName, func(context.Context, map[string]any) (string, error) { return toolName, nil }, agent.ToolDefinition{
 			Name:        toolName,
@@ -363,17 +363,20 @@ func TestResolveAgentTurnToolSurfaceBlocksFleetWritesInPrivateSession(t *testing
 	}
 
 	rt, exec, defs := resolveAgentTurnToolSurface(
-		context.Background(), state.ConfigDoc{Agents: []state.AgentConfig{{
-			ID:           "worker",
-			EnabledTools: []string{"memory_search", "nostr_fetch", "nostr_publish", "nostr_send_dm", "nostr_agent_rpc"},
-		}}}, docsRepo, "session-private", "worker",
+		context.Background(), state.ConfigDoc{
+			FleetTasks: state.FleetTasksConfig{Enabled: true},
+			Agents: []state.AgentConfig{{
+				ID:           "worker",
+				EnabledTools: []string{"memory_search", "nostr_fetch", "nostr_publish", "nostr_send_dm", "nostr_agent_rpc", "fleet_tasks", "task_add", "task_list"},
+			}},
+		}, docsRepo, "session-private", "worker",
 		&filterableRuntime{}, baseTools, turnToolConstraints{},
 	)
 	filteredRuntime, ok := rt.(*filterableRuntime)
 	if !ok {
 		t.Fatalf("runtime type = %T, want *filterableRuntime", rt)
 	}
-	for _, blocked := range []string{"nostr_publish", "nostr_send_dm", "nostr_agent_rpc"} {
+	for _, blocked := range []string{"nostr_publish", "nostr_send_dm", "nostr_agent_rpc", "fleet_tasks"} {
 		if filteredRuntime.allowed[blocked] {
 			t.Fatalf("private runtime exposes blocked tool %q: %v", blocked, filteredRuntime.allowed)
 		}
@@ -381,13 +384,44 @@ func TestResolveAgentTurnToolSurfaceBlocksFleetWritesInPrivateSession(t *testing
 			t.Fatalf("private executor invoked blocked tool %q", blocked)
 		}
 	}
-	for _, retained := range []string{"memory_search", "nostr_fetch"} {
+	for _, retained := range []string{"memory_search", "nostr_fetch", "task_add", "task_list"} {
 		if !filteredRuntime.allowed[retained] {
 			t.Fatalf("private runtime removed read-only tool %q: %v", retained, filteredRuntime.allowed)
 		}
 	}
-	if got := len(defs); got != 2 {
-		t.Fatalf("private definitions len = %d, want 2: %+v", got, defs)
+	if got := len(defs); got != 4 {
+		t.Fatalf("private definitions len = %d, want 4: %+v", got, defs)
+	}
+}
+
+func TestResolveAgentTurnToolSurfaceSuppressesLocalQueueInFleetSession(t *testing.T) {
+	baseTools := agent.NewToolRegistry()
+	for _, name := range []string{"fleet_tasks", "task_add", "task_list", "task_update", "task_remove"} {
+		toolName := name
+		baseTools.RegisterWithDef(toolName, func(context.Context, map[string]any) (string, error) { return toolName, nil }, agent.ToolDefinition{Name: toolName})
+	}
+
+	rt, exec, defs := resolveAgentTurnToolSurface(
+		context.Background(), state.ConfigDoc{FleetTasks: state.FleetTasksConfig{Enabled: true}},
+		nil, "session-fleet", "worker", &filterableRuntime{}, baseTools, turnToolConstraints{},
+	)
+	filteredRuntime, ok := rt.(*filterableRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want *filterableRuntime", rt)
+	}
+	if !filteredRuntime.allowed["fleet_tasks"] {
+		t.Fatalf("fleet runtime removed fleet_tasks: %v", filteredRuntime.allowed)
+	}
+	for name := range localScratchTaskTools {
+		if filteredRuntime.allowed[name] {
+			t.Fatalf("fleet runtime exposes local scratch tool %q: %v", name, filteredRuntime.allowed)
+		}
+		if _, err := exec.Execute(context.Background(), agent.ToolCall{Name: name}); err == nil {
+			t.Fatalf("fleet executor invoked local scratch tool %q", name)
+		}
+	}
+	if len(defs) != 1 || defs[0].Name != "fleet_tasks" {
+		t.Fatalf("fleet definitions=%+v want fleet_tasks only", defs)
 	}
 }
 

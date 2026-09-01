@@ -50,6 +50,11 @@ const (
 	MethodSessionsGet                        = "sessions.get"
 	MethodSessionsResolve                    = "sessions.resolve"
 	MethodSessionsRecover                    = "sessions.recover"
+	MethodSessionsGoalUpdate                 = "sessions.goal.update"
+	MethodSessionsGoalClear                  = "sessions.goal.clear"
+	MethodSessionsUsage                      = "sessions.usage"
+	MethodSessionsUsageTimeseries            = "sessions.usage.timeseries"
+	MethodSessionsUsageLogs                  = "sessions.usage.logs"
 	MethodSessionsSteer                      = "sessions.steer"
 	MethodSessionsViewersSet                 = "sessions.viewers.set"
 	MethodSessionsAssignOwner                = "sessions.assignOwner"
@@ -190,6 +195,8 @@ const (
 	// skills.proposals.* — skill-workshop proposals core (WS-G, swarmstr-xfny.4)
 	// plus the history-scan + revision-request follow-ups (swarmstr-xfny.5).
 	MethodSkillsProposalsList            = "skills.proposals.list"
+	MethodSkillsProposalsEventsList      = "skills.proposals.events.list"
+	MethodSkillsProposalsEvaluate        = "skills.proposals.evaluate"
 	MethodSkillsProposalsInspect         = "skills.proposals.inspect"
 	MethodSkillsProposalsHistoryStatus   = "skills.proposals.historyStatus"
 	MethodSkillsProposalsHistoryScan     = "skills.proposals.historyScan"
@@ -390,6 +397,7 @@ const (
 	MethodTalkClientToolCall          = "talk.client.toolCall"
 	MethodTalkClientSteer             = "talk.client.steer"
 
+	MethodHooksStatus              = "hooks.status"
 	MethodHooksList                = "hooks.list"
 	MethodHooksEnable              = "hooks.enable"
 	MethodHooksDisable             = "hooks.disable"
@@ -515,7 +523,8 @@ const (
 	// audit.list — list permission-engine audit-log entries (filters:
 	// time/type/tool/limit). Backed by the WS-G permission engine's durable
 	// Auditor (internal/permissions).
-	MethodAuditList = "audit.list"
+	MethodAuditList       = "audit.list"
+	MethodAuditRunInspect = "audit.run.inspect"
 
 	// audit.activity.list — agent/session activity feed projected from the same
 	// permission-engine audit log (decision/override/escalation events carry the

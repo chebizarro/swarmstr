@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"metiq/internal/store/state"
@@ -55,7 +56,10 @@ const (
 	maxSkillArchiveFiles = 10_000
 )
 
-var skillArchiveSha256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var (
+	skillArchiveSha256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	uploadLocks               sync.Map // absolute record path -> *sync.Mutex
+)
 
 // uploadRecord is the persisted per-upload metadata document.
 type uploadRecord struct {
@@ -94,9 +98,19 @@ func NewUploadStore() *UploadStore {
 	return &UploadStore{root: filepath.Join(ManagedSkillsDir(), "tmp", uploadDirName)}
 }
 
-func (s *UploadStore) uploadDir(id string) string  { return filepath.Join(s.root, id) }
-func (s *UploadStore) recordPath(id string) string { return filepath.Join(s.uploadDir(id), uploadRecordFile) }
-func (s *UploadStore) dataPath(id string) string   { return filepath.Join(s.uploadDir(id), uploadDataFile) }
+func (s *UploadStore) uploadDir(id string) string { return filepath.Join(s.root, id) }
+func (s *UploadStore) recordPath(id string) string {
+	return filepath.Join(s.uploadDir(id), uploadRecordFile)
+}
+func (s *UploadStore) dataPath(id string) string {
+	return filepath.Join(s.uploadDir(id), uploadDataFile)
+}
+
+func (s *UploadStore) uploadLock(id string) *sync.Mutex {
+	key := s.recordPath(strings.TrimSpace(id))
+	lock, _ := uploadLocks.LoadOrStore(key, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
 
 func newUploadID() (string, error) {
 	buf := make([]byte, 12)
@@ -249,6 +263,10 @@ func (s *UploadStore) Begin(in UploadBeginInput) (map[string]any, error) {
 
 // Chunk appends one sequential chunk of decoded archive bytes.
 func (s *UploadStore) Chunk(uploadID string, offset int64, data []byte) (map[string]any, error) {
+	lock := s.uploadLock(uploadID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty upload chunk")
 	}
@@ -301,6 +319,10 @@ func (s *UploadStore) Chunk(uploadID string, offset int64, data []byte) (map[str
 // with the skill linter, and marks the upload committed. It rejects the commit
 // when the archive fails the security scan (any lint error).
 func (s *UploadStore) Commit(uploadID, sha256Hex string) (map[string]any, error) {
+	lock := s.uploadLock(uploadID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	now := nowMillis()
 	rec, err := s.loadRecord(uploadID)
 	if err != nil {

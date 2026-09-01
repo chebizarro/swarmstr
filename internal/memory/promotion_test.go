@@ -490,7 +490,55 @@ func TestPromotionManager_WithSummarizer(t *testing.T) {
 	}
 }
 
-// ── Integration Tests ───────────────────────────────────────────────────────
+func TestPromotionManager_SummarizedGroupRollsBackAtomically(t *testing.T) {
+	backend, _ := createTestSQLiteBackend(t)
+	defer backend.Close()
+
+	cfg := DefaultPromotionConfig()
+	cfg.MinRecallCount = 2
+	cfg.MinUniqueQueries = 1
+	cfg.MinScore = 0.5
+	cfg.EnableSummary = true
+	manager := NewPromotionManager(backend, cfg)
+	manager.SetSummarizer(func([]IndexedMemory) (string, error) { return "atomic summary", nil })
+
+	addTestMemory(backend, "mem1", "First memory", "test-topic")
+	addTestMemory(backend, "mem2", "Second memory", "test-topic")
+	for _, id := range []string{"mem1", "mem2"} {
+		manager.Tracker().TrackRecall(id, "query1", 0.9)
+		manager.Tracker().TrackRecall(id, "query2", 0.8)
+	}
+	if err := manager.Tracker().Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	candidates, err := manager.FindCandidates()
+	if err != nil {
+		t.Fatalf("find candidates: %v", err)
+	}
+	if _, err := backend.db.Exec(`CREATE TRIGGER fail_second_promotion BEFORE UPDATE ON recall_tracking WHEN OLD.memory_id = 'mem2' BEGIN SELECT RAISE(ABORT, 'forced promotion failure'); END`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	promoted, err := manager.promoteGroup("test-topic", candidates, time.Now().Unix())
+	if err == nil {
+		t.Fatal("expected forced transactional failure")
+	}
+	if len(promoted) != 0 {
+		t.Fatalf("reported promoted IDs after rollback: %v", promoted)
+	}
+	var claimed, consolidated int
+	if err := backend.db.QueryRow(`SELECT COUNT(*) FROM recall_tracking WHERE promoted_at IS NOT NULL`).Scan(&claimed); err != nil {
+		t.Fatalf("count claims: %v", err)
+	}
+	if err := backend.db.QueryRow(`SELECT COUNT(*) FROM chunks WHERE type = 'consolidated'`).Scan(&consolidated); err != nil {
+		t.Fatalf("count consolidated: %v", err)
+	}
+	if claimed != 0 || consolidated != 0 {
+		t.Fatalf("partial promotion survived rollback: claims=%d consolidated=%d", claimed, consolidated)
+	}
+}
+
+// ── Integration Tests ────────────────────────────────────────────────────────
 
 func TestSearchWithTracking(t *testing.T) {
 	backend, _ := createTestSQLiteBackend(t)

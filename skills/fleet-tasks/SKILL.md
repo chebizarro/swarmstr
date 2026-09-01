@@ -50,10 +50,20 @@ initial claim with `status=in_progress`, a non-empty assignee, and
 
 Do not edit because a Beads file, queue entry, room message, or one relay event
 says work is available. Competing claims settle by the earliest claim
-`created_at`; equal timestamps choose the lowest event ID. Wait for the
-configured settlement interval or observed peer heads, then verify your origin
-won before editing. Peer settlement is eventual: an earlier unseen claim may
-still appear.
+`created_at`; equal timestamps choose the lowest event ID.
+
+Using `fleet_tasks`, follow this confirmation sequence exactly:
+
+1. `claim` with the fresh `effective_event_id` as `base_event_id`.
+2. Wait until the configured claim settlement interval has elapsed while the
+   live subscription remains open.
+3. `inspect` the task again.
+4. Start work only when `resolution` is `effective` and `winning_claim` names
+   your claim's origin event ID, origin pubkey, claimed timestamp, and assignee.
+
+This settlement check is not linearizable: an earlier unseen claim may still
+arrive after inspection. Re-inspect before risky work and stand down if the
+winning origin changes.
 
 If your claim loses, stop work, reload the winning snapshot, preserve the
 winner's assignee, claimed timestamp, origin event ID, and origin pubkey, then
@@ -80,8 +90,11 @@ snapshot with a concise reason, blocker description, `blocked_at`, durable
 unblock instructions, and stable evidence. Preserve the winning assignee,
 claimed timestamp, and origin metadata.
 
-This version has no coordinator-free release or reassignment epoch. Create a
-successor linked by `discovered-from` when reassignment is required.
+This version has no coordinator-free release or reassignment epoch. The
+`handoff` action is lineage-preserving only: it requires an existing winning
+claim and the same assignee, and records a structured handoff note. It cannot
+introduce a claim or reassign claimed work. Use `claim` for unclaimed work;
+create a successor linked by `discovered-from` when reassignment is required.
 
 ### 5. Verify and request review
 

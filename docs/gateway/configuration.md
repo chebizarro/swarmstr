@@ -370,6 +370,19 @@ Arbitrary key-value configuration for features that don't have top-level section
 }
 ```
 
+`extra.dvm.enabled` is a deprecated, startup-only compatibility flag. Its default
+is `false`. Setting it to `true` registers the legacy outbound
+`nostr_dvm_request` tool **and** starts the inbound NIP-90 provider for the kinds
+listed in `extra.dvm.kinds` (default provider kind: `5000`). A daemon restart is
+required after changing the flag.
+
+Legacy NIP-90 support is retained only through the next breaking release. Prefer
+the default ContextVM tools (`contextvm_discover`, `contextvm_tools_list`, and
+`contextvm_call`) for new MCP/control integrations. ContextVM does not reproduce
+NIP-90 marketplace, bid, invoice, or status semantics; keep the compatibility
+flag enabled only while migrating an existing NIP-90 counterparty. Rolling back
+by enabling the flag also increases inbound relay-facing surface.
+
 ## Config Paths
 
 | Path | Purpose |

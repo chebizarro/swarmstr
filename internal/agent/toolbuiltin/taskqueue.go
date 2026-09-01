@@ -166,7 +166,7 @@ func (s *taskStore) pruneLocked(now time.Time) int {
 // TaskAddDef is the ToolDefinition for task_add.
 var TaskAddDef = agent.ToolDefinition{
 	Name:        "task_add",
-	Description: "Add a new task to the persistent task queue. Returns the task ID. Use to track discrete units of work that survive session restarts.",
+	Description: "LOCAL-ONLY scratch tracking: add a task to this node's private JSON queue. It survives restarts but is never published to fleet peers; use fleet_tasks for shared coordination. Returns the local task ID.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
@@ -191,7 +191,7 @@ var TaskAddDef = agent.ToolDefinition{
 // TaskListDef is the ToolDefinition for task_list.
 var TaskListDef = agent.ToolDefinition{
 	Name:        "task_list",
-	Description: "List tasks in the queue. Filter by status or priority. Returns all tasks matching the filter, sorted by created_at descending.",
+	Description: "LOCAL-ONLY scratch tracking: list this node's private JSON tasks. These are never fleet state; use fleet_tasks for shared coordination. Filter by status or priority, sorted by created_at descending.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
@@ -212,7 +212,7 @@ var TaskListDef = agent.ToolDefinition{
 // TaskUpdateDef is the ToolDefinition for task_update.
 var TaskUpdateDef = agent.ToolDefinition{
 	Name:        "task_update",
-	Description: "Update the status, notes, or priority of an existing task.",
+	Description: "LOCAL-ONLY scratch tracking: update a task in this node's private JSON queue. This never changes fleet state; use fleet_tasks for shared coordination.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{
@@ -242,7 +242,7 @@ var TaskUpdateDef = agent.ToolDefinition{
 // TaskRemoveDef is the ToolDefinition for task_remove.
 var TaskRemoveDef = agent.ToolDefinition{
 	Name:        "task_remove",
-	Description: "Permanently delete a task from the queue.",
+	Description: "LOCAL-ONLY scratch tracking: permanently delete a task from this node's private JSON queue. This never changes fleet state; use fleet_tasks for shared coordination.",
 	Parameters: agent.ToolParameters{
 		Type: "object",
 		Properties: map[string]agent.ToolParamProp{

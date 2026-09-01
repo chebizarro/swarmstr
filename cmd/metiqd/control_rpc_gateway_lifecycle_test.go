@@ -128,6 +128,9 @@ func TestGatewaySuspendPrepareStatusResumeLifecycle(t *testing.T) {
 	if payload["state"] != suspendpkg.StateIdle {
 		t.Fatalf("expected idle state, got %+v", payload)
 	}
+	if payload["scope"] != "full-daemon" || payload["interactiveActive"] != true {
+		t.Fatalf("idle suspend scope/admission mismatch: %+v", payload)
+	}
 	if !coord.AcceptingWork() {
 		t.Fatal("coordinator should accept work before prepare")
 	}
@@ -146,7 +149,7 @@ func TestGatewaySuspendPrepareStatusResumeLifecycle(t *testing.T) {
 		t.Fatal("prepare must return a suspensionId")
 	}
 	inFlight := payload["inFlight"].(map[string]any)
-	if inFlight["agentRuns"].(int) != 1 || inFlight["sessions"].(int) != 1 {
+	if inFlight["agentRuns"].(int) != 1 || inFlight["sessions"].(int) != 1 || inFlight["interactiveLeases"].(int) != 0 {
 		t.Fatalf("expected in-flight run+session reported, got %+v", inFlight)
 	}
 	if payload["quiesced"] != false {
@@ -192,5 +195,42 @@ func TestGatewaySuspendPrepareStatusResumeLifecycle(t *testing.T) {
 	// resume again -> rejected (not suspended).
 	if _, err := lifecycleCall(t, h, methods.MethodGatewaySuspendResume, `{}`); err == nil {
 		t.Fatal("resume when not suspended must be rejected")
+	}
+}
+
+func TestGatewaySuspendPrepareWaitsForInteractiveLeaseDrain(t *testing.T) {
+	coord := suspendpkg.NewCoordinator()
+	coord.RegisterPausableWorker("task-runner")
+	lease, err := coord.BeginWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newControlRPCHandler(controlRPCDeps{suspendCoordinator: coord})
+
+	res, err := lifecycleCall(t, h, methods.MethodGatewaySuspendPrepare, `{"reason":"maintenance"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := res.Result.(map[string]any)
+	if payload["state"] != suspendpkg.StatePreparing || payload["interactiveActive"] != false {
+		t.Fatalf("prepare with lease must close admission while draining: %+v", payload)
+	}
+	if got := payload["inFlight"].(map[string]any)["interactiveLeases"].(int); got != 1 {
+		t.Fatalf("interactive leases=%d, want 1", got)
+	}
+	if payload["quiesced"] != false || len(payload["pausedWorkers"].([]string)) != 1 {
+		t.Fatalf("preparing accounting mismatch: %+v", payload)
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	res, err = lifecycleCall(t, h, methods.MethodGatewaySuspendStatus, `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = res.Result.(map[string]any)
+	if payload["state"] != suspendpkg.StateSuspended || payload["quiesced"] != true {
+		t.Fatalf("final lease release must complete suspension: %+v", payload)
 	}
 }

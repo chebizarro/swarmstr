@@ -274,6 +274,15 @@ func (m *Manager) List() []HookStatus {
 	return out
 }
 
+// StatusFor evaluates a hook against the manager's live enable/disable
+// overrides without registering or mutating it. This is used by per-agent
+// status projections that scan a workspace on demand.
+func (m *Manager) StatusFor(h *Hook) HookStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.statusOf(h)
+}
+
 // Info returns status for a single hook by key. Returns nil if not found.
 // Info returns status for a single hook by key. Returns nil if not found.
 func (m *Manager) Info(hookKey string) *HookStatus {

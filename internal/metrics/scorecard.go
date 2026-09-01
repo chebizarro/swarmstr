@@ -14,10 +14,8 @@
 //
 // Parity: mirrors openclaw-nostr ocn-340 (counterpart pending).
 //
-// Follow-up (documented, deliberately not implemented here): MAST LLM-judge
-// transcript annotation — labeling room transcripts with the multi-agent
-// failure taxonomy and joining those codes into this scorecard. Tracked as
-// swarmstr-z4ub.
+// MAST judge annotations are joined through the bounded scheduler and provider
+// seam in mast_judge.go; no transcript text enters exported metric labels.
 package metrics
 
 import (
@@ -50,6 +48,9 @@ const (
 	RoomSignalCommitmentOpened    RoomSignal = "commitment_opened"
 	RoomSignalCommitmentCompleted RoomSignal = "commitment_completed"
 	RoomSignalCommitmentDropped   RoomSignal = "commitment_dropped"
+	RoomSignalMASTRun             RoomSignal = "mast_run"
+	RoomSignalMASTAnnotation      RoomSignal = "mast_annotation"
+	RoomSignalMASTError           RoomSignal = "mast_error"
 	RoomSignalLedgerRun           RoomSignal = "ledger_run"
 	RoomSignalLedgerPost          RoomSignal = "ledger_post"
 	RoomSignalStatusReaction      RoomSignal = "status_reaction"
@@ -73,6 +74,9 @@ func validRoomSignal(signal RoomSignal) bool {
 		RoomSignalCommitmentOpened,
 		RoomSignalCommitmentCompleted,
 		RoomSignalCommitmentDropped,
+		RoomSignalMASTRun,
+		RoomSignalMASTAnnotation,
+		RoomSignalMASTError,
 		RoomSignalLedgerRun,
 		RoomSignalLedgerPost,
 		RoomSignalStatusReaction:
@@ -128,6 +132,7 @@ type roomState struct {
 	msgs           []roomMessage
 	agentRoster    map[string]struct{}
 	commitmentOpen int
+	mastLabels     map[MASTLabel]uint64
 
 	shareMax   *Gauge
 	shareAlarm *Gauge
@@ -207,6 +212,7 @@ func (s *RoomScorecard) roomStateLocked(room string) (string, *roomState) {
 	state := &roomState{
 		metricLabel: metricLabel,
 		signals:     map[RoomSignal]*Counter{},
+		mastLabels:  map[MASTLabel]uint64{},
 		shareMax:    s.registry.GaugeWithLabels(roomShareMaxMetricName, roomShareMaxMetricHelp, map[string]string{"room": metricLabel}),
 		shareAlarm:  s.registry.GaugeWithLabels(roomShareAlarmMetricName, roomShareAlarmMetricHelp, map[string]string{"room": metricLabel}),
 		mentionAge:  s.registry.GaugeWithLabels(roomMentionAgeMetricName, roomMentionAgeMetricHelp, map[string]string{"room": metricLabel}),
@@ -294,6 +300,27 @@ func (s *RoomScorecard) SetUnansweredMentionAge(room string, age time.Duration) 
 	state.mentionAge.Set(age.Seconds())
 }
 
+// RecordMASTAnnotation joins one validated MAST judge result to a room.
+func (s *RoomScorecard) RecordMASTAnnotation(room string, labels []MASTLabel) {
+	unique, err := normalizeMASTLabels(labels)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, state := s.roomStateLocked(room)
+	counter, ok := state.signals[RoomSignalMASTAnnotation]
+	if !ok {
+		counter = s.registry.CounterWithLabels(roomSignalMetricName, roomSignalMetricHelp,
+			map[string]string{"room": state.metricLabel, "signal": string(RoomSignalMASTAnnotation)})
+		state.signals[RoomSignalMASTAnnotation] = counter
+	}
+	counter.Inc()
+	for _, label := range unique {
+		state.mastLabels[label]++
+	}
+}
+
 // pruneLocked evicts window entries past the size or age bound. Callers hold s.mu.
 func (s *RoomScorecard) pruneLocked(state *roomState, now time.Time) {
 	cutoff := now.Add(-s.windowAge)
@@ -346,6 +373,14 @@ type RoomSenderShare struct {
 	Share    float64 `json:"share"`
 }
 
+// RoomMASTSnapshot is the bounded MAST annotation view for one room.
+type RoomMASTSnapshot struct {
+	Runs        uint64            `json:"runs"`
+	Annotations uint64            `json:"annotations"`
+	Errors      uint64            `json:"errors"`
+	ByLabel     map[string]uint64 `json:"by_label,omitempty"`
+}
+
 // RoomScorecardSnapshot is the JSON view of one room's discipline scorecard.
 type RoomScorecardSnapshot struct {
 	Room                        string            `json:"room"`
@@ -372,6 +407,7 @@ type RoomScorecardSnapshot struct {
 	CommitmentsOpened           uint64            `json:"commitments_opened"`
 	CommitmentsCompleted        uint64            `json:"commitments_completed"`
 	CommitmentsDropped          uint64            `json:"commitments_dropped"`
+	MAST                        RoomMASTSnapshot  `json:"mast"`
 	UnansweredMentionAgeSeconds float64           `json:"unanswered_mention_age_seconds"`
 }
 
@@ -434,28 +470,38 @@ func (s *RoomScorecard) Snapshots() []RoomScorecardSnapshot {
 		echoDrops := signalValue(state.signals, RoomSignalEchoDrop)
 		taskEchoOpportunities := signalValue(state.signals, RoomSignalTaskEchoOpportunity)
 		taskEchoDrops := signalValue(state.signals, RoomSignalTaskEchoDrop)
+		mastLabels := make(map[string]uint64, len(state.mastLabels))
+		for label, count := range state.mastLabels {
+			mastLabels[string(label)] = count
+		}
 		snap := RoomScorecardSnapshot{
-			Room:                        room,
-			WindowMessages:              len(state.msgs),
-			DistinctSenders:             len(observedCounts),
-			ObservedTopSenders:          senderShares(observedCounts, len(state.msgs)),
-			AgentWindowMessages:         agentTotal,
-			AgentRosterSize:             len(state.agentRoster),
-			TopSenders:                  senderShares(agentCounts, agentTotal),
-			ShareAlarms:                 alarmed,
-			ACKCandidates:               ackCandidates,
-			ACKConversions:              ackConversions,
-			ACKConversionRate:           ratio(ackConversions, ackCandidates),
-			EchoOpportunities:           echoOpportunities,
-			EchoDrops:                   echoDrops,
-			EchoDropRate:                ratio(echoDrops, echoOpportunities),
-			TaskEchoOpportunities:       taskEchoOpportunities,
-			TaskEchoDrops:               taskEchoDrops,
-			TaskEchoDropRate:            ratio(taskEchoDrops, taskEchoOpportunities),
-			CommitmentsOpen:             state.commitmentOpen,
-			CommitmentsOpened:           signalValue(state.signals, RoomSignalCommitmentOpened),
-			CommitmentsCompleted:        signalValue(state.signals, RoomSignalCommitmentCompleted),
-			CommitmentsDropped:          signalValue(state.signals, RoomSignalCommitmentDropped),
+			Room:                  room,
+			WindowMessages:        len(state.msgs),
+			DistinctSenders:       len(observedCounts),
+			ObservedTopSenders:    senderShares(observedCounts, len(state.msgs)),
+			AgentWindowMessages:   agentTotal,
+			AgentRosterSize:       len(state.agentRoster),
+			TopSenders:            senderShares(agentCounts, agentTotal),
+			ShareAlarms:           alarmed,
+			ACKCandidates:         ackCandidates,
+			ACKConversions:        ackConversions,
+			ACKConversionRate:     ratio(ackConversions, ackCandidates),
+			EchoOpportunities:     echoOpportunities,
+			EchoDrops:             echoDrops,
+			EchoDropRate:          ratio(echoDrops, echoOpportunities),
+			TaskEchoOpportunities: taskEchoOpportunities,
+			TaskEchoDrops:         taskEchoDrops,
+			TaskEchoDropRate:      ratio(taskEchoDrops, taskEchoOpportunities),
+			CommitmentsOpen:       state.commitmentOpen,
+			CommitmentsOpened:     signalValue(state.signals, RoomSignalCommitmentOpened),
+			CommitmentsCompleted:  signalValue(state.signals, RoomSignalCommitmentCompleted),
+			CommitmentsDropped:    signalValue(state.signals, RoomSignalCommitmentDropped),
+			MAST: RoomMASTSnapshot{
+				Runs:        signalValue(state.signals, RoomSignalMASTRun),
+				Annotations: signalValue(state.signals, RoomSignalMASTAnnotation),
+				Errors:      signalValue(state.signals, RoomSignalMASTError),
+				ByLabel:     mastLabels,
+			},
 			UnansweredMentionAgeSeconds: state.mentionAge.Value(),
 		}
 		if len(state.signals) > 0 {
@@ -506,6 +552,11 @@ func SetRoomOpenCommitments(room string, count int) {
 // the process-wide scorecard.
 func SetRoomUnansweredMentionAge(room string, age time.Duration) {
 	DefaultScorecard.SetUnansweredMentionAge(room, age)
+}
+
+// RecordRoomMASTAnnotation joins a validated judge result to the process-wide scorecard.
+func RecordRoomMASTAnnotation(room string, labels []MASTLabel) {
+	DefaultScorecard.RecordMASTAnnotation(room, labels)
 }
 
 // RoomScorecardJSON returns the process-wide scorecard as JSON.

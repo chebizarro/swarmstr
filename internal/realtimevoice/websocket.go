@@ -11,11 +11,14 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	browserpkg "metiq/internal/browser"
 )
 
 type WebSocketProvider struct {
 	id, name, apiKeyEnv, endpointEnv, defaultEndpoint string
 	openAI                                            bool
+	browserClient                                     *browserpkg.OpenAIRealtimeClient
 }
 
 func NewOpenAIRealtimeProvider() *WebSocketProvider {
@@ -24,9 +27,49 @@ func NewOpenAIRealtimeProvider() *WebSocketProvider {
 func NewElevenLabsRealtimeProvider() *WebSocketProvider {
 	return &WebSocketProvider{id: "elevenlabs", name: "ElevenLabs Realtime", apiKeyEnv: "ELEVENLABS_API_KEY", endpointEnv: "ELEVENLABS_REALTIME_URL", defaultEndpoint: "wss://api.elevenlabs.io/v1/convai/conversation"}
 }
-func (p *WebSocketProvider) ID() string                                          { return p.id }
-func (p *WebSocketProvider) Name() string                                        { return p.name }
-func (p *WebSocketProvider) Configured() bool                                    { return strings.TrimSpace(os.Getenv(p.apiKeyEnv)) != "" }
+func (p *WebSocketProvider) ID() string       { return p.id }
+func (p *WebSocketProvider) Name() string     { return p.name }
+func (p *WebSocketProvider) Configured() bool { return strings.TrimSpace(os.Getenv(p.apiKeyEnv)) != "" }
+
+// BrowserTransports advertises native browser-session support. The OpenAI
+// provider mints WebRTC client secrets; the ElevenLabs WebSocket bridge remains
+// gateway-owned and therefore advertises no browser transport.
+func (p *WebSocketProvider) BrowserTransports() []string {
+	if p == nil {
+		return nil
+	}
+	if p.openAI {
+		return []string{browserpkg.TransportWebRTC}
+	}
+	// A non-empty list distinguishes an explicit lack of browser support from
+	// legacy plugin providers that have not published transport metadata.
+	return []string{"gateway-relay"}
+}
+
+// CreateBrowserSession mints a short-lived OpenAI credential for direct browser
+// WebRTC negotiation. Standard API keys stay on the daemon.
+func (p *WebSocketProvider) CreateBrowserSession(ctx context.Context, cfg browserpkg.SessionConfig) (browserpkg.Session, error) {
+	if p == nil {
+		return nil, fmt.Errorf("realtime voice provider is nil")
+	}
+	if !p.openAI {
+		return nil, fmt.Errorf("%s does not support browser-owned sessions", p.ID())
+	}
+	client := p.browserClient
+	if client == nil {
+		client = &browserpkg.OpenAIRealtimeClient{}
+	}
+	if cfg.SafetyIdentifier == "" {
+		cfg.SafetyIdentifier = strings.TrimSpace(os.Getenv("OPENAI_SAFETY_IDENTIFIER"))
+	}
+	session, err := client.CreateSession(ctx, os.Getenv(p.apiKeyEnv), cfg)
+	if err != nil {
+		return nil, err
+	}
+	session["provider"] = p.ID()
+	return session, nil
+}
+
 // openAIRealtimeVoices is the fixed, documented voice set exposed by the OpenAI
 // Realtime API. The realtime WebSocket transport has no voices-listing method,
 // so we return this known set rather than silently returning an empty list.

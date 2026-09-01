@@ -25,6 +25,17 @@ var (
 	ErrLegacyNIP04Disabled = errors.New("legacy NIP-04 compatibility is disabled")
 )
 
+// PublishedNostrMessage identifies a signed Nostr event accepted for delivery.
+// For NIP-17 this is the inner rumor ID; relay URLs identify the wrap targets.
+type PublishedNostrMessage struct {
+	EventID    string
+	RelayURLs  []string
+	Kind       nostr.Kind
+	PubKey     string
+	Scheme     string
+	Recipients []string
+}
+
 type InboundDM struct {
 	EventID    string
 	FromPubKey string
@@ -41,6 +52,9 @@ type InboundDM struct {
 	Subject    string
 	ReplyTo    string
 	Reply      func(ctx context.Context, text string) error
+	// ReplyWithReceipt is set by Nostr transports that can expose the signed
+	// message/rumor identity. Callers may persist it for later NIP-09/NIP-25 actions.
+	ReplyWithReceipt func(ctx context.Context, text string) (PublishedNostrMessage, error)
 }
 
 // NIP04Decrypter is an optional extension of nostr.Keyer for signers that

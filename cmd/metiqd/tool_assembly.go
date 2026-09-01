@@ -9,6 +9,7 @@ import (
 )
 
 var privateSessionBlockedFleetTools = map[string]struct{}{
+	"fleet_tasks":          {},
 	"nostr_publish":        {},
 	"nostr_send_dm":        {},
 	"nostr_profile_set":    {},
@@ -18,17 +19,35 @@ var privateSessionBlockedFleetTools = map[string]struct{}{
 	"nostr_agent_send":     {},
 }
 
+var localScratchTaskTools = map[string]struct{}{
+	"task_add":    {},
+	"task_list":   {},
+	"task_update": {},
+	"task_remove": {},
+}
+
+func mutableTurnToolAllowlist(allowed map[string]bool, base agent.ToolExecutor) map[string]bool {
+	if allowed != nil {
+		return agent.CloneAllowedToolIDs(allowed)
+	}
+	allowed = make(map[string]bool)
+	for _, def := range agent.ToolDefinitions(base) {
+		allowed[def.Name] = true
+	}
+	return allowed
+}
+
 func resolveAgentTurnToolSurface(ctx context.Context, cfg state.ConfigDoc, docsRepo *state.DocsRepository, sessionID, agentID string, rt agent.Runtime, base agent.ToolExecutor, constraints turnToolConstraints) (agent.Runtime, agent.ToolExecutor, []agent.ToolDefinition) {
 	allowed := resolvedTurnRuntimeToolAllowlist(ctx, cfg, docsRepo, sessionID, agentID, constraints)
-	if sessionUsesPrivateAgentMode(ctx, docsRepo, sessionID) {
-		if allowed == nil {
-			allowed = make(map[string]bool)
-			for _, def := range agent.ToolDefinitions(base) {
-				allowed[def.Name] = true
-			}
-		} else {
-			allowed = agent.CloneAllowedToolIDs(allowed)
+	privateMode := sessionUsesPrivateAgentMode(ctx, docsRepo, sessionID)
+	if cfg.FleetTasks.Enabled && !privateMode {
+		allowed = mutableTurnToolAllowlist(allowed, base)
+		for name := range localScratchTaskTools {
+			delete(allowed, name)
 		}
+	}
+	if privateMode {
+		allowed = mutableTurnToolAllowlist(allowed, base)
 		for name := range privateSessionBlockedFleetTools {
 			delete(allowed, name)
 		}

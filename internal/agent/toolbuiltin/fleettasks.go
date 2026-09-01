@@ -59,7 +59,7 @@ var FleetTasksDef = agent.ToolDefinition{
 	Name: "fleet_tasks",
 	Description: "Coordinate peer-to-peer fleet work via merge-aware NIP-CAS task-state events (kind 30900, cascadia.task-state.v2). " +
 		"Actions: list (all merged tasks), inspect (one task with claim resolution), create (new open task), claim (take an unclaimed task), " +
-		"checkpoint (progress note), block (mark blocked), handoff (set assignee / initial claim), close (finish with evidence). " +
+		"checkpoint (progress note), block (mark blocked), handoff (lineage-preserving note; reassignment is forbidden), close (finish with evidence). " +
 		"Every mutation except create requires base_event_id — the effective_event_id from a fresh list/inspect. If the task changed concurrently " +
 		"the call fails with a conflict; inspect and retry. After claim, inspect again to verify your claim won settlement before doing heavy work. " +
 		"This is the ONLY surface for fleet task coordination — the local task_add/task_list queue is not visible to fleet peers.",

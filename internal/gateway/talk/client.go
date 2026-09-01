@@ -7,24 +7,15 @@ import (
 	"sync"
 
 	"metiq/internal/autoreply"
+	browserpkg "metiq/internal/browser"
 	"metiq/internal/realtimevoice"
 )
 
-// BrowserSessionProvider is the optional realtimevoice.Provider capability
-// required by browser-owned transports (webrtc / provider-websocket): the
-// provider mints a session the browser connects to directly. No metiq-wired
-// provider implements it yet, so talk.client.create is honestly unavailable
-// until one does (accepted deviation, tracked as a follow-up).
-type BrowserSessionProvider interface {
-	CreateBrowserSession(ctx context.Context, cfg BrowserSessionConfig) (map[string]any, error)
-}
-
-// BrowserSessionConfig carries the browser-session request parameters.
-type BrowserSessionConfig struct {
-	Voice    string
-	Language string
-	Model    string
-}
+// BrowserSessionProvider and BrowserSessionConfig retain the talk package names
+// while sharing the provider-neutral contract from internal/browser.
+type BrowserSessionProvider = browserpkg.SessionProvider
+type BrowserSessionConfig = browserpkg.SessionConfig
+type BrowserSession = browserpkg.Session
 
 // TranscriptEntry is one appended transcript line on a client session.
 type TranscriptEntry struct {
@@ -101,18 +92,28 @@ func (s *ClientStore) Create(ctx context.Context, in ClientCreateInput) (map[str
 		s.mu.Unlock()
 	}
 
-	var browser map[string]any
+	var browserSession browserpkg.Session
+	var resolvedProvider realtimevoice.Provider
 	switch in.Transport {
-	case "webrtc", "provider-websocket":
-		provider, err := s.browserProvider(in.Provider)
+	case browserpkg.TransportWebRTC, browserpkg.TransportProviderWebSocket:
+		provider, browserProvider, err := s.browserProvider(in.Provider, in.Transport)
 		if err != nil {
 			return nil, err
 		}
-		browser, err = provider.CreateBrowserSession(ctx, BrowserSessionConfig{
-			Voice: in.Voice, Language: in.Language, Model: in.Model,
+		resolvedProvider = provider
+		browserSession, err = browserProvider.CreateBrowserSession(ctx, BrowserSessionConfig{
+			Transport: in.Transport, Voice: in.Voice, Language: in.Language, Model: in.Model,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("%w: create browser session: %v", ErrUnavailable, err)
+		}
+		if browserSession == nil {
+			return nil, fmt.Errorf("%w: provider %q returned an empty browser session", ErrUnavailable, provider.ID())
+		}
+		if returned, _ := browserSession["transport"].(string); returned == "" {
+			browserSession["transport"] = in.Transport
+		} else if returned != in.Transport {
+			return nil, fmt.Errorf("%w: provider %q returned transport %q for %q request", ErrUnavailable, provider.ID(), returned, in.Transport)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported client transport %q", in.Transport)
@@ -124,43 +125,67 @@ func (s *ClientStore) Create(ctx context.Context, in ClientCreateInput) (map[str
 	if id == "" {
 		id = fmt.Sprintf("talk-client-%d", s.seq)
 	}
+	providerID := in.Provider
+	if resolvedProvider != nil {
+		providerID = resolvedProvider.ID()
+	}
 	sess := &clientSession{
-		id: id, transport: in.Transport, provider: in.Provider,
+		id: id, transport: in.Transport, provider: providerID,
 		agentID: in.AgentID, transcript: []TranscriptEntry{},
 	}
 	s.sessions[id] = sess
 	s.mu.Unlock()
 
-	out := map[string]any{"sessionId": id, "transport": in.Transport, "provider": in.Provider, "resumed": false}
-	if browser != nil {
-		out["browserSession"] = browser
+	out := map[string]any{"sessionId": id, "transport": in.Transport, "provider": providerID, "resumed": false}
+	if browserSession != nil {
+		out["browserSession"] = browserSession
 	}
 	return out, nil
 }
 
-func (s *ClientStore) browserProvider(id string) (BrowserSessionProvider, error) {
+func (s *ClientStore) browserProvider(id, transport string) (realtimevoice.Provider, BrowserSessionProvider, error) {
 	if s.voice == nil {
-		return nil, fmt.Errorf("%w: no realtimevoice registry wired", ErrUnavailable)
+		return nil, nil, fmt.Errorf("%w: no realtimevoice registry wired", ErrUnavailable)
 	}
-	var provider realtimevoice.Provider
 	if id != "" {
-		p, ok := s.voice.Get(id)
+		provider, ok := s.voice.Get(id)
 		if !ok {
-			return nil, fmt.Errorf("%w: unknown realtime voice provider %q", ErrUnavailable, id)
+			return nil, nil, fmt.Errorf("%w: unknown realtime voice provider %q", ErrUnavailable, id)
 		}
-		provider = p
-	} else {
-		p, err := s.voice.Default()
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		browserProvider, ok := provider.(BrowserSessionProvider)
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: realtime voice provider %q does not support browser-owned sessions", ErrUnavailable, provider.ID())
 		}
-		provider = p
+		if supported, advertised := browserpkg.SupportsTransport(provider, transport); advertised && !supported {
+			return nil, nil, fmt.Errorf("%w: realtime voice provider %q does not support transport %q", ErrUnavailable, provider.ID(), transport)
+		}
+		return provider, browserProvider, nil
 	}
-	bp, ok := provider.(BrowserSessionProvider)
-	if !ok {
-		return nil, fmt.Errorf("%w: realtime voice provider %q does not support browser-owned sessions", ErrUnavailable, provider.ID())
+
+	providers := s.voice.List()
+	// Prefer configured providers that explicitly advertise the requested
+	// transport, then configured legacy/plugin providers without metadata. Only
+	// fall back to unconfigured providers so the resulting error names the actual
+	// missing provider configuration.
+	for _, requireConfigured := range []bool{true, false} {
+		for _, requireAdvertised := range []bool{true, false} {
+			for _, provider := range providers {
+				browserProvider, ok := provider.(BrowserSessionProvider)
+				if !ok || (requireConfigured && !provider.Configured()) {
+					continue
+				}
+				supported, advertised := browserpkg.SupportsTransport(provider, transport)
+				if advertised && !supported {
+					continue
+				}
+				if requireAdvertised != advertised {
+					continue
+				}
+				return provider, browserProvider, nil
+			}
+		}
 	}
-	return bp, nil
+	return nil, nil, fmt.Errorf("%w: no realtime voice provider supports browser transport %q", ErrUnavailable, transport)
 }
 
 // Transcript appends a transcript entry to a client session.

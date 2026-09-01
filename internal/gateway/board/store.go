@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 )
@@ -82,9 +83,12 @@ type storedBoard struct {
 // Store is the in-memory per-sessionKey board store. All methods are safe for
 // concurrent use. Boards are process-local state, mirroring the OpenClaw
 // in-memory board store; persistence is a follow-up.
+type PluginGrantResolver func(capabilityID string) (PluginGrantIdentity, bool)
+
 type Store struct {
-	mu     sync.Mutex
-	boards map[string]*storedBoard
+	mu                  sync.Mutex
+	boards              map[string]*storedBoard
+	pluginGrantResolver PluginGrantResolver
 	// ticketSecret signs view tickets; per-process so tickets never survive
 	// a restart. now is injectable for ticket expiry tests.
 	ticketSecret []byte
@@ -100,6 +104,18 @@ func NewStore() *Store {
 	}
 }
 
+// SetPluginGrantResolver wires the authoritative plugin contribution registry.
+// Existing grants are revalidated lazily on their next read/use, making updates
+// revoke stale approvals without a polling loop.
+func (s *Store) SetPluginGrantResolver(resolver PluginGrantResolver) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.pluginGrantResolver = resolver
+	s.mu.Unlock()
+}
+
 func emptySnapshot(sessionKey string) Snapshot {
 	return Snapshot{SessionKey: sessionKey, Revision: 0, Tabs: []Tab{}, Widgets: []Widget{}}
 }
@@ -110,6 +126,7 @@ func (s *Store) GetSnapshot(sessionKey string) Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if b, ok := s.boards[sessionKey]; ok {
+		s.revokeStalePluginGrantsLocked(b)
 		return CloneSnapshot(b.snapshot)
 	}
 	return emptySnapshot(sessionKey)
@@ -269,6 +286,7 @@ func (s *Store) PutWidget(params PutParams) (Snapshot, error) {
 	current := s.boards[params.SessionKey]
 	prior := emptySnapshot(params.SessionKey)
 	if current != nil {
+		s.revokeStalePluginGrantsLocked(current)
 		prior = current.snapshot
 	}
 
@@ -399,6 +417,9 @@ func (s *Store) PutWidget(params PutParams) (Snapshot, error) {
 	if summary != nil {
 		widget.Declared = cloneDeclared(declared)
 	}
+	if preservesGrant && existing != nil {
+		widget.PluginGrantIdentities = pluginGrantIdentitySubset(existing.PluginGrantIdentities, declared)
+	}
 
 	after := ""
 	explicitPlacement := false
@@ -515,6 +536,96 @@ func (s *Store) ReadWidgetMcpApp(sessionKey, name string) (McpAppView, bool) {
 	}, true
 }
 
+func pluginGrantIdentitySubset(existing map[string]PluginGrantIdentity, declared *Declared) map[string]PluginGrantIdentity {
+	if len(existing) == 0 || declared == nil {
+		return nil
+	}
+	out := map[string]PluginGrantIdentity{}
+	for _, capability := range declared.Tools {
+		if identity, ok := existing[capability]; ok {
+			out[capability] = identity
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (s *Store) capturePluginGrantIdentitiesLocked(widget Widget) (map[string]PluginGrantIdentity, error) {
+	if widget.Declared == nil {
+		return nil, nil
+	}
+	identities := map[string]PluginGrantIdentity{}
+	for _, capability := range widget.Declared.Tools {
+		identity, contributed := PluginGrantIdentity{}, false
+		if s.pluginGrantResolver != nil {
+			identity, contributed = s.pluginGrantResolver(capability)
+		}
+		if !contributed {
+			if _, wasContributed := widget.PluginGrantIdentities[capability]; wasContributed {
+				return nil, errInvalid("plugin capability is no longer available: %s", capability)
+			}
+			continue
+		}
+		identity.PluginID = strings.TrimSpace(identity.PluginID)
+		identity.PackageDigest = strings.TrimSpace(identity.PackageDigest)
+		if identity.PluginID == "" || identity.PackageDigest == "" {
+			return nil, errInvalid("plugin capability package identity unavailable: %s", capability)
+		}
+		identities[capability] = identity
+	}
+	if len(identities) == 0 {
+		return nil, nil
+	}
+	return identities, nil
+}
+
+// revokeStalePluginGrantsLocked invalidates approvals whose contributed
+// capability now resolves to a different package (or no package). The widget
+// revision and generation both change, immediately staling any minted ticket.
+func (s *Store) revokeStalePluginGrantsLocked(board *storedBoard) bool {
+	if board == nil || s.pluginGrantResolver == nil {
+		return false
+	}
+	changed := false
+	for i := range board.snapshot.Widgets {
+		widget := &board.snapshot.Widgets[i]
+		if widget.GrantState != GrantGranted || len(widget.PluginGrantIdentities) == 0 {
+			continue
+		}
+		stale := false
+		for capability, approved := range widget.PluginGrantIdentities {
+			current, ok := s.pluginGrantResolver(capability)
+			if !ok || strings.TrimSpace(current.PluginID) != approved.PluginID || strings.TrimSpace(current.PackageDigest) == "" || strings.TrimSpace(current.PackageDigest) != approved.PackageDigest {
+				stale = true
+				break
+			}
+		}
+		if !stale {
+			continue
+		}
+		changed = true
+		widget.GrantState = GrantPending
+		widget.Revision++
+		widget.InstanceID = newInstanceID()
+		if doc := board.documents[widget.Name]; doc != nil {
+			doc.GrantState = GrantPending
+			doc.Revision = widget.Revision
+			doc.ViewGeneration = widget.InstanceID
+		}
+		if doc := board.appDocuments[widget.Name]; doc != nil {
+			doc.GrantState = GrantPending
+			doc.Revision = widget.Revision
+			doc.InstanceID = widget.InstanceID
+		}
+	}
+	if changed {
+		board.snapshot.Revision++
+	}
+	return changed
+}
+
 // Grant resolves a pending capability grant. The caller must present the
 // widget revision and instance it saw so a concurrent re-put can never be
 // granted retroactively.
@@ -539,6 +650,18 @@ func (s *Store) Grant(sessionKey, name, decision string, revision int, instanceI
 	if idx < 0 {
 		return Snapshot{}, errNotFound("board widget not found: %s", name)
 	}
+	s.revokeStalePluginGrantsLocked(current)
+	snapshot = CloneSnapshot(current.snapshot)
+	idx = -1
+	for i := range snapshot.Widgets {
+		if snapshot.Widgets[i].Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return Snapshot{}, errNotFound("board widget not found: %s", name)
+	}
 	widget := &snapshot.Widgets[idx]
 	if widget.Revision != revision {
 		return Snapshot{}, errConflict("board widget revision changed: %s is revision %d, not %d", name, widget.Revision, revision)
@@ -548,6 +671,15 @@ func (s *Store) Grant(sessionKey, name, decision string, revision int, instanceI
 	}
 	if widget.GrantState != GrantPending {
 		return Snapshot{}, errInvalid("board widget grant is not pending: %s", name)
+	}
+	if decision == GrantGranted {
+		identities, err := s.capturePluginGrantIdentitiesLocked(*widget)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		widget.PluginGrantIdentities = identities
+	} else {
+		widget.PluginGrantIdentities = nil
 	}
 	widget.GrantState = decision
 	snapshot.Revision++

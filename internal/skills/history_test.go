@@ -182,6 +182,31 @@ func TestHistoryScan_RejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestHistoryScan_NULDelimitedControlCharacters(t *testing.T) {
+	ws := t.TempDir()
+	gitRun(t, ws, "init", "-q")
+	key := "odd\t\x1edir\x1f"
+	subject := "add odd \x1e subject \x1f"
+	writeSkill(t, ws, key, "# odd skill\n")
+	gitRun(t, ws, "add", "-A")
+	gitRun(t, ws, "commit", "-q", "-m", subject)
+	t.Setenv("METIQ_WORKSPACE", ws)
+
+	page, err := HistoryScan(context.Background(), cfgForWorkspace(), "main", SkillHistoryScanParams{Limit: 1})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(page.Entries) != 1 {
+		t.Fatalf("entries=%d want 1: %#v", len(page.Entries), page.Entries)
+	}
+	if page.Entries[0].SkillKey != key {
+		t.Fatalf("skillKey=%q want %q", page.Entries[0].SkillKey, key)
+	}
+	if page.Entries[0].Subject != subject {
+		t.Fatalf("subject=%q want %q", page.Entries[0].Subject, subject)
+	}
+}
+
 func TestHistoryScan_RenameAcrossSkillKeys(t *testing.T) {
 	ws := t.TempDir()
 	gitRun(t, ws, "init", "-q")

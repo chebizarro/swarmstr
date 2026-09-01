@@ -14,6 +14,7 @@ import (
 	"metiq/internal/autoreply"
 	ctxengine "metiq/internal/context"
 	"metiq/internal/gateway/methods"
+	suspendpkg "metiq/internal/gateway/suspend"
 	gatewayws "metiq/internal/gateway/ws"
 	"metiq/internal/memory"
 	"metiq/internal/planner"
@@ -39,6 +40,7 @@ type taskRunner struct {
 	runtimeConfig  *runtimeConfigStore
 	emitter        gatewayws.EventEmitter
 	enqueue        taskRunEnqueueFunc
+	suspend        *suspendpkg.Coordinator
 
 	mu           sync.Mutex
 	active       map[string]taskRunnerActiveRun
@@ -65,6 +67,7 @@ type taskRunnerQueuedRun struct {
 	SourceRef string
 	SessionID string
 	AgentID   string
+	lease     *suspendpkg.Lease
 }
 
 func newTaskRunner(svc *daemonServices) *taskRunner {
@@ -92,6 +95,7 @@ func newTaskRunner(svc *daemonServices) *taskRunner {
 		toolRegistry:   svc.session.toolRegistry,
 		runtimeConfig:  svc.runtimeConfig,
 		emitter:        svc.emitter,
+		suspend:        controlSuspendCoordinator,
 	}
 	r.enqueue = r.enqueueQueuedRun
 	return r
@@ -116,6 +120,26 @@ func (r *taskRunner) OnRunUpdated(ctx context.Context, entry taskspkg.RunEntry, 
 	r.observeQueuedRun(ctx, entry)
 }
 
+// ResumeQueued re-observes durable queued runs after suspension admission is
+// reopened. It is called by gateway.suspend.resume and never polls.
+func (r *taskRunner) ResumeQueued(ctx context.Context) error {
+	if r == nil || r.ledger == nil {
+		return nil
+	}
+	entries, err := r.ledger.ListRuns(contextWithoutNil(ctx), taskspkg.ListRunsOptions{
+		Status: []state.TaskRunStatus{state.TaskRunStatusQueued}, Limit: 1000,
+	})
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry != nil {
+			r.observeQueuedRun(ctx, *entry)
+		}
+	}
+	return nil
+}
+
 func (r *taskRunner) observeQueuedRun(ctx context.Context, entry taskspkg.RunEntry) bool {
 	queued, ok := r.prepareQueuedRun(ctx, entry)
 	if !ok {
@@ -124,6 +148,13 @@ func (r *taskRunner) observeQueuedRun(ctx context.Context, entry taskspkg.RunEnt
 	if r.enqueue == nil {
 		return false
 	}
+	lease, err := r.suspend.BeginWork()
+	if err != nil {
+		// Leave the durable run queued. ResumeQueued re-observes it after the
+		// operator reopens admission; no polling or failure transition is used.
+		return false
+	}
+	queued.lease = lease
 	r.enqueue(ctx, queued)
 	return true
 }
@@ -296,10 +327,18 @@ func (r *taskRunner) Shutdown(ctx context.Context) {
 }
 
 func (r *taskRunner) executeQueuedRun(ctx context.Context, queued taskRunnerQueuedRun) {
+	ctx = contextWithoutNil(ctx)
+	if queued.lease != nil {
+		defer func() {
+			if err := queued.lease.Release(); err != nil {
+				log.Printf("task runner: suspend lease release failed run=%s err=%v", queued.Run.RunID, err)
+			}
+		}()
+		ctx = contextWithSuspendAdmission(ctx)
+	}
 	if r == nil || r.ledger == nil || r.taskService == nil {
 		return
 	}
-	ctx = contextWithoutNil(ctx)
 	queued.Task = queued.Task.Normalize()
 	queued.Run = queued.Run.Normalize()
 	queued.SessionID = strings.TrimSpace(queued.SessionID)

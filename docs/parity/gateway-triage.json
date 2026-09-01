@@ -26,14 +26,14 @@
     },
     {
       "id": "memory-health",
-      "prefixes": ["doctor", "migrations"],
+      "prefixes": ["doctor", "memory", "migrations"],
       "category": "implement",
       "workstream": "WS-C",
       "rationale": "Memory diagnostics and migration controls align with the existing memory subsystem and WS-C lifecycle work."
     },
     {
       "id": "plugin-skill-security",
-      "prefixes": ["plugin", "plugins", "skills"],
+      "prefixes": ["hooks", "plugin", "plugins", "skills"],
       "category": "implement",
       "workstream": "WS-G",
       "rationale": "Plugin approvals, package lifecycle, and skill curation belong to the WS-G platform/security roadmap."
@@ -53,6 +53,13 @@
       "rationale": "Metiq implements durable profiles, preferences, and configured role metadata keyed by authenticated Nostr pubkey; email-primary account semantics remain an explicit identity adaptation."
     },
     {
+      "id": "product-specific-host-surfaces",
+      "prefixes": ["desktop", "portal", "progressCard", "projects", "push", "worker"],
+      "category": "accepted-deviation",
+      "workstream": "none",
+      "rationale": "Browser push, hosted projects/GitHub, desktop workers, portals, and progress cards depend on OpenClaw product runtimes that Metiq does not own; Nostr notifications, operator-managed repositories/worktrees, durable tasks, and the Metiq Web UI are the supported boundaries."
+    },
+    {
       "id": "openclaw-branded-control-ui",
       "prefixes": ["controlUi", "openclaw"],
       "category": "accepted-deviation",
@@ -67,8 +74,12 @@
       "rationale": "Terminal PTY sessions (including the attach/list/text/upload helpers), attach.* MCP-loopback grants, workspace-rooted fs.listDir, the git worktree lifecycle, the per-session board store (including the view-ticket surface and sandboxed frame host), gateway conversations, the durable question.* operator-question lifecycle, the ephemeral taskSuggestions.* registry, and the mcp.app.* MCP-App view surface are implemented as WS-native gateway surfaces in the A7 pass."
     }
   ],
-  "non_advertised_divergence_note": "OpenClaw also defines product-specific methods that are hidden (advertise: false) or absent from the pinned descriptor catalog, so they never become triage-group entries above. swarmstr-u6gn.8 classified those long-tail families as intentional divergences; the authoritative per-method list lives in docs/parity/gateway-long-tail-2026-08.json and the family/rationale summary is mirrored here.",
+  "non_advertised_divergence_note": "swarmstr-u6gn.8 classified product-specific long-tail families as intentional divergences. Some are now advertised by the refreshed OpenClaw catalog and therefore receive accepted-deviation prefix triage above; mixed-prefix methods remain in implement groups but are intentionally not registered by Metiq. Hidden methods do not become snapshot entries. The authoritative per-method list lives in docs/parity/gateway-long-tail-2026-08.json and the family/rationale summary is mirrored here.",
   "non_advertised_divergences": [
+    {
+      "family": "diagnostics-lanes",
+      "rationale": "Metiq has no command-lane scheduler, capacity groups, or queued/active lane accounting. Agent jobs, session mailboxes, and prompt-assembly lanes are different state and must not be projected as OpenClaw command-lane diagnostics."
+    },
     {
       "family": "browser-push-and-vapid",
       "rationale": "Metiq has no browser-push service, VAPID key lifecycle, or push subscription store; notifications flow through Nostr/channel events."
@@ -107,7 +118,42 @@
     }
   ],
   "method_notes": {
+    "audit.run.inspect": "Implemented by swarmstr-e9o6: gateway run identity is persisted on permission-audit decisions and inspected through bounded safe-only displays; receipt provenance and richer principal/lineage identity remain explicitly unknown rather than fabricated.",
     "chat.abort": "Operator abort remains unconditional. Busy queue-mode interrupt is tool-aware: it aborts only when active tools are interruptible and otherwise defers newest input as urgent active-run steering.",
-    "config.schema.lookup": "Returns schema for a specific config path; full schema when path is empty."
+    "config.schema.lookup": "Returns schema for a specific config path; full schema when path is empty.",
+    "controlUi.githubPreview": "Intentional control-UI divergence (swarmstr-uhup): Metiq has no authoritative GitHub/git-forge integration or pull-request event source; operator-managed repositories, worktrees, boards, and artifacts are not presented as live forge preview data.",
+    "controlUi.sessionPreview": "Intentional control-UI divergence: Metiq has no GitHub preview model; see swarmstr-uhup.",
+    "controlUi.sessionPullRequests.subscribe": "Intentional control-UI divergence: Metiq has no git-forge pull-request subscription source; see swarmstr-uhup.",
+    "desktop.launch": "Intentional desktop-worker divergence: Metiq is a daemon with no desktop process host.",
+    "desktop.observe": "Intentional desktop-worker divergence: Metiq is a daemon with no desktop process host.",
+    "diagnostics.lanes": "Intentional runtime divergence (swarmstr-fiwr): Metiq has no command-lane scheduler or queued/active lane accounting; unrelated agent-job, session-mailbox, and prompt-lane state is not advertised as lane diagnostics.",
+    "hooks.status": "Implemented by swarmstr-1guw: resolves the selected agent workspace, projects daemon-loaded bundled/managed hooks plus that workspace's scanned hooks using live enable overrides, and merges active unified-plugin hook registrations without executing or registering hooks.",
+    "portal.close": "Intentional product divergence: Metiq has no portal process or window lifecycle.",
+    "portal.list": "Intentional product divergence: Metiq has no portal process or window lifecycle.",
+    "portal.open": "Intentional product divergence: Metiq has no portal process or window lifecycle.",
+    "progressCard.get": "Intentional product divergence: Metiq exposes durable tasks instead of OpenClaw progress cards.",
+    "progressCard.put": "Intentional product divergence: Metiq exposes durable tasks instead of OpenClaw progress cards.",
+    "projects.add": "Intentional managed-project divergence: Metiq uses operator-managed repositories and worktrees.",
+    "projects.list": "Intentional managed-project divergence: Metiq uses operator-managed repositories and worktrees.",
+    "projects.register": "Intentional managed-project divergence: Metiq uses operator-managed repositories and worktrees.",
+    "projects.remove": "Intentional managed-project divergence: Metiq uses operator-managed repositories and worktrees.",
+    "projects.searchRemote": "Intentional managed-project divergence: Metiq has no hosted project-search or GitHub OAuth lifecycle.",
+    "push.web.preferences.get": "Intentional browser-push divergence: Metiq notifications flow through Nostr and channel events.",
+    "push.web.preferences.set": "Intentional browser-push divergence: Metiq notifications flow through Nostr and channel events.",
+    "sessions.github.publish": "Intentional git-forge divergence: Metiq has no GitHub publication lifecycle.",
+    "sessions.goal.clear": "Implemented by swarmstr-s2td with durable session metadata, bounded idempotency receipts, identity fences, and an atomic clear transition.",
+    "sessions.goal.update": "Implemented by swarmstr-s2td with durable lifecycle state, bounded idempotency receipts, identity fences, and exactly-once resume dispatch; first edit creates the Metiq goal because there is no separate chat goal-start RPC.",
+    "sessions.usage": "Implemented by swarmstr-ks3v from durable per-turn transcript usage; cost/model/context-weight fields are not fabricated.",
+    "sessions.usage.logs": "Implemented by swarmstr-ks3v as a bounded durable terminal-turn log projection.",
+    "sessions.usage.timeseries": "Implemented by swarmstr-ks3v as a bounded chronological projection of durable terminal-turn token counters.",
+    "skills.proposals.evaluate": "Implemented by swarmstr-t4wf as a revision-fenced projection of the immutable Metiq proposal static scan, with a durable evaluation_completed event; external plugin evaluator results are not fabricated.",
+    "skills.proposals.events.list": "Implemented by swarmstr-t4wf as sequence-ordered replay from an atomic workspace lifecycle-event ledger.",
+    "tools.github.authorize.cancel": "Intentional git-forge divergence: Metiq has no GitHub OAuth lifecycle.",
+    "tools.github.authorize.poll": "Intentional git-forge divergence: Metiq has no GitHub OAuth lifecycle.",
+    "tools.github.authorize.start": "Intentional git-forge divergence: Metiq has no GitHub OAuth lifecycle.",
+    "tools.github.configure": "Intentional git-forge divergence: Metiq has no GitHub integration to configure.",
+    "tools.github.status": "Intentional git-forge divergence: Metiq has no GitHub integration to inspect.",
+    "worker.desktop.launch": "Intentional desktop-worker divergence: Metiq is a daemon with no desktop process host.",
+    "worker.desktop.observe": "Intentional desktop-worker divergence: Metiq is a daemon with no desktop process host."
   }
 }

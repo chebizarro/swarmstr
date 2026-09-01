@@ -56,8 +56,7 @@ const (
 	// scanTimeout bounds any single history scan's git invocations.
 	scanTimeout = 20 * time.Second
 
-	rsSep = "\x1e" // record separator: begins each commit record
-	usSep = "\x1f" // unit separator: delimits header fields
+	gitCommitMarker = "METIQ_COMMIT"
 )
 
 // commitishRe validates a paging cursor as a bare hex commit-ish. Anything else
@@ -256,10 +255,12 @@ func HistoryScan(ctx context.Context, cfg state.ConfigDoc, agentID string, param
 	return scanOlder(ctx, workspaceDir, cursor, limit, result)
 }
 
-// gitLogFormat is the per-commit header: RS starts each record; US delimits the
-// hash / commit-date / subject fields. --name-status entries follow on their own
-// lines. -M enables rename detection so renames surface as R rather than D+A.
-var gitLogFormatArgs = []string{"--no-color", "-M", "--name-status", "--format=" + rsSep + "%H" + usSep + "%cI" + usSep + "%s"}
+// gitLogFormatArgs emits a fully NUL-delimited token stream. The marker separates
+// commit headers from -z name-status tokens; -M enables rename detection.
+var gitLogFormatArgs = []string{
+	"--no-color", "-M", "--name-status", "-z",
+	"--format=%x00" + gitCommitMarker + "%x00%H%x00%cI%x00%s",
+}
 
 func scanOlder(ctx context.Context, dir, cursor string, limit int, result SkillHistoryScanResult) (SkillHistoryScanResult, error) {
 	rev := "HEAD"
@@ -335,58 +336,64 @@ type parsedCommit struct {
 	changes []SkillHistoryEntry
 }
 
-// parseGitLog parses RS/US-delimited git log --name-status output into commits.
+// parseGitLog parses the NUL-delimited git log --name-status token stream.
 func parseGitLog(out string) []parsedCommit {
-	var commits []parsedCommit
-	records := strings.Split(out, rsSep)
-	for _, rec := range records {
-		rec = strings.TrimLeft(rec, "\n")
-		if strings.TrimSpace(rec) == "" {
-			continue
+	tokens := strings.Split(out, "\x00")
+	commits := make([]parsedCommit, 0)
+	var current *parsedCommit
+	flush := func() {
+		if current != nil {
+			commits = append(commits, *current)
+			current = nil
 		}
-		lines := strings.Split(rec, "\n")
-		header := strings.SplitN(lines[0], usSep, 3)
-		if len(header) < 2 {
-			continue
-		}
-		c := parsedCommit{hash: strings.TrimSpace(header[0]), date: strings.TrimSpace(header[1])}
-		if len(header) == 3 {
-			c.subject = header[2]
-		}
-		for _, line := range lines[1:] {
-			line = strings.TrimRight(line, "\r")
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			for _, entry := range parseNameStatusEntries(line) {
-				entry.Commit = c.hash
-				entry.Date = c.date
-				entry.Subject = c.subject
-				c.changes = append(c.changes, entry)
-			}
-		}
-		commits = append(commits, c)
 	}
+
+	for i := 0; i < len(tokens); {
+		token := strings.TrimLeft(tokens[i], "\r\n")
+		if token == gitCommitMarker {
+			flush()
+			if i+3 >= len(tokens) {
+				break
+			}
+			current = &parsedCommit{hash: tokens[i+1], date: tokens[i+2], subject: tokens[i+3]}
+			i += 4
+			continue
+		}
+		if current == nil || strings.TrimSpace(token) == "" {
+			i++
+			continue
+		}
+
+		code := strings.TrimSpace(token)
+		pathCount := 1
+		if code[0] == 'R' || code[0] == 'C' {
+			pathCount = 2
+		}
+		if i+pathCount >= len(tokens) {
+			break
+		}
+		for _, entry := range parseNameStatusFields(code, tokens[i+1:i+1+pathCount]) {
+			entry.Commit = current.hash
+			entry.Date = current.date
+			entry.Subject = current.subject
+			current.changes = append(current.changes, entry)
+		}
+		i += pathCount + 1
+	}
+	flush()
 	return commits
 }
 
-// parseNameStatusEntries parses one --name-status row into zero or more
-// skill-change entries, keeping only SKILL.md paths. Renames/copies (R/C) carry
-// both the source and destination path, so a SKILL.md moved to a different key
-// (or away from a skill path) records a deletion for the old key in addition to
-// the add/rename at the new key, letting either skill's history find the change.
-func parseNameStatusEntries(line string) []SkillHistoryEntry {
-	fields := strings.Split(line, "\t")
-	if len(fields) < 2 {
+// parseNameStatusFields parses one -z --name-status record into zero or more
+// skill-change entries. Renames/copies carry source and destination as separate
+// NUL-delimited fields, so paths are never decoded from tab/newline separators.
+func parseNameStatusFields(code string, paths []string) []SkillHistoryEntry {
+	if code == "" || len(paths) == 0 {
 		return nil
 	}
-	code := strings.TrimSpace(fields[0])
-	if code == "" {
-		return nil
-	}
-	if (code[0] == 'R' || code[0] == 'C') && len(fields) >= 3 {
-		oldPath := strings.TrimSpace(fields[1])
-		newPath := strings.TrimSpace(fields[2])
+	if (code[0] == 'R' || code[0] == 'C') && len(paths) >= 2 {
+		oldPath := paths[0]
+		newPath := paths[1]
 		oldSkill := filepath.Base(oldPath) == "SKILL.md"
 		newSkill := filepath.Base(newPath) == "SKILL.md"
 		var out []SkillHistoryEntry
@@ -403,7 +410,7 @@ func parseNameStatusEntries(line string) []SkillHistoryEntry {
 		}
 		return out
 	}
-	path := strings.TrimSpace(fields[len(fields)-1])
+	path := paths[0]
 	if filepath.Base(path) != "SKILL.md" {
 		return nil
 	}

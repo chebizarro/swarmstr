@@ -4,10 +4,9 @@ package methods
 // mutation over one transcript entry identified by {sessionKey, messageId}.
 // Verbs: react / edit / delete / retry. Mirrors OpenClaw
 // src/gateway/server-methods message.action, backed by metiq's durable
-// per-session transcript store (TranscriptRepository). Operates on the LOCAL
-// transcript only; cross-protocol nostr propagation (NIP-09 delete / NIP-25
-// reaction to a published event) is out of scope for v1 (follow-up tracked
-// separately).
+// per-session transcript store (TranscriptRepository). Published Nostr entries
+// also carry event/relay provenance so delete and reaction-add actions propagate
+// as NIP-09 kind 5 and NIP-25 kind 7 events before the local mutation.
 
 import (
 	"encoding/json"

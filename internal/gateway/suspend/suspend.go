@@ -8,17 +8,16 @@
 //
 // persisted to an atomic JSON ledger (mirroring internal/gateway/questions and
 // internal/gateway/pluginapproval) so gateway.suspend.status survives a crash
-// or restart mid-suspension. While suspended the coordinator flips a shared
-// "accepting work" gate that the cooperative background dispatchers (cron
-// scheduler, dreaming/promotion job, memory-compaction worker) consult before
-// dispatching NEW scheduled work: pause == stop dispatching new, never
-// hard-kill in-flight. In-flight interactive work (agent runs, sessions) is not
-// killed — it is reported honestly via the quiesce accounting so an operator can
-// wait for it to drain.
+// or restart mid-suspension. During prepare it atomically closes a shared
+// "accepting work" gate used by cooperative background dispatchers and the
+// interactive runtime surface. Work admitted before the gate closes owns a
+// lease and drains naturally; the final release advances preparing to suspended
+// without polling. Suspend never hard-kills in-flight work.
 package suspend
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,18 +37,25 @@ const (
 
 const ledgerVersion = 1
 
+// ErrAdmissionClosed is returned when new interactive work is attempted while
+// a suspension is preparing, suspended, or resuming.
+var ErrAdmissionClosed = errors.New("gateway interactive work admission is suspended")
+
 // InFlight is the quiesce-accounting snapshot the coordinator reports. It mirrors
 // the gateway.restart.preflight readiness inspector (in-flight agent runs +
 // active sessions): this is work the daemon does NOT kill on suspend, only
 // reports so an operator can wait for it to drain.
 type InFlight struct {
-	AgentRuns      int `json:"agentRuns"`
-	ActiveSessions int `json:"sessions"`
+	AgentRuns         int `json:"agentRuns"`
+	ActiveSessions    int `json:"sessions"`
+	InteractiveLeases int `json:"interactiveLeases"`
 }
 
 // Empty reports whether no in-flight work remains (the daemon has fully
 // quiesced its interactive surface).
-func (f InFlight) Empty() bool { return f.AgentRuns == 0 && f.ActiveSessions == 0 }
+func (f InFlight) Empty() bool {
+	return f.AgentRuns == 0 && f.ActiveSessions == 0 && f.InteractiveLeases == 0
+}
 
 // Record is the durable + wire representation of the current suspension state.
 type Record struct {
@@ -77,6 +83,7 @@ type Coordinator struct {
 	storagePath     string
 	pausableWorkers []string
 	now             func() int64
+	activeWork      int
 }
 
 // NewCoordinator returns an in-memory coordinator (tests, ephemeral runtimes).
@@ -183,6 +190,67 @@ func (c *Coordinator) AcceptingWork() bool {
 	return c.rec.State == StateIdle
 }
 
+// Lease represents one admitted unit of interactive work. Release must be
+// called exactly once; it is idempotent so callers may safely defer it.
+type Lease struct {
+	coordinator *Coordinator
+	once        sync.Once
+}
+
+// BeginWork atomically checks admission and accounts one active interactive
+// unit. The check and increment share the coordinator mutex, so Prepare cannot
+// race a newly admitted turn after it closes the gate.
+func (c *Coordinator) BeginWork() (*Lease, error) {
+	if c == nil {
+		return &Lease{}, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rec.State != StateIdle {
+		return nil, ErrAdmissionClosed
+	}
+	c.activeWork++
+	return &Lease{coordinator: c}, nil
+}
+
+// Release ends an admitted unit. When the final pre-suspend lease drains, the
+// preparing suspension advances durably to suspended without polling.
+func (l *Lease) Release() error {
+	if l == nil || l.coordinator == nil {
+		return nil
+	}
+	var err error
+	l.once.Do(func() {
+		c := l.coordinator
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.activeWork > 0 {
+			c.activeWork--
+		}
+		if c.activeWork == 0 && c.rec.State == StatePreparing {
+			suspended := c.rec
+			suspended.State = StateSuspended
+			suspended.UpdatedAtMs = c.now()
+			if persistErr := c.persistLocked(suspended); persistErr != nil {
+				err = persistErr
+				return
+			}
+			c.rec = suspended
+		}
+	})
+	return err
+}
+
+// ActiveWork returns the current interactive admission lease count.
+func (c *Coordinator) ActiveWork() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeWork
+}
+
 // State returns a snapshot of the current suspension record.
 func (c *Coordinator) State() Record {
 	if c == nil {
@@ -203,9 +271,9 @@ func (c *Coordinator) Suspended() bool {
 	return c.rec.State == StateSuspended
 }
 
-// Prepare begins a suspension, or returns the active one unchanged when already
-// suspended (idempotent). It transitions idle -> preparing -> suspended,
-// persisting at each step so a crash between steps recovers to a stable state.
+// Prepare begins a suspension, or returns the active one unchanged while it is
+// preparing/suspended (idempotent). It transitions idle -> preparing, then to
+// suspended immediately when no lease is active or when the final lease drains.
 // The accepting-work gate is closed for the whole preparing/suspended window.
 func (c *Coordinator) Prepare(reason string) (Record, error) {
 	if c == nil {
@@ -214,7 +282,7 @@ func (c *Coordinator) Prepare(reason string) (Record, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch c.rec.State {
-	case StateSuspended:
+	case StatePreparing, StateSuspended:
 		return c.rec, nil // idempotent: return the active suspension
 	case StateIdle:
 		// proceed
@@ -237,7 +305,12 @@ func (c *Coordinator) Prepare(reason string) (Record, error) {
 		return c.rec, err
 	}
 	c.rec = preparing
-	// Phase 2: suspended — quiesce complete.
+	if c.activeWork > 0 {
+		// Existing admitted work owns leases and advances this record to suspended
+		// when the final lease releases. No timeout or polling is involved.
+		return c.rec, nil
+	}
+	// Phase 2: suspended — no admitted interactive work remains.
 	suspended := preparing
 	suspended.State = StateSuspended
 	suspended.UpdatedAtMs = c.now()
@@ -259,7 +332,7 @@ func (c *Coordinator) Resume(suspensionID string) (Record, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.rec.State != StateSuspended {
+	if c.rec.State != StateSuspended && c.rec.State != StatePreparing {
 		return c.rec, fmt.Errorf("cannot resume: no active suspension (state %q)", c.rec.State)
 	}
 	if id := strings.TrimSpace(suspensionID); id != "" && id != c.rec.SuspensionID {

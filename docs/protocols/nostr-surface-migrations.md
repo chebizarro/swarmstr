@@ -2,7 +2,9 @@
 
 ## NIP-90
 
-Treat NIP-90 as a compatibility surface rather than the default abstraction for new work. Migrate individual data-vending-machine use cases to their applicable microstandards, preserving legacy event ingestion during a documented transition window. Do not introduce a single replacement RPC-style layer.
+Treat NIP-90 as a compatibility surface rather than the default abstraction for new work. ContextVM is the default for MCP/control workloads; it is not a feature-for-feature replacement for NIP-90 marketplace, payment, or status semantics.
+
+Legacy NIP-90 support is **off by default**. Setting `extra.dvm.enabled=true` enables both the outbound `nostr_dvm_request` tool and the inbound 5xxx-job provider. The value is read at startup, so changing it requires a daemon restart. Enabling the provider expands the daemon's externally reachable Nostr surface; keep accepted kinds narrowly configured. This compatibility flag and both legacy paths are scheduled for removal in the next breaking release. Until then, disabling the flag is the rollback to the ContextVM-only default. Do not introduce a single replacement RPC-style layer.
 
 ## NIP-96
 

@@ -1,18 +1,13 @@
 // Package talk implements the gateway voice/talk long-tail surface: the talk.*
 // discovery + synthesis methods (talk.catalog, talk.speak), the tts persona
 // controls (tts.personas, tts.setPersona), the voicewake.routing.* config, the
-// talk.session.* turn lifecycle over the gateway-relay transport, and the
-// talk.client.* client-owned voice sessions.
+// talk.session.* turn lifecycle over gateway-relay or an optional managed-room
+// adapter, and the talk.client.* client-owned voice sessions.
 //
-// Capability honesty (swarmstr-0tfj): metiq's internal/tts manager is live, so
-// talk.speak, tts.personas/setPersona, talk.catalog's speech section, and the
-// voicewake routing config are implemented for real. The realtimevoice and
-// realtimestt provider registries are plugin scaffolding that the daemon does
-// not currently populate, and there is no managed-room / LiveKit transport, so
-// the session/client audio-transport paths resolve a provider from those
-// registries and return a clear ErrUnavailable when none is registered rather
-// than shipping a fake stub. Managed-room-only operations (join, managed-room
-// startTurn/endTurn) are accepted deviations that return ErrUnsupported.
+// Capability honesty: provider registries are wired by the daemon, browser
+// sessions are provider-advertised, and managed-room readiness requires an
+// explicitly configured adapter. Missing runtime infrastructure returns
+// ErrUnavailable rather than fabricated success data.
 package talk
 
 import (
@@ -37,8 +32,8 @@ const (
 // precedent, instead of returning fabricated success data.
 var ErrUnavailable = errors.New("unavailable")
 
-// ErrUnsupported marks an operation that only exists for a transport metiq does
-// not implement (managed-room / LiveKit). It is an accepted parity deviation.
+// ErrUnsupported marks an operation that is invalid for the selected transport
+// (for example gateway appendAudio on room-native media).
 var ErrUnsupported = errors.New("unsupported")
 
 // ReasonedError couples a machine-readable reason code with a human message.

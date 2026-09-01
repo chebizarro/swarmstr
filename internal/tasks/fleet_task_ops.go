@@ -12,8 +12,8 @@
 //   - successors are complete snapshots built from the effective head, with
 //     winning-claim lineage (assignee, claimed_at, origin metadata)
 //     materialized into every successor
-//   - close requires a winning claim; evidence enforcement lives at the tool
-//     boundary (swarmstr-t3ty tracks the full acceptance-evidence contract)
+//   - close requires a winning claim, a non-empty acceptance note, and
+//     non-blank evidence at both the tool and bridge boundaries
 //
 // Mutations wait for the initial relay EOSE (WaitReady) so create/claim
 // decisions never run against partial history, publish strictly after both
@@ -21,9 +21,9 @@
 // per-author eventWins replacement), and verify post-publish that the event
 // became the retained local head.
 //
-// Follow-ups tracked in beads: swarmstr-11af (publish-time double check is
-// best-effort here; no lock is held between check and relay accept),
-// swarmstr-rj4j (claim settlement interval + richer resolution reporting).
+// Local tool mutations are serialized with ledger projection publishes. This
+// matches the reference mutation chain and closes the local check-to-publish
+// race; relay-delivered heads remain concurrent and are reconciled by the merge.
 package tasks
 
 import (
@@ -50,7 +50,7 @@ func (e *FleetTaskConflictError) Error() string {
 	case e.Actual == "":
 		return fmt.Sprintf("fleet task %s has no effective state for base %s; inspect and retry", e.TaskID, e.Expected)
 	default:
-		return fmt.Sprintf("fleet task %s changed concurrently (expected %s, current %s); inspect and retry", e.TaskID, e.Expected, e.Actual)
+		return fmt.Sprintf("Fleet task changed concurrently (expected %s, current %s). Inspect and retry.", e.Expected, e.Actual)
 	}
 }
 
@@ -100,15 +100,16 @@ func (b *FleetTaskBridge) buildTaskView(effective TaskEventHead, heads []TaskEve
 		}
 		view.Resolution = FleetTaskResolutionEffective
 	}
+	claimContenders := make(map[string]FleetTaskClaimView)
 	for _, head := range heads {
 		id := strings.ToLower(head.Event.ID.Hex())
 		if head.Claim != nil {
-			view.ClaimContenders = append(view.ClaimContenders, FleetTaskClaimView{
+			claimContenders[head.Claim.EventID] = FleetTaskClaimView{
 				OriginEventID: head.Claim.EventID,
 				OriginPubkey:  head.Claim.Pubkey,
 				Assignee:      head.Claim.Assignee,
 				ClaimedAt:     head.Claim.CreatedAt,
-			})
+			}
 		}
 		if id == view.EffectiveEventID {
 			continue
@@ -119,6 +120,9 @@ func (b *FleetTaskBridge) buildTaskView(effective TaskEventHead, heads []TaskEve
 			continue
 		}
 		view.ContendingEventIDs = append(view.ContendingEventIDs, id)
+	}
+	for _, contender := range claimContenders {
+		view.ClaimContenders = append(view.ClaimContenders, contender)
 	}
 	sort.Strings(view.ContendingEventIDs)
 	sort.Strings(view.IncompatibleEventIDs)
@@ -260,6 +264,8 @@ func (b *FleetTaskBridge) CreateFleetTask(ctx context.Context, in CreateFleetTas
 	if err := b.WaitReady(ctx); err != nil {
 		return FleetTaskView{}, err
 	}
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
 	taskID := strings.TrimSpace(in.ID)
 	if b.merger.HasTask(taskID) {
 		actual := ""
@@ -304,6 +310,8 @@ func (b *FleetTaskBridge) ClaimFleetTask(ctx context.Context, taskID, baseEventI
 	if err := b.WaitReady(ctx); err != nil {
 		return FleetTaskView{}, err
 	}
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
 	head, err := b.checkBase(taskID, baseEventID)
 	if err != nil {
 		return FleetTaskView{}, err
@@ -364,6 +372,62 @@ type AdvanceFleetTaskInput struct {
 	Assignee    string // handoff only
 }
 
+// materializeFleetTaskClaim enforces and carries the winning claim through a
+// complete successor. The claim fields are immutable: callers may not reopen,
+// reassign, retimestamp, or replace an observed origin.
+func materializeFleetTaskClaim(base TaskEventHead, doc *TaskDocument) error {
+	if base.Claim == nil {
+		return nil
+	}
+	if doc.Assignee != base.Claim.Assignee || doc.ClaimedAt != base.Task.ClaimedAt || doc.Status == "open" {
+		return fmt.Errorf("a claimed task successor must preserve assignee, claimed_at, and a non-open status")
+	}
+	if doc.Metadata == nil {
+		doc.Metadata = map[string]string{}
+	}
+	for key, expected := range map[string]string{
+		ClaimOriginIDMetaKey:     base.Claim.EventID,
+		ClaimOriginPubkeyMetaKey: base.Claim.Pubkey,
+	} {
+		if actual := strings.TrimSpace(doc.Metadata[key]); actual != "" && !strings.EqualFold(actual, expected) {
+			return fmt.Errorf("a claimed task successor cannot change claim origin")
+		}
+		doc.Metadata[key] = expected
+	}
+	return nil
+}
+
+// checkClaimSettlement gates only the local sole apparent winning initial
+// claim. A remote winner or an already-observed competing origin does not use
+// this local quiet-period heuristic, matching openclaw-nostr. This check is not
+// linearizable: an earlier unseen claim may still arrive after the window.
+func (b *FleetTaskBridge) checkClaimSettlement(ctx context.Context, head TaskEventHead) error {
+	if !head.InitialClaim || head.Claim == nil || b.claimSettlement <= 0 {
+		return nil
+	}
+	pubkey, err := b.keyer.GetPublicKey(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve fleet task signer for claim settlement: %w", err)
+	}
+	if !strings.EqualFold(head.Event.PubKey.Hex(), pubkey.Hex()) {
+		return nil
+	}
+	view, ok := b.FleetTaskView(head.Task.ID)
+	if !ok || view.Claim == nil ||
+		!strings.EqualFold(view.Claim.OriginEventID, head.Event.ID.Hex()) ||
+		len(view.ClaimContenders) != 1 {
+		return nil
+	}
+	settleAt := time.Unix(int64(head.Event.CreatedAt), 0).Add(b.claimSettlement)
+	if now := b.now(); now.Before(settleAt) {
+		return fmt.Errorf(
+			"fleet task %s claim is still settling until %s; inspect after the settlement window and verify winning_claim before publishing a successor",
+			head.Task.ID, settleAt.UTC().Format(time.RFC3339),
+		)
+	}
+	return nil
+}
+
 // AdvanceFleetTask publishes a checkpoint/block/handoff/close successor built
 // from the current effective snapshot, preserving winning-claim lineage.
 func (b *FleetTaskBridge) AdvanceFleetTask(ctx context.Context, in AdvanceFleetTaskInput) (FleetTaskView, error) {
@@ -373,6 +437,8 @@ func (b *FleetTaskBridge) AdvanceFleetTask(ctx context.Context, in AdvanceFleetT
 	if err := b.WaitReady(ctx); err != nil {
 		return FleetTaskView{}, err
 	}
+	b.mutationMu.Lock()
+	defer b.mutationMu.Unlock()
 	head, err := b.checkBase(in.TaskID, in.BaseEventID)
 	if err != nil {
 		return FleetTaskView{}, err
@@ -380,14 +446,8 @@ func (b *FleetTaskBridge) AdvanceFleetTask(ctx context.Context, in AdvanceFleetT
 	if head.Task.Status == "closed" {
 		return FleetTaskView{}, fmt.Errorf("fleet task %s is closed; fleet_tasks does not support reopening", in.TaskID)
 	}
-	if head.InitialClaim && head.Claim != nil {
-		settleAt := time.Unix(head.Claim.CreatedAt, 0).Add(b.claimSettlement)
-		if now := b.now(); now.Before(settleAt) {
-			return FleetTaskView{}, fmt.Errorf(
-				"fleet task %s claim is still settling until %s; inspect after the settlement window and verify winning_claim before publishing a successor",
-				in.TaskID, settleAt.UTC().Format(time.RFC3339),
-			)
-		}
+	if err := b.checkClaimSettlement(ctx, head); err != nil {
+		return FleetTaskView{}, err
 	}
 	now, err := b.successorCreatedAt(ctx, in.TaskID, head)
 	if err != nil {
@@ -398,66 +458,67 @@ func (b *FleetTaskBridge) AdvanceFleetTask(ctx context.Context, in AdvanceFleetT
 	if doc.Metadata == nil {
 		doc.Metadata = map[string]string{}
 	}
-	// Materialize winning-claim lineage into the successor: assignee and
-	// claimed_at stay pinned to the claim, and the origin identity survives
-	// even when the effective head was itself the initial claim event.
-	if head.Claim != nil {
-		doc.Assignee = head.Claim.Assignee
-		doc.ClaimedAt = time.Unix(head.Claim.CreatedAt, 0).UTC().Format(time.RFC3339)
-		doc.Metadata[ClaimOriginIDMetaKey] = head.Claim.EventID
-		doc.Metadata[ClaimOriginPubkeyMetaKey] = head.Claim.Pubkey
-	}
 	note := strings.TrimSpace(in.Note)
-	entry := fmt.Sprintf("[%s %s] %s", in.Op, stamp, note)
-	if doc.Notes != "" {
-		doc.Notes += "\n" + entry
-	} else {
-		doc.Notes = entry
-	}
+	evidence := make([]string, 0, len(in.Evidence))
 	for _, item := range in.Evidence {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
+		if item = strings.TrimSpace(item); item != "" {
+			evidence = append(evidence, item)
 		}
-		raw, marshalErr := json.Marshal(item)
-		if marshalErr != nil {
-			return FleetTaskView{}, fmt.Errorf("encode evidence: %w", marshalErr)
+	}
+	if in.Op == FleetTaskOpClose {
+		if note == "" {
+			return FleetTaskView{}, fmt.Errorf("fleet task %s close requires a non-empty acceptance note", in.TaskID)
+		}
+		if len(evidence) == 0 {
+			return FleetTaskView{}, fmt.Errorf("fleet task %s close requires at least one non-blank acceptance evidence reference", in.TaskID)
+		}
+		if head.Claim == nil || strings.TrimSpace(head.Task.Assignee) == "" || strings.TrimSpace(head.Task.ClaimedAt) == "" {
+			return FleetTaskView{}, fmt.Errorf("fleet task %s cannot close unclaimed work; a winning claim with assignee and claimed_at is required", in.TaskID)
+		}
+	}
+	entry, marshalErr := json.Marshal(struct {
+		At        string   `json:"at"`
+		Operation string   `json:"operation"`
+		Note      string   `json:"note"`
+		Evidence  []string `json:"evidence,omitempty"`
+	}{At: stamp, Operation: in.Op, Note: note, Evidence: evidence})
+	if marshalErr != nil {
+		return FleetTaskView{}, fmt.Errorf("encode fleet task note: %w", marshalErr)
+	}
+	if doc.Notes != "" {
+		doc.Notes += "\n" + string(entry)
+	} else {
+		doc.Notes = string(entry)
+	}
+	for _, item := range evidence {
+		raw, err := json.Marshal(item)
+		if err != nil {
+			return FleetTaskView{}, fmt.Errorf("encode evidence: %w", err)
 		}
 		doc.Evidence = append(doc.Evidence, raw)
 	}
+	doc.Metadata["last_"+in.Op] = stamp
 	switch in.Op {
 	case FleetTaskOpCheckpoint:
-		doc.Metadata["last_checkpoint"] = stamp
 	case FleetTaskOpBlock:
 		doc.Status = "blocked"
 		doc.BlockedAt = stamp
 		doc.BlockerDescription = note
-		doc.Metadata["last_block"] = stamp
 	case FleetTaskOpHandoff:
-		assignee := strings.TrimSpace(in.Assignee)
-		if head.Claim != nil && assignee != head.Claim.Assignee {
-			return FleetTaskView{}, fmt.Errorf("fleet task %s has a winning claim by %s; claim lineage forbids reassignment — the claimant must block or close, then the new assignee claims",
-				in.TaskID, head.Claim.Assignee)
+		if head.Claim == nil {
+			return FleetTaskView{}, fmt.Errorf("fleet task %s is unclaimed; use claim rather than handoff to introduce a claim", in.TaskID)
 		}
 		doc.Status = "in_progress"
-		doc.Assignee = assignee
-		if head.Claim == nil { // handoff of an unclaimed task is an initial claim
-			doc.ClaimedAt = now.Format(time.RFC3339)
-			if doc.StartedAt == "" {
-				doc.StartedAt = stamp
-			}
-			delete(doc.Metadata, ClaimOriginIDMetaKey)
-			delete(doc.Metadata, ClaimOriginPubkeyMetaKey)
-		}
+		doc.Assignee = strings.TrimSpace(in.Assignee)
 	case FleetTaskOpClose:
-		if head.Claim == nil {
-			return FleetTaskView{}, fmt.Errorf("fleet task %s has no winning claim; close requires claimed, evidence-backed work", in.TaskID)
-		}
 		doc.Status = "closed"
 		doc.ClosedAt = stamp
 		doc.CloseReason = note
 	default:
 		return FleetTaskView{}, fmt.Errorf("unsupported fleet task op %q", in.Op)
+	}
+	if err := materializeFleetTaskClaim(head, &doc); err != nil {
+		return FleetTaskView{}, fmt.Errorf("fleet task %s: %w", in.TaskID, err)
 	}
 	doc.UpdatedAt = now.Format(time.RFC3339Nano)
 	if raw, encodeErr := EncodeTaskDocument(doc); encodeErr != nil {

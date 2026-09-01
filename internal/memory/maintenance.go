@@ -11,6 +11,7 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -66,28 +67,47 @@ type MemoryMigrationApplyReport struct {
 	DryRun  bool                  `json:"dry_run"`
 }
 
-// MemoryMigrationPlan computes a migration/maintenance plan over the unified
-// SQLite store.
+// MemoryMigrationPlan computes a read-only migration/maintenance plan. It never
+// creates or repairs schema objects; missing objects make SchemaPending true even
+// when a stale schema_version row already equals the target.
 func (b *SQLiteBackend) MemoryMigrationPlan(ctx context.Context) (MemoryMigrationPlan, error) {
-	_ = ctx
-	if err := b.ensureUnifiedSchema(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return MemoryMigrationPlan{}, err
 	}
 	plan := MemoryMigrationPlan{Backend: "sqlite", Path: b.path, TargetVersion: sqliteSchemaVersion}
-	_ = b.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&plan.CurrentVersion)
-	plan.SchemaPending = plan.CurrentVersion < plan.TargetVersion
+	if tableExists(b.db, "schema_version") {
+		_ = b.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&plan.CurrentVersion)
+	}
+	hasRecords := tableExists(b.db, "memory_records")
+	hasFTS := tableExists(b.db, "memory_fts")
+	hasEmbeddings := tableExists(b.db, "memory_embeddings")
+	plan.SchemaPending = plan.CurrentVersion < plan.TargetVersion || !unifiedSchemaObjectsPresent(b.db)
 
 	var records, fts int
-	_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_records`).Scan(&records)
-	_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_fts`).Scan(&fts)
-	plan.FTSDrift = absInt(records - fts)
-	_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_records r LEFT JOIN memory_embeddings e ON e.record_id = r.id WHERE r.deleted_at IS NULL AND e.record_id IS NULL`).Scan(&plan.ReindexBacklog)
+	if hasRecords {
+		_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_records`).Scan(&records)
+	}
+	if hasRecords && hasFTS {
+		_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_fts`).Scan(&fts)
+		plan.FTSDrift = absInt(records - fts)
+	}
+	if hasRecords && hasEmbeddings {
+		_ = b.db.QueryRow(`SELECT COUNT(*) FROM memory_records r LEFT JOIN memory_embeddings e ON e.record_id = r.id WHERE r.deleted_at IS NULL AND e.record_id IS NULL`).Scan(&plan.ReindexBacklog)
+	}
 	if tableExists(b.db, "chunks") {
-		_ = b.db.QueryRow(`SELECT COUNT(*) FROM chunks WHERE id NOT IN (SELECT id FROM memory_records)`).Scan(&plan.LegacyChunks)
+		if hasRecords {
+			_ = b.db.QueryRow(`SELECT COUNT(*) FROM chunks WHERE id NOT IN (SELECT id FROM memory_records)`).Scan(&plan.LegacyChunks)
+		} else {
+			_ = b.db.QueryRow(`SELECT COUNT(*) FROM chunks`).Scan(&plan.LegacyChunks)
+		}
 	}
 
 	if plan.SchemaPending {
-		plan.Steps = append(plan.Steps, MemoryMigrationStep{ID: "schema_upgrade", Kind: "schema", Pending: true, Count: plan.TargetVersion - plan.CurrentVersion, Description: fmt.Sprintf("migrate unified schema from v%d to v%d", plan.CurrentVersion, plan.TargetVersion)})
+		count := plan.TargetVersion - plan.CurrentVersion
+		if count < 1 {
+			count = 1
+		}
+		plan.Steps = append(plan.Steps, MemoryMigrationStep{ID: "schema_upgrade", Kind: "schema", Pending: true, Count: count, Description: fmt.Sprintf("migrate unified schema from v%d to v%d", plan.CurrentVersion, plan.TargetVersion)})
 	}
 	if plan.FTSDrift > 0 {
 		plan.Steps = append(plan.Steps, MemoryMigrationStep{ID: "fts_rebuild", Kind: "fts_rebuild", Pending: true, Count: plan.FTSDrift, Description: "rebuild memory_fts to match memory_records"})
@@ -100,6 +120,27 @@ func (b *SQLiteBackend) MemoryMigrationPlan(ctx context.Context) (MemoryMigratio
 	}
 	plan.Dirty = plan.SchemaPending || plan.FTSDrift > 0 || plan.LegacyChunks > 0
 	return plan, nil
+}
+
+func unifiedSchemaObjectsPresent(db *sql.DB) bool {
+	required := map[string][]string{
+		"table": {
+			"memory_records", "memory_fts", "memory_sources", "memory_sync_state",
+			"memory_eval_cases", "memory_eval_runs", "memory_events_outbox",
+			"memory_embeddings", "memory_nostr_provenance", "reindex_status",
+			"memory_maintenance_state", "memory_health_scores",
+		},
+		"trigger": {"memory_records_ai", "memory_records_ad", "memory_records_au"},
+	}
+	for objectType, names := range required {
+		for _, name := range names {
+			var found string
+			if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = ? AND name = ?`, objectType, name).Scan(&found); err != nil {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // MemoryMigrationApply executes the migration plan. FTS rebuild and legacy
@@ -143,6 +184,11 @@ func (b *SQLiteBackend) memoryMigrationApply(ctx context.Context, opts MemoryMig
 		return MemoryMigrationApplyReport{}, err
 	}
 	report := MemoryMigrationApplyReport{Before: before, DryRun: opts.DryRun}
+	if !opts.DryRun && before.SchemaPending {
+		if err := b.ensureUnifiedSchema(); err != nil {
+			return report, err
+		}
+	}
 
 	rebuildFTS := before.FTSDrift > 0 || opts.RebuildFTS
 	backfill := before.LegacyChunks > 0 || opts.Backfill
@@ -188,7 +234,7 @@ func (b *SQLiteBackend) memoryMigrationApply(ctx context.Context, opts MemoryMig
 	if !opts.DryRun {
 		if !dataOK {
 			schemaStep.Detail = "skipped schema_version bump: data migration/FTS rebuild failed"
-		} else if _, err := b.db.Exec(`INSERT OR REPLACE INTO schema_version (version) VALUES (?)`, sqliteSchemaVersion); err != nil {
+		} else if err := b.stampSchemaVersion(); err != nil {
 			schemaStep.Detail = err.Error()
 		} else {
 			schemaStep.Applied = true

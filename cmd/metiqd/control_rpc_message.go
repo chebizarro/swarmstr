@@ -13,9 +13,9 @@ package main
 //              launchManagedRun, with the same idempotent reserve+Begin-under-one-
 //              mutex pattern as skills.proposals.requestRevision (no double-launch).
 //
-// v1 operates on the LOCAL transcript only. If a message was published over a
-// channel/DM, cross-protocol propagation (NIP-09 delete / NIP-25 reaction to the
-// real nostr event) is out of scope for v1 and is NOT half-built here.
+// Entries carrying persisted Nostr publication provenance propagate delete and
+// reaction-add actions before the local mutation: kind 5 (NIP-09) for delete and
+// kind 7 (NIP-25) for react. Entries without provenance retain local-only behavior.
 
 import (
 	"context"
@@ -68,14 +68,20 @@ func (h controlRPCHandler) handleMessageActionRPC(ctx context.Context, in nostru
 		defer unlock()
 		// Confirm the entry exists (and is not already tombstoned) so a delete of a
 		// missing message is an honest not_found rather than a silent success.
-		if _, err := transcriptRepo.GetEntry(ctx, sessionID, req.MessageID); err != nil {
+		entry, err := transcriptRepo.GetEntry(ctx, sessionID, req.MessageID)
+		if err != nil {
 			return messageNotFoundOrErr(err)
+		}
+		propagated, err := h.propagateMessageDelete(ctx, entry)
+		if err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
 		}
 		if err := transcriptRepo.DeleteEntry(ctx, sessionID, req.MessageID); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{
 			"ok": true, "deleted": true, "session_id": sessionID, "entry_id": req.MessageID,
+			"nostr_propagated": propagated,
 		}}, true, nil
 
 	case methods.MessageActionVerbEdit:
@@ -120,8 +126,19 @@ func (h controlRPCHandler) handleMessageActionRPC(ctx context.Context, in nostru
 			return messageNotFoundOrErr(err)
 		}
 		meta := cloneEntryMeta(entry.Meta)
+		alreadyPresent := hasReaction(meta, req.Actor, req.Reaction)
+		propagated := false
+		if !req.Remove && !alreadyPresent {
+			propagated, err = h.propagateMessageReaction(ctx, entry, req.Reaction)
+			if err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+		}
 		applyReaction(meta, req.Actor, req.Reaction, req.Remove)
 		entry.Meta = meta
+		if propagated {
+			entry.Meta["nostr_reaction_propagated"] = true
+		}
 		if _, err := transcriptRepo.ReplaceEntry(ctx, entry); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
@@ -129,7 +146,11 @@ func (h controlRPCHandler) handleMessageActionRPC(ctx context.Context, in nostru
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
-		return messageEntryResult(updated), true, nil
+		result := messageEntryResult(updated)
+		if payload, ok := result.Result.(map[string]any); ok {
+			payload["nostr_propagated"] = propagated
+		}
+		return result, true, nil
 
 	case methods.MessageActionVerbRetry:
 		out, err := h.launchMessageRetryRun(ctx, sessionID, req)
@@ -191,6 +212,16 @@ func existingRevisions(meta map[string]any) []any {
 // applyReaction mutates meta["reactions"] (actor -> sorted unique reaction list).
 // remove=false adds the reaction to the actor's set; remove=true drops it,
 // pruning the actor (and the whole reactions map) when it empties.
+func hasReaction(meta map[string]any, actor, reaction string) bool {
+	reactions, _ := meta["reactions"].(map[string]any)
+	for _, existing := range metaStringSlice(reactions[actor]) {
+		if existing == reaction {
+			return true
+		}
+	}
+	return false
+}
+
 func applyReaction(meta map[string]any, actor, reaction string, remove bool) {
 	reactions := map[string]any{}
 	if existing, ok := meta["reactions"].(map[string]any); ok {

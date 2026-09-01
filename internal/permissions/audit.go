@@ -76,6 +76,11 @@ type AuditEvent struct {
 	// SessionID identifies the session involved.
 	SessionID string `json:"session_id,omitempty"`
 
+	// RunID and ExecutionID durably correlate permission decisions with one
+	// gateway execution. Legacy records omit both fields.
+	RunID       string `json:"run_id,omitempty"`
+	ExecutionID string `json:"execution_id,omitempty"`
+
 	// Details contains additional event-specific data.
 	Details map[string]any `json:"details,omitempty"`
 }
@@ -124,18 +129,20 @@ func (a *Auditor) LogEvent(event AuditEvent) string {
 // LogDecision records a permission decision.
 func (a *Auditor) LogDecision(req *ToolRequest, decision *Decision) string {
 	return a.LogEvent(AuditEvent{
-		Type:       AuditEventDecision,
-		Timestamp:  time.Now(),
-		ToolName:   req.ToolName,
-		Category:   req.Category,
-		Origin:     req.Origin,
-		OriginName: req.OriginName,
-		Behavior:   decision.Behavior,
-		Reason:     decision.Reason,
-		UserID:     req.UserID,
-		ProjectID:  req.ProjectID,
-		AgentID:    req.AgentID,
-		SessionID:  req.SessionID,
+		Type:        AuditEventDecision,
+		Timestamp:   time.Now(),
+		ToolName:    req.ToolName,
+		Category:    req.Category,
+		Origin:      req.Origin,
+		OriginName:  req.OriginName,
+		Behavior:    decision.Behavior,
+		Reason:      decision.Reason,
+		UserID:      req.UserID,
+		ProjectID:   req.ProjectID,
+		AgentID:     req.AgentID,
+		SessionID:   req.SessionID,
+		RunID:       req.RunID,
+		ExecutionID: req.ExecutionID,
 		Details: map[string]any{
 			"content":       truncate(req.Content, 200),
 			"matched_rules": len(decision.MatchedRules),
@@ -147,18 +154,20 @@ func (a *Auditor) LogDecision(req *ToolRequest, decision *Decision) string {
 // LogOverride records a manual permission override.
 func (a *Auditor) LogOverride(req *ToolRequest, originalBehavior, newBehavior Behavior, overrideBy, reason string) string {
 	return a.LogEvent(AuditEvent{
-		Type:       AuditEventOverride,
-		Timestamp:  time.Now(),
-		ToolName:   req.ToolName,
-		Category:   req.Category,
-		Origin:     req.Origin,
-		OriginName: req.OriginName,
-		Behavior:   newBehavior,
-		Reason:     reason,
-		UserID:     req.UserID,
-		ProjectID:  req.ProjectID,
-		AgentID:    req.AgentID,
-		SessionID:  req.SessionID,
+		Type:        AuditEventOverride,
+		Timestamp:   time.Now(),
+		ToolName:    req.ToolName,
+		Category:    req.Category,
+		Origin:      req.Origin,
+		OriginName:  req.OriginName,
+		Behavior:    newBehavior,
+		Reason:      reason,
+		UserID:      req.UserID,
+		ProjectID:   req.ProjectID,
+		AgentID:     req.AgentID,
+		SessionID:   req.SessionID,
+		RunID:       req.RunID,
+		ExecutionID: req.ExecutionID,
 		Details: map[string]any{
 			"original_behavior": originalBehavior,
 			"override_by":       overrideBy,
@@ -169,17 +178,19 @@ func (a *Auditor) LogOverride(req *ToolRequest, originalBehavior, newBehavior Be
 // LogEscalation records a permission escalation.
 func (a *Auditor) LogEscalation(req *ToolRequest, fromScope, toScope Scope, reason string) string {
 	return a.LogEvent(AuditEvent{
-		Type:       AuditEventEscalation,
-		Timestamp:  time.Now(),
-		ToolName:   req.ToolName,
-		Category:   req.Category,
-		Origin:     req.Origin,
-		OriginName: req.OriginName,
-		Reason:     reason,
-		UserID:     req.UserID,
-		ProjectID:  req.ProjectID,
-		AgentID:    req.AgentID,
-		SessionID:  req.SessionID,
+		Type:        AuditEventEscalation,
+		Timestamp:   time.Now(),
+		ToolName:    req.ToolName,
+		Category:    req.Category,
+		Origin:      req.Origin,
+		OriginName:  req.OriginName,
+		Reason:      reason,
+		UserID:      req.UserID,
+		ProjectID:   req.ProjectID,
+		AgentID:     req.AgentID,
+		SessionID:   req.SessionID,
+		RunID:       req.RunID,
+		ExecutionID: req.ExecutionID,
 		Details: map[string]any{
 			"from_scope": fromScope,
 			"to_scope":   toScope,
@@ -324,6 +335,12 @@ func (a *Auditor) readAuditFile(path string, opts AuditQueryOptions) ([]AuditEve
 		if opts.Behavior != "" && event.Behavior != opts.Behavior {
 			continue
 		}
+		if opts.RunID != "" && event.RunID != opts.RunID {
+			continue
+		}
+		if opts.ExecutionID != "" && event.ExecutionID != opts.ExecutionID {
+			continue
+		}
 		if opts.Since != nil && event.Timestamp.Before(*opts.Since) {
 			continue
 		}
@@ -350,6 +367,10 @@ type AuditQueryOptions struct {
 
 	// Behavior filters by decision behavior.
 	Behavior Behavior `json:"behavior,omitempty"`
+
+	// RunID / ExecutionID filter durable gateway execution correlation.
+	RunID       string `json:"run_id,omitempty"`
+	ExecutionID string `json:"execution_id,omitempty"`
 
 	// Since filters events after this time.
 	Since *time.Time `json:"since,omitempty"`

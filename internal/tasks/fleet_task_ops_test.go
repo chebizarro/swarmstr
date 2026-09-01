@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -82,6 +83,18 @@ func TestFleetTaskOpsLifecycle(t *testing.T) {
 	if checked.Task.Metadata["last_checkpoint"] == "" || len(checked.Task.Evidence) != 1 {
 		t.Fatalf("checkpoint view: %#v", checked.Task)
 	}
+	var checkpointNote struct {
+		Operation string   `json:"operation"`
+		Note      string   `json:"note"`
+		Evidence  []string `json:"evidence"`
+	}
+	noteLines := strings.Split(checked.Task.Notes, "\n")
+	if err := json.Unmarshal([]byte(noteLines[len(noteLines)-1]), &checkpointNote); err != nil {
+		t.Fatalf("checkpoint note is not structured JSON: %v (%q)", err, noteLines[len(noteLines)-1])
+	}
+	if checkpointNote.Operation != FleetTaskOpCheckpoint || checkpointNote.Note != "halfway" || len(checkpointNote.Evidence) != 1 || checkpointNote.Evidence[0] != "commit:abc123" {
+		t.Fatalf("checkpoint note=%#v", checkpointNote)
+	}
 	if checked.Claim == nil || checked.Claim.OriginEventID != claimOriginID {
 		t.Fatalf("checkpoint lost claim lineage: %#v", checked.Claim)
 	}
@@ -149,6 +162,10 @@ func TestFleetTaskOpsConflicts(t *testing.T) {
 	if !errors.As(err, &conflict) || conflict.Expected != stale || conflict.Actual != created.EffectiveEventID {
 		t.Fatalf("stale claim err=%v conflict=%#v", err, conflict)
 	}
+	wantConflict := "Fleet task changed concurrently (expected " + stale + ", current " + created.EffectiveEventID + "). Inspect and retry."
+	if err.Error() != wantConflict {
+		t.Fatalf("conflict message=%q want=%q", err.Error(), wantConflict)
+	}
 
 	// Close without a winning claim is rejected.
 	if _, err := bridge.AdvanceFleetTask(ctx, AdvanceFleetTaskInput{
@@ -156,6 +173,14 @@ func TestFleetTaskOpsConflicts(t *testing.T) {
 		Note: "nope", Evidence: []string{"x"},
 	}); err == nil {
 		t.Fatal("close of unclaimed task succeeded")
+	}
+
+	// Handoff cannot introduce a claim; unclaimed work must use claim.
+	if _, err := bridge.AdvanceFleetTask(ctx, AdvanceFleetTaskInput{
+		Op: FleetTaskOpHandoff, TaskID: "ops-2", BaseEventID: created.EffectiveEventID,
+		Note: "take it", Assignee: "agent-a",
+	}); err == nil || !strings.Contains(err.Error(), "use claim") {
+		t.Fatalf("unclaimed handoff error=%v", err)
 	}
 
 	// Claimed tasks cannot be reassigned via handoff.
@@ -168,6 +193,27 @@ func TestFleetTaskOpsConflicts(t *testing.T) {
 		Note: "take it", Assignee: "agent-b",
 	}); err == nil {
 		t.Fatal("handoff reassignment of claimed task succeeded")
+	}
+
+	if _, err := bridge.AdvanceFleetTask(ctx, AdvanceFleetTaskInput{
+		Op: FleetTaskOpClose, TaskID: "ops-2", BaseEventID: claimed.EffectiveEventID,
+		Note: "done",
+	}); err == nil || !strings.Contains(err.Error(), "evidence") {
+		t.Fatalf("close without evidence error=%v", err)
+	}
+	if _, err := bridge.AdvanceFleetTask(ctx, AdvanceFleetTaskInput{
+		Op: FleetTaskOpClose, TaskID: "ops-2", BaseEventID: claimed.EffectiveEventID,
+		Note: "   ", Evidence: []string{"commit:abc"},
+	}); err == nil || !strings.Contains(err.Error(), "acceptance note") {
+		t.Fatalf("close without note error=%v", err)
+	}
+	mutated := claimed.Task
+	mutated.Metadata = map[string]string{ClaimOriginIDMetaKey: strings.Repeat("f", 64)}
+	if err := materializeFleetTaskClaim(TaskEventHead{Task: claimed.Task, Claim: &ClaimOrigin{
+		EventID: claimed.Claim.OriginEventID, Pubkey: claimed.Claim.OriginPubkey,
+		CreatedAt: claimed.Claim.ClaimedAt, Assignee: claimed.Claim.Assignee,
+	}}, &mutated); err == nil || !strings.Contains(err.Error(), "cannot change claim origin") {
+		t.Fatalf("claim-origin mutation error=%v", err)
 	}
 
 	// Second claim on an already claimed task is rejected.
@@ -261,6 +307,57 @@ func TestFleetTaskOpsClosedIsTerminal(t *testing.T) {
 	}
 }
 
+func TestFleetTaskMutationLockCoversCheckThroughPublish(t *testing.T) {
+	signer := testTaskSigner()
+	pubkey := signerPubkey(t, signer)
+	eventsCh := make(chan nostr.RelayEvent)
+	eoseCh := make(chan struct{}, 1)
+	eoseCh <- struct{}{}
+	publishEntered := make(chan struct{})
+	releasePublish := make(chan struct{})
+	blockPublish := false
+	bridge, err := NewFleetTaskBridge(context.Background(), FleetTaskBridgeOptions{
+		Keyer: signer, Ledger: NewLedger(nil),
+		ReadRelays: []string{"wss://read.example"}, WriteRelays: []string{"wss://write.example"},
+		TrustedTaskAuthors: []string{pubkey}, TrustedCollectionAuthors: []string{pubkey},
+		Now: func() time.Time { return time.Unix(500, 0) },
+		PublishFunc: func(context.Context, []string, nostr.Event) error {
+			if blockPublish {
+				close(publishEntered)
+				<-releasePublish
+			}
+			return nil
+		},
+		SubscribeFunc: func(context.Context, []string, nostr.Filter) (<-chan nostr.RelayEvent, <-chan struct{}) {
+			return eventsCh, eoseCh
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Stop()
+
+	created, err := bridge.CreateFleetTask(context.Background(), CreateFleetTaskInput{ID: "serialized", Title: "Serialized"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockPublish = true
+	claimDone := make(chan error, 1)
+	go func() {
+		_, claimErr := bridge.ClaimFleetTask(context.Background(), "serialized", created.EffectiveEventID, "agent-a")
+		claimDone <- claimErr
+	}()
+	<-publishEntered
+	if bridge.mutationMu.TryLock() {
+		bridge.mutationMu.Unlock()
+		t.Fatal("mutation lock was released before relay publication completed")
+	}
+	close(releasePublish)
+	if err := <-claimDone; err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+}
+
 func TestFleetTaskOpsWaitReadyGatesMutations(t *testing.T) {
 	signer := testTaskSigner()
 	eventsCh := make(chan nostr.RelayEvent)
@@ -283,6 +380,83 @@ func TestFleetTaskOpsWaitReadyGatesMutations(t *testing.T) {
 
 	if _, err := bridge.CreateFleetTask(context.Background(), CreateFleetTaskInput{ID: "ops-5", Title: "Too early"}); err == nil {
 		t.Fatal("create succeeded before EOSE")
+	}
+}
+
+func TestFleetTaskOpsSettlementOnlyGatesLocalSoleWinner(t *testing.T) {
+	local, remote := testTaskSigner(), testTaskSigner()
+	localPub, remotePub := signerPubkey(t, local), signerPubkey(t, remote)
+	eventsCh := make(chan nostr.RelayEvent)
+	eoseCh := make(chan struct{}, 1)
+	eoseCh <- struct{}{}
+	now := time.Unix(500, 0)
+	bridge, err := NewFleetTaskBridge(context.Background(), FleetTaskBridgeOptions{
+		Keyer: local, Ledger: NewLedger(nil),
+		ReadRelays: []string{"wss://read.example"}, WriteRelays: []string{"wss://write.example"},
+		TrustedTaskAuthors: []string{localPub, remotePub}, TrustedCollectionAuthors: []string{localPub},
+		ClaimSettlement: 10 * time.Second,
+		Now:             func() time.Time { return now },
+		PublishFunc:     func(context.Context, []string, nostr.Event) error { return nil },
+		SubscribeFunc: func(context.Context, []string, nostr.Filter) (<-chan nostr.RelayEvent, <-chan struct{}) {
+			return eventsCh, eoseCh
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Stop()
+
+	created, err := bridge.CreateFleetTask(context.Background(), CreateFleetTaskInput{ID: "remote-settlement", Title: "Remote winner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteClaim := created.Task
+	remoteClaim.Status = "in_progress"
+	remoteClaim.Assignee = "remote-agent"
+	remoteClaim.ClaimedAt = time.Unix(501, 0).UTC().Format(time.RFC3339)
+	remoteClaim.UpdatedAt = remoteClaim.ClaimedAt
+	remoteClaimEvent := signedTaskEvent(t, remote, remoteClaim, 501)
+	if err := bridge.ingestTask(remoteClaimEvent); err != nil {
+		t.Fatal(err)
+	}
+	view, ok := bridge.FleetTaskView("remote-settlement")
+	if !ok || view.Claim == nil || view.Claim.OriginEventID != remoteClaimEvent.ID.Hex() {
+		t.Fatalf("remote winning view=%#v", view)
+	}
+	advanced, err := bridge.AdvanceFleetTask(context.Background(), AdvanceFleetTaskInput{
+		Op: FleetTaskOpCheckpoint, TaskID: "remote-settlement", BaseEventID: view.EffectiveEventID, Note: "remote claim continuation",
+	})
+	if err != nil {
+		t.Fatalf("remote winner was incorrectly settlement-gated: %v", err)
+	}
+	if len(advanced.ClaimContenders) != 1 {
+		t.Fatalf("same claim origin duplicated across successors: %#v", advanced.ClaimContenders)
+	}
+
+	created, err = bridge.CreateFleetTask(context.Background(), CreateFleetTaskInput{ID: "contended-settlement", Title: "Visible contender"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	localClaim, err := bridge.ClaimFleetTask(context.Background(), "contended-settlement", created.EffectiveEventID, "local-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteLoser := created.Task
+	remoteLoser.Status = "in_progress"
+	remoteLoser.Assignee = "remote-agent"
+	remoteLoser.ClaimedAt = time.Unix(localClaim.Claim.ClaimedAt+1, 0).UTC().Format(time.RFC3339)
+	remoteLoser.UpdatedAt = remoteLoser.ClaimedAt
+	if err := bridge.ingestTask(signedTaskEvent(t, remote, remoteLoser, localClaim.Claim.ClaimedAt+1)); err != nil {
+		t.Fatal(err)
+	}
+	view, _ = bridge.FleetTaskView("contended-settlement")
+	if len(view.ClaimContenders) != 2 {
+		t.Fatalf("claim contenders=%#v want two distinct origins", view.ClaimContenders)
+	}
+	if _, err := bridge.AdvanceFleetTask(context.Background(), AdvanceFleetTaskInput{
+		Op: FleetTaskOpCheckpoint, TaskID: "contended-settlement", BaseEventID: view.EffectiveEventID, Note: "visible race already observed",
+	}); err != nil {
+		t.Fatalf("visible contender should lift sole-winner settlement gate: %v", err)
 	}
 }
 

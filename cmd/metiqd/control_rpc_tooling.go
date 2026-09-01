@@ -258,6 +258,9 @@ func (h controlRPCHandler) handleToolingRPC(ctx context.Context, in nostruntime.
 		if err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
+		if err := appendSkillProposalEvent(cfg, req.AgentID, rec, "created", "", map[string]any{"kind": rec.Kind}, nil); err != nil {
+			return nostruntime.ControlRPCResult{}, true, err
+		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"proposal": rec}}, true, nil
 	case methods.MethodSkillsProposalsRevise:
 		req, err := methods.DecodeSkillsProposalsReviseParams(in.Params)
@@ -276,6 +279,9 @@ func (h controlRPCHandler) handleToolingRPC(ctx context.Context, in nostruntime.
 			if errors.Is(err, state.ErrNotFound) {
 				return nostruntime.ControlRPCResult{}, true, fmt.Errorf("proposal %q not found", req.ProposalID)
 			}
+			return nostruntime.ControlRPCResult{}, true, err
+		}
+		if err := appendSkillProposalEvent(cfg, req.AgentID, rec, "revised", "", nil, nil); err != nil {
 			return nostruntime.ControlRPCResult{}, true, err
 		}
 		return nostruntime.ControlRPCResult{Result: map[string]any{"proposal": rec}}, true, nil
@@ -301,6 +307,13 @@ func (h controlRPCHandler) handleToolingRPC(ctx context.Context, in nostruntime.
 				}
 				return nostruntime.ControlRPCResult{}, true, applyErr
 			}
+			rec, loadErr := store.Load(req.ProposalID)
+			if loadErr != nil {
+				return nostruntime.ControlRPCResult{}, true, loadErr
+			}
+			if err := appendSkillProposalEvent(cfg, req.AgentID, rec, "applied", "", nil, nil); err != nil {
+				return nostruntime.ControlRPCResult{}, true, err
+			}
 			return nostruntime.ControlRPCResult{Result: out}, true, nil
 		default:
 			var rec skillspkg.ProposalRecord
@@ -313,6 +326,13 @@ func (h controlRPCHandler) handleToolingRPC(ctx context.Context, in nostruntime.
 				if errors.Is(err, state.ErrNotFound) {
 					return nostruntime.ControlRPCResult{}, true, fmt.Errorf("proposal %q not found", req.ProposalID)
 				}
+				return nostruntime.ControlRPCResult{}, true, err
+			}
+			eventType := "quarantined"
+			if method == methods.MethodSkillsProposalsReject {
+				eventType = "rejected"
+			}
+			if err := appendSkillProposalEvent(cfg, req.AgentID, rec, eventType, "", map[string]any{"reason": req.Reason}, nil); err != nil {
 				return nostruntime.ControlRPCResult{}, true, err
 			}
 			return nostruntime.ControlRPCResult{Result: map[string]any{"proposal": rec}}, true, nil

@@ -176,7 +176,7 @@ func TestMemoryMaintenance_ResetDreamDiaryConfirmationGate(t *testing.T) {
 	}
 
 	// Correct token applies.
-	params := `{"scope":"agentA","confirm":"` + memory.MaintenanceConfirmToken("resetDreamDiary", "agentA") + `"}`
+	params := `{"scope":"agentA","confirm":"` + confirmation.ConfirmToken + `"}`
 	res, handled, err = memoryMaintCall(t, h, methods.MethodDoctorMemoryResetDreamDiary, params)
 	if !handled || err != nil {
 		t.Fatalf("apply handled=%v err=%v", handled, err)
@@ -199,12 +199,12 @@ func TestMemoryMaintenance_ResetGroundedShortTermConfirmationGate(t *testing.T) 
 		t.Fatalf("tokenless call must not apply: %#v", out)
 	}
 	confirmation := out["confirmation"].(memory.MaintenanceConfirmation)
-	if confirmation.ConfirmToken != memory.MaintenanceConfirmToken("resetGroundedShortTerm", "") {
-		t.Fatalf("unexpected token for empty scope: %#v", confirmation)
+	if confirmation.ConfirmToken == "" || confirmation.StateVersion == "" {
+		t.Fatalf("expected state-bound token for empty scope: %#v", confirmation)
 	}
 
 	// Correct token applies (empty tier -> demoted 0, but applied).
-	params := `{"confirm":"` + memory.MaintenanceConfirmToken("resetGroundedShortTerm", "") + `"}`
+	params := `{"confirm":"` + confirmation.ConfirmToken + `"}`
 	res, handled, err = memoryMaintCall(t, h, methods.MethodDoctorMemoryResetGroundedShortTerm, params)
 	if !handled || err != nil {
 		t.Fatalf("apply handled=%v err=%v", handled, err)
@@ -216,10 +216,14 @@ func TestMemoryMaintenance_ResetGroundedShortTermConfirmationGate(t *testing.T) 
 
 func TestMemoryMaintenance_GroundedScopeTokenIsolation(t *testing.T) {
 	// A token minted for one agent must not authorize another agent's scope.
-	tokenA := memory.MaintenanceConfirmToken("resetGroundedShortTerm", "project:agentA")
 	h := newControlRPCHandler(controlRPCDeps{memoryIndex: newSQLiteBackedStore(t)})
-	params := `{"scopeKind":"project","agentId":"agentB","confirm":"` + tokenA + `"}`
-	_, handled, err := memoryMaintCall(t, h, methods.MethodDoctorMemoryResetGroundedShortTerm, params)
+	preview, handled, err := memoryMaintCall(t, h, methods.MethodDoctorMemoryResetGroundedShortTerm, `{"AgentID":"agentA"}`)
+	if !handled || err != nil {
+		t.Fatalf("preview handled=%v err=%v", handled, err)
+	}
+	tokenA := preview.Result.(map[string]any)["confirmation"].(memory.MaintenanceConfirmation).ConfirmToken
+	params := `{"AgentID":"agentB","confirm":"` + tokenA + `"}`
+	_, handled, err = memoryMaintCall(t, h, methods.MethodDoctorMemoryResetGroundedShortTerm, params)
 	if !handled {
 		t.Fatalf("expected handled")
 	}
