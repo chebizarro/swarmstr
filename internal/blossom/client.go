@@ -1,12 +1,12 @@
 // Package blossom implements the Blossom blob storage protocol.
 //
 // BUD-01: GET/HEAD /{sha256}         – download a blob
-// BUD-02: PUT /upload                – upload with NIP-98 auth
+// BUD-02: PUT /upload                – upload with BUD-11 auth
 // BUD-03: GET /list/{pubkey}         – list blobs for a pubkey
-// BUD-04: DELETE /{sha256}           – delete with NIP-98 auth
+// BUD-04: DELETE /{sha256}           – delete with BUD-11 auth
 // BUD-05: PUT /mirror                – mirror a blob from another server
 //
-// All authenticated endpoints use NIP-98 HTTP auth (kind 27235).
+// Authenticated Blossom endpoints use BUD-11 auth (kind 24242).
 package blossom
 
 import (
@@ -225,7 +225,7 @@ func (c *Client) Mirror(ctx context.Context, serverURL, sha256Hex, sourceURL str
 	return &desc, nil
 }
 
-// makeAuthToken creates a NIP-98 HTTP auth token (kind 27235) for authenticated requests.
+// makeAuthToken creates a BUD-11 auth token (kind 24242) for Blossom requests.
 func (c *Client) makeAuthToken(ctx context.Context, method, rawURL, sha256Hex, mimeType string, size int64) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -239,6 +239,16 @@ func (c *Client) makeAuthToken(ctx context.Context, method, rawURL, sha256Hex, m
 		{"method", strings.ToUpper(method)},
 		{"expiration", fmt.Sprintf("%d", time.Now().Add(5*time.Minute).Unix())},
 	}
+	switch strings.ToUpper(method) {
+	case "PUT":
+		if strings.HasSuffix(parsed.Path, "/mirror") {
+			tags = append(tags, nostr.Tag{"t", "mirror"})
+		} else {
+			tags = append(tags, nostr.Tag{"t", "upload"})
+		}
+	case "DELETE":
+		tags = append(tags, nostr.Tag{"t", "delete"})
+	}
 	if sha256Hex != "" {
 		tags = append(tags, nostr.Tag{"x", sha256Hex})
 	}
@@ -250,7 +260,7 @@ func (c *Client) makeAuthToken(ctx context.Context, method, rawURL, sha256Hex, m
 	}
 
 	evt := nostr.Event{
-		Kind:      27235, // NIP-98 HTTP auth
+		Kind:      24242, // BUD-11 Blossom auth
 		CreatedAt: nostr.Now(),
 		Tags:      tags,
 		Content:   "",
@@ -265,6 +275,6 @@ func (c *Client) makeAuthToken(ctx context.Context, method, rawURL, sha256Hex, m
 		return "", fmt.Errorf("marshal auth event: %w", err)
 	}
 
-	// Encode as base64url (no padding) per NIP-98.
+	// BUD-11 uses the same Nostr Authorization header encoding as NIP-98.
 	return base64.RawURLEncoding.EncodeToString(evtJSON), nil
 }
