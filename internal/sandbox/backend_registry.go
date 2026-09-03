@@ -39,7 +39,7 @@ const DefaultDriver = "docker"
 
 func init() {
 	mustRegisterBackend(BackendFunc{BackendName: DefaultDriver, Constructor: func(cfg Config) (SandboxRunner, error) {
-		if err := CheckDockerAvailability(context.Background()); err != nil {
+		if err := dockerAvailabilityCheck(context.Background()); err != nil {
 			return nil, err
 		}
 		return &DockerSandbox{cfg: cfg}, nil
@@ -119,13 +119,22 @@ func normalizeDriver(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
+// dockerAvailabilityCheck is the probe used by the docker backend constructor.
+// It is a package variable so hermetic unit tests (which only exercise config
+// mapping, not container execution) can stub it out instead of depending on a
+// warm Docker daemon on the host or CI runner.
+var dockerAvailabilityCheck = CheckDockerAvailability
+
 // CheckDockerAvailability verifies that the default isolation backend can accept
 // work. It returns an actionable error instead of falling back to host execution.
 func CheckDockerAvailability(parent context.Context) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("docker sandbox unavailable: Docker CLI not found in PATH; install Docker and run `metiq doctor`, or explicitly set extra.sandbox.driver=\"nop\" with allow_unsafe_nop=true only for trusted local work")
 	}
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	// A cold daemon (e.g. a CI runner that has not touched Docker yet) can take
+	// well over 3s to answer its first `docker info`; keep the probe generous so
+	// availability checks fail only when the daemon is genuinely unreachable.
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}")
 	if output, err := cmd.CombinedOutput(); err != nil {

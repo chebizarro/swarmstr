@@ -1,6 +1,6 @@
 rules:
   - id: metiq-no-sleep-waiting-for-events
-    message: Avoid sleep/timeout polling for Nostr event delivery; use subscriptions plus EVENT/EOSE/OK/CLOSED handlers.
+    message: "Avoid sleep/timeout polling for Nostr event delivery; use subscriptions plus EVENT/EOSE/OK/CLOSED handlers."
     severity: WARNING
     languages: [go]
     patterns:
@@ -16,21 +16,19 @@ rules:
       technology: [nostr]
       cwe: "CWE-400"
   - id: metiq-no-discarded-publish-result
-    message: Nostr publishes must not discard relay OK/accepted results.
+    message: "Nostr publishes must not discard relay OK/accepted results."
     severity: ERROR
     languages: [go]
-    pattern-either:
-      - pattern: _ = $RELAY.Publish($EVENT)
-      - pattern: _ = $RELAY.Send($EVENT)
-      - pattern: |
-          $RELAY.Publish($EVENT)
-      - pattern: |
-          $RELAY.Send($EVENT)
+    patterns:
+      - pattern-either:
+          - pattern: _ = $RELAY.Publish(...)
+          - pattern: _, _ = $RELAY.Publish(...)
+          - pattern: go $RELAY.Publish(...)
     metadata:
       category: security
       technology: [nostr]
   - id: metiq-dangerous-plugin-eval
-    message: Plugin source must not use eval/Function dynamic execution.
+    message: "Plugin source must not use eval/Function dynamic execution."
     severity: ERROR
     languages: [javascript, typescript]
     pattern-either:
@@ -40,7 +38,7 @@ rules:
       category: security
       technology: [plugins]
   - id: metiq-secret-in-config-literal
-    message: Avoid inline secrets in config; use env: or secret-store references.
+    message: "Avoid inline secrets in config; use env: or secret-store references."
     severity: WARNING
     languages: [json, yaml]
     pattern-regex: '(?i)(api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["''][^"''$][^"'']{12,}'

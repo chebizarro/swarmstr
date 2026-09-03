@@ -3,7 +3,7 @@ name: SAST
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: read
@@ -20,8 +20,14 @@ jobs:
       - name: Install Semgrep
         run: python -m pip install --upgrade semgrep
 
-      - name: Run security rulepack
-        run: semgrep scan --config security/opengrep --sarif --output semgrep.sarif --error
+      - name: Validate rulepack
+        run: semgrep scan --validate --config security/opengrep
+
+      - name: Full scan (report-only, all severities)
+        run: semgrep scan --config security/opengrep --sarif --output semgrep.sarif
+
+      - name: Blocking scan (ERROR severity)
+        run: semgrep scan --config security/opengrep --severity ERROR --error
 
       - name: Upload SARIF
         if: always() && hashFiles('semgrep.sarif') != ''

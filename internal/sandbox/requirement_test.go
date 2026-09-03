@@ -69,6 +69,7 @@ func TestRequiredSessionRequirementRejectsUnsafeOrTamperedState(t *testing.T) {
 		Version: sessionRequirementVersion, CreatorRole: "support",
 		Policy: CreatorSandboxRequired, Backend: "nop",
 	}
+	StubDockerAvailability(t, nil)
 	if _, err := NewForSession(Config{Driver: "docker"}, tampered); err == nil {
 		t.Fatal("tampered persisted requirement was accepted")
 	}

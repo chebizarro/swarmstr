@@ -78,7 +78,12 @@ jobs:
 
       - name: Build FIPS daemon binaries
         working-directory: fips
-        run: cargo build --release --locked
+        # The test image Dockerfile also ships the native datagram API example
+        # programs (native-echo / native-surface), which cargo only builds when
+        # examples are requested explicitly.
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked --example native-echo --example native-surface
 
       - name: Prepare FIPS image context
         run: |
@@ -86,6 +91,8 @@ jobs:
           install -m 0755 fips/target/release/fipsctl fips/testing/docker/fipsctl
           install -m 0755 fips/target/release/fipstop fips/testing/docker/fipstop
           install -m 0755 fips/target/release/fips-gateway fips/testing/docker/fips-gateway
+          install -m 0755 fips/target/release/examples/native-echo fips/testing/docker/native-echo
+          install -m 0755 fips/target/release/examples/native-surface fips/testing/docker/native-surface
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

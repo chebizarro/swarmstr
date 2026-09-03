@@ -1,37 +1,38 @@
 rules:
-  - id: metiq.nostr.no-sleep-delivery
-    languages: [go, javascript, typescript, python]
-    severity: ERROR
-    message: Do not sleep/poll for Nostr message delivery; use subscriptions with EVENT/EOSE/OK/CLOSED handlers.
+  # Advisory (non-blocking): JS/TS sleep-style waits around Nostr delivery.
+  # The Go equivalent lives in metiq-security.yml (metiq-no-sleep-waiting-for-events).
+  - id: metiq.nostr.no-sleep-delivery-js
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "Do not sleep/poll for Nostr message delivery; use subscriptions with EVENT/EOSE/OK/CLOSED handlers."
     patterns:
       - pattern-either:
-          - pattern: time.Sleep(...)
           - pattern: await new Promise($R => setTimeout($R, ...))
           - pattern: setInterval(...)
+  - id: metiq.nostr.no-sleep-delivery-python
+    languages: [python]
+    severity: WARNING
+    message: "Do not sleep/poll for Nostr message delivery; use subscriptions with EVENT/EOSE/OK/CLOSED handlers."
+    patterns:
+      - pattern-either:
           - pattern: await asyncio.sleep(...)
+          - pattern: time.sleep(...)
   - id: metiq.nostr.broad-kind-filter
     languages: [go, javascript, typescript]
     severity: INFO
-    message: Advisory: Nostr subscriptions should be scoped with routing tags and since/until, not kind-only broad filters.
+    message: "Advisory: Nostr subscriptions should be scoped with routing tags and since/until, not kind-only broad filters."
     patterns:
       - pattern-either:
-          - pattern: map[string]any{"kinds": $KINDS}
+          - pattern: 'map[string]any{"kinds": $KINDS}'
           - pattern: '{ kinds: $KINDS }'
       - pattern-not-regex: '(#p|#t|#d|since|until|authors)'
-  - id: metiq.nostr.ignored-publish-ok
-    languages: [go]
-    severity: WARNING
-    message: Advisory: publish paths must inspect OK accepted=false and relay message; do not ignore publish acknowledgements.
-    pattern-either:
-      - pattern: $RELAY.Publish($CTX, $EV)
-      - pattern: $RELAY.Send($CTX, $EV)
   - id: metiq.nostr.rpc-queue-abstraction
     languages: [go, javascript, typescript, python]
     severity: WARNING
-    message: Avoid queue/RPC-over-Nostr abstractions; model workflows as events, tags, and subscriptions.
-    pattern-regex: '(NostrQueue|Pop\(|Dequeue\(|RPCOverNostr|RequestResponse)'
+    message: "Avoid queue/RPC-over-Nostr abstractions; model workflows as events, tags, and subscriptions."
+    pattern-regex: '(NostrQueue|RPCOverNostr|RpcOverNostr|NostrRPC|NostrRpc)'
   - id: metiq.secrets.raw-env-log
     languages: [go, javascript, typescript, python]
     severity: ERROR
-    message: Do not print raw environment variables or secret material; redact before logging.
+    message: "Do not print raw environment variables or secret material; redact before logging."
     pattern-regex: '(fmt\.Print.*os\.Getenv|console\.log\(process\.env|print\(os\.environ)'

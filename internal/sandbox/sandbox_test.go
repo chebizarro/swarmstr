@@ -13,6 +13,7 @@ import (
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 func TestNew_DefaultDriver(t *testing.T) {
+	sandbox.StubDockerAvailability(t, nil)
 	s, err := sandbox.New(sandbox.Config{})
 	if err != nil {
 		t.Fatalf("New default: %v", err)
@@ -38,6 +39,7 @@ func TestNew_NopDriverRequiresUnsafeOptIn(t *testing.T) {
 }
 
 func TestNew_DockerDriver(t *testing.T) {
+	sandbox.StubDockerAvailability(t, nil)
 	s, err := sandbox.New(sandbox.Config{Driver: "docker"})
 	if err != nil {
 		t.Fatalf("New docker: %v", err)
@@ -167,6 +169,7 @@ func TestNopSandbox_OutputLimit(t *testing.T) {
 // ─── NewFromMap ───────────────────────────────────────────────────────────────
 
 func TestNewFromMap_EmptyMap(t *testing.T) {
+	sandbox.StubDockerAvailability(t, nil)
 	s, err := sandbox.NewFromMap(nil)
 	if err != nil {
 		t.Fatalf("NewFromMap nil: %v", err)
@@ -192,6 +195,7 @@ func TestNewFromMap_NopDriverRequiresExplicitConfig(t *testing.T) {
 }
 
 func TestNewFromMap_DockerDriver(t *testing.T) {
+	sandbox.StubDockerAvailability(t, nil)
 	s, err := sandbox.NewFromMap(map[string]any{"driver": "docker"})
 	if err != nil {
 		t.Fatalf("NewFromMap docker: %v", err)

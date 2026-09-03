@@ -129,6 +129,7 @@ func TestNopSandboxEnvDoesNotFabricateEnforcement(t *testing.T) {
 }
 
 func TestNewFromMap_DockerHardeningConfig(t *testing.T) {
+	StubDockerAvailability(t, nil)
 	runner, err := NewFromMap(map[string]any{
 		"driver":          "docker",
 		"allow_network":   true,
