@@ -3,6 +3,7 @@ package blossom
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -13,6 +14,39 @@ import (
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/keyer"
 )
+
+func decodeAuthEvent(t *testing.T, header string) nostr.Event {
+	t.Helper()
+	const prefix = "Nostr "
+	if len(header) <= len(prefix) || header[:len(prefix)] != prefix {
+		t.Fatalf("unexpected Authorization header %q", header)
+	}
+	data, err := base64.RawURLEncoding.DecodeString(header[len(prefix):])
+	if err != nil {
+		t.Fatalf("decode auth token: %v", err)
+	}
+	var evt nostr.Event
+	if err := json.Unmarshal(data, &evt); err != nil {
+		t.Fatalf("decode auth event: %v", err)
+	}
+	if !evt.CheckID() || !evt.VerifySignature() {
+		t.Fatal("auth event has invalid id or signature")
+	}
+	return evt
+}
+
+func requireTag(t *testing.T, evt nostr.Event, name, want string) {
+	t.Helper()
+	for _, tag := range evt.Tags {
+		if len(tag) >= 2 && tag[0] == name {
+			if tag[1] != want {
+				t.Fatalf("tag %q = %q, want %q", name, tag[1], want)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing tag %q in %#v", name, evt.Tags)
+}
 
 func testClient(t *testing.T) *Client {
 	t.Helper()
@@ -41,7 +75,8 @@ func TestUpload_Success(t *testing.T) {
 	hash := sha256.Sum256(data)
 	hashHex := hex.EncodeToString(hash[:])
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "PUT" {
 			t.Errorf("expected PUT, got %s", r.Method)
 		}
@@ -52,6 +87,17 @@ func TestUpload_Success(t *testing.T) {
 		if auth == "" {
 			t.Error("missing Authorization header")
 		}
+		evt := decodeAuthEvent(t, auth)
+		if evt.Kind != nostr.Kind(24242) {
+			t.Fatalf("auth kind = %d, want 24242", evt.Kind)
+		}
+		requireTag(t, evt, "u", srv.URL+"/upload")
+		requireTag(t, evt, "method", "PUT")
+		requireTag(t, evt, "t", "upload")
+		requireTag(t, evt, "x", hashHex)
+		requireTag(t, evt, "m", "text/plain")
+		requireTag(t, evt, "size", "13")
+
 		body, _ := io.ReadAll(r.Body)
 		if string(body) != string(data) {
 			t.Errorf("body mismatch")
@@ -181,7 +227,8 @@ func TestList_Success(t *testing.T) {
 }
 
 func TestDelete_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "DELETE" {
 			t.Errorf("expected DELETE, got %s", r.Method)
 		}
@@ -189,6 +236,15 @@ func TestDelete_Success(t *testing.T) {
 		if auth == "" {
 			t.Error("missing Authorization header")
 		}
+		evt := decodeAuthEvent(t, auth)
+		if evt.Kind != nostr.Kind(24242) {
+			t.Fatalf("auth kind = %d, want 24242", evt.Kind)
+		}
+		requireTag(t, evt, "u", srv.URL+"/abc123hash")
+		requireTag(t, evt, "method", "DELETE")
+		requireTag(t, evt, "t", "delete")
+		requireTag(t, evt, "x", "abc123hash")
+
 		w.WriteHeader(200)
 	}))
 	defer srv.Close()
@@ -219,13 +275,27 @@ func TestDelete_ServerError(t *testing.T) {
 }
 
 func TestMirror_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "PUT" {
 			t.Errorf("expected PUT, got %s", r.Method)
 		}
 		if r.URL.Path != "/mirror" {
 			t.Errorf("expected /mirror, got %s", r.URL.Path)
 		}
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			t.Error("missing Authorization header")
+		}
+		evt := decodeAuthEvent(t, auth)
+		if evt.Kind != nostr.Kind(24242) {
+			t.Fatalf("auth kind = %d, want 24242", evt.Kind)
+		}
+		requireTag(t, evt, "u", srv.URL+"/mirror")
+		requireTag(t, evt, "method", "PUT")
+		requireTag(t, evt, "t", "mirror")
+		requireTag(t, evt, "x", "sourcehash")
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(BlobDescriptor{SHA256: "mirrored"})
 	}))
