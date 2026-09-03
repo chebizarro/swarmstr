@@ -85,6 +85,9 @@ func startLoopbackControlChannel(t *testing.T, handler func(context.Context, Con
 
 func TestFIPSControlChannel_RoundTrip(t *testing.T) {
 	handler := func(_ context.Context, in ControlRPCInbound) (ControlRPCResult, error) {
+		if !in.Authenticated {
+			return ControlRPCResult{}, fmt.Errorf("identity-verified request must be marked authenticated")
+		}
 		if in.Method == "echo" {
 			return ControlRPCResult{Result: map[string]any{"echo": string(in.Params)}}, nil
 		}

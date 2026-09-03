@@ -249,6 +249,10 @@ func (cc *FIPSControlChannel) handleControlRequest(conn net.Conn, payload []byte
 		Method:     env.Method,
 		Params:     env.Params,
 		CreatedAt:  time.Now().Unix(),
+		// The sender identity was resolved from the daemon-authenticated socket
+		// and verified against the envelope claim above; handlers rely on this
+		// flag for fail-closed authentication checks.
+		Authenticated: true,
 	}
 
 	result, err := cc.onRequest(cc.ctx, inbound)
