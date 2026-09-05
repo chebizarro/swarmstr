@@ -3,7 +3,7 @@ module metiq
 go 1.25.10
 
 require (
-	fiatjaf.com/nostr v0.0.0-20260611214214-c4534c716026
+	fiatjaf.com/nostr v0.0.0-20260902034142-316ef6591fa2
 	git.sharegap.net/cascadia/cascadia-go v1.2.1
 	github.com/anthropics/anthropic-sdk-go v1.27.1
 	github.com/aws/aws-sdk-go-v2 v1.43.0

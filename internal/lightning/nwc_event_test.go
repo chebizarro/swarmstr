@@ -10,7 +10,7 @@ import (
 )
 
 func TestPinnedNostrVersionKeepsCheckptrWorkaroundUnderReview(t *testing.T) {
-	const unsafePinnedVersion = "v0.0.0-20260611214214-c4534c716026"
+	const unsafePinnedVersion = "v0.0.0-20260902034142-316ef6591fa2"
 	goMod, err := os.ReadFile("../../go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)

@@ -45,6 +45,12 @@ func (k *localKeyer) DecryptNIP04(_ context.Context, ciphertext string, peer nos
 	}
 	return nip04.Decrypt(ciphertext, shared)
 }
+func (k *localKeyer) Nip04Encrypt(ctx context.Context, plaintext string, peer nostr.PubKey) (string, error) {
+	return k.EncryptNIP04(ctx, plaintext, peer)
+}
+func (k *localKeyer) Nip04Decrypt(ctx context.Context, ciphertext string, peer nostr.PubKey) (string, error) {
+	return k.DecryptNIP04(ctx, ciphertext, peer)
+}
 
 type fakeSub struct {
 	ctx    context.Context

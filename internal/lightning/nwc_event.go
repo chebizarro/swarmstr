@@ -13,7 +13,7 @@ import (
 
 // SignEvent avoids fiatjaf.com/nostr's unsafe string pointer arithmetic, which
 // violates checkptr under Go 1.26 race builds. Upstream
-// v0.0.0-20260830215426-220d2202425a was re-audited on 2026-08-31 and still had
+// v0.0.0-20260902034142-316ef6591fa2 was re-audited on 2026-09-05 and still had
 // byte-for-byte identical unsafe event.go code. Keep this serializer compatible
 // with nostr.Event's NIP-01 serialization until the dependency guard test forces
 // a fresh audit on the next bump.
