@@ -3174,6 +3174,23 @@ func TestResolveModelProviderOverride_ProviderQualifiedModelWins(t *testing.T) {
 	}
 }
 
+func TestBuildSessionModelRuntimeUsesConfiguredProvider(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	cfg := state.ConfigDoc{
+		Providers: state.ProvidersConfig{
+			"openrouter": {
+				BaseURL: "https://openrouter.invalid/api/v1",
+				APIKey:  "configured-test-key",
+			},
+		},
+		Agents: []state.AgentConfig{{ID: "main", Provider: "openrouter"}},
+	}
+
+	if _, err := buildSessionModelRuntime(cfg, "main", "openrouter/openai/gpt-5-mini", nil); err != nil {
+		t.Fatalf("build session model runtime with configured provider: %v", err)
+	}
+}
+
 func TestResolveInboundChannelRuntime_PrefersConfiguredAgentThenSessionThenMain(t *testing.T) {
 	prevRegistry := controlAgentRegistry
 	prevRouter := controlSessionRouter

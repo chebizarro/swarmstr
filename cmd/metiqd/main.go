@@ -3873,7 +3873,8 @@ func main() {
 			return fmt.Sprintf("Current agent: %s\nUsage: /model <model-name>", agentID), nil
 		}
 		modelName := cmd.Args[0]
-		rt, rtErr := agent.BuildRuntimeForModel(modelName, tools)
+		agentID := sessionRouter.Get(cmd.SessionID)
+		rt, rtErr := buildSessionModelRuntime(configState.Get(), agentID, modelName, tools)
 		if rtErr != nil {
 			return fmt.Sprintf("⚠️  Unknown or unconfigured model %q: %v", modelName, rtErr), nil
 		}
@@ -9081,6 +9082,14 @@ func buildProviderForAgentModel(cfg state.ConfigDoc, agCfg state.AgentConfig, mo
 func buildRuntimeForAgentModel(cfg state.ConfigDoc, agCfg state.AgentConfig, model string, tools agent.ToolExecutor) (agent.Runtime, error) {
 	override := resolveModelProviderOverride(cfg, agCfg, model)
 	return agent.BuildRuntimeWithOverride(strings.TrimSpace(model), override, tools)
+}
+
+func buildSessionModelRuntime(cfg state.ConfigDoc, agentID, model string, tools agent.ToolExecutor) (agent.Runtime, error) {
+	agCfg, ok := resolveAgentConfigByID(cfg, agentID)
+	if !ok {
+		agCfg, _ = resolveAgentConfigByID(cfg, "main")
+	}
+	return buildRuntimeForAgentModel(cfg, agCfg, model, tools)
 }
 
 func resolveAuxiliaryModelForAgent(agCfg state.AgentConfig, useCase auxiliaryModelUseCase) string {
