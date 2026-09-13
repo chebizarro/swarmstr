@@ -34,7 +34,7 @@ The system checks if `cron_add` was successfully called during the turn. If not,
 
 This transparency ensures users know the follow-up won't actually happen automatically.
 
-### 2. Planning-Only Detection
+### 2. Planning-Only Detection & Continuation
 
 When an agent's response contains "promise language" like:
 - "I'll inspect the code..."
@@ -42,7 +42,30 @@ When an agent's response contains "promise language" like:
 - "First, I'll analyze..."
 - "I'm going to..."
 
-But **no tools were actually called**, this indicates the agent stated a plan without executing it. The system can detect this pattern and potentially retry with a forcing instruction.
+But **no tools were actually called**, this indicates the agent stated a plan without executing it. The system can detect this pattern and, when configured, retry with a forcing instruction.
+
+#### DM Continuation
+
+When an agent turn responds with a plan but no tool calls, and the runtime has planning-only continuation enabled, it re-invokes the model exactly once with the instruction:
+
+> The previous assistant turn only described the plan. Do not restate the plan. Act now: take the first concrete tool action you can.
+
+The intermediate planning-only turn is **not** persisted to transcript or context engine — only the final continuation result is saved and delivered. If the continuation fails, the original planning-only text is delivered as a fallback.
+
+#### DM Continuation
+
+On direct messages, continuation is enabled by setting `planning_only_continuation: true` in the agent's `AgentConfig`. Off by default (`false`).
+
+#### Room Continuation
+
+Room channels (NIP-29, NIP-28, Chat, Control-RPC) also support planning-only continuation. The feature fires when **either** flag is `true`:
+
+- The room's channel config has `planningOnlyContinuation: true` (or the equivalent `planning_only_continuation` key), **OR**
+- The agent assigned to the room has `planning_only_continuation: true` in its `AgentConfig`.
+
+The effective-OR rule lets operators opt in an entire room without changing individual agent configs, or enable it for a specific agent across all rooms.
+
+Like DM continuation, the retry fires exactly once and the intermediate turn is discarded.
 
 ### 3. Taskflow-Room Outbound Enforcement
 
@@ -133,7 +156,7 @@ Done! I found the bug on line 42 where the token wasn't being validated properly
 
 ## Configuration
 
-The soft reminder guard is enabled by default and runs after successful orchestrated turns. Hard room enforcement and dropped-commitment notices are independent explicit opt-ins.
+The soft reminder guard is enabled by default and runs after successful orchestrated turns. Hard room enforcement and dropped-commitment notices are independent explicit opt-ins. Planning-only continuation is configured per-agent via `planning_only_continuation` in `AgentConfig` and per-room via `planningOnlyContinuation` in the channel config (both off by default).
 
 ### Tool Tracking
 
@@ -160,6 +183,8 @@ The commitment guard is integrated at:
 2. **`internal/gateway/channels`** — Hard per-room outbound enforcement before NIP-29/Communikey publish
 3. **`internal/commitments.HeartbeatScheduler`** — Dropped-notice delivery on expiry/attempt exhaustion
 4. **Heartbeat runs and ACP worker tasks** — Use the orchestrator's soft guard path
+5. **`cmd/metiqd/main.go` (`runInboundTurn`)** — DM turn continuation when `planning_only_continuation` is enabled (section 2 above)
+6. **`cmd/metiqd/main.go` (NIP29/NIP28/Chat) and `cmd/metiqd/control_rpc_channels.go`** — Room continuation when room policy or agent config has planning-only continuation enabled (section 2 above)
 
 ## API
 
@@ -172,12 +197,21 @@ guardedText, modified := agent.ApplyCommitmentGuard(result.Text, state)
 
 // Check if planning-only retry is warranted
 shouldRetry := agent.ShouldRetryPlanningOnly(result.Text, state, retriesUsed, maxRetries)
+
+// Build a continuation Turn for the DM planning-only retry
+cont := agent.BuildPlanningOnlyContinuation(baseTurn, priorAssistantText)
 ```
+
+## Agent Config
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `planning_only_continuation` | `bool` | `false` | Enable DM planning-only continuation (section 2 above) |
+| `planningOnlyContinuation` | `bool` | `false` | Room-level planning-only continuation override — OR-ed with agent flag (section 2 above) |
 
 ## Future Enhancements
 
 1. **Automatic per-room taskflow discovery** — Replace the explicit room opt-in when a reliable capability signal exists
-2. **Planning-only auto-retry** — Automatically retry with forcing instruction
-3. **HEARTBEAT.md task injection** — Offer to add unbacked tasks to HEARTBEAT.md
-4. **Configurable patterns** — Allow operators to customize detection patterns
-5. **Severity levels** — Distinguish hard failures from soft warnings
+2. **HEARTBEAT.md task injection** — Offer to add unbacked tasks to HEARTBEAT.md
+3. **Configurable patterns** — Allow operators to customize detection patterns
+4. **Severity levels** — Distinguish hard failures from soft warnings

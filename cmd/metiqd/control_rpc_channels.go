@@ -248,13 +248,26 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 				filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 				scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, activeAgentID, "")
 				turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
-				result, turnErr := filteredRuntime.ProcessTurn(turnCtx, agent.Turn{
+				roomPolicy := channels.ResolveNostrRoomPolicy(roomCfg.Config)
+				enabled := roomPolicy.PlanningOnlyContinuation
+				if !enabled {
+					for _, ac := range configState.Get().Agents {
+						if ac.ID == activeAgentID {
+							enabled = ac.PlanningOnlyContinuation
+							break
+						}
+					}
+				}
+				turn := agent.Turn{
 					SessionID:           sessionID,
 					UserText:            decision.BodyForAgent,
 					Tools:               turnTools,
 					Executor:            turnExecutor,
 					ContextWindowTokens: maxContextTokensForAgent(configState.Get(), activeAgentID),
 					HookInvoker:         controlHookInvoker,
+				}
+				result, _, turnErr := runTurnWithPlanningContinuation(enabled, turn, func(t agent.Turn) (agent.TurnResult, error) {
+					return filteredRuntime.ProcessTurn(turnCtx, t)
 				})
 				if turnErr != nil {
 					log.Printf("channel agent turn error channel=%s err=%v", msg.ChannelID, turnErr)

@@ -83,6 +83,7 @@ Nostr configuration is split between the **bootstrap config** (local file, start
 | `dm.allow_from` | string[] | `[]` | Allowed sender pubkeys (npub/hex) |
 | `relays.read` | string[] | from bootstrap | Override read relays |
 | `relays.write` | string[] | from bootstrap | Override write relays |
+| `nostr_channels.<name>.config.planningOnlyContinuation` | `bool` | `false` | Room-level planning-only continuation override for room channels (see [Groups](../channels/groups.md)) |
 
 ## Profile metadata
 

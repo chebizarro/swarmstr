@@ -2580,7 +2580,18 @@ func main() {
 					defer abortCancel()
 					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 					prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor)
-					result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
+					enabled := roomPolicy.PlanningOnlyContinuation
+					if !enabled {
+						for _, ac := range configState.Get().Agents {
+							if ac.ID == activeAgentID {
+								enabled = ac.PlanningOnlyContinuation
+								break
+							}
+						}
+					}
+					result, _, turnErr := runTurnWithPlanningContinuation(enabled, prepared.Turn, func(t agent.Turn) (agent.TurnResult, error) {
+						return filteredRuntime.ProcessTurn(prepared.TurnCtx, t)
+					})
 					if turnErr != nil {
 						log.Printf("auto-join channel agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 						return
@@ -2805,7 +2816,19 @@ func main() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
-						result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
+						roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
+						enabled := roomPolicy.PlanningOnlyContinuation
+						if !enabled {
+							for _, ac := range configState.Get().Agents {
+								if ac.ID == activeAgentID {
+									enabled = ac.PlanningOnlyContinuation
+									break
+								}
+							}
+						}
+						result, _, turnErr := runTurnWithPlanningContinuation(enabled, prepared.Turn, func(t agent.Turn) (agent.TurnResult, error) {
+							return filteredRuntime.ProcessTurn(prepared.TurnCtx, t)
+						})
 						if turnErr != nil {
 							log.Printf("auto-join nip28 agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return
@@ -2891,7 +2914,19 @@ func main() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
 						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
-						result, turnErr := filteredRuntime.ProcessTurn(prepared.TurnCtx, prepared.Turn)
+						roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
+						enabled := roomPolicy.PlanningOnlyContinuation
+						if !enabled {
+							for _, ac := range configState.Get().Agents {
+								if ac.ID == activeAgentID {
+									enabled = ac.PlanningOnlyContinuation
+									break
+								}
+							}
+						}
+						result, _, turnErr := runTurnWithPlanningContinuation(enabled, prepared.Turn, func(t agent.Turn) (agent.TurnResult, error) {
+							return filteredRuntime.ProcessTurn(prepared.TurnCtx, t)
+						})
 						if turnErr != nil {
 							log.Printf("auto-join chat agent turn error channel=%s agent=%s err=%v", msg.ChannelID, activeAgentID, turnErr)
 							return

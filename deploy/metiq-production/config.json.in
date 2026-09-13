@@ -17,6 +17,16 @@
       "write": "block"
     }
   },
+  "nostr_channels": {
+    "_example-room": {
+      "kind": "nip29",
+      "enabled": false,
+      "group_address": "wss://relay.example.com'example-room",
+      "config": {
+        "planningOnlyContinuation": false
+      }
+    }
+  },
   "control": {
     "require_auth": true,
     "allow_unauth_methods": [],

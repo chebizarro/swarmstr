@@ -64,6 +64,27 @@ ch:<channelID>:<senderPubKey>
 
 Where `channelID` is derived from the group address. Each group participant has their own isolated session context with the agent.
 
+
+### Room Policy Configuration
+
+Each channel entry can include a `config` block with room-level policy overrides. These apply to all agent turns in that channel:
+
+```json5
+{
+  "nostr_channels": {
+    "team-group": {
+      "kind": "nip29",
+      "group_address": "<relay>'team-abc",
+      "config": {
+        "planningOnlyContinuation": true
+      }
+    }
+  }
+}
+```
+
+`planningOnlyContinuation` (or the equivalent `planning_only_continuation` key) enables planning-only continuation for room turns. When `true`, the runtime re-invokes the agent once when a turn produces promises without tool actions. The full set of room policy keys is documented in [Commitment Guard](../concepts/commitment-guard.md).
+
 ## Nostr Public Channels (NIP-28)
 
 NIP-28 defines open public channels anchored by a channel creation event on Nostr.

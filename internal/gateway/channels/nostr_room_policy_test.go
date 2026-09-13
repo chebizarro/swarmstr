@@ -25,6 +25,9 @@ func TestResolveNostrRoomPolicy_Defaults(t *testing.T) {
 	if p.PairLoop != nil {
 		t.Error("PairLoop should be nil when unset")
 	}
+	if p.PlanningOnlyContinuation {
+		t.Error("PlanningOnlyContinuation should default false")
+	}
 }
 
 func TestResolveNostrRoomPolicy_Typed(t *testing.T) {
@@ -159,5 +162,35 @@ func TestResolveNostrRoomPolicy_TaskEchoSuppression(t *testing.T) {
 	}
 	if p := ResolveNostrRoomPolicy(map[string]any{"taskEchoSimilarityThreshold": float64(1.5)}); p.TaskEchoThreshold != 0 {
 		t.Errorf("out-of-range threshold must be ignored: %+v", p)
+	}
+}
+
+func TestResolveNostrRoomPolicy_PlanningOnlyContinuation(t *testing.T) {
+	// Default: missing key => false
+	p := ResolveNostrRoomPolicy(nil)
+	if p.PlanningOnlyContinuation {
+		t.Error("nil config: PlanningOnlyContinuation should default false")
+	}
+	p = ResolveNostrRoomPolicy(map[string]any{})
+	if p.PlanningOnlyContinuation {
+		t.Error("empty config: PlanningOnlyContinuation should default false")
+	}
+	// CamelCase key => true
+	p = ResolveNostrRoomPolicy(map[string]any{"planningOnlyContinuation": true})
+	if !p.PlanningOnlyContinuation {
+		t.Error("planningOnlyContinuation=true should set true")
+	}
+	// snake_case key => true
+	p = ResolveNostrRoomPolicy(map[string]any{"planning_only_continuation": true})
+	if !p.PlanningOnlyContinuation {
+		t.Error("planning_only_continuation=true should set true")
+	}
+	// CamelCase takes priority over snake_case
+	p = ResolveNostrRoomPolicy(map[string]any{
+		"planningOnlyContinuation":  false,
+		"planning_only_continuation": true,
+	})
+	if p.PlanningOnlyContinuation {
+		t.Error("camelCase false should override snake_case true")
 	}
 }

@@ -939,7 +939,7 @@ Configure individual agents in `agents[]`:
       "turn_timeout_secs": 300,
       "max_agentic_iterations": 30,
       "memory_scope": "user",
-      
+      "planning_only_continuation": true,      
       // DM Routing
       "dm_peers": ["npub1...", "npub2..."],
       
@@ -985,6 +985,34 @@ Set defaults for all agents in `agents.defaults`:
 ```
 
 ---
+
+---
+
+## Room Policy Configuration
+
+Room channels (NIP-29, NIP-28, Chat, Control-RPC) accept per-channel policy overrides in the channel entry's `config` block:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `planningOnlyContinuation` | `bool` | `false` | Room-level planning-only continuation (also accepts `planning_only_continuation`). OR-ed with the assigned agent's `planning_only_continuation` flag. |
+
+Example:
+
+```json5
+{
+  "nostr_channels": {
+    "team-group": {
+      "kind": "nip29",
+      "group_address": "<relay>'team-abc",
+      "config": {
+        "planningOnlyContinuation": true
+      }
+    }
+  }
+}
+```
+
+See [Groups](../channels/groups.md) and [Commitment Guard](../concepts/commitment-guard.md) for details.
 
 ## Tool Profiles
 

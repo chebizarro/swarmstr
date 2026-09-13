@@ -76,6 +76,10 @@ type NostrRoomPolicy struct {
 	// CommitmentEnforcement blocks/rephrases unbacked outbound work promises.
 	// It is explicit opt-in because rooms do not expose a separate taskflow flag.
 	CommitmentEnforcement bool
+	// PlanningOnlyContinuation enables automatic re-invocation when a room turn
+	// produces only a planning-only response (promises without tool actions).
+	// Default false (opt-in).
+	PlanningOnlyContinuation bool
 	// ProgressLedger enables the R5 scheduled moderator review turn (Progress
 	// Ledger). Explicit opt-in: defaults off.
 	ProgressLedger bool
@@ -235,6 +239,11 @@ func ResolveNostrRoomPolicy(config map[string]any) NostrRoomPolicy {
 	}
 	if v, ok := boolFromAny(config["commitmentEnforcement"]); ok {
 		p.CommitmentEnforcement = v
+	}
+	if v, ok := boolFromAny(config["planningOnlyContinuation"]); ok {
+		p.PlanningOnlyContinuation = v
+	} else if v, ok := boolFromAny(config["planning_only_continuation"]); ok {
+		p.PlanningOnlyContinuation = v
 	}
 
 	// R5 progress ledger (explicit opt-in; sub-minute intervals are ignored).
