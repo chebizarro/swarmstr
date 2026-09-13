@@ -1198,18 +1198,17 @@ func main() {
 	tools.RegisterWithDef("task_update", toolbuiltin.TaskUpdateTool, toolbuiltin.TaskUpdateDef)
 	tools.RegisterWithDef("task_remove", toolbuiltin.TaskRemoveTool, toolbuiltin.TaskRemoveDef)
 
-	// fleet_tasks is the sole shared task surface in fleet mode. It is
-	// late-bound because the bridge starts after tool registration; private
-	// sessions remove it from their per-turn tool surface.
-	fleetTasksEnabled := configState != nil && configState.Get().FleetTasks.Enabled
-	if fleetTasksEnabled {
-		tools.RegisterWithDef("fleet_tasks", toolbuiltin.FleetTasksTool(func() *taskspkg.FleetTaskBridge {
-			if controlServices == nil {
-				return nil
-			}
-			return controlServices.tasks.fleetTaskBridge
-		}), toolbuiltin.FleetTasksDef)
-	}
+	// fleet_tasks is the sole shared task surface in fleet mode. Registration
+	// must not depend on configState: persisted runtime configuration is loaded
+	// below, after the base registry is assembled. The bridge is late-bound and
+	// the per-turn/capability filters hide this tool when fleet mode is disabled
+	// or the session is private.
+	tools.RegisterWithDef("fleet_tasks", toolbuiltin.FleetTasksTool(func() *taskspkg.FleetTaskBridge {
+		if controlServices == nil {
+			return nil
+		}
+		return controlServices.tasks.fleetTaskBridge
+	}), toolbuiltin.FleetTasksDef)
 
 	agentRuntime, err := agent.NewRuntimeFromEnv(tools)
 	if err != nil {

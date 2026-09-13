@@ -85,6 +85,10 @@ func currentCapabilityToolSurface(ctx context.Context, cfg state.ConfigDoc, docs
 		return capabilityToolSurface{}
 	}
 	allowed := resolvedAgentRuntimeToolAllowlist(ctx, cfg, docsRepo, "")
+	if !cfg.FleetTasks.Enabled {
+		allowed = mutableTurnToolAllowlist(allowed, toolReg)
+		delete(allowed, "fleet_tasks")
+	}
 	exec := agent.FilteredToolExecutor(toolReg, allowed)
 	return capabilityToolSurfaceFromDefinitions(agent.ToolDefinitions(exec))
 }

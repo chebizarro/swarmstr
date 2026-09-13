@@ -471,6 +471,37 @@ func TestResolveAgentTurnToolSurfaceRetainsExplicitFleetTasksInCodingProfile(t *
 	}
 }
 
+func TestResolveAgentTurnToolSurfaceHidesFleetTasksWhenFleetModeDisabled(t *testing.T) {
+	baseTools := agent.NewToolRegistry()
+	baseTools.RegisterWithDef("fleet_tasks", func(context.Context, map[string]any) (string, error) {
+		return "fleet", nil
+	}, toolbuiltin.FleetTasksDef)
+	baseTools.RegisterWithDef("memory_search", func(context.Context, map[string]any) (string, error) {
+		return "memory", nil
+	}, toolbuiltin.MemorySearchDef)
+
+	rt, exec, defs := resolveAgentTurnToolSurface(
+		context.Background(), state.ConfigDoc{}, nil, "session-local", "worker",
+		&filterableRuntime{}, baseTools, turnToolConstraints{},
+	)
+	filteredRuntime, ok := rt.(*filterableRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want *filterableRuntime", rt)
+	}
+	if filteredRuntime.allowed["fleet_tasks"] {
+		t.Fatalf("disabled fleet runtime exposes fleet_tasks: %v", filteredRuntime.allowed)
+	}
+	if !filteredRuntime.allowed["memory_search"] {
+		t.Fatalf("disabled fleet runtime removed unrelated tool: %v", filteredRuntime.allowed)
+	}
+	if _, err := exec.Execute(context.Background(), agent.ToolCall{Name: "fleet_tasks"}); err == nil {
+		t.Fatal("disabled fleet executor invoked fleet_tasks")
+	}
+	if len(defs) != 1 || defs[0].Name != "memory_search" {
+		t.Fatalf("disabled fleet definitions = %+v, want memory_search only", defs)
+	}
+}
+
 func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	provider := &capturingProvider{result: agent.ProviderResult{
 		Text:  "ok",

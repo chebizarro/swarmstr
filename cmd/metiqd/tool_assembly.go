@@ -46,6 +46,10 @@ func resolveAgentTurnToolSurface(ctx context.Context, cfg state.ConfigDoc, docsR
 			delete(allowed, name)
 		}
 	}
+	if !cfg.FleetTasks.Enabled {
+		allowed = mutableTurnToolAllowlist(allowed, base)
+		delete(allowed, "fleet_tasks")
+	}
 	if privateMode {
 		allowed = mutableTurnToolAllowlist(allowed, base)
 		for name := range privateSessionBlockedFleetTools {
