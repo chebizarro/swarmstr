@@ -425,6 +425,52 @@ func TestResolveAgentTurnToolSurfaceSuppressesLocalQueueInFleetSession(t *testin
 	}
 }
 
+func TestResolveAgentTurnToolSurfaceRetainsExplicitFleetTasksInCodingProfile(t *testing.T) {
+	baseTools := agent.NewToolRegistry()
+	baseTools.RegisterWithDef("fleet_tasks", func(context.Context, map[string]any) (string, error) {
+		return "fleet", nil
+	}, toolbuiltin.FleetTasksDef)
+	baseTools.RegisterWithDef("memory_search", func(context.Context, map[string]any) (string, error) {
+		return "memory", nil
+	}, toolbuiltin.MemorySearchDef)
+
+	prevToolRegistry := controlToolRegistry
+	prevControlServices := controlServices
+	controlToolRegistry = baseTools
+	controlServices = &daemonServices{session: sessionServices{toolRegistry: baseTools}}
+	defer func() {
+		controlToolRegistry = prevToolRegistry
+		controlServices = prevControlServices
+	}()
+	if allowed := allowedToolIDsForProfile(state.ConfigDoc{}, "coding"); !allowed["fleet_tasks"] {
+		t.Fatalf("coding profile does not include fleet_tasks: %v", allowed)
+	}
+
+	rt, exec, defs := resolveAgentTurnToolSurface(
+		context.Background(), state.ConfigDoc{
+			FleetTasks: state.FleetTasksConfig{Enabled: true},
+			Agents: []state.AgentConfig{{
+				ID:           "worker",
+				ToolProfile:  "coding",
+				EnabledTools: []string{"fleet_tasks"},
+			}},
+		}, nil, "session-fleet", "worker", &filterableRuntime{}, baseTools, turnToolConstraints{},
+	)
+	filteredRuntime, ok := rt.(*filterableRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want *filterableRuntime", rt)
+	}
+	if len(filteredRuntime.allowed) != 1 || !filteredRuntime.allowed["fleet_tasks"] {
+		t.Fatalf("coding fleet runtime allowed tools = %v, want fleet_tasks only", filteredRuntime.allowed)
+	}
+	if got := agent.ToolDefinitions(exec); len(got) != 1 || got[0].Name != "fleet_tasks" {
+		t.Fatalf("executor definitions = %+v, want fleet_tasks only", got)
+	}
+	if len(defs) != 1 || defs[0].Name != "fleet_tasks" {
+		t.Fatalf("turn definitions = %+v, want fleet_tasks only", defs)
+	}
+}
+
 func TestHandleACPMessageAppliesInheritedRuntimeHints(t *testing.T) {
 	provider := &capturingProvider{result: agent.ProviderResult{
 		Text:  "ok",
