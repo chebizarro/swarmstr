@@ -71,6 +71,12 @@ type LLMResponse struct {
 	// HistoryDelta is populated by RunAgenticLoop with the ordered sequence of
 	// assistant tool-call and tool-result messages produced during the turn.
 	HistoryDelta []ConversationMessage
+
+	// ToolTraces is populated by RunAgenticLoop with the redacted record of
+	// every tool the loop executed during the turn. Providers surface it as
+	// ProviderResult.ToolTraces so the runtime can build TurnResult without
+	// re-executing the calls.
+	ToolTraces []ToolTrace
 }
 
 // ChatProvider makes a single LLM API call and returns the response.
@@ -78,6 +84,15 @@ type LLMResponse struct {
 // format. The agentic loop uses this interface to drive tool→LLM→tool cycles.
 type ChatProvider interface {
 	Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error)
+}
+
+// StreamingChatProvider is an optional extension of ChatProvider that streams
+// text deltas from a single LLM call. RunAgenticLoop uses it (when configured
+// with a delta callback) to stream each tool round as it is produced; providers
+// that do not implement it still run the loop, just without incremental text.
+type StreamingChatProvider interface {
+	ChatProvider
+	ChatStream(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions, onDelta func(text string)) (*LLMResponse, error)
 }
 
 // ResponseFormatType identifies a provider-agnostic structured output mode.
@@ -257,10 +272,26 @@ func llmResponseToProviderResult(resp *LLMResponse) ProviderResult {
 	return ProviderResult{
 		Text:         resp.Content,
 		ToolCalls:    resp.ToolCalls,
+		ToolTraces:   resp.ToolTraces,
 		Usage:        resp.Usage,
 		HistoryDelta: resp.HistoryDelta,
 		Outcome:      resp.Outcome,
 		StopReason:   resp.StopReason,
+	}
+}
+
+// providerResultToLLMResponse converts a ProviderResult into the ChatProvider
+// LLMResponse shape.
+func providerResultToLLMResponse(res ProviderResult) *LLMResponse {
+	return &LLMResponse{
+		Content:          res.Text,
+		ToolCalls:        res.ToolCalls,
+		Usage:            res.Usage,
+		Outcome:          res.Outcome,
+		StopReason:       res.StopReason,
+		NeedsToolResults: len(res.ToolCalls) > 0,
+		HistoryDelta:     res.HistoryDelta,
+		ToolTraces:       res.ToolTraces,
 	}
 }
 

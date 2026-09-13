@@ -86,46 +86,7 @@ func (p *OpenAIChatProviderChat) Chat(ctx context.Context, messages []LLMMessage
 	client := openai.NewClient(clientOpts...)
 
 	// Convert LLMMessages to SDK message params.
-	sdkMsgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
-	for _, m := range messages {
-		switch m.Role {
-		case "system":
-			sdkMsgs = append(sdkMsgs, openai.SystemMessage(m.Content))
-
-		case "user":
-			sdkMsgs = append(sdkMsgs, buildOpenAISDKUserContent(m))
-
-		case "assistant":
-			if len(m.ToolCalls) > 0 {
-				tcs := make([]openai.ChatCompletionMessageToolCallUnionParam, 0, len(m.ToolCalls))
-				for _, tc := range m.ToolCalls {
-					argsJSON, _ := json.Marshal(tc.Args)
-					tcs = append(tcs, openai.ChatCompletionMessageToolCallUnionParam{
-						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-							ID: tc.ID,
-							Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-								Name:      tc.Name,
-								Arguments: string(argsJSON),
-							},
-						},
-					})
-				}
-				sdkMsgs = append(sdkMsgs, openai.ChatCompletionMessageParamUnion{
-					OfAssistant: &openai.ChatCompletionAssistantMessageParam{
-						Content: openai.ChatCompletionAssistantMessageParamContentUnion{
-							OfString: openai.String(m.Content),
-						},
-						ToolCalls: tcs,
-					},
-				})
-			} else {
-				sdkMsgs = append(sdkMsgs, openai.AssistantMessage(m.Content))
-			}
-
-		case "tool":
-			sdkMsgs = append(sdkMsgs, openai.ToolMessage(m.Content, m.ToolCallID))
-		}
-	}
+	sdkMsgs := openAISDKMessages(messages)
 
 	// Build request params.
 	params := openai.ChatCompletionNewParams{
@@ -169,6 +130,146 @@ func (p *OpenAIChatProviderChat) Chat(ctx context.Context, messages []LLMMessage
 
 	return parseOpenAISDKResponse(completion), nil
 }
+
+// ChatStream implements StreamingChatProvider for the OpenAI-compatible
+// ChatProvider. It mirrors OpenAIChatProvider.Stream but operates on the
+// provider-agnostic message list the agentic loop maintains.
+func (p *OpenAIChatProviderChat) ChatStream(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions, onDelta func(text string)) (*LLMResponse, error) {
+	messages = PrepareTranscriptMessages(messages, ResolveOpenAITranscriptPolicy(p.Model, p.BaseURL))
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = "gpt-4o"
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	} else if u, err := url.Parse(baseURL); err == nil {
+		host := strings.ToLower(u.Host)
+		if host == "api.openai.com" && (u.Path == "" || u.Path == "/") {
+			baseURL = strings.TrimRight(baseURL, "/") + "/v1"
+		}
+	}
+
+	clientOpts := []option.RequestOption{option.WithBaseURL(baseURL)}
+	if p.APIKey != "" {
+		clientOpts = append(clientOpts, option.WithAPIKey(p.APIKey))
+	}
+	if p.Client != nil {
+		clientOpts = append(clientOpts, option.WithHTTPClient(p.Client))
+	}
+	client := openai.NewClient(clientOpts...)
+
+	params := openai.ChatCompletionNewParams{
+		Model:         shared.ChatModel(model),
+		Messages:      openAISDKMessages(messages),
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)},
+	}
+	if p.Store {
+		params.Store = openai.Bool(true)
+	}
+	if len(tools) > 0 {
+		params.Tools = translateToolsToOpenAISDK(p.NormalizeToolSchema(tools))
+	}
+
+	var extraOpts []option.RequestOption
+	extraOpts = append(extraOpts, openAIResponseFormatOptions(opts.ResponseFormat)...)
+	if profile := p.PromptCacheProfile(); profile.Enabled && profile.SendLlamaCachePrompt {
+		extraOpts = append(extraOpts, option.WithJSONSet("cache_prompt", true))
+	}
+	if isOllamaEndpoint(baseURL) {
+		if p.ContextWindowTokens > 0 {
+			extraOpts = append(extraOpts, option.WithJSONSet("options.num_ctx", p.ContextWindowTokens))
+		}
+		if p.KeepAlive != "" {
+			extraOpts = append(extraOpts, option.WithJSONSet("keep_alive", p.KeepAlive))
+		}
+	}
+
+	stream := client.Chat.Completions.NewStreaming(ctx, params, extraOpts...)
+	defer stream.Close()
+
+	type toolCallAcc struct {
+		ID        string
+		Name      string
+		Arguments strings.Builder
+	}
+	toolAcc := map[int]*toolCallAcc{}
+	maxToolIndex := -1
+	var textBuf strings.Builder
+	var usage ProviderUsage
+	finishReason := ""
+
+	for stream.Next() {
+		chunk := stream.Current()
+		if chunk.JSON.Usage.Valid() {
+			usage = ProviderUsage{
+				InputTokens:     chunk.Usage.PromptTokens,
+				OutputTokens:    chunk.Usage.CompletionTokens,
+				CacheReadTokens: chunk.Usage.PromptTokensDetails.CachedTokens,
+			}
+			usage = normalizeOpenAICompatibleUsage(chunk.Usage.RawJSON(), usage)
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		choice := chunk.Choices[0]
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+		delta := choice.Delta
+		if delta.Content != "" {
+			textBuf.WriteString(delta.Content)
+			if onDelta != nil {
+				onDelta(delta.Content)
+			}
+		}
+		for _, tc := range delta.ToolCalls {
+			idx := int(tc.Index)
+			if idx > maxToolIndex {
+				maxToolIndex = idx
+			}
+			acc, ok := toolAcc[idx]
+			if !ok {
+				acc = &toolCallAcc{}
+				toolAcc[idx] = acc
+			}
+			if tc.ID != "" {
+				acc.ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				acc.Name = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				acc.Arguments.WriteString(tc.Function.Arguments)
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, fmt.Errorf("openai stream: %w", err)
+	}
+
+	var toolCalls []ToolCall
+	for idx := 0; idx <= maxToolIndex; idx++ {
+		acc, ok := toolAcc[idx]
+		if !ok {
+			continue
+		}
+		var args map[string]any
+		if argStr := acc.Arguments.String(); argStr != "" {
+			_ = json.Unmarshal([]byte(argStr), &args)
+		}
+		toolCalls = append(toolCalls, ToolCall{ID: acc.ID, Name: acc.Name, Args: args})
+	}
+
+	return &LLMResponse{
+		Content:          textBuf.String(),
+		ToolCalls:        toolCalls,
+		Usage:            usage,
+		NeedsToolResults: finishReason == "tool_calls" || len(toolCalls) > 0,
+	}, nil
+}
+
+var _ StreamingChatProvider = (*OpenAIChatProviderChat)(nil)
 
 func openAIResponseFormatOptions(format *ResponseFormatConfig) []option.RequestOption {
 	if format == nil || format.Type == "" || format.Type == ResponseFormatText {
@@ -268,6 +369,52 @@ func isOllamaEndpoint(baseURL string) bool {
 	// Also check the hostname-only form (e.g. "ollama" in Docker).
 	hostname := strings.ToLower(u.Hostname())
 	return hostname == "ollama" || strings.HasPrefix(hostname, "ollama.")
+}
+
+// openAISDKMessages converts provider-agnostic LLMMessages to the OpenAI SDK
+// message union used by both the Chat and ChatStream paths.
+func openAISDKMessages(messages []LLMMessage) []openai.ChatCompletionMessageParamUnion {
+	sdkMsgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
+	for _, m := range messages {
+		switch m.Role {
+		case "system":
+			sdkMsgs = append(sdkMsgs, openai.SystemMessage(m.Content))
+
+		case "user":
+			sdkMsgs = append(sdkMsgs, buildOpenAISDKUserContent(m))
+
+		case "assistant":
+			if len(m.ToolCalls) > 0 {
+				tcs := make([]openai.ChatCompletionMessageToolCallUnionParam, 0, len(m.ToolCalls))
+				for _, tc := range m.ToolCalls {
+					argsJSON, _ := json.Marshal(tc.Args)
+					tcs = append(tcs, openai.ChatCompletionMessageToolCallUnionParam{
+						OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+							ID: tc.ID,
+							Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+								Name:      tc.Name,
+								Arguments: string(argsJSON),
+							},
+						},
+					})
+				}
+				sdkMsgs = append(sdkMsgs, openai.ChatCompletionMessageParamUnion{
+					OfAssistant: &openai.ChatCompletionAssistantMessageParam{
+						Content: openai.ChatCompletionAssistantMessageParamContentUnion{
+							OfString: openai.String(m.Content),
+						},
+						ToolCalls: tcs,
+					},
+				})
+			} else {
+				sdkMsgs = append(sdkMsgs, openai.AssistantMessage(m.Content))
+			}
+
+		case "tool":
+			sdkMsgs = append(sdkMsgs, openai.ToolMessage(m.Content, m.ToolCallID))
+		}
+	}
+	return sdkMsgs
 }
 
 // parseOpenAISDKResponse converts an SDK ChatCompletion to LLMResponse.
