@@ -60,7 +60,8 @@ RUN --mount=type=cache,id=metiq-gomod,target=/go/pkg/mod,sharing=locked \
 COPY . .
 
 # Compile daemon and CLI as static binaries (no CGO required).
-RUN --mount=type=cache,id=metiq-gobuild,target=/root/.cache/go-build,sharing=locked \
+RUN --mount=type=secret,id=gitauth,target=/root/.netrc \
+    --mount=type=cache,id=metiq-gobuild,target=/root/.cache/go-build,sharing=locked \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
