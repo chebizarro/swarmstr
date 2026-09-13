@@ -26,9 +26,15 @@ The chunk size is governed by Nostr event size limits — responses that would p
 
 Although Nostr delivery is non-streaming, the model API is called in streaming mode internally:
 
-1. LLM token stream is buffered internally
-2. Tool calls are executed as they're identified (streaming tool use)
+1. Each agentic round's LLM token stream is delivered incrementally to the
+   canvas/webchat feed and buffered for the final reply
+2. Tool calls are executed as they're identified, then the loop calls the model
+   again with the tool results until it produces a final text answer
 3. When the full response is ready, it's delivered as one Nostr DM
+
+Intermediate round text (for example "Let me check…") may appear briefly in
+the canvas feed; the terminal assistant message replaces it with the
+synthesized final answer, and the Nostr DM only ever carries that final answer.
 
 This gives faster tool execution while maintaining clean Nostr delivery.
 

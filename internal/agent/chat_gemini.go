@@ -336,5 +336,20 @@ func (p *GoogleGeminiProvider) Stream(ctx context.Context, turn Turn, onChunk fu
 	return streamEventsAsLegacy(ctx, turn, onChunk, p)
 }
 
+// ChatStream implements StreamingChatProvider for the Gemini ChatProvider by
+// forwarding text deltas from the shared SSE accumulator.
+func (p *GeminiChatProvider) ChatStream(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions, onDelta func(text string)) (*LLMResponse, error) {
+	res, err := p.streamRequestWithSink(ctx, messages, tools, opts, func(evt ProviderStreamEvent) {
+		if evt.Type == ProviderStreamTextDelta && evt.TextDelta != "" && onDelta != nil {
+			onDelta(evt.TextDelta)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return providerResultToLLMResponse(res), nil
+}
+
+var _ StreamingChatProvider = (*GeminiChatProvider)(nil)
 var _ EventStreamingProvider = (*GoogleGeminiProvider)(nil)
 var _ StreamingProvider = (*GoogleGeminiProvider)(nil)

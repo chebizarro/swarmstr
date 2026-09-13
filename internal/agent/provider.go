@@ -28,9 +28,15 @@ type Provider interface {
 	Generate(context.Context, Turn) (ProviderResult, error)
 }
 
+// ProviderResult carries the result of a provider turn. Providers that drive
+// the agentic loop internally populate ToolTraces with the redacted record of
+// the calls they executed, so runtime callers do not re-execute them.
 type ProviderResult struct {
 	Text      string     `json:"text"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ToolTraces records tools executed inside the provider's agentic loop.
+	// When set, ToolCalls is empty and the runtime must not execute again.
+	ToolTraces []ToolTrace `json:"-"`
 	// responseID is provider transport state used for Responses continuation.
 	// It intentionally stays internal and is never projected into agent output.
 	responseID string
@@ -70,6 +76,15 @@ type ProviderUsage struct {
 type StreamingProvider interface {
 	Provider
 	Stream(ctx context.Context, turn Turn, onChunk func(text string)) (ProviderResult, error)
+}
+
+// StreamingAgenticProvider runs a full agentic tool loop for a turn while
+// streaming each round's assistant text via onChunk. ProcessTurnStreaming uses
+// it when available so tool-using turns stream and synthesize like the
+// non-streaming path, instead of executing one round and dead-ending.
+type StreamingAgenticProvider interface {
+	Provider
+	GenerateStreaming(ctx context.Context, turn Turn, onChunk func(text string)) (ProviderResult, error)
 }
 
 type EchoProvider struct{}
@@ -383,6 +398,13 @@ func (p *AnthropicProvider) Generate(ctx context.Context, turn Turn) (ProviderRe
 	return generateWithAgenticLoop(ctx, p.chatProvider(), turn, p.SystemPrompt, "anthropic")
 }
 
+// GenerateStreaming runs the full agentic loop, streaming each round's text.
+func (p *AnthropicProvider) GenerateStreaming(ctx context.Context, turn Turn, onChunk func(string)) (ProviderResult, error) {
+	return generateWithAgenticLoopStreaming(ctx, p.chatProvider(), turn, p.SystemPrompt, "anthropic", onChunk)
+}
+
+var _ StreamingAgenticProvider = (*AnthropicProvider)(nil)
+
 // isAnthropicAuthError reports whether err indicates an authentication failure.
 func isAnthropicAuthError(err error) bool {
 	if err == nil {
@@ -413,6 +435,18 @@ type OpenAIChatProvider struct {
 }
 
 func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
+	return generateWithAgenticLoop(ctx, p.chatProvider(turn), turn, "", "openai")
+}
+
+// GenerateStreaming runs the full agentic loop, streaming each round's text.
+func (p *OpenAIChatProvider) GenerateStreaming(ctx context.Context, turn Turn, onChunk func(string)) (ProviderResult, error) {
+	return generateWithAgenticLoopStreaming(ctx, p.chatProvider(turn), turn, "", "openai", onChunk)
+}
+
+var _ StreamingAgenticProvider = (*OpenAIChatProvider)(nil)
+
+// chatProvider builds the per-turn OpenAI-compatible ChatProvider.
+func (p *OpenAIChatProvider) chatProvider(turn Turn) *OpenAIChatProviderChat {
 	keepAlive := p.KeepAlive
 	if keepAlive == "" {
 		keepAlive = strings.TrimSpace(os.Getenv("OLLAMA_KEEP_ALIVE"))
@@ -421,7 +455,7 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 	if !store && strings.EqualFold(strings.TrimSpace(os.Getenv("OPENAI_STORE_COMPLETIONS")), "true") {
 		store = true
 	}
-	chatProvider := &OpenAIChatProviderChat{
+	return &OpenAIChatProviderChat{
 		BaseURL:              p.BaseURL,
 		APIKey:               p.resolveAPIKey(),
 		Model:                p.resolveModel(),
@@ -432,7 +466,6 @@ func (p *OpenAIChatProvider) Generate(ctx context.Context, turn Turn) (ProviderR
 		ToolSchemaNormalizer: p.ToolSchemaNormalizer,
 		PromptCache:          promptCacheProfilePtr(p.PromptCacheProfile()),
 	}
-	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "openai")
 }
 
 func (p *OpenAIChatProvider) PromptCacheProfile() PromptCacheProfile {
@@ -882,6 +915,19 @@ func (p *GoogleGeminiProvider) Generate(ctx context.Context, turn Turn) (Provide
 	}
 	return generateWithAgenticLoop(ctx, chatProvider, turn, "", "gemini")
 }
+
+// GenerateStreaming runs the full agentic loop, streaming each round's text.
+func (p *GoogleGeminiProvider) GenerateStreaming(ctx context.Context, turn Turn, onChunk func(string)) (ProviderResult, error) {
+	chatProvider := &GeminiChatProvider{
+		APIKey:      p.APIKey,
+		Model:       p.Model,
+		Client:      p.Client,
+		PromptCache: promptCacheProfilePtr(p.PromptCacheProfile()),
+	}
+	return generateWithAgenticLoopStreaming(ctx, chatProvider, turn, "", "gemini", onChunk)
+}
+
+var _ StreamingAgenticProvider = (*GoogleGeminiProvider)(nil)
 
 // OpenAI-compatible provider descriptors live in provider_registry.go.
 // NewProviderForModel constructs a Provider for the given model identifier.

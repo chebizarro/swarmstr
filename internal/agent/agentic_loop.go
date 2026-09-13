@@ -55,6 +55,10 @@ type AgenticLoopConfig struct {
 	ForceText bool
 	// LogPrefix is prepended to log messages (e.g. "anthropic", "openai").
 	LogPrefix string
+	// OnTextDelta, when non-nil, streams incremental assistant text from each
+	// LLM round. Providers implementing StreamingChatProvider deliver real
+	// tokens; others fall back to delivering the full round text once.
+	OnTextDelta func(text string)
 	// SessionID and TurnID correlate runtime tool lifecycle events back to the
 	// enclosing metiq turn when ToolEventSink is set.
 	SessionID string
@@ -141,7 +145,7 @@ type toolCallBatch struct {
 //  3. Append tool results and call the LLM again
 //  4. Repeat until the model produces text or MaxIterations is reached
 //  5. Optionally force a text response when the loop is exhausted
-func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, error) {
+func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (out *LLMResponse, runErr error) {
 	ctx = ensureMutationTrackingContext(ctx)
 	if cfg.MaxIterations <= 0 {
 		profile := ResolveModelContext(cfg.ModelID)
@@ -153,6 +157,14 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 	if cfg.LogPrefix == "" {
 		cfg.LogPrefix = "agentic"
 	}
+	var collectedToolTraces []ToolTrace
+	// Attach every tool the loop executes to whichever response is returned so
+	// callers can build TurnResult.ToolTraces without re-executing the calls.
+	defer func() {
+		if out != nil {
+			out.ToolTraces = collectedToolTraces
+		}
+	}()
 	loopDetectionConfig := cfg.LoopDetectionConfig
 	if loopDetectionConfig == nil {
 		defaultLoopConfig := toolloop.DefaultConfig()
@@ -345,7 +357,10 @@ func RunAgenticLoop(ctx context.Context, cfg AgenticLoopConfig) (*LLMResponse, e
 		results := executeToolBatches(toolCtx, cfg.Executor, calls, cfg.SessionID, cfg.TurnID, cfg.ToolEventSink, cfg.Trace, cfg.HookInvoker)
 
 		// Append tool results and check for loop blocking.
-		for _, r := range results {
+		for i, r := range results {
+			if i < len(calls) {
+				collectedToolTraces = append(collectedToolTraces, toolTraceFromExecResult(cfg.Executor, calls[i], r))
+			}
 			messages = append(messages, LLMMessage{
 				Role:       "tool",
 				Content:    r.Content,
@@ -660,7 +675,15 @@ type restoredTurnCheckpoint struct {
 
 func chatWithTurnSpan(ctx context.Context, cfg AgenticLoopConfig, phase string, iter int, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
 	startedAt := time.Now()
-	resp, err := cfg.Provider.Chat(ctx, messages, normalizeToolsForProvider(cfg.Provider, tools), opts)
+	provider := cfg.Provider
+	normalizedTools := normalizeToolsForProvider(provider, tools)
+	var resp *LLMResponse
+	var err error
+	if streamer, ok := provider.(StreamingChatProvider); ok && cfg.OnTextDelta != nil {
+		resp, err = streamer.ChatStream(ctx, messages, normalizedTools, opts, cfg.OnTextDelta)
+	} else {
+		resp, err = provider.Chat(ctx, messages, normalizedTools, opts)
+	}
 	fields := map[string]any{
 		"phase":          phase,
 		"iteration":      iter,
@@ -672,6 +695,23 @@ func chatWithTurnSpan(ctx context.Context, cfg AgenticLoopConfig, phase string, 
 	}
 	EmitTurnSpan(ctx, "provider_call", time.Since(startedAt), fields)
 	return resp, err
+}
+
+// toolTraceFromExecResult builds a redacted ToolTrace from one executed tool
+// call. It mirrors the trace construction in buildResult so loop-driven and
+// buildResult-driven turns agree.
+func toolTraceFromExecResult(executor ToolExecutor, call ToolCall, res ToolExecResult) ToolTrace {
+	descriptor, _ := ToolDescriptorForExecutor(executor, call.Name)
+	trace := ToolTrace{
+		Call:       NewToolRedactor().RedactToolCall(call, descriptor),
+		Descriptor: descriptor,
+	}
+	if strings.HasPrefix(res.Content, "error: ") {
+		trace.Error = strings.TrimPrefix(res.Content, "error: ")
+	} else {
+		trace.Result = res.Content
+	}
+	return trace
 }
 
 func restoreTurnCheckpoint(cp *sessioncheckpoint.TurnCheckpoint, resumeSafe bool) (restoredTurnCheckpoint, bool) {
@@ -1458,6 +1498,16 @@ func isCriticalToolError(err error) bool {
 // agentic loop if needed. This eliminates the duplicated loop code from
 // each provider.
 func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Turn, providerSystemPrompt, logPrefix string) (ProviderResult, error) {
+	return generateWithAgenticLoopOpts(ctx, provider, turn, providerSystemPrompt, logPrefix, nil)
+}
+
+// generateWithAgenticLoopStreaming mirrors generateWithAgenticLoop but streams
+// each round's assistant text via onChunk when the ChatProvider supports it.
+func generateWithAgenticLoopStreaming(ctx context.Context, provider ChatProvider, turn Turn, providerSystemPrompt, logPrefix string, onChunk func(string)) (ProviderResult, error) {
+	return generateWithAgenticLoopOpts(ctx, provider, turn, providerSystemPrompt, logPrefix, onChunk)
+}
+
+func generateWithAgenticLoopOpts(ctx context.Context, provider ChatProvider, turn Turn, providerSystemPrompt, logPrefix string, onChunk func(string)) (ProviderResult, error) {
 	profile := disabledPromptCacheProfile()
 	if profileProvider, ok := provider.(promptCacheProfileProvider); ok {
 		profile = profileProvider.PromptCacheProfile()
@@ -1481,7 +1531,7 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 
 	// If no executor or no tools, just do a single call.
 	if turn.Executor == nil || len(tools) == 0 {
-		spanCfg := AgenticLoopConfig{Provider: provider, SessionID: turn.SessionID, TurnID: turn.TurnID, LogPrefix: logPrefix}
+		spanCfg := AgenticLoopConfig{Provider: provider, SessionID: turn.SessionID, TurnID: turn.TurnID, LogPrefix: logPrefix, OnTextDelta: onChunk}
 		resp, err := chatWithTurnSpan(ctx, spanCfg, "single_call", 0, messages, tools, opts)
 		if err != nil {
 			return ProviderResult{}, turnCancellationCause(ctx, err)
@@ -1506,6 +1556,7 @@ func generateWithAgenticLoop(ctx context.Context, provider ChatProvider, turn Tu
 		MaxIterations:        maxIter,
 		ForceText:            true,
 		LogPrefix:            logPrefix,
+		OnTextDelta:          onChunk,
 		SessionID:            turn.SessionID,
 		TurnID:               turn.TurnID,
 		ToolEventSink:        turn.ToolEventSink,

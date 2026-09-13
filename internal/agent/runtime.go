@@ -466,7 +466,22 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 	var lastStreamUsage ProviderUsage
 
 	startedAt := time.Now()
-	if sp, ok := r.provider.(EventStreamingProvider); ok {
+	if asp, ok := r.provider.(StreamingAgenticProvider); ok {
+		// Run the full agentic tool→LLM loop, streaming each round's text so the
+		// canvas/webchat feed stays live while tools execute. The DM lane still
+		// delivers the single synthesized final answer from result.Text.
+		streamedDelta := func(text string) {
+			if strings.TrimSpace(text) == "" {
+				return
+			}
+			if onChunk != nil {
+				onChunk(text)
+			}
+			emitRuntimeEvent(turn.RuntimeEventSink, RuntimeEvent{Type: RuntimeEventAssistantDelta, SessionID: turn.SessionID, TurnID: turn.TurnID, ContentBlockIndex: 0, Delta: text, Trace: turn.Trace})
+		}
+		gen, err = asp.GenerateStreaming(ctx, turn, streamedDelta)
+		emitProviderRoundtripSpan(ctx, "stream_agentic", turn, startedAt, err)
+	} else if sp, ok := r.provider.(EventStreamingProvider); ok {
 		var normalizer *toolrepair.StreamNormalizer
 		if len(turn.Tools) > 0 {
 			defs := make([]toolrepair.ToolDefinition, 0, len(turn.Tools))
@@ -739,9 +754,16 @@ func synthesizeTurnHistoryContextID(turnID string, index int, m ConversationMess
 
 // buildResult executes any tool calls from gen and assembles the TurnResult.
 func (r *ProviderRuntime) buildResult(ctx context.Context, turn Turn, gen ProviderResult, tools ToolExecutor) (TurnResult, error) {
+	// Providers that drive the agentic loop internally return ToolTraces with
+	// no pending ToolCalls. Seed those traces so the runtime does not
+	// re-execute work the provider already performed.
+	var seededTraces []ToolTrace
+	if len(gen.ToolCalls) == 0 {
+		seededTraces = append(seededTraces, gen.ToolTraces...)
+	}
 	result := TurnResult{
 		Text:         strings.TrimSpace(gen.Text),
-		ToolTraces:   nil,
+		ToolTraces:   seededTraces,
 		Outcome:      gen.Outcome,
 		StopReason:   gen.StopReason,
 		HistoryDelta: RedactConversationMessagesForPersistence(tools, gen.HistoryDelta),

@@ -370,6 +370,17 @@ func (p *AnthropicChatProvider) StreamMessages(ctx context.Context, messages []L
 	return ProviderResult{Text: textBuf.String(), ToolCalls: toolCalls, Usage: usage}, nil
 }
 
+// ChatStream implements StreamingChatProvider for the Anthropic ChatProvider.
+func (p *AnthropicChatProvider) ChatStream(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions, onDelta func(text string)) (*LLMResponse, error) {
+	res, err := p.StreamMessages(ctx, messages, tools, opts, "", "", nil, onDelta)
+	if err != nil {
+		return nil, err
+	}
+	return providerResultToLLMResponse(res), nil
+}
+
+var _ StreamingChatProvider = (*AnthropicChatProvider)(nil)
+
 // ─── SDK format converters ───────────────────────────────────────────────────
 
 // buildAnthropicSDKUserContent converts user message content to SDK blocks.

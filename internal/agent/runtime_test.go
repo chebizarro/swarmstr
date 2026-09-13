@@ -360,6 +360,104 @@ func TestProviderRuntime_ProcessTurnStreaming_NoToolCalls_NoFallback(t *testing.
 	}
 }
 
+// ─── streaming agentic loop ───────────────────────────────────────────────────
+
+// fakeStreamingChatProvider streams each round's text and emits a tool call on
+// the first round, then a synthesized answer on the second.
+type fakeStreamingChatProvider struct {
+	round int
+}
+
+func (p *fakeStreamingChatProvider) Chat(ctx context.Context, messages []LLMMessage, tools []ToolDefinition, opts ChatOptions) (*LLMResponse, error) {
+	return p.ChatStream(ctx, messages, tools, opts, nil)
+}
+
+func (p *fakeStreamingChatProvider) ChatStream(_ context.Context, _ []LLMMessage, _ []ToolDefinition, _ ChatOptions, onDelta func(string)) (*LLMResponse, error) {
+	p.round++
+	if p.round == 1 {
+		if onDelta != nil {
+			onDelta("Let me check. ")
+		}
+		return &LLMResponse{
+			Content:          "Let me check. ",
+			ToolCalls:        []ToolCall{{ID: "c1", Name: "lookup", Args: map[string]any{"k": "v"}}},
+			NeedsToolResults: true,
+		}, nil
+	}
+	if onDelta != nil {
+		onDelta("The answer is 42.")
+	}
+	return &LLMResponse{Content: "The answer is 42."}, nil
+}
+
+// streamingAgenticTestProvider exposes the shared streaming loop as a
+// StreamingAgenticProvider so the runtime picks the streaming agentic path.
+type streamingAgenticTestProvider struct {
+	chat *fakeStreamingChatProvider
+}
+
+func (p *streamingAgenticTestProvider) Generate(ctx context.Context, turn Turn) (ProviderResult, error) {
+	return generateWithAgenticLoop(ctx, p.chat, turn, "", "test")
+}
+
+func (p *streamingAgenticTestProvider) GenerateStreaming(ctx context.Context, turn Turn, onChunk func(string)) (ProviderResult, error) {
+	return generateWithAgenticLoopStreaming(ctx, p.chat, turn, "", "test", onChunk)
+}
+
+func streamingAgenticLookupTools(t *testing.T) *ToolRegistry {
+	t.Helper()
+	tools := NewToolRegistry()
+	tools.RegisterWithDef("lookup", func(_ context.Context, _ map[string]any) (string, error) {
+		return "value=42", nil
+	}, ToolDefinition{Name: "lookup", Description: "lookup tool"})
+	return tools
+}
+
+func TestProviderRuntime_ProcessTurnStreaming_StreamsFullAgenticLoop(t *testing.T) {
+	tools := streamingAgenticLookupTools(t)
+	provider := &streamingAgenticTestProvider{chat: &fakeStreamingChatProvider{}}
+	rt, _ := NewProviderRuntime(provider, tools)
+
+	var chunks []string
+	result, err := rt.ProcessTurnStreaming(context.Background(), Turn{UserText: "hello"}, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "The answer is 42." {
+		t.Fatalf("expected synthesized answer, got %q", result.Text)
+	}
+	if len(result.ToolTraces) != 1 || result.ToolTraces[0].Call.Name != "lookup" || result.ToolTraces[0].Result != "value=42" {
+		t.Fatalf("expected loop tool trace, got %#v", result.ToolTraces)
+	}
+	joined := strings.Join(chunks, "")
+	if !strings.Contains(joined, "Let me check.") || !strings.Contains(joined, "The answer is 42.") {
+		t.Fatalf("expected both rounds streamed, got %q", joined)
+	}
+	// The loop must synthesize, not emit the raw tool-log safety net.
+	if strings.Contains(result.Text, "[lookup]") {
+		t.Fatalf("did not expect tool-log fallback text, got %q", result.Text)
+	}
+}
+
+func TestProviderRuntime_ProcessTurn_SurfacesLoopToolTraces(t *testing.T) {
+	tools := streamingAgenticLookupTools(t)
+	provider := &streamingAgenticTestProvider{chat: &fakeStreamingChatProvider{}}
+	rt, _ := NewProviderRuntime(provider, tools)
+
+	result, err := rt.ProcessTurn(context.Background(), Turn{UserText: "hello"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "The answer is 42." {
+		t.Fatalf("expected synthesized answer, got %q", result.Text)
+	}
+	if len(result.ToolTraces) != 1 || result.ToolTraces[0].Call.Name != "lookup" || result.ToolTraces[0].Result != "value=42" {
+		t.Fatalf("expected loop tool trace to propagate, got %#v", result.ToolTraces)
+	}
+}
+
 // ─── buildResult safety-net summary ──────────────────────────────────────────
 
 // toolOnlyProvider returns only tool calls and no text — exercises the
