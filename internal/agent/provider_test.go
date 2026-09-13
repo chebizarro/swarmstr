@@ -182,3 +182,22 @@ func TestOpenAIChatProvider_Stream_LargeSSEChunk(t *testing.T) {
 		t.Fatalf("streamed text length=%d want=%d", len(res.Text), len(longText))
 	}
 }
+
+func TestOpenAIChatProvider_StreamRejectsToolCallWithoutFunctionName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintln(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"arguments":"{\"action\":\"inspect\"}"}}]}}]}`)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
+	}))
+	defer srv.Close()
+
+	p := &OpenAIChatProvider{BaseURL: srv.URL, Model: "gpt-4o", Client: srv.Client()}
+	result, err := p.Stream(context.Background(), Turn{UserText: "inspect the task"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "missing function name") {
+		t.Fatalf("Stream error = %v, want missing function name", err)
+	}
+	if result.Text != "" || len(result.ToolCalls) != 0 {
+		t.Fatalf("Stream returned partial malformed result: %#v", result)
+	}
+}

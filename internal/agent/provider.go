@@ -610,6 +610,9 @@ func (p *OpenAIChatProvider) Stream(ctx context.Context, turn Turn, onChunk func
 		if !ok {
 			continue
 		}
+		if strings.TrimSpace(acc.Name) == "" {
+			return ProviderResult{}, fmt.Errorf("openai stream: tool call at index %d missing function name", idx)
+		}
 		var args map[string]any
 		if argStr := acc.Arguments.String(); argStr != "" {
 			_ = json.Unmarshal([]byte(argStr), &args)
