@@ -188,6 +188,9 @@ type TurnTelemetry struct {
 	FallbackReason string
 	Usage          TurnUsage
 	Trace          TraceContext
+	// PlanningOnlyContinuation is true when this telemetry records the final
+	// (continuation) turn after a planning-only retry.
+	PlanningOnlyContinuation bool
 }
 
 // TurnResultMetadata is the canonical persisted subset of a terminal turn

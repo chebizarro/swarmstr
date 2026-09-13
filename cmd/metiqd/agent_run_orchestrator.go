@@ -402,7 +402,7 @@ func (c agentRunController) runAgentTurnWithFallbacks(baseCtx context.Context, r
 	}
 
 	if lastErr != nil {
-		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, lastErr, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)
+		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, lastErr, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason, false)
 		persistTurnTelemetry(c.sessionStore, req.SessionID, turnTelemetry)
 		c.emit(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
 		attempt.Err = lastErr
@@ -410,7 +410,7 @@ func (c agentRunController) runAgentTurnWithFallbacks(baseCtx context.Context, r
 	}
 	if result == nil {
 		err := fmt.Errorf("all runtimes returned nil result")
-		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, err, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)
+		turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), agent.TurnResult{}, err, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason, false)
 		persistTurnTelemetry(c.sessionStore, req.SessionID, turnTelemetry)
 		c.emit(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
 		attempt.Err = err
@@ -434,7 +434,7 @@ func (c agentRunController) runAgentTurnWithFallbacks(baseCtx context.Context, r
 			log.Printf("session store put failed session=%s: %v", req.SessionID, putErr)
 		}
 	}
-	turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), *result, nil, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason)
+	turnTelemetry := buildTurnTelemetry("", turnStartedAt, time.Now(), *result, nil, attempt.FallbackUsed, attempt.FallbackFrom, attempt.FallbackTo, attempt.FallbackReason, false)
 	persistTurnTelemetry(c.sessionStore, req.SessionID, turnTelemetry)
 	c.emit(gatewayws.EventTurnResult, turnTelemetryPayload(agentID, req.SessionID, turnTelemetry))
 	attempt.Result = result

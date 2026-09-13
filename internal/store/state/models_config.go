@@ -707,6 +707,11 @@ type AgentConfig struct {
 	// SessionMemory holds per-agent session memory extraction configuration.
 	// When nil/empty, inherits from extra.memory.session_memory global config.
 	SessionMemory *AgentSessionMemoryConfig `json:"session_memory,omitempty"`
+	// PlanningOnlyContinuation enables automatic re-invocation when a DM turn
+	// produces only a planning-only response (promises without tool actions).
+	// When true, the runtime re-calls the agent once with PlanningOnlyRetryInstruction
+	// and delivers the second (real) result. Default false.
+	PlanningOnlyContinuation bool `json:"planning_only_continuation,omitempty"`
 }
 
 // AgentSessionMemoryConfig holds per-agent session memory extraction settings.

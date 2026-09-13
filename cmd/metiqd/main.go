@@ -4900,12 +4900,14 @@ func main() {
 			}
 		}
 		var maxAgenticIterations int
+		var planningOnlyContinuation bool
 		for _, ac := range configState.Get().Agents {
 			if ac.ID == activeAgentID {
 				if ac.ThinkingLevel != "" {
 					thinkingBudget = thinkingLevelToBudget(ac.ThinkingLevel)
 				}
 				maxAgenticIterations = ac.MaxAgenticIterations
+				planningOnlyContinuation = ac.PlanningOnlyContinuation
 				break
 			}
 		}
@@ -4960,10 +4962,14 @@ func main() {
 			DeferredTools:        deferredTools,
 		}
 		chatStream := gatewayws.NewChatStream(wsEmitter, eventID, sessionID, activeAgentID)
+		suppressStreamEnd := suppressStreamEnd
 		if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
 			projection := gatewayws.NewRuntimeChatProjection(chatStream, wsEmitter, activeAgentID)
 			projection.Start()
 			baseTurn.RuntimeEventSink = projection.RuntimeEventSink()
+			if planningOnlyContinuation {
+				baseTurn.RuntimeEventSink = suppressStreamEnd(baseTurn.RuntimeEventSink)
+			}
 			turnResult, turnErr = sr.ProcessTurnStreaming(turnCtx, baseTurn, projection.LegacyDelta)
 		} else {
 			chatStream.Status(gatewayws.ChatPhaseStartingModel)
@@ -5017,7 +5023,7 @@ func main() {
 			default:
 				log.Printf("agent process failed session=%s err=%v", sessionID, turnErr)
 			}
-			turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, turnErr, false, "", "", "")
+			turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, turnErr, false, "", "", "", false)
 			persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
 			emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
 			// Do NOT mark as processed on failure — the agent will retry
@@ -5033,6 +5039,32 @@ func main() {
 		// NIP-38: return to idle once the agent turn is complete.
 		if controlPresenceHeartbeat38 != nil {
 			controlPresenceHeartbeat38.SetIdle(ctx)
+		}
+
+		// ── Planning-only continuation ─────────────────────────────────────
+		planningOnlyContinuationUsed := false
+		if planningOnlyContinuation {
+			commitState := agent.BuildCommitmentStateFromTraces(turnResult.ToolTraces)
+			if agent.ShouldRetryPlanningOnly(turnResult.Text, commitState, 0, 1) {
+				continuation := agent.BuildPlanningOnlyContinuation(baseTurn, turnResult.Text)
+				var continuationResult agent.TurnResult
+				var continuationErr error
+				if sr, ok := activeRuntime.(agent.StreamingRuntime); ok {
+					contProjection := gatewayws.NewRuntimeChatProjection(chatStream, wsEmitter, activeAgentID)
+					contProjection.Start()
+					continuation.RuntimeEventSink = contProjection.RuntimeEventSink()
+					continuation.RuntimeEventSink = suppressStreamEnd(continuation.RuntimeEventSink)
+					continuationResult, continuationErr = sr.ProcessTurnStreaming(turnCtx, continuation, contProjection.LegacyDelta)
+				} else {
+					continuationResult, continuationErr = activeRuntime.ProcessTurn(turnCtx, continuation)
+				}
+				if continuationErr == nil {
+					planningOnlyContinuationUsed = true
+					turnResult = continuationResult
+				} else {
+					log.Printf("planning-only continuation failed; falling back to original session=%s err=%v", sessionID, continuationErr)
+				}
+			}
 		}
 
 		inlineSteering := drainedSteering.Snapshot()
@@ -5116,7 +5148,7 @@ func main() {
 			Status:  "idle",
 			Session: sessionID,
 		})
-		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "")
+		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "", planningOnlyContinuationUsed)
 		if deferredPersistence {
 			deferredSessionBatch.TurnTelemetry = turnTelemetry
 			deferredSessionBatch.HasTelemetry = true
@@ -6506,7 +6538,7 @@ func main() {
 				chatStream.Error(nil, turnErr.Error(), kind, gatewayws.ChatUsage(turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens), string(turnResult.StopReason))
 				log.Printf("channel agent error session=%s err=%v", sessionID, turnErr)
 			}
-			turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, turnErr, false, "", "", "")
+			turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, turnErr, false, "", "", "", false)
 			persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
 			emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
 			return turnErr
@@ -6619,7 +6651,7 @@ func main() {
 		if sessionStore != nil && (turnResult.Usage.InputTokens > 0 || turnResult.Usage.OutputTokens > 0) {
 			_ = sessionStore.AddTokens(sessionID, turnResult.Usage.InputTokens, turnResult.Usage.OutputTokens, turnResult.Usage.CacheReadTokens, turnResult.Usage.CacheCreationTokens)
 		}
-		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "")
+		turnTelemetry := buildTurnTelemetry(eventID, turnStartedAt, time.Now(), turnResult, nil, false, "", "", "", false)
 		persistTurnTelemetry(sessionStore, sessionID, turnTelemetry)
 		emitTurnTelemetry(wsEmitter, activeAgentID, sessionID, turnTelemetry)
 		steeringDrainCommitted = true
@@ -8650,7 +8682,7 @@ func handleACPMessage(
 		if controlServices.session.sessionStore != nil && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0) {
 			_ = controlServices.session.sessionStore.AddTokens(sessionID, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CacheReadTokens, result.Usage.CacheCreationTokens)
 		}
-		turnTelemetry := buildTurnTelemetry(msg.TaskID, turnStartedAt, time.Now(), result, procErr, false, "", "", "")
+		turnTelemetry := buildTurnTelemetry(msg.TaskID, turnStartedAt, time.Now(), result, procErr, false, "", "", "", false)
 		turnTelemetry.Trace = agent.TraceContext{
 			GoalID:       strings.TrimSpace(workerTask.GoalID),
 			TaskID:       firstNonEmptyTrimmed(workerTask.TaskID, msg.TaskID),
@@ -9310,6 +9342,21 @@ func persistToolTraces(
 		}
 	}
 	return firstErr
+}
+
+// suppressStreamEnd wraps a RuntimeEventSink to drop RuntimeEventStreamEnd events.
+// Used in the planning-only continuation path to prevent the first turn's
+// stream-end from terminating the shared chatStream before the continuation resolves.
+func suppressStreamEnd(sink agent.RuntimeEventSink) agent.RuntimeEventSink {
+	if sink == nil {
+		return nil
+	}
+	return func(evt agent.RuntimeEvent) {
+		if evt.Type == agent.RuntimeEventStreamEnd {
+			return
+		}
+		sink(evt)
+	}
 }
 
 func mediaGenerationOutputDir(cfg state.ConfigDoc, kind string) string {

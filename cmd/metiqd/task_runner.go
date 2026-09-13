@@ -526,7 +526,7 @@ func (r *taskRunner) finishQueuedRun(ctx context.Context, queued taskRunnerQueue
 	if len(historyEntryIDs) > 0 {
 		resultRef = state.TaskResultRef{Kind: "transcript_entry", ID: historyEntryIDs[len(historyEntryIDs)-1]}
 	}
-	turnTelemetry := buildTurnTelemetry(queued.Run.RunID, startedAt, time.Now(), result, turnErr, false, "", "", "")
+	turnTelemetry := buildTurnTelemetry(queued.Run.RunID, startedAt, time.Now(), result, turnErr, false, "", "", "", false)
 	turnTelemetry.Trace = trace
 	persistTurnTelemetry(r.sessionStore, queued.SessionID, turnTelemetry)
 	emitTurnTelemetry(r.emitter, queued.AgentID, queued.SessionID, turnTelemetry)

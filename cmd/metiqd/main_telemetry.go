@@ -154,7 +154,7 @@ func currentMCPTelemetry(cfg state.ConfigDoc, mgr *mcppkg.Manager) mcppkg.Teleme
 // Turn telemetry
 // ---------------------------------------------------------------------------
 
-func buildTurnTelemetry(turnID string, startedAt, endedAt time.Time, result agent.TurnResult, turnErr error, fallbackUsed bool, fallbackFrom, fallbackTo, fallbackReason string) agent.TurnTelemetry {
+func buildTurnTelemetry(turnID string, startedAt, endedAt time.Time, result agent.TurnResult, turnErr error, fallbackUsed bool, fallbackFrom, fallbackTo, fallbackReason string, planningOnlyContinuation bool) agent.TurnTelemetry {
 	telemetry := agent.TurnTelemetry{
 		TurnID:         strings.TrimSpace(turnID),
 		StartedAtMS:    startedAt.UnixMilli(),
@@ -174,6 +174,7 @@ func buildTurnTelemetry(turnID string, startedAt, endedAt time.Time, result agen
 		telemetry.Error = truncateRunes(strings.TrimSpace(turnErr.Error()), 200)
 	}
 	telemetry.LoopBlocked = telemetry.StopReason == agent.TurnStopReasonLoopBlocked
+	telemetry.PlanningOnlyContinuation = planningOnlyContinuation
 	return telemetry
 }
 
