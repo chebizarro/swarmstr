@@ -128,6 +128,7 @@ func TestFitToolDefinitions_CriticalToolsFirst(t *testing.T) {
 		{Name: "memory_search", Description: "Search memory"},
 		{Name: "another_regular", Description: "Another regular tool"},
 		{Name: "session_send", Description: "Send session message"},
+		{Name: "fleet_tasks", Description: "Manage authoritative fleet tasks"},
 	}
 
 	budget := ContextBudget{
@@ -147,6 +148,9 @@ func TestFitToolDefinitions_CriticalToolsFirst(t *testing.T) {
 	}
 	if !criticalFound["session_send"] {
 		t.Error("session_send should be included as critical tool")
+	}
+	if !criticalFound["fleet_tasks"] {
+		t.Error("fleet_tasks should be included as critical tool")
 	}
 }
 

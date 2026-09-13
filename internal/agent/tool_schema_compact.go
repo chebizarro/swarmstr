@@ -235,6 +235,10 @@ func DefaultCriticalToolNames() []string {
 		// Session management
 		"session_send",
 		"session_spawn",
+		// Fleet lifecycle control must remain directly available to workers.
+		// Deferring it makes task claims and checkpoints depend on the model
+		// choosing tool_search before it can see the authoritative tool.
+		"fleet_tasks",
 		// Tools required by test suite
 		"bash_exec",
 		"write_file",
