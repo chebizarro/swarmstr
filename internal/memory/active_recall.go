@@ -252,6 +252,15 @@ func (a *ActiveRecallAssembler) Recall(ctx context.Context, req ActiveRecallRequ
 		a.recordActiveRecallFailure(cfg)
 		return out, nil
 	case got := <-ch:
+		// If the scheduler delivers both the result and deadline together, a
+		// select may choose either ready case. Preserve the configured deadline
+		// instead of occasionally accepting work that completed too late.
+		if ctx.Err() != nil {
+			out.TimedOut = true
+			out.Error = ctx.Err().Error()
+			a.recordActiveRecallFailure(cfg)
+			return out, nil
+		}
 		hits := got.hits
 		out.HitCount = len(hits)
 		out.Context = FormatActiveRecallContextWithCitations(hits, cfg.MaxContextChars, cfg.CitationsMode)

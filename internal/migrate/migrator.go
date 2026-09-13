@@ -612,16 +612,24 @@ func (m *Migrator) copyDir(src, dst string, art *ArtifactEntry) error {
 		if err != nil {
 			return err
 		}
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
 
-		// Skip runtime garbage subdirectories
-		for _, garbage := range RuntimeGarbage {
-			if strings.Contains(path, string(os.PathSeparator)+garbage+string(os.PathSeparator)) ||
-				strings.HasSuffix(path, string(os.PathSeparator)+garbage) {
-				return filepath.SkipDir
+		// Skip runtime garbage inside the copied tree. Inspecting the absolute
+		// path incorrectly discarded every artifact rooted below /tmp (including
+		// ordinary test and migration staging directories).
+		if relPath != "." {
+			for _, component := range strings.Split(relPath, string(os.PathSeparator)) {
+				for _, garbage := range RuntimeGarbage {
+					if component == garbage {
+						return filepath.SkipDir
+					}
+				}
 			}
 		}
 
-		relPath, _ := filepath.Rel(src, path)
 		dstPath := filepath.Join(dst, relPath)
 
 		if info.IsDir() {
@@ -752,11 +760,11 @@ type: user
 func (m *Migrator) normalizePathsInContent(content string) string {
 	// Replace common OpenClaw paths with Metiq equivalents
 	replacements := map[string]string{
-		"~/.openclaw/":          "~/.metiq/",
-		"/openclaw/":            "/metiq/",
-		"$HOME/.openclaw/":      "$HOME/.metiq/",
-		"${HOME}/.openclaw/":    "${HOME}/.metiq/",
-		"openclaw.json":         "config.json",
+		"~/.openclaw/":       "~/.metiq/",
+		"/openclaw/":         "/metiq/",
+		"$HOME/.openclaw/":   "$HOME/.metiq/",
+		"${HOME}/.openclaw/": "${HOME}/.metiq/",
+		"openclaw.json":      "config.json",
 	}
 
 	result := content
