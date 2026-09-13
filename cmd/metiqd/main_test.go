@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -3652,6 +3653,60 @@ func TestIngestTrackerSameSecondEventDedupUsesExplicitIDs(t *testing.T) {
 	if tracker.AlreadyProcessed("evt-a", 100) {
 		t.Fatal("unexpected same-second event dedupe based on lexical ordering")
 	}
+}
+
+type blockingWriter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func TestIngestTrackerBlockedLoggerDoesNotBlockFreshEvent(t *testing.T) {
+	writer := &blockingWriter{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	oldOutput := log.Writer()
+	log.SetOutput(writer)
+	defer log.SetOutput(oldOutput)
+
+	tracker := newIngestTracker(state.CheckpointDoc{LastUnix: 200})
+	oldDone := make(chan bool, 1)
+	go func() {
+		oldDone <- tracker.AlreadyProcessed("evt-old", 100)
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("stale-event log did not block as expected")
+	}
+
+	freshDone := make(chan bool, 1)
+	go func() {
+		freshDone <- tracker.AlreadyProcessed("evt-fresh", 300)
+	}()
+	select {
+	case processed := <-freshDone:
+		if processed {
+			t.Fatal("fresh event unexpectedly treated as processed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh event blocked behind stale-event logging")
+	}
+
+	close(writer.release)
+	if processed := <-oldDone; !processed {
+		t.Fatal("stale event unexpectedly treated as fresh")
+	}
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	select {
+	case w.started <- struct{}{}:
+	default:
+	}
+	<-w.release
+	return len(p), nil
 }
 
 func TestCheckpointAdvanceStateAdvancesTimestamp(t *testing.T) {

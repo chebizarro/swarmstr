@@ -338,13 +338,21 @@ func (t *ingestTracker) AlreadyProcessed(eventID string, createdAt int64) bool {
 		return false
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if createdAt < t.lastUnix {
+	lastUnix := t.lastUnix
+	seen := createdAt == lastUnix && checkpointEventSeen(t.recentEventIDs, eventID)
+	older := createdAt < lastUnix
+	t.mu.Unlock()
+
+	// Never write to the process logger while holding the ingest checkpoint
+	// mutex. Relay catch-up can deliver thousands of stale events at startup;
+	// if the container log sink applies backpressure, logging one stale event
+	// must not prevent a fresh event from checking the checkpoint.
+	if older {
 		log.Printf("dm dedup: dropping event=%s created_at=%d checkpoint_last_unix=%d (delta=%ds behind checkpoint)",
-			eventID, createdAt, t.lastUnix, t.lastUnix-createdAt)
+			eventID, createdAt, lastUnix, lastUnix-createdAt)
 		return true
 	}
-	if createdAt == t.lastUnix && checkpointEventSeen(t.recentEventIDs, eventID) {
+	if seen {
 		return true
 	}
 	return false
