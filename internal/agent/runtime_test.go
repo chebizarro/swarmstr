@@ -235,9 +235,10 @@ func (p *streamingToolProvider) Stream(_ context.Context, _ Turn, _ func(string)
 }
 
 func TestProviderRuntime_ProcessTurnStreaming_ToolCallDoesNotFallbackToGenerate(t *testing.T) {
-	// When the streaming response returns tool calls, ProcessTurnStreaming uses
-	// the streamed ProviderResult directly instead of replaying the prompt with
-	// Generate().
+	// When the streaming response returns tool calls alongside streamed text,
+	// ProcessTurnStreaming uses the streamed ProviderResult directly instead of
+	// replaying the prompt with Generate(). The agentic-loop fallback only
+	// applies to blank-text tool-call rounds (nothing user-visible streamed).
 	tools := NewToolRegistry()
 	tools.RegisterWithDef("search", func(_ context.Context, _ map[string]any) (string, error) {
 		return "search result", nil
@@ -266,6 +267,84 @@ func TestProviderRuntime_ProcessTurnStreaming_ToolCallDoesNotFallbackToGenerate(
 	}
 	if len(chunks) != 0 {
 		t.Fatalf("did not expect Generate fallback chunks, got %#v", chunks)
+	}
+}
+
+// blankStreamToolProvider streams tool calls with no text, then returns a
+// synthesized answer from Generate. It models a tool-use model whose first
+// streamed round is a pure tool call — the case that previously produced a raw
+// tool-log reply.
+type blankStreamToolProvider struct {
+	generateCalls int
+	result        ProviderResult
+}
+
+func (p *blankStreamToolProvider) Stream(_ context.Context, _ Turn, _ func(string)) (ProviderResult, error) {
+	return ProviderResult{
+		ToolCalls: []ToolCall{{ID: "tc1", Name: "search", Args: map[string]any{"q": "test"}}},
+	}, nil
+}
+
+func (p *blankStreamToolProvider) Generate(_ context.Context, _ Turn) (ProviderResult, error) {
+	p.generateCalls++
+	return p.result, nil
+}
+
+func TestProviderRuntime_ProcessTurnStreaming_BlankTextToolCallsFallbackToGenerate(t *testing.T) {
+	// A blank-text tool-call round must fall back to the agentic loop so the
+	// user gets a synthesized answer instead of the raw "[tool] result" safety
+	// net.
+	tools := NewToolRegistry()
+	tools.RegisterWithDef("search", func(_ context.Context, _ map[string]any) (string, error) {
+		return "search result", nil
+	}, ToolDefinition{Name: "search", Description: "search tool"})
+
+	provider := &blankStreamToolProvider{result: ProviderResult{
+		Text:         "Here is the synthesized answer.",
+		HistoryDelta: []ConversationMessage{{Role: "assistant", Content: "Here is the synthesized answer."}},
+	}}
+	rt, _ := NewProviderRuntime(provider, tools)
+	var chunks []string
+	result, err := rt.ProcessTurnStreaming(context.Background(), Turn{UserText: "hello"}, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.generateCalls != 1 {
+		t.Fatalf("Generate calls = %d, want 1", provider.generateCalls)
+	}
+	if result.Text != "Here is the synthesized answer." {
+		t.Fatalf("expected synthesized answer, got %q", result.Text)
+	}
+	if strings.Contains(result.Text, "[search]") {
+		t.Fatalf("did not expect raw tool-log fallback text, got %q", result.Text)
+	}
+	if len(result.ToolTraces) != 0 {
+		t.Fatalf("streamed tool calls should not be executed when falling back, got %#v", result.ToolTraces)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("no round-1 text should have been streamed, got %#v", chunks)
+	}
+	if len(result.HistoryDelta) != 1 || result.HistoryDelta[0].Content != "Here is the synthesized answer." {
+		t.Fatalf("expected Generate history delta only, got %#v", result.HistoryDelta)
+	}
+}
+
+func TestProviderRuntime_ProcessTurnStreaming_BlankTextToolCalls_NoExecutor(t *testing.T) {
+	// With no tool executor the agentic fallback cannot run, so the buildResult
+	// safety net still provides a degraded summary rather than no output.
+	provider := &blankStreamToolProvider{result: ProviderResult{Text: "unused"}}
+	rt, _ := NewProviderRuntime(provider, nil)
+	result, err := rt.ProcessTurnStreaming(context.Background(), Turn{UserText: "hello"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.generateCalls != 0 {
+		t.Fatalf("Generate calls = %d, want 0 when no executor is available", provider.generateCalls)
+	}
+	if !strings.Contains(result.Text, "search") {
+		t.Fatalf("expected degraded tool summary, got %q", result.Text)
 	}
 }
 

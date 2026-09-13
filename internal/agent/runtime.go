@@ -546,6 +546,37 @@ func (r *ProviderRuntime) ProcessTurnStreaming(ctx context.Context, turn Turn, o
 		return TurnResult{}, err
 	}
 
+	// A streamed round that returns tool calls with no accompanying text means
+	// the single-shot stream bypassed the agentic tool→LLM→tool cycle: the
+	// model asked for tools but never received their results, so buildResult
+	// would emit a raw "[tool] result" summary as the reply. Re-run the turn
+	// through Generate, which drives the full agentic loop (tool execution →
+	// model synthesis → repeat) and produces a real answer. Only do this when
+	// nothing user-visible was streamed (blank text) so we never duplicate
+	// streamed text or re-execute tools the caller already saw.
+	if len(gen.ToolCalls) > 0 && strings.TrimSpace(gen.Text) == "" && turn.Executor != nil {
+		log.Printf("agent: streamed round returned %d tool call(s) without text; running agentic loop session=%s turn=%s", len(gen.ToolCalls), turn.SessionID, turn.TurnID)
+		streamedGen := gen
+		lastStreamUsage = ProviderUsage{}
+		fallbackStartedAt := time.Now()
+		fallbackGen, fallbackErr := r.provider.Generate(ctx, turn)
+		emitProviderRoundtripSpan(ctx, "stream_fallback_generate", turn, fallbackStartedAt, fallbackErr)
+		if fallbackErr != nil {
+			err = turnCancellationCause(ctx, fallbackErr)
+			emitStreamLifecycleRuntimeEvent(turn, RuntimeEventStreamError, err)
+			return TurnResult{}, err
+		}
+		// Only adopt the loop result when it actually produced output. A provider
+		// whose Generate cannot run the loop (e.g. a stream-repaired leaked tool
+		// call) returns an empty result; keep the streamed round so its tool calls
+		// still execute instead of silently dropping the turn.
+		if strings.TrimSpace(fallbackGen.Text) != "" || len(fallbackGen.ToolCalls) > 0 {
+			gen = fallbackGen
+		} else {
+			gen = streamedGen
+		}
+	}
+
 	if len(gen.ToolCalls) > 0 && len(gen.HistoryDelta) == 0 {
 		refs := make([]ToolCallRef, 0, len(gen.ToolCalls))
 		for _, call := range gen.ToolCalls {
