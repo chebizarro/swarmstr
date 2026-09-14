@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	metricspkg "metiq/internal/metrics"
+	nostrmeta "metiq/internal/nostr/metadata"
 	okpublish "metiq/internal/nostr/publish"
 	nostruntime "metiq/internal/nostr/runtime"
 )
@@ -1075,6 +1076,14 @@ func (c *ConcordChannel) handleChat(re nostr.RelayEvent, target concordTarget) b
 		relay = re.Relay.URL
 	}
 	msg := InboundMessage{ChannelID: c.id, GroupID: c.communityID, Relay: relay, FromPubKey: rumor.PubKey, Text: rumor.Content, EventID: rumor.ID, CreatedAt: rumor.CreatedAt, Meta: meta}
+	msg.Tags = tags
+	msg.Community = &nostrmeta.CommunityFacts{
+		CommunityID: c.communityID,
+		ChannelID:   target.id,
+		ChannelName: c.channelName,
+		Epoch:       int64(target.epoch),
+		OwnerPubkey: c.material.Owner,
+	}
 	msg.Reply = func(ctx context.Context, text string) error { return c.send(ctx, text, rumor.ID) }
 	c.onMessage(msg)
 	return true

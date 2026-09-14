@@ -1027,7 +1027,7 @@ func main() {
 	watchDeliveryCtx, watchDeliveryCancel := context.WithCancel(ctx)
 	defer watchDeliveryCancel()
 	relayFilterInFlight := newEventInFlightRegistry()
-	var dmRunAgentTurnRef func(ctx context.Context, sessionID, senderID, text, eventID string, createdAt int64, replyFn func(context.Context, string) error, overrideAgentID string, constraints turnToolConstraints)
+	var dmRunAgentTurnRef func(ctx context.Context, sessionID, senderID, text, eventID string, createdAt int64, replyFn func(context.Context, string) error, overrideAgentID string, constraints turnToolConstraints, meta inboundTurnMeta)
 	watchDeliver := func(sessionID, name string, event map[string]any) {
 		if dmRunAgentTurnRef == nil {
 			return
@@ -1043,7 +1043,7 @@ func main() {
 				return
 			}
 		}
-		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, sessionID, text, eventID, createdAt, nil, "", turnToolConstraints{})
+		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, sessionID, text, eventID, createdAt, nil, "", turnToolConstraints{}, inboundTurnMeta{})
 	}
 	// saveWatches persists the active watch specs to the state store so they
 	// survive daemon restarts.  Runs asynchronously to avoid blocking tool
@@ -1098,7 +1098,7 @@ func main() {
 				return
 			}
 		}
-		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, sessionID, text, eventID, createdAt, nil, "", turnToolConstraints{})
+		dmRunAgentTurnRef(watchDeliveryCtx, sessionID, sessionID, text, eventID, createdAt, nil, "", turnToolConstraints{}, inboundTurnMeta{})
 	}
 	tools.RegisterWithDef("file_watch_add", toolbuiltin.FileWatchAddTool(fileWatchRegistry, fileWatchDeliver), toolbuiltin.FileWatchAddDef)
 	tools.RegisterWithDef("file_watch_remove", toolbuiltin.FileWatchRemoveTool(fileWatchRegistry), toolbuiltin.FileWatchRemoveDef)
@@ -3063,7 +3063,7 @@ func main() {
 					}
 					go func() {
 						defer relayFilterInFlight.End(inFlightKey)
-						dmRunAgentTurnRef(watchDeliveryCtx, sessionID, senderID, text, eventID, createdAt, nil, overrideAgentID, turnConstraintsCopy)
+						dmRunAgentTurnRef(watchDeliveryCtx, sessionID, senderID, text, eventID, createdAt, nil, overrideAgentID, turnConstraintsCopy, inboundTurnMeta{})
 						if sessionStore != nil {
 							se := sessionStore.GetOrNew(sessionID)
 							se.LastChannel = "nostr"
@@ -4489,6 +4489,7 @@ func main() {
 		overrideAgentID string,
 		constraints turnToolConstraints,
 		handoffToken uint64,
+		meta inboundTurnMeta,
 	)
 	runInboundTurn = func(
 		ctx context.Context,
@@ -4498,6 +4499,7 @@ func main() {
 		overrideAgentID string,
 		constraints turnToolConstraints,
 		handoffToken uint64,
+		meta inboundTurnMeta,
 	) {
 		sessionID = strings.TrimSpace(sessionID)
 		senderID = strings.TrimSpace(senderID)
@@ -4605,7 +4607,7 @@ func main() {
 				first := combinedPending[0]
 				enqueuePendingTurns(sessionDMQ, combinedPending[1:])
 				log.Printf("dm active-run steering fallback dispatch: session=%s remaining=%d", sessionID, len(combinedPending)-1)
-				go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken)
+				go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken, inboundTurnMeta{})
 				return
 			}
 			if len(pending) == 0 {
@@ -4624,7 +4626,7 @@ func main() {
 					for _, pt := range pending[1:] {
 						sessionDMQ.Enqueue(pt)
 					}
-					go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken)
+					go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken, inboundTurnMeta{})
 					return
 				}
 				var texts []string
@@ -4645,7 +4647,7 @@ func main() {
 				}
 				log.Printf("dm queue drain: session=%s items=%d mode=%s", sessionID, len(pending), mode)
 				latest := pending[len(pending)-1]
-				go runInboundTurn(ctx, sessionID, latest.SenderID, combined, latestEventID, latestCreatedAt, replyFn, latest.AgentID, turnToolConstraints{ToolProfile: latest.ToolProfile, EnabledTools: append([]string(nil), latest.EnabledTools...)}, nextHandoffToken)
+				go runInboundTurn(ctx, sessionID, latest.SenderID, combined, latestEventID, latestCreatedAt, replyFn, latest.AgentID, turnToolConstraints{ToolProfile: latest.ToolProfile, EnabledTools: append([]string(nil), latest.EnabledTools...)}, nextHandoffToken, inboundTurnMeta{})
 				return
 			}
 
@@ -4655,13 +4657,13 @@ func main() {
 				for _, pt := range pending[1:] {
 					sessionDMQ.Enqueue(pt)
 				}
-				go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken)
+				go runInboundTurn(ctx, sessionID, first.SenderID, first.Text, first.EventID, pendingTurnCreatedAt(first), replyFn, first.AgentID, turnToolConstraints{ToolProfile: first.ToolProfile, EnabledTools: append([]string(nil), first.EnabledTools...)}, nextHandoffToken, inboundTurnMeta{})
 				return
 			}
 
 			// Steer/interrupt fallback after drain: run newest only.
 			latest := pending[len(pending)-1]
-			go runInboundTurn(ctx, sessionID, latest.SenderID, latest.Text, latest.EventID, pendingTurnCreatedAt(latest), replyFn, latest.AgentID, turnToolConstraints{ToolProfile: latest.ToolProfile, EnabledTools: append([]string(nil), latest.EnabledTools...)}, nextHandoffToken)
+			go runInboundTurn(ctx, sessionID, latest.SenderID, latest.Text, latest.EventID, pendingTurnCreatedAt(latest), replyFn, latest.AgentID, turnToolConstraints{ToolProfile: latest.ToolProfile, EnabledTools: append([]string(nil), latest.EnabledTools...)}, nextHandoffToken, inboundTurnMeta{})
 		}()
 
 		defer releaseTurnSlot()
@@ -4850,6 +4852,11 @@ func main() {
 			} else {
 				log.Printf("context engine assemble session=%s err=%v", sessionID, asmErr)
 			}
+		}
+
+		// Inject Nostr message metadata block (if available).
+		if meta.renderedBlock != "" {
+			turnContext = joinPromptSections(turnContext, meta.renderedBlock)
 		}
 
 		// Refresh routed agent only for normal session-routed turns.
@@ -5335,13 +5342,14 @@ func main() {
 		fromPubKey, combinedText, eventID string,
 		createdAt int64,
 		replyFn func(context.Context, string) error,
+		meta inboundTurnMeta,
 	) {
-		runInboundTurn(ctx, fromPubKey, fromPubKey, combinedText, eventID, createdAt, replyFn, "", turnToolConstraints{}, 0)
+		runInboundTurn(ctx, fromPubKey, fromPubKey, combinedText, eventID, createdAt, replyFn, "", turnToolConstraints{}, 0, meta)
 	}
 
 	// Wire dmRunAgentTurn into the watch delivery closure.
-	dmRunAgentTurnRef = func(ctx context.Context, sessionID, senderID, text, eventID string, createdAt int64, replyFn func(context.Context, string) error, overrideAgentID string, constraints turnToolConstraints) {
-		runInboundTurn(ctx, sessionID, senderID, text, eventID, createdAt, replyFn, overrideAgentID, constraints, 0)
+	dmRunAgentTurnRef = func(ctx context.Context, sessionID, senderID, text, eventID string, createdAt int64, replyFn func(context.Context, string) error, overrideAgentID string, constraints turnToolConstraints, meta inboundTurnMeta) {
+		runInboundTurn(ctx, sessionID, senderID, text, eventID, createdAt, replyFn, overrideAgentID, constraints, 0, meta)
 	}
 
 	// Restore persisted watch subscriptions from the state store.
@@ -5391,7 +5399,7 @@ func main() {
 			if replyFn == nil {
 				return
 			}
-			dmRunAgentTurn(ctx, pubkey, combined, ev.ID, ev.CreatedAt, replyFn)
+			dmRunAgentTurn(ctx, pubkey, combined, ev.ID, ev.CreatedAt, replyFn, inboundTurnMeta{})
 		})
 		defer dmDebouncer.FlushAll()
 	}
@@ -5603,7 +5611,7 @@ func main() {
 		// ─────────────────────────────────────────────────────────────────
 
 		// Direct (non-debounced) DM turn execution via shared helper.
-		dmRunAgentTurn(ctx, msg.FromPubKey, msg.Text, msg.EventID, msg.CreatedAt, turnReply)
+		dmRunAgentTurn(ctx, msg.FromPubKey, msg.Text, msg.EventID, msg.CreatedAt, turnReply, inboundTurnMeta{renderedBlock: renderInboundBlock(msg, pubkey)})
 		log.Printf("dm accepted from=%s relay=%s event=%s text=%q", msg.FromPubKey, msg.RelayURL, msg.EventID, msg.Text)
 		return nil
 	}

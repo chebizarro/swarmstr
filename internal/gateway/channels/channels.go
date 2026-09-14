@@ -18,6 +18,7 @@ import (
 	"fiatjaf.com/nostr/nip29"
 
 	metricspkg "metiq/internal/metrics"
+	nostrmeta "metiq/internal/nostr/metadata"
 	okpublish "metiq/internal/nostr/publish"
 	nostruntime "metiq/internal/nostr/runtime"
 )
@@ -66,6 +67,14 @@ type InboundMessage struct {
 	// which triggers bounded redispatch. Nil for channels without seen-gating;
 	// callers must nil-check. It should be called exactly once per dispatch.
 	Settle func(deliveredOK bool)
+
+	// Tags carries the raw wire tags for nostrmeta normalization. Optional;
+	// nil for transports without raw tag access at this layer.
+	Tags nostr.Tags
+
+	// Community carries communikey/concord community facts. Optional; nil
+	// for transports that lack a community context.
+	Community *nostrmeta.CommunityFacts
 }
 
 // extractNIP29Meta parses NIP-29 mention/thread facts from a kind:9 event's
@@ -837,6 +846,10 @@ func (c *NIP29GroupChannel) handleReactionEvent(ev nostr.RelayEvent) bool {
 func (c *NIP29GroupChannel) dispatchInbound(ev nostr.Event, evIDHex string) {
 	gad := c.gad
 	senderHex := ev.PubKey.Hex()
+	tags := make(nostr.Tags, len(ev.Tags))
+	for i, t := range ev.Tags {
+		tags[i] = append(nostr.Tag(nil), t...)
+	}
 	c.onMsg(InboundMessage{
 		ChannelID:  c.id,
 		GroupID:    gad.ID,
@@ -846,6 +859,7 @@ func (c *NIP29GroupChannel) dispatchInbound(ev nostr.Event, evIDHex string) {
 		EventID:    evIDHex,
 		CreatedAt:  int64(ev.CreatedAt),
 		Meta:       extractNIP29Meta(ev, evIDHex, c.liveSince),
+		Tags:       tags,
 		Reply: func(ctx context.Context, text string) error {
 			return c.sendReply(ctx, text, evIDHex, senderHex)
 		},
@@ -1151,6 +1165,10 @@ func (c *NIP28PublicChannel) handleEvent(ev nostr.RelayEvent) bool {
 	if ev.Relay != nil {
 		relayURL = ev.Relay.URL
 	}
+	tags := make(nostr.Tags, len(ev.Tags))
+	for i, t := range ev.Tags {
+		tags[i] = append(nostr.Tag(nil), t...)
+	}
 	c.onMsg(InboundMessage{
 		ChannelID:  c.ID(),
 		GroupID:    c.channelID,
@@ -1159,6 +1177,7 @@ func (c *NIP28PublicChannel) handleEvent(ev nostr.RelayEvent) bool {
 		Text:       ev.Content,
 		EventID:    evIDHex,
 		CreatedAt:  int64(ev.CreatedAt),
+		Tags:       tags,
 		Reply: func(replyCtx context.Context, text string) error {
 			return c.Send(replyCtx, text)
 		},

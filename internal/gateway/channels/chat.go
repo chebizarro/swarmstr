@@ -276,6 +276,11 @@ func (c *ChatChannel) subscribeLoop(ctx context.Context) {
 			c.lastEventID = evIDHex
 			c.lastEventMu.Unlock()
 
+			tags := make(nostr.Tags, len(ev.Tags))
+			for i, t := range ev.Tags {
+				tags[i] = append(nostr.Tag(nil), t...)
+			}
+
 			c.onMsg(InboundMessage{
 				ChannelID:  c.id,
 				GroupID:    c.rootTag,
@@ -284,6 +289,7 @@ func (c *ChatChannel) subscribeLoop(ctx context.Context) {
 				Text:       ev.Content,
 				EventID:    evIDHex,
 				CreatedAt:  int64(ev.CreatedAt),
+				Tags:       tags,
 				Reply: func(replyCtx context.Context, replyText string) error {
 					return c.SendWithReply(replyCtx, replyText, evIDHex, senderHex)
 				},

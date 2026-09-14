@@ -10,6 +10,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
+	nostrmeta "metiq/internal/nostr/metadata"
 	nostruntime "metiq/internal/nostr/runtime"
 )
 
@@ -646,6 +647,9 @@ func (c *CommunikeyChannel) handleChatMessage(msg InboundMessage, onMessage func
 			msg.Settle(true)
 		}
 		return
+	}
+	msg.Community = &nostrmeta.CommunityFacts{
+		OwnerPubkey: c.community,
 	}
 	onMessage(msg)
 }
