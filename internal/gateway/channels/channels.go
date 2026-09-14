@@ -75,6 +75,10 @@ type InboundMessage struct {
 	// Community carries communikey/concord community facts. Optional; nil
 	// for transports that lack a community context.
 	Community *nostrmeta.CommunityFacts
+
+	// Protocol identifies the Nostr protocol/lane that delivered this message.
+	// Set by the lane adapter at construction time. Empty when unknown/none.
+	Protocol nostrmeta.Protocol
 }
 
 // extractNIP29Meta parses NIP-29 mention/thread facts from a kind:9 event's
@@ -860,6 +864,7 @@ func (c *NIP29GroupChannel) dispatchInbound(ev nostr.Event, evIDHex string) {
 		CreatedAt:  int64(ev.CreatedAt),
 		Meta:       extractNIP29Meta(ev, evIDHex, c.liveSince),
 		Tags:       tags,
+		Protocol:   nostrmeta.ProtocolNIP29,
 		Reply: func(ctx context.Context, text string) error {
 			return c.sendReply(ctx, text, evIDHex, senderHex)
 		},
@@ -1178,8 +1183,9 @@ func (c *NIP28PublicChannel) handleEvent(ev nostr.RelayEvent) bool {
 		EventID:    evIDHex,
 		CreatedAt:  int64(ev.CreatedAt),
 		Tags:       tags,
-		Reply: func(replyCtx context.Context, text string) error {
-			return c.Send(replyCtx, text)
+		Protocol:   nostrmeta.ProtocolNIP28,
+		Reply: func(ctx context.Context, text string) error {
+			return c.Send(ctx, text)
 		},
 	})
 	return true

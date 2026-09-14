@@ -33,6 +33,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	nostruntime "metiq/internal/nostr/runtime"
+	nostrmeta "metiq/internal/nostr/metadata"
 )
 
 // KindChat is the NIP-C7 chat message kind.
@@ -290,6 +291,7 @@ func (c *ChatChannel) subscribeLoop(ctx context.Context) {
 				EventID:    evIDHex,
 				CreatedAt:  int64(ev.CreatedAt),
 				Tags:       tags,
+				Protocol:   nostrmeta.ProtocolNIP28,
 				Reply: func(replyCtx context.Context, replyText string) error {
 					return c.SendWithReply(replyCtx, replyText, evIDHex, senderHex)
 				},

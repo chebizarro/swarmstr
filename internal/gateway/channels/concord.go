@@ -1084,6 +1084,7 @@ func (c *ConcordChannel) handleChat(re nostr.RelayEvent, target concordTarget) b
 		Epoch:       int64(target.epoch),
 		OwnerPubkey: c.material.Owner,
 	}
+	msg.Protocol = nostrmeta.ProtocolConcord
 	msg.Reply = func(ctx context.Context, text string) error { return c.send(ctx, text, rumor.ID) }
 	c.onMessage(msg)
 	return true

@@ -7,6 +7,53 @@ the swarmstr/metiq agent. Some of this metadata is required to interpret the mes
 (thread/reply refs, subject, sender/recipient roles, group/room identity, attachments, encryption
 envelope facts). openclaw-nostr has an implemented normalized-metadata solution to use as guidance.
 
+## Resolution — Implementation Landed (bead swarmstr-f93d)
+
+The normalized metadata delivery system is implemented across the following surface:
+
+### New package: `internal/nostr/metadata` (nostrmeta)
+- Pure library with caps, validators, typed `Metadata` model, `Build()` (never errors; omit-invalid), `Render()` (~1,200-char ceiling with ordered reduction ladder, `reply_scope` exempt), and `ContextBlock()` producing the fenced JSON section.
+- Tested: validators (hex64, event kind, relay hints, unix seconds, byte size, text normalization/fence-neutralization), thread refs (NIP-10 marked/positional, NIP-22, quote), participants (self/sender exclusion, multi-party detection, cap+omitted), imeta/flat attachments, handling (expiration, content-warning, protected, hashtags, labels), allowlisted payload keys (hostile tag names `system`/`policy` cannot inject keys), fence escape (backtick-neutralization prevents JSON fence breakage), 512-tag ceiling convergence with `truncated: true`, community facts rendering, and omit-when-empty.
+
+### InboundMessage fields (`internal/gateway/channels/channels.go`)
+- `Tags nostr.Tags` — raw wire tags for metadata normalization (all room lanes).
+- `Community *nostrmeta.CommunityFacts` — per-lane community facts (communikey/concord).
+- `Protocol nostrmeta.Protocol` — identifies the Nostr protocol/lane.
+
+### Per-lane population
+- **NIP-29** (`channels.go:864`): `Protocol = ProtocolNIP29`, `Tags` populated.
+- **NIP-28** (`channels.go:1183`): `Protocol = ProtocolNIP28`, `Tags` populated. No longer drops metadata.
+- **Chat (kind:9)** (`chat.go:291`): `Protocol = ProtocolNIP28`, `Tags` populated. No longer drops metadata.
+- **Communikey** (`communikey.go:651`): `Community{OwnerPubkey}` and `Protocol = ProtocolCommunikey` set in `handleChatMessage` before forwarding.
+- **Concord** (`concord.go:1084`): `Community{CommunityID, ChannelID, ChannelName, Epoch, OwnerPubkey}` and `Protocol = ProtocolConcord` set in `handleChat`.
+
+### DM adapter (`cmd/metiqd/nostr_inbound_meta.go`)
+- `renderInboundBlock(InboundDM, botPubkey)` — produces context block for NIP-17/NIP-04 DMs.
+  - Kind:5 (deletion): returns empty string (no injection).
+  - Kind:7 (reaction): minimal — protocol + thread.parent only; participants/attachments/subject/unknown-tags stripped.
+  - Kind:15 (file): full metadata with attachments from imeta/flat tags.
+  - Multi-party NIP-17 (len(participants) > 0): injects `reply_scope: "all_participants"`.
+  - 1:1 NIP-04/NIP-17 (no extra participants): omit-when-empty (zero tokens, zero injection).
+- `renderRoomInboundBlock(InboundMessage, botPubkey)` — produces context block for room lanes; returns empty when `Protocol == ""`.
+
+### Injection seams
+- **DM** (`main.go ~4863`): `runInboundTurn` appends `meta.renderedBlock` via `joinPromptSections` when non-empty. The direct dispatch (non-debounced) site at line 5619 passes `renderInboundBlock(msg, pubkey)`. Queued/watch paths pass the zero value (documented v1 limitation — metadata of the latest message in a merged batch is not projected).
+- **Room** (`main.go ~2315`): `buildAutoJoinTurn` accepts a `metaBlock` string param and appends it via `joinPromptSections`. Called from NIP-29 dispatch (line 2584), NIP-28 handleEvent (line 2820), and chat subscribeLoop (line 2918).
+- **Control-RPC** (`control_rpc_channels.go:268-273`): produces the block via `renderRoomInboundBlock(msg, controlHub.PublicKey())` and assigns it to `agent.Turn.Context`.
+- **Preflight** (`nostr_preflight.go`): unchanged — preflight continues to consume `NostrInboundMeta` for gating; the normalized metadata flows around it.
+
+### V1 limitations (documented, deferred)
+- Queued/steered DM turns lose metadata (merged batch preserves only the latest-event ID/timestamp, not per-message metadata).
+- Communikey `sender_roles` has no analog in the V1 ACL model (binary membership per profile list is not a role system).
+- Reply-chain hydration (relay fetches for ancestor resolution) is deferred.
+- Raw-tags debug entry is deferred (no config flag introduced).
+- Per-message metadata for merged queue batches is deferred.
+- NIP-30 emoji resolution (`resolveCustomEmoji`) is deferred.
+
+### Test coverage
+- Unit tests in `internal/nostr/metadata/metadata_test.go` cover all validators, parsers, caps, ceiling, allowlisted keys, and fence safety.
+- Adapter-level tests in `cmd/metiqd/nostr_inbound_meta_test.go` cover: 1:1 omits, multi-party injects, kind:5 omits, kind:7 minimal, kind:15 attachments, NIP-29 reply thread facts, NIP-28 message, and empty-protocol guard.
+
 ## Symptoms
 - The agent receives only the plaintext body; tag/rumor metadata needed for interpretation is absent
   or lossy.

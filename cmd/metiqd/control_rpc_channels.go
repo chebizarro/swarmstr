@@ -258,6 +258,12 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 						}
 					}
 				}
+				ctxBlock := func() string {
+					if controlHub == nil {
+						return ""
+					}
+					return renderRoomInboundBlock(msg, controlHub.PublicKey())
+				}()
 				turn := agent.Turn{
 					SessionID:           sessionID,
 					UserText:            decision.BodyForAgent,
@@ -265,6 +271,7 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 					Executor:            turnExecutor,
 					ContextWindowTokens: maxContextTokensForAgent(configState.Get(), activeAgentID),
 					HookInvoker:         controlHookInvoker,
+					Context:             ctxBlock,
 				}
 				result, _, turnErr := runTurnWithPlanningContinuation(enabled, turn, func(t agent.Turn) (agent.TurnResult, error) {
 					return filteredRuntime.ProcessTurn(turnCtx, t)

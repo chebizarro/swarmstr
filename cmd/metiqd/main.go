@@ -2283,7 +2283,7 @@ func main() {
 	// for auto-joined channel sessions.  This mirrors the context assembly in
 	// doChannelTurn (defined later) so auto-join channels get the same context
 	// quality as manually-connected channels.
-	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string, turnTools []agent.ToolDefinition, turnExecutor agent.ToolExecutor) preparedAgentRunTurn {
+	buildAutoJoinTurn := func(turnCtx context.Context, sessionID, text string, turnTools []agent.ToolDefinition, turnExecutor agent.ToolExecutor, metaBlock string) preparedAgentRunTurn {
 		scopeCtx := resolveMemoryScopeContext(turnCtx, configState.Get(), docsRepo, sessionStore, sessionID, sessionRouter.Get(sessionID), "")
 		turnCtx = contextWithMemoryScope(turnCtx, scopeCtx)
 		turnContext, surfacedFileMemory, memoryRecallSample := buildDynamicMemoryRecallContext(turnCtx, memoryIndex, scopeCtx, sessionID, text, workspaceDirForAgent(configState.Get(), sessionRouter.Get(sessionID)), sessionStore, 0)
@@ -2309,6 +2309,11 @@ func main() {
 					turnHistory = append(turnHistory, conversationMessageFromContext(m))
 				}
 			}
+		}
+
+		// Inject Nostr message metadata block (if available).
+		if metaBlock != "" {
+			turnContext = joinPromptSections(turnContext, metaBlock)
 		}
 		promptEnvelope := buildTurnPromptEnvelope(turnPromptBuilderParams{
 			Config:             configState.Get(),
@@ -2579,7 +2584,7 @@ func main() {
 					turnCtx, abortCancel := context.WithTimeout(turnCtx, nostrInboundDispatchAbort)
 					defer abortCancel()
 					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-					prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor)
+					prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor, renderRoomInboundBlock(msg, pubkey))
 					enabled := roomPolicy.PlanningOnlyContinuation
 					if !enabled {
 						for _, ac := range configState.Get().Agents {
@@ -2815,7 +2820,7 @@ func main() {
 					go func() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
+						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor, renderRoomInboundBlock(msg, pubkey))
 						roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
 						enabled := roomPolicy.PlanningOnlyContinuation
 						if !enabled {
@@ -2913,7 +2918,7 @@ func main() {
 					go func() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor)
+						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor, renderRoomInboundBlock(msg, pubkey))
 						roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
 						enabled := roomPolicy.PlanningOnlyContinuation
 						if !enabled {

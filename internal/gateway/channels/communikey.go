@@ -651,6 +651,7 @@ func (c *CommunikeyChannel) handleChatMessage(msg InboundMessage, onMessage func
 	msg.Community = &nostrmeta.CommunityFacts{
 		OwnerPubkey: c.community,
 	}
+	msg.Protocol = nostrmeta.ProtocolCommunikey
 	onMessage(msg)
 }
 

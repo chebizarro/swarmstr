@@ -1,6 +1,7 @@
 package main
 
 import (
+	"metiq/internal/gateway/channels"
 	nostr "fiatjaf.com/nostr"
 
 	nostrmeta "metiq/internal/nostr/metadata"
@@ -66,4 +67,34 @@ func protocolFromScheme(scheme string) nostrmeta.Protocol {
 	default:
 		return nostrmeta.ProtocolNIP17
 	}
+}
+// renderRoomInboundBlock builds a nostrmeta context block from a room
+// InboundMessage. Returns empty string when nothing survives normalization.
+func renderRoomInboundBlock(msg channels.InboundMessage, botPubkey string) string {
+	if msg.Protocol == "" {
+		return ""
+	}
+
+	tags := make([][]string, len(msg.Tags))
+	for i, t := range msg.Tags {
+		tags[i] = []string(t)
+	}
+
+	input := nostrmeta.Input{
+		Protocol:     msg.Protocol,
+		Tags:         tags,
+		Community:    msg.Community,
+		Content:      msg.Text,
+		SelfPubkey:   botPubkey,
+		SenderPubkey: msg.FromPubKey,
+	}
+
+	meta := nostrmeta.Build(input)
+
+	payload, ok := nostrmeta.Render(meta, nostrmeta.RenderOptions{})
+	if !ok {
+		return ""
+	}
+
+	return nostrmeta.ContextBlock(payload)
 }
