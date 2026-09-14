@@ -29,6 +29,7 @@ import (
 	"metiq/internal/memory"
 	"metiq/internal/nostr/dvm"
 	"metiq/internal/nostr/nip38"
+	"metiq/internal/nostr/refresolve"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
 	pluginmanager "metiq/internal/plugins/manager"
@@ -50,8 +51,9 @@ type daemonServices struct {
 	session        sessionServices
 	handlers       handlerServices
 	runtimeConfig  *runtimeConfigStore
-	docsRepo       *state.DocsRepository
-	transcriptRepo *state.TranscriptRepository
+	docsRepo          *state.DocsRepository
+	transcriptRepo    *state.TranscriptRepository
+	nostrRefResolver  *refresolve.Chained
 	tasks          taskRuntimeServices
 	pubKeyHex      string
 	restartCh      chan int

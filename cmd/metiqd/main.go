@@ -59,6 +59,7 @@ import (
 	"metiq/internal/nostr/dvm"
 	"metiq/internal/nostr/nip38"
 	"metiq/internal/nostr/nip51"
+	"metiq/internal/nostr/refresolve"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
 	"metiq/internal/permissions"
@@ -2584,7 +2585,10 @@ func main() {
 					turnCtx, abortCancel := context.WithTimeout(turnCtx, nostrInboundDispatchAbort)
 					defer abortCancel()
 					filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-					prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor, renderRoomInboundBlock(msg, pubkey))
+					refCfg := resolveReferenceContextConfig(configState.Get())
+					chained := controlServices.nostrRefResolver
+					localOnly := &refresolve.Chained{Local: refresolve.NewLocalResolver(transcriptRepo)}
+					prepared := buildAutoJoinTurn(turnCtx, sessionID, decision.BodyForAgent, turnTools, turnExecutor, buildRoomTurnBlock(turnCtx, msg, pubkey, refCfg, chained, localOnly))
 					enabled := roomPolicy.PlanningOnlyContinuation
 					if !enabled {
 						for _, ac := range configState.Get().Agents {
@@ -2602,9 +2606,7 @@ func main() {
 						return
 					}
 					commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
-					// Persist/ingest turn history, tool traces, session-memory
-					// observation, and task-state — equivalent to the DM path so
-					// auto-joined channel turns are not lost (swarmstr-nibw).
+					persistInboundRoom(ctx, transcriptRepo, sessionID, msg)
 					persistPostTurn(autoJoinPostTurnSvc, postTurnPersistenceParams{
 						Ctx:       ctx,
 						Config:    configState.Get(),
@@ -2820,7 +2822,10 @@ func main() {
 					go func() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor, renderRoomInboundBlock(msg, pubkey))
+						refCfg := resolveReferenceContextConfig(configState.Get())
+						chained := controlServices.nostrRefResolver
+						localOnly := &refresolve.Chained{Local: refresolve.NewLocalResolver(transcriptRepo)}
+						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor, buildRoomTurnBlock(turnCtx, msg, pubkey, refCfg, chained, localOnly))
 						roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
 						enabled := roomPolicy.PlanningOnlyContinuation
 						if !enabled {
@@ -2839,9 +2844,7 @@ func main() {
 							return
 						}
 						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
-						// Persist/ingest turn history, tool traces, session-memory
-						// observation, and task-state — equivalent to the DM path so
-						// auto-joined channel turns are not lost (swarmstr-nibw).
+						persistInboundRoom(ctx, transcriptRepo, sessionID, msg)
 						persistPostTurn(autoJoinPostTurnSvc, postTurnPersistenceParams{
 							Ctx:       ctx,
 							Config:    configState.Get(),
@@ -2918,7 +2921,10 @@ func main() {
 					go func() {
 						defer release()
 						filteredRuntime, turnExecutor, turnTools := resolveAgentTurnToolSurface(turnCtx, configState.Get(), docsRepo, sessionID, activeAgentID, rt, tools, turnToolConstraints{})
-						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor, renderRoomInboundBlock(msg, pubkey))
+						refCfg := resolveReferenceContextConfig(configState.Get())
+						chained := controlServices.nostrRefResolver
+						localOnly := &refresolve.Chained{Local: refresolve.NewLocalResolver(transcriptRepo)}
+						prepared := buildAutoJoinTurn(turnCtx, sessionID, msg.Text, turnTools, turnExecutor, buildRoomTurnBlock(turnCtx, msg, pubkey, refCfg, chained, localOnly))
 						roomPolicy := channels.ResolveNostrRoomPolicy(localChanCfg.Config)
 						enabled := roomPolicy.PlanningOnlyContinuation
 						if !enabled {
@@ -2937,9 +2943,7 @@ func main() {
 							return
 						}
 						commitMemoryRecallArtifacts(sessionStore, sessionID, prepared.Turn.TurnID, prepared.MemoryRecallSample, prepared.SurfacedFileMemory)
-						// Persist/ingest turn history, tool traces, session-memory
-						// observation, and task-state — equivalent to the DM path so
-						// auto-joined channel turns are not lost (swarmstr-nibw).
+						persistInboundRoom(ctx, transcriptRepo, sessionID, msg)
 						persistPostTurn(autoJoinPostTurnSvc, postTurnPersistenceParams{
 							Ctx:       ctx,
 							Config:    configState.Get(),
@@ -5404,7 +5408,20 @@ func main() {
 			if replyFn == nil {
 				return
 			}
-			dmRunAgentTurn(ctx, pubkey, combined, ev.ID, ev.CreatedAt, replyFn, inboundTurnMeta{})
+			// Debounce flush: recompute the metadata/reference block from the
+			// stored InboundDM so the debounced turn still carries context.
+			deferredMeta := inboundTurnMeta{}
+			if ev.ID != "" {
+				if stored, ok := dmInboundMessages.Load(ev.ID); ok {
+					if inbound, ok := stored.(nostruntime.InboundDM); ok {
+						refCfg := resolveReferenceContextConfig(configState.Get())
+						chained := controlServices.nostrRefResolver
+						localOnly := &refresolve.Chained{Local: refresolve.NewLocalResolver(transcriptRepo)}
+						deferredMeta = inboundTurnMeta{renderedBlock: buildInboundTurnBlock(ctx, inbound, pubkey, refCfg, chained, localOnly)}
+					}
+				}
+			}
+			dmRunAgentTurn(ctx, pubkey, combined, ev.ID, ev.CreatedAt, replyFn, deferredMeta)
 		})
 		defer dmDebouncer.FlushAll()
 	}
@@ -5616,7 +5633,10 @@ func main() {
 		// ─────────────────────────────────────────────────────────────────
 
 		// Direct (non-debounced) DM turn execution via shared helper.
-		dmRunAgentTurn(ctx, msg.FromPubKey, msg.Text, msg.EventID, msg.CreatedAt, turnReply, inboundTurnMeta{renderedBlock: renderInboundBlock(msg, pubkey)})
+		refCfg := resolveReferenceContextConfig(configState.Get())
+		chained := controlServices.nostrRefResolver
+		localOnly := &refresolve.Chained{Local: refresolve.NewLocalResolver(transcriptRepo)}
+		dmRunAgentTurn(ctx, msg.FromPubKey, msg.Text, msg.EventID, msg.CreatedAt, turnReply, inboundTurnMeta{renderedBlock: buildInboundTurnBlock(ctx, msg, pubkey, refCfg, chained, localOnly)})
 		log.Printf("dm accepted from=%s relay=%s event=%s text=%q", msg.FromPubKey, msg.RelayURL, msg.EventID, msg.Text)
 		return nil
 	}
@@ -5731,6 +5751,10 @@ func main() {
 	// ── Initialize daemonServices ──────────────────────────────────────────────
 	// Consolidates commonly-accessed globals into a dependency struct so that
 	// extracted handler files can receive it instead of reading globals directly.
+	nostrRefResolver := &refresolve.Chained{
+		Local: refresolve.NewLocalResolver(transcriptRepo),
+		Relay: refresolve.NewRelayResolver(controlHub, nil),
+	}
 	controlServices = &daemonServices{
 		relay: relayPolicyServices{
 			nip17Bus:            controlNIP17Bus,
@@ -5800,8 +5824,9 @@ func main() {
 			cronExecutorMu:     &controlCronExecutorMu,
 		},
 		runtimeConfig:  controlRuntimeConfig,
-		docsRepo:       docsRepo,
-		transcriptRepo: transcriptRepo,
+		docsRepo:          docsRepo,
+		transcriptRepo:    transcriptRepo,
+		nostrRefResolver:  nostrRefResolver,
 		tasks: taskRuntimeServices{
 			store:         taskStore,
 			ledger:        taskLedger,

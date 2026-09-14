@@ -13,6 +13,7 @@ import (
 	gatewayws "metiq/internal/gateway/ws"
 	metricspkg "metiq/internal/metrics"
 	nostruntime "metiq/internal/nostr/runtime"
+	"metiq/internal/nostr/refresolve"
 	pluginhooks "metiq/internal/plugins/hooks"
 	"metiq/internal/store/state"
 )
@@ -262,7 +263,10 @@ func (h controlRPCHandler) handleChannelRPC(ctx context.Context, in nostruntime.
 					if controlHub == nil {
 						return ""
 					}
-					return renderRoomInboundBlock(msg, controlHub.PublicKey())
+					refCfg := resolveReferenceContextConfig(configState.Get())
+					chained := controlServices.nostrRefResolver
+					localOnly := &refresolve.Chained{Local: refresolve.NewLocalResolver(controlServices.transcriptRepo)}
+					return buildRoomTurnBlock(turnCtx, msg, controlHub.PublicKey(), refCfg, chained, localOnly)
 				}()
 				turn := agent.Turn{
 					SessionID:           sessionID,

@@ -172,3 +172,35 @@ structured-context entries on `agent.Turn`, NIP-30 emoji resolution.
   agent prompt; test this invariant.
 - When a lane extracts facts for gating/authz, thread them to (or at least retain them for) the agent turn in
   the same change, rather than leaving them channel-local.
+### Follow-up: Reply-reference hydration landed (bead swarmstr-1fo8)
+
+A separate investigation and implementation tracked in `oracle-plan-2026-09-13-201008-nostr-message-metada-b714.md` added
+reply/reference context hydration via `internal/nostr/refresolve`. The block "## Referenced Nostr messages (untrusted)"
+appends after the metadata block at all three injection seams (DM, room, Control-RPC) when at least one referenced
+event resolves.
+
+Delivered surface:
+- `internal/nostr/refresolve/` — core interface, `Chained{Local,Relay}` resolver, lane-policy helper (`ResolverFor`),
+  renderer producing the referenced-messages block.
+- `state.TranscriptRepository.GetEntryByNostrEventID` — pointer-index lookup from `nostr_event_id` to
+  `{session_id, entry_id}`, written at `PutEntry` time when `meta["nostr_event_id"]` is present.
+- `cmd/metiqd/nostr_ref_block.go` — per-turn helper `renderReferencedBlock(ctx, resolver, thread, selfEventID, cfg)`,
+  lifecycle: `SelectRefs` (priority, dedupe, self-skip, cap at 3) → resolver → repost-inner-parse → `RenderReferencedBlock`.
+- `cmd/metiqd/nostr_inbound_meta.go` — `buildInboundTurnBlock` and `buildRoomTurnBlock` produce the concatenated
+  (metadata + ref) block; `renderResolvedRefBlock` selects the resolver per protocol+config.
+- `Extra["nostr"]["reference_context"]` config with `enabled`, `max_refs`, `max_block_chars`, `relay_fetch`.
+
+V1 constraints:
+- Depth-1 only (no recursive chain walking; a ref's own refs are not resolved).
+- Concord relay hydration deferred (plane-encrypted content is not decryptable at the refresolve layer).
+- Media/attachment hydration of referenced messages deferred.
+- Repost-as-inbound-turn handling deferred (no lane delivers kind 6/16 as turns today).
+- Pointer index is process-wide across sessions (acceptable in single-tenant model).
+
+Test coverage:
+- Unit tests in `internal/nostr/refresolve/` (44 tests): candidate order, dedupe, self-skip, cap, local hit/miss/tombstone,
+  relay batched filter, signature/CheckID rejection, deadline partial results, negative/positive cache, render ceilings,
+  role label differentiation, empty/default Role, hostile body fence safety, distinct labels via real resolver output.
+- Integration tests in `cmd/metiqd/nostr_ref_block_test.go` (15 tests): NIP-17 zero-fetch counting assertion,
+  NIP-29 chained fetch, config disable/max_refs=0 skip, self-skip, repost parsing (full JSON + bounded scan),
+  config parsing defaults/overrides, room block concatenation, disabled-does-not-crash.

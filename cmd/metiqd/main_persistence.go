@@ -15,6 +15,7 @@ import (
 	"metiq/internal/agent"
 	"metiq/internal/autoreply"
 	ctxengine "metiq/internal/context"
+	"metiq/internal/gateway/channels"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/sandbox"
 	"metiq/internal/store/state"
@@ -66,6 +67,35 @@ func persistInbound(
 		Meta:      meta,
 	})
 	return err
+}
+
+func persistInboundRoom(
+	ctx context.Context,
+	transcriptRepo *state.TranscriptRepository,
+	sessionID string,
+	msg channels.InboundMessage,
+) {
+	if transcriptRepo == nil {
+		return
+	}
+	meta := map[string]any{
+		"nostr_event_id":  msg.EventID,
+		"nostr_pubkey":    msg.FromPubKey,
+		"nostr_transport": string(msg.Protocol),
+		"nostr_relays":    []string{msg.Relay},
+		"relay":           msg.Relay,
+	}
+	if _, err := transcriptRepo.PutEntry(ctx, state.TranscriptEntryDoc{
+		Version:   1,
+		SessionID: sessionID,
+		EntryID:   msg.EventID,
+		Role:      "user",
+		Text:      msg.Text,
+		Unix:      msg.CreatedAt,
+		Meta:      meta,
+	}); err != nil {
+		log.Printf("persist inbound room entry failed session=%s event=%s err=%v", sessionID, msg.EventID, err)
+	}
 }
 
 func persistAssistant(

@@ -23,6 +23,11 @@ const transcriptSessionPageLimit = 1024
 
 var ErrTranscriptCheckpointNotFound = errors.New("transcript checkpoint not found")
 
+// nostrEventRefDTag returns the deterministic DTag for the event ID pointer record.
+func nostrEventRefDTag(eventID string) string {
+	return fmt.Sprintf("metiq:txref:%s", eventID)
+}
+
 type TranscriptPage struct {
 	Entries []TranscriptEntryDoc
 	HasMore bool
@@ -46,6 +51,11 @@ func (r *TranscriptRepository) BindSessionStore(store *SessionStore) *Transcript
 }
 
 func (r *TranscriptRepository) PutEntry(ctx context.Context, entry TranscriptEntryDoc) (Event, error) {
+	if eventID, ok := entry.Meta["nostr_event_id"].(string); ok && eventID != "" {
+		if err := r.putNostrEventRef(ctx, eventID, entry.SessionID, entry.EntryID); err != nil {
+			return Event{}, err
+		}
+	}
 	if r.sessionStore == nil {
 		return r.putEntryRaw(ctx, entry)
 	}
@@ -355,6 +365,51 @@ func (r *TranscriptRepository) DeleteEntry(ctx context.Context, sessionID, entry
 // mutated, then written back) so the overwrite is total, not a partial patch.
 func (r *TranscriptRepository) ReplaceEntry(ctx context.Context, entry TranscriptEntryDoc) (Event, error) {
 	return r.putEntryRaw(ctx, entry)
+}
+
+// putNostrEventRef writes a small pointer record mapping a Nostr event ID to
+// its transcript entry location. The record is a replaceable event at DTag
+// metiq:txref:<eventID> containing {"session_id", "entry_id"}.
+func (r *TranscriptRepository) putNostrEventRef(ctx context.Context, eventID, sessionID, entryID string) error {
+	content := fmt.Sprintf(`{"session_id":%q,"entry_id":%q}`, sessionID, entryID)
+	tags := [][]string{
+		{"type", "nostr_event_ref"},
+		{"event", eventID},
+		{"session", protectedTagValue(sessionID)},
+		{"entry", entryID},
+	}
+	_, err := r.store.PutReplaceable(ctx, Address{
+		Kind:   events.KindAppData,
+		PubKey: r.author,
+		DTag:   nostrEventRefDTag(eventID),
+	}, content, tags)
+	return err
+}
+
+// GetEntryByNostrEventID looks up a transcript entry by its Nostr event ID using
+// the pointer index. Returns ErrNotFound when the event ID has no pointer record
+// or the target entry has been deleted.
+func (r *TranscriptRepository) GetEntryByNostrEventID(ctx context.Context, eventID string) (TranscriptEntryDoc, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return TranscriptEntryDoc{}, fmt.Errorf("event_id is required")
+	}
+	refEvt, err := r.store.GetLatestReplaceable(ctx, Address{
+		Kind:   events.KindAppData,
+		PubKey: r.author,
+		DTag:   nostrEventRefDTag(eventID),
+	})
+	if err != nil {
+		return TranscriptEntryDoc{}, err
+	}
+	var ref struct {
+		SessionID string `json:"session_id"`
+		EntryID   string `json:"entry_id"`
+	}
+	if err := decodeEnvelopePayload(refEvt.Content, &ref, r.codec); err != nil {
+		return TranscriptEntryDoc{}, err
+	}
+	return r.GetEntry(ctx, ref.SessionID, ref.EntryID)
 }
 
 func (r *TranscriptRepository) decodeTranscriptEvent(evt Event) (TranscriptEntryDoc, error) {
