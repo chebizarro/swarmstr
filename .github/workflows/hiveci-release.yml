@@ -1,0 +1,180 @@
+name: HiveCI Metiq Release
+
+# Repository-native HiveCI release workflow for the Metiq runtime image.
+#
+# HiveCI runs this standard GitHub Actions workflow on a Loom worker via
+# nektos/act. The release branch is explicitly `master`; it is never inferred.
+# One push to master produces exactly one immutable Harbor image digest plus
+# the SBOM descriptor that Bahia's HiveCI ReleaseIngestor verifies.
+#
+# Signed lineage boundary (do not move signing into CI):
+#   - grasp-gitea/Bahia publishes kind-5401 WorkflowRun carrying the NIP-34
+#     repository address, the full commit, the master branch, and this
+#     workflow path.
+#   - the Loom worker executes this workflow and publishes the ordinary
+#     kind-5402 WorkflowResult.
+#   - the bridge/Signet signer signs the terminal RELEASE kind-5402 that Bahia
+#     ingests and registers as one shared runtime release.
+# CI holds no Nostr signing authority and never emits a kind-25910 deployment
+# intent.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hiveci-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_BRANCH: master
+  WORKFLOW_PATH: .github/workflows/hiveci-release.yml
+  HARBOR_REGISTRY: ${{ vars.HARBOR_REGISTRY }}
+  IMAGE_NAME: metiq
+
+jobs:
+  release:
+    name: Build immutable Metiq release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Assert explicit release branch
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_NAME}" != "${RELEASE_BRANCH}" ]; then
+            echo "release workflow only runs on ${RELEASE_BRANCH}, got ${GITHUB_REF_NAME}" >&2
+            exit 2
+          fi
+          if [ -z "${HARBOR_REGISTRY}" ]; then
+            echo "HARBOR_REGISTRY repository variable is required" >&2
+            exit 2
+          fi
+
+      - name: Checkout full source revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Capture immutable source revision
+        id: source
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          commit="$(git rev-parse HEAD)"
+          case "$commit" in
+            ""|*[!0-9a-f]*) echo "unexpected commit: $commit" >&2; exit 2 ;;
+          esac
+          if [ "${#commit}" -ne 40 ]; then
+            echo "release commit must be a full 40-hex revision, got ${commit}" >&2
+            exit 2
+          fi
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build and push immutable image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          pull: true
+          push: true
+          tags: ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.source.outputs.commit }}
+          build-args: |
+            VERSION=${{ steps.source.outputs.commit }}
+            COMMIT=${{ steps.source.outputs.commit }}
+            METIQ_VARIANT=default
+          provenance: true
+          sbom: true
+
+      - name: Resolve immutable image digest
+        id: digest
+        run: |
+          set -euo pipefail
+          digest="${{ steps.build.outputs.digest }}"
+          case "$digest" in
+            sha256:????????????????????????????????????????????????????????????????) ;;
+            *) echo "missing immutable image digest: ${digest}" >&2; exit 2 ;;
+          esac
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Emit Loom artifact contract
+        env:
+          HARBOR_IMAGE_REPO: ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE_TAG: sha-${{ steps.source.outputs.commit }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          printf 'BAHIA_ARTIFACT={"image_repo":"%s","image_tag":"%s","image_digest":"%s"}\n' \
+            "$HARBOR_IMAGE_REPO" "$IMAGE_TAG" "$IMAGE_DIGEST"
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.digest.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: metiq-release-sbom
+          upload-artifact: false
+
+      - name: Generate release inputs for the signed 5401/5402 lineage
+        env:
+          REPO_ADDRESS: ${{ vars.HIVECI_REPO_ADDRESS }}
+          PUBLISHER: ${{ vars.HIVECI_PUBLISHER }}
+          HARBOR_IMAGE_REPO: ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          export SBOM_DIGEST="sha256:$(sha256sum sbom.cdx.json | awk '{print $1}')"
+          export WORKFLOW_DIGEST="sha256:$(sha256sum "${WORKFLOW_PATH}" | awk '{print $1}')"
+          python3 - <<'PY'
+          import json, os
+          inputs = {
+              "schema": "hiveci.release-provenance.v1",
+              "result_type": "RELEASE",
+              "repo_address": os.environ["REPO_ADDRESS"],
+              "branch": os.environ["RELEASE_BRANCH"],
+              "commit": os.environ["SOURCE_COMMIT"],
+              "workflow": os.environ["WORKFLOW_PATH"],
+              "workflow_digest": os.environ["WORKFLOW_DIGEST"],
+              "image_repo": os.environ["HARBOR_IMAGE_REPO"],
+              "image_digest": os.environ["IMAGE_DIGEST"],
+              "image_tag": "",
+              "sbom": {"repository": os.environ["HARBOR_IMAGE_REPO"], "digest": os.environ["SBOM_DIGEST"]},
+              "publisher": os.environ.get("PUBLISHER", ""),
+          }
+          with open("release-inputs.json", "w", encoding="utf-8") as handle:
+              json.dump(inputs, handle, indent=2, sort_keys=True)
+          PY
+          echo "### Immutable Metiq release" >> "$GITHUB_STEP_SUMMARY"
+          echo "- commit: ${SOURCE_COMMIT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- image: ${HARBOR_IMAGE_REPO}@${IMAGE_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- sbom: ${SBOM_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: metiq-release-${{ steps.source.outputs.commit }}
+          path: |
+            sbom.cdx.json
+            release-inputs.json
+          if-no-files-found: error
