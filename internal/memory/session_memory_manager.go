@@ -328,9 +328,18 @@ func (m *SessionMemoryManager) extractOnce(ctx context.Context, sessionID, works
 	if err != nil {
 		return out, err
 	}
-	path, err = WriteSessionMemoryFileWithLimit(workspaceDir, sessionID, response.Document, cfg.MaxOutputBytes)
-	if err != nil {
-		return out, err
+	writtenPath, writeErr := WriteSessionMemoryFileWithLimit(workspaceDir, sessionID, response.Document, cfg.MaxOutputBytes)
+	if writeErr != nil {
+		if IsSessionMemoryFormatError(writeErr) {
+			// The model returned a document that does not match the managed
+			// format. Keep the existing document and advance progress rather
+			// than failing extraction and retrying the malformed output.
+			m.log("session memory update rejected; keeping existing document session=%s err=%v", sessionID, writeErr)
+		} else {
+			return out, writeErr
+		}
+	} else {
+		path = writtenPath
 	}
 	m.stateMu.Lock()
 	latestProgress, latestEntry := m.loadProgress(sessionID)

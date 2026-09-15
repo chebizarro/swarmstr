@@ -300,6 +300,27 @@ func WriteSessionMemoryFileWithLimit(workspaceDir, sessionID, content string, ma
 	return path, nil
 }
 
+// SessionMemoryFormatError reports that a candidate session-memory document did
+// not match the managed format. Callers can keep the existing document instead
+// of failing the whole extraction.
+type SessionMemoryFormatError struct{ Err error }
+
+func (e *SessionMemoryFormatError) Error() string {
+	if e == nil || e.Err == nil {
+		return "session memory document format error"
+	}
+	return e.Err.Error()
+}
+
+func (e *SessionMemoryFormatError) Unwrap() error { return e.Err }
+
+// IsSessionMemoryFormatError reports whether err was caused by a session-memory
+// document failing managed-format validation (as opposed to an I/O failure).
+func IsSessionMemoryFormatError(err error) bool {
+	var formatErr *SessionMemoryFormatError
+	return errors.As(err, &formatErr)
+}
+
 func ValidateSessionMemoryDocument(raw string, maxBytes int) (string, error) {
 	normalized := normalizeSessionMemoryDocument(raw)
 	if normalized == "" {
@@ -313,22 +334,39 @@ func ValidateSessionMemoryDocument(raw string, maxBytes int) (string, error) {
 	}
 	lines := strings.Split(normalized, "\n")
 	lineIdx := 0
+	repaired := make([]string, 0, len(lines))
 	for _, section := range sessionMemorySections {
 		for lineIdx < len(lines) && strings.TrimSpace(lines[lineIdx]) == "" {
 			lineIdx++
 		}
-		if lineIdx >= len(lines) || lines[lineIdx] != section.Header {
+		if lineIdx >= len(lines) || strings.TrimSpace(lines[lineIdx]) != section.Header {
 			return "", fmt.Errorf("expected header %q", section.Header)
 		}
 		lineIdx++
-		if lineIdx >= len(lines) || lines[lineIdx] != section.Description {
-			return "", fmt.Errorf("expected description for %q", section.Header)
+		for lineIdx < len(lines) && strings.TrimSpace(lines[lineIdx]) == "" {
+			lineIdx++
 		}
-		lineIdx++
+		// The model is asked to preserve each italic description line, but it
+		// may reword, drop, or wrap it (notably for "# Key results", whose
+		// description reads like a placeholder). Consume any model-supplied
+		// description and re-emit the canonical line so the managed document
+		// stays in format instead of failing the whole extraction.
+		if lineIdx < len(lines) && isSessionMemoryDescriptionLine(lines[lineIdx]) {
+			lineIdx++
+			for lineIdx < len(lines) {
+				prev := strings.TrimSpace(lines[lineIdx-1])
+				if strings.HasSuffix(prev, "_") || strings.HasPrefix(strings.TrimSpace(lines[lineIdx]), "# ") {
+					break
+				}
+				lineIdx++
+			}
+		}
+		repaired = append(repaired, section.Header, section.Description)
 		for lineIdx < len(lines) {
-			if strings.HasPrefix(lines[lineIdx], "# ") {
+			if strings.HasPrefix(strings.TrimSpace(lines[lineIdx]), "# ") {
 				break
 			}
+			repaired = append(repaired, lines[lineIdx])
 			lineIdx++
 		}
 	}
@@ -338,7 +376,18 @@ func ValidateSessionMemoryDocument(raw string, maxBytes int) (string, error) {
 		}
 		lineIdx++
 	}
-	return normalized, nil
+	out := strings.TrimSpace(strings.Join(repaired, "\n"))
+	if len(out) > maxBytes {
+		return "", fmt.Errorf("session memory document exceeds %d bytes", maxBytes)
+	}
+	return out, nil
+}
+
+// isSessionMemoryDescriptionLine reports whether a line is an italic managed
+// description line such as "_Some description_".
+func isSessionMemoryDescriptionLine(line string) bool {
+	line = strings.TrimSpace(line)
+	return len(line) >= 2 && strings.HasPrefix(line, "_") && strings.HasSuffix(line, "_")
 }
 
 func SessionMemoryUpdateSystemPrompt() string {
@@ -428,7 +477,7 @@ func normalizeSessionMemoryDocument(raw string) string {
 func writeSessionMemoryFile(path, content string, maxBytes int) error {
 	validated, err := ValidateSessionMemoryDocument(content, maxBytes)
 	if err != nil {
-		return err
+		return &SessionMemoryFormatError{Err: err}
 	}
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".session-memory-*.tmp")
