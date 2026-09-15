@@ -116,6 +116,16 @@ jobs:
           esac
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
+      - name: Emit Loom artifact contract
+        env:
+          HARBOR_IMAGE_REPO: ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE_TAG: sha-${{ steps.source.outputs.commit }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          printf 'BAHIA_ARTIFACT={"image_repo":"%s","image_tag":"%s","image_digest":"%s"}\n' \
+            "$HARBOR_IMAGE_REPO" "$IMAGE_TAG" "$IMAGE_DIGEST"
+
       - name: Generate CycloneDX SBOM
         uses: anchore/sbom-action@v0
         with:
