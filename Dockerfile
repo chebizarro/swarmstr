@@ -227,7 +227,9 @@ ENV METIQ_BUNDLED_SKILLS_DIR=/app/skills
 RUN groupadd -g 1000 metiq && \
     useradd -m -u 1000 -g metiq -d /home/metiq -s /bin/bash metiq && \
     mkdir -p /data /run/secrets && \
+    touch /run/secrets/metiq-nip46-client-key && \
     chmod 0755 /run/secrets && \
+    chmod 0400 /run/secrets/metiq-nip46-client-key && \
     chown metiq:metiq /data && \
     chown -R metiq:metiq /app
 
