@@ -14,6 +14,11 @@ Volume=metiq-production-workspace.volume:/data/.metiq/workspace:rw
 Secret=metiq-nip46-client-key,type=mount,target=/run/secrets/metiq-nip46-client-key
 Environment=HOME=/data
 Environment=METIQ_BOOTSTRAP_PATH=/data/.metiq/bootstrap.json
+# This dedicated SoulFactory bridge does not service chat or general inference.
+# Its checked-in config selects the deterministic echo provider so lifecycle
+# control can be accepted without injecting a hosted-model credential.
+Environment=METIQ_AGENT_PROVIDER=echo
+Environment=METIQ_AGENT_ALLOW_ECHO=true
 ReadOnly=true
 ReadOnlyTmpfs=false
 Tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m

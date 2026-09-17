@@ -15,6 +15,11 @@ an incumbent runtime's identity, volumes, container, or controller policy.
   soulfactory.provision plus soulfactory.suspend. Direct messages, heartbeats,
   legacy token fallback, execution, network tools, and writes are disabled by
   default.
+- This lifecycle-only bridge explicitly opts into Metiq's deterministic echo
+  provider. It does not service chat or general inference, and therefore does
+  not receive a hosted-model credential. A deployment that enables DM/chat or
+  broader agent methods must replace echo with a real provider and protected
+  credential injection before start.
 - Kind values are supplied by cascadia-go in the application. The kind 30317
   capability is parameterized-replaceable and advertises exactly
   soulfactory.provision and soulfactory.suspend.
