@@ -17,6 +17,7 @@ Environment=METIQ_BOOTSTRAP_PATH=/data/.metiq/bootstrap.json
 ReadOnly=true
 ReadOnlyTmpfs=false
 Tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m
+Tmpfs=/run/secrets:rw,noexec,nosuid,nodev,size=1m
 NoNewPrivileges=true
 DropCapability=all
 LogDriver=journald
