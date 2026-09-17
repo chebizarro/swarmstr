@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/keyer"
@@ -223,6 +224,51 @@ func TestConnectBunkerAllowsUnsupportedSwitchRelays(t *testing.T) {
 	}
 	if pk, err := client.GetPublicKey(ctx); err != nil || pk != user.sk.Public() {
 		t.Fatalf("authenticated user pubkey unavailable after optional rejection: %v %v", pk, err)
+	}
+}
+
+func TestConnectBunkerSurvivesHandshakeContextCancellation(t *testing.T) {
+	serverCtx, stopServer := context.WithCancel(context.Background())
+	defer stopServer()
+	handler := newLocalKeyer(nostr.Generate())
+	user := newLocalKeyer(nostr.Generate())
+	server, err := NewServer(serverCtx, ServerOptions{
+		Handler: handler,
+		User:    user,
+		Relays:  []string{"wss://old.example"},
+		AuthorizeConnect: func(_ context.Context, _ nostr.PubKey, _ string, requested PermissionSet, _ ClientMetadata) (PermissionSet, error) {
+			return requested, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := newLoopTransport(server)
+	clientKey := nostr.Generate()
+	bunkerURL := "bunker://" + handler.sk.Public().Hex() + "?relay=wss%3A%2F%2Fold.example"
+	permissions, err := ParsePermissions("sign_event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshakeCtx, cancelHandshake := context.WithCancel(context.Background())
+	client, err := ConnectBunker(handshakeCtx, clientKey, bunkerURL, transport, permissions, ClientMetadata{Name: "agent"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	cancelHandshake()
+
+	opCtx, cancelOp := context.WithTimeout(context.Background(), time.Second)
+	defer cancelOp()
+	if pk, err := client.GetPublicKey(opCtx); err != nil || pk != user.sk.Public() {
+		t.Fatalf("signer died with handshake context: pubkey=%v err=%v", pk, err)
+	}
+	event := nostr.Event{Kind: 1, CreatedAt: nostr.Now(), Tags: nostr.Tags{}, Content: "after handshake"}
+	if err := client.SignEvent(opCtx, &event); err != nil {
+		t.Fatalf("sign after handshake context cancellation: %v", err)
+	}
+	if event.PubKey != user.sk.Public() || !event.CheckID() || !event.VerifySignature() {
+		t.Fatal("invalid event signed after handshake context cancellation")
 	}
 }
 
