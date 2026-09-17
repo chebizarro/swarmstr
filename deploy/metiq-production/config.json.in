@@ -30,12 +30,7 @@
   "control": {
     "require_auth": true,
     "allow_unauth_methods": [],
-    "admins": [
-      {
-        "pubkey": "{{SOULFACTORY_CONTROLLER_PUBKEY}}",
-        "methods": ["soulfactory.provision", "soulfactory.suspend"]
-      }
-    ],
+    "admins": {{SOULFACTORY_ADMINS_JSON}},
     "legacy_token_fallback": false
   },
   "storage": {

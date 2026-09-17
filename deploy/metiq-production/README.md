@@ -77,7 +77,7 @@ export METIQ_SOURCE_COMMIT="$SOURCE_COMMIT"
 export METIQ_IMAGE
 export METIQ_SIGNER_URL='bunker://<signet-pubkey>?relay=wss%3A%2F%2F<relay>'
 export METIQ_RELAYS_JSON='["wss://<canonical-relay-1>","wss://<canonical-relay-2>"]'
-export SOULFACTORY_CONTROLLER_PUBKEY='<64-hex-controller-pubkey>'
+export SOULFACTORY_CONTROLLER_PUBKEYS_JSON='["<64-hex-controller-pubkey>"]'
 ./deploy/metiq-production/render.sh /tmp/metiq-production-rendered
 sha256sum /tmp/metiq-production-rendered/* > /tmp/metiq-production-rendered/SHA256SUMS
 ~~~

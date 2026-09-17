@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-required=(METIQ_IMAGE METIQ_SOURCE_COMMIT METIQ_SIGNER_URL METIQ_RELAYS_JSON SOULFACTORY_CONTROLLER_PUBKEY)
+required=(METIQ_IMAGE METIQ_SOURCE_COMMIT METIQ_SIGNER_URL METIQ_RELAYS_JSON)
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
     echo "missing required environment variable: $name" >&2
@@ -17,10 +17,20 @@ done
   echo "METIQ_SOURCE_COMMIT must be a full lowercase Git commit" >&2
   exit 2
 }
-[[ "$SOULFACTORY_CONTROLLER_PUBKEY" =~ ^[0-9a-f]{64}$ ]] || {
-  echo "SOULFACTORY_CONTROLLER_PUBKEY must be a lowercase hex public key" >&2
-  exit 2
-}
+if [[ -n "${SOULFACTORY_CONTROLLER_PUBKEYS_JSON:-}" ]]; then
+  jq -e 'type == "array" and length > 0 and length == (unique | length) and all(.[]; type == "string" and test("^[0-9a-f]{64}$"))' \
+    <<<"$SOULFACTORY_CONTROLLER_PUBKEYS_JSON" >/dev/null || {
+      echo "SOULFACTORY_CONTROLLER_PUBKEYS_JSON must be a non-empty unique array of lowercase hex public keys" >&2
+      exit 2
+    }
+  controllers_json="$SOULFACTORY_CONTROLLER_PUBKEYS_JSON"
+else
+  [[ "${SOULFACTORY_CONTROLLER_PUBKEY:-}" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "SOULFACTORY_CONTROLLER_PUBKEY or SOULFACTORY_CONTROLLER_PUBKEYS_JSON is required" >&2
+    exit 2
+  }
+  controllers_json="$(jq -cn --arg pubkey "$SOULFACTORY_CONTROLLER_PUBKEY" '[$pubkey]')"
+fi
 [[ "$METIQ_SIGNER_URL" == bunker://* ]] || {
   echo "METIQ_SIGNER_URL must be a bunker URL" >&2
   exit 2
@@ -46,13 +56,14 @@ escape_sed() { printf '%s' "$1" | sed 's/[\\&|]/\\&/g'; }
 image="$(escape_sed "$METIQ_IMAGE")"
 signer="$(escape_sed "$METIQ_SIGNER_URL")"
 relays="$(escape_sed "$METIQ_RELAYS_JSON")"
-controller="$(escape_sed "$SOULFACTORY_CONTROLLER_PUBKEY")"
+admins="$(jq -c 'map({pubkey: ., methods: ["soulfactory.provision", "soulfactory.suspend"]})' <<<"$controllers_json")"
+admins="$(escape_sed "$admins")"
 
 sed -e "s|{{METIQ_SIGNER_URL}}|$signer|g" \
     -e "s|{{METIQ_RELAYS_JSON}}|$relays|g" \
     "$repo_root/deploy/metiq-production/bootstrap.json.in" >"$out/bootstrap.json"
 sed -e "s|{{METIQ_RELAYS_JSON}}|$relays|g" \
-    -e "s|{{SOULFACTORY_CONTROLLER_PUBKEY}}|$controller|g" \
+    -e "s|{{SOULFACTORY_ADMINS_JSON}}|$admins|g" \
     "$repo_root/deploy/metiq-production/config.json.in" >"$out/config.json"
 sed -e "s|{{METIQ_IMAGE}}|$image|g" \
     "$repo_root/deploy/metiq-production/metiq-production.container.in" >"$out/metiq-production.container"
