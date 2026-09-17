@@ -105,7 +105,10 @@ func ConnectBunker(ctx context.Context, clientKey nostr.SecretKey, rawURL string
 	if err != nil {
 		return nil, err
 	}
-	client, err := NewClient(ctx, ClientOptions{ClientKey: clientKey, RemoteSigner: token.RemoteSigner, Relays: token.Relays, Transport: transport, OnAuth: onAuth})
+	// ctx bounds the connection handshake only. The returned signer is a
+	// long-lived runtime dependency and must remain usable after a caller
+	// releases a startup timeout. Client.Close owns its lifetime explicitly.
+	client, err := NewClient(context.WithoutCancel(ctx), ClientOptions{ClientKey: clientKey, RemoteSigner: token.RemoteSigner, Relays: token.Relays, Transport: transport, OnAuth: onAuth})
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +184,9 @@ func AcceptNostrConnect(ctx context.Context, clientKey nostr.SecretKey, rawURL s
 			if json.Unmarshal([]byte(plain), &response) != nil || response.Error != "" || response.Result != token.Secret {
 				continue
 			}
-			client, err := NewClient(ctx, ClientOptions{ClientKey: clientKey, RemoteSigner: event.PubKey, Relays: token.Relays, Transport: transport, OnAuth: onAuth})
+			// The invitation context bounds acceptance, not the lifetime of the
+			// returned signer. Client.Close owns the long-lived subscription.
+			client, err := NewClient(context.WithoutCancel(ctx), ClientOptions{ClientKey: clientKey, RemoteSigner: event.PubKey, Relays: token.Relays, Transport: transport, OnAuth: onAuth})
 			if err != nil {
 				return nil, err
 			}
