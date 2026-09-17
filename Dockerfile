@@ -226,7 +226,9 @@ ENV METIQ_BUNDLED_SKILLS_DIR=/app/skills
 # Security hardening: run as non-root to reduce container escape attack surface.
 RUN groupadd -g 1000 metiq && \
     useradd -m -u 1000 -g metiq -d /home/metiq -s /bin/bash metiq && \
-    mkdir -p /data && chown metiq:metiq /data && \
+    mkdir -p /data /run/secrets && \
+    chmod 0755 /run/secrets && \
+    chown metiq:metiq /data && \
     chown -R metiq:metiq /app
 
 ENV HOME=/data
