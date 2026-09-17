@@ -188,6 +188,44 @@ func TestBunkerClientServerFullFlow(t *testing.T) {
 	}
 }
 
+func TestConnectBunkerAllowsUnsupportedSwitchRelays(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := newLocalKeyer(nostr.Generate())
+	user := newLocalKeyer(nostr.Generate())
+	server, err := NewServer(ctx, ServerOptions{
+		Handler: handler,
+		User:    user,
+		Relays:  []string{"wss://old.example"},
+		AuthorizeConnect: func(_ context.Context, _ nostr.PubKey, _ string, requested PermissionSet, _ ClientMetadata) (PermissionSet, error) {
+			return requested, nil
+		},
+		AuthorizeOperation: func(_ context.Context, _ nostr.PubKey, method string, _ nostr.Kind) error {
+			if method == MethodSwitchRelays {
+				return fmt.Errorf("unsupported method")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := newLoopTransport(server)
+	clientKey := nostr.Generate()
+	bunkerURL := "bunker://" + handler.sk.Public().Hex() + "?relay=wss%3A%2F%2Fold.example"
+	client, err := ConnectBunker(ctx, clientKey, bunkerURL, transport, PermissionSet{}, ClientMetadata{Name: "agent"}, nil)
+	if err != nil {
+		t.Fatalf("optional switch_relays rejection must not fail connection: %v", err)
+	}
+	defer client.Close()
+	if got := client.Relays(); len(got) != 1 || got[0] != "wss://old.example" {
+		t.Fatalf("original relay set not preserved: %v", got)
+	}
+	if pk, err := client.GetPublicKey(ctx); err != nil || pk != user.sk.Public() {
+		t.Fatalf("authenticated user pubkey unavailable after optional rejection: %v %v", pk, err)
+	}
+}
+
 func TestNostrConnectFlowValidatesSecretAndDiscoversSigner(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

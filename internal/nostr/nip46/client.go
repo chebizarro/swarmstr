@@ -5,14 +5,32 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip44"
 )
+
+// RPCError is an authenticated error returned by the remote signer.
+type RPCError struct {
+	Method  string
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("NIP-46 %s: %s", e.Method, e.Message)
+}
+
+func isUnsupportedMethod(err error, method string) bool {
+	var remoteErr *RPCError
+	return errors.As(err, &remoteErr) && remoteErr.Method == method &&
+		strings.EqualFold(strings.TrimSpace(remoteErr.Message), "unsupported method")
+}
 
 type ClientOptions struct {
 	ClientKey    nostr.SecretKey
@@ -112,7 +130,7 @@ func ConnectBunker(ctx context.Context, clientKey nostr.SecretKey, rawURL string
 		client.Close()
 		return nil, err
 	}
-	if _, err := client.SwitchRelays(ctx); err != nil {
+	if _, err := client.SwitchRelays(ctx); err != nil && !isUnsupportedMethod(err, MethodSwitchRelays) {
 		client.Close()
 		return nil, err
 	}
@@ -171,7 +189,7 @@ func AcceptNostrConnect(ctx context.Context, clientKey nostr.SecretKey, rawURL s
 				client.Close()
 				return nil, err
 			}
-			if _, err := client.SwitchRelays(ctx); err != nil {
+			if _, err := client.SwitchRelays(ctx); err != nil && !isUnsupportedMethod(err, MethodSwitchRelays) {
 				client.Close()
 				return nil, err
 			}
@@ -330,7 +348,7 @@ func (c *Client) RPC(ctx context.Context, method string, params []string) (strin
 		return "", c.ctx.Err()
 	case response := <-responses:
 		if response.Error != "" {
-			return "", fmt.Errorf("NIP-46 %s: %s", method, response.Error)
+			return "", &RPCError{Method: method, Message: response.Error}
 		}
 		return response.Result, nil
 	}
