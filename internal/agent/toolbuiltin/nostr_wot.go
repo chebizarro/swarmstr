@@ -11,6 +11,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	"metiq/internal/nostr/nip51"
 )
 
 // ─── Follow list cache (for BFS) ──────────────────────────────────────────────
@@ -113,7 +114,7 @@ func NostrFollowsTool(opts NostrToolOpts) agent.ToolFunc {
 		defer releasePool()
 
 		f := nostr.Filter{
-			Kinds:   []nostr.Kind{3},
+			Kinds:   []nostr.Kind{nip51.KindFollowList},
 			Authors: []nostr.PubKey{pk},
 			Limit:   1,
 		}
@@ -189,7 +190,7 @@ func NostrFollowersTool(opts NostrToolOpts) agent.ToolFunc {
 		defer releasePool()
 
 		f := nostr.Filter{
-			Kinds: []nostr.Kind{3},
+			Kinds: []nostr.Kind{nip51.KindFollowList},
 			Tags:  nostr.TagMap{"p": []string{pubkeyHex}},
 			Limit: limit,
 		}
@@ -322,7 +323,7 @@ func fetchFollows(ctx context.Context, pubkeyHex string, relays []string) ([]str
 	defer pool.Close("fetchFollows done")
 
 	f := nostr.Filter{
-		Kinds:   []nostr.Kind{3},
+		Kinds:   []nostr.Kind{nip51.KindFollowList},
 		Authors: []nostr.PubKey{pk},
 		Limit:   1,
 	}

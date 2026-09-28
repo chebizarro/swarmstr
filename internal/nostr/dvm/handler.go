@@ -17,6 +17,7 @@ import (
 
 	nostr "fiatjaf.com/nostr"
 
+	"metiq/internal/nostr/events"
 	okpublish "metiq/internal/nostr/publish"
 	runtime "metiq/internal/nostr/runtime"
 )
@@ -535,7 +536,7 @@ func (h *Handler) buildStatusEvent(ctx context.Context, request JobRequest, sour
 		tags = append(tags, nostr.Tag{"encrypted"})
 	}
 	evt := nostr.Event{
-		Kind:      7000,
+		Kind:      nostr.Kind(events.KindDVMFeedback),
 		Content:   content,
 		CreatedAt: nostr.Timestamp(time.Now().Unix()),
 		Tags:      tags,

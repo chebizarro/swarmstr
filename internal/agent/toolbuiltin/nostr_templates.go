@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"metiq/internal/agent"
+	"metiq/internal/nostr/events"
 )
 
 // ─── Tool Definition ─────────────────────────────────────────────────────────
@@ -209,7 +210,7 @@ func NostrComposeTool() agent.ToolFunc {
 			if len(labels) == 0 {
 				return "", nostrToolErr("nostr_compose", "invalid_input", "labeled template requires at least one label", nil)
 			}
-			spec.Kind = 1985
+			spec.Kind = int(events.KindLabel)
 			spec.Content = content
 			spec.Tags = [][]string{
 				{"e", eventID},

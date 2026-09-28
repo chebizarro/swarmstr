@@ -5,13 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
-
-	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
 	"metiq/internal/nostr/nip51"
-	nostruntime "metiq/internal/nostr/runtime"
 )
 
 var NostrListGetDef = agent.ToolDefinition{
@@ -61,22 +57,6 @@ var NostrListDeleteDef = agent.ToolDefinition{
 }
 
 func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToolOpts) {
-	var (
-		fallbackPool *nostr.Pool
-		poolOnce     sync.Once
-	)
-	getPool := func() *nostr.Pool {
-		if opts.HubFunc != nil {
-			if h := opts.HubFunc(); h != nil {
-				return h.Pool()
-			}
-		}
-		poolOnce.Do(func() {
-			fallbackPool = nostruntime.NewPoolNIP42(opts.Keyer)
-		})
-		return fallbackPool
-	}
-
 	tools.RegisterWithDef("nostr_list_get", func(ctx context.Context, args map[string]any) (string, error) {
 		kind, dtag, _, err := resolveSemanticListTarget(args)
 		if err != nil {
@@ -98,7 +78,9 @@ func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToo
 				pubkeyHex = resolved
 			}
 		}
-		list, err := nip51.Fetch(ctx, getPool(), opts.Relays, pubkeyHex, kind, dtag)
+		pool, releasePool := opts.AcquirePool("list_get done")
+		defer releasePool()
+		list, err := nip51.Fetch(ctx, pool, opts.Relays, pubkeyHex, kind, dtag)
 		if err != nil {
 			return "", mapSemanticListErr("nostr_list_get", err)
 		}
@@ -129,7 +111,9 @@ func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToo
 			entries = append(entries, nip51.ListEntry{Tag: tag, Value: v})
 		}
 		list := &nip51.List{Kind: kind, DTag: dtag, PubKey: pk.Hex(), Title: strings.TrimSpace(argString(args, "title")), Entries: entries}
-		evID, err := nip51.Publish(ctx, getPool(), ks, opts.Relays, list)
+		pool, releasePool := opts.AcquirePool("list_put done")
+		defer releasePool()
+		evID, err := nip51.Publish(ctx, pool, ks, opts.Relays, list)
 		if err != nil {
 			return "", mapSemanticListErr("nostr_list_put", err)
 		}
@@ -161,7 +145,9 @@ func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToo
 		if err != nil {
 			return "", semanticListErr("nostr_list_remove", "signer_failure", "failed to derive caller pubkey")
 		}
-		evID, err := nip51.RemoveEntry(ctx, getPool(), ks, opts.Relays, pk.Hex(), kind, dtag, tag, value)
+		pool, releasePool := opts.AcquirePool("list_remove done")
+		defer releasePool()
+		evID, err := nip51.RemoveEntry(ctx, pool, ks, opts.Relays, pk.Hex(), kind, dtag, tag, value)
 		if err != nil {
 			return "", mapSemanticListErr("nostr_list_remove", err)
 		}
@@ -188,7 +174,9 @@ func RegisterNostrListSemanticTools(tools *agent.ToolRegistry, opts NostrListToo
 			return "", semanticListErr("nostr_list_delete", "signer_failure", "failed to derive caller pubkey")
 		}
 		list := &nip51.List{Kind: kind, DTag: dtag, PubKey: pk.Hex(), Entries: nil}
-		evID, err := nip51.Publish(ctx, getPool(), ks, opts.Relays, list)
+		pool, releasePool := opts.AcquirePool("list_delete done")
+		defer releasePool()
+		evID, err := nip51.Publish(ctx, pool, ks, opts.Relays, list)
 		if err != nil {
 			return "", mapSemanticListErr("nostr_list_delete", err)
 		}

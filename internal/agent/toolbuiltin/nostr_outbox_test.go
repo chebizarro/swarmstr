@@ -4,7 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
+
+	nostruntime "metiq/internal/nostr/runtime"
 )
 
 func TestNostrRelayHintsTool_MissingPubkey(t *testing.T) {
@@ -54,28 +55,24 @@ func TestUniqueNonEmpty_DedupTrimAndSort(t *testing.T) {
 	}
 }
 
-func TestOutboxCacheRoundtrip(t *testing.T) {
-	outboxCacheMu.Lock()
-	outboxCache = map[string]outboxCacheEntry{} // reset
-	outboxCacheMu.Unlock()
+func TestOutboxRelaysForUsesRelaySelector(t *testing.T) {
+	prev := GetRelaySelector()
+	t.Cleanup(func() { SetRelaySelector(prev) })
 
 	pk := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	outboxCacheMu.Lock()
-	outboxCache[pk] = outboxCacheEntry{
-		read:      []string{"wss://r.example.com"},
-		write:     []string{"wss://w.example.com"},
-		fetchedAt: time.Now(),
+	SetRelaySelector(nil)
+	if got := OutboxRelaysFor(pk); got != nil {
+		t.Fatalf("expected nil without selector, got %v", got)
 	}
-	outboxCacheMu.Unlock()
 
-	outboxCacheMu.Lock()
-	e, ok := outboxCache[pk]
-	outboxCacheMu.Unlock()
-
-	if !ok {
-		t.Fatal("expected cache hit")
-	}
-	if len(e.read) != 1 || e.read[0] != "wss://r.example.com" {
-		t.Fatalf("unexpected read relays: %v", e.read)
+	sel := nostruntime.NewRelaySelector(nil, nil)
+	sel.Put(&nostruntime.NIP65RelayList{PubKey: pk, Entries: []nostruntime.NIP65RelayEntry{
+		{URL: "wss://w.example.com", Write: true},
+		{URL: "wss://r.example.com", Read: true},
+	}})
+	SetRelaySelector(sel)
+	got := OutboxRelaysFor(pk)
+	if len(got) != 2 || got[0] != "wss://w.example.com" || got[1] != "wss://r.example.com" {
+		t.Fatalf("unexpected outbox relays: %v", got)
 	}
 }

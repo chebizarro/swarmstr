@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
@@ -17,22 +16,8 @@ import (
 	nostruntime "metiq/internal/nostr/runtime"
 )
 
-// ─── NIP-65 outbox cache ─────────────────────────────────────────────────────
-
-type outboxCacheEntry struct {
-	read      []string
-	write     []string
-	fetchedAt time.Time
-}
-
-var (
-	outboxCacheMu  sync.Mutex
-	outboxCache    = map[string]outboxCacheEntry{}
-	outboxCacheTTL = 30 * time.Minute
-)
-
-// NostrRelayHintsTool fetches a pubkey's NIP-65 relay hints (kind:10002).
-// It checks both the local outbox cache and the global NIP-65 relay selector.
+// NostrRelayHintsTool fetches a pubkey's NIP-65 relay hints (kind:10002),
+// using the global NIP-65 relay selector as its cache.
 func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 	return func(ctx context.Context, args map[string]any) (string, error) {
 		pubkeyHex, err := requirePubkey(args)
@@ -40,8 +25,8 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", fmt.Errorf("nostr_relay_hints: %w", err)
 		}
 
-		// Check the NIP-65 relay selector cache first (if available).
-		if sel := GetRelaySelector(); sel != nil {
+		sel := GetRelaySelector()
+		if sel != nil {
 			if list := sel.Get(pubkeyHex); list != nil {
 				out, _ := json.Marshal(map[string]any{
 					"pubkey": pubkeyHex,
@@ -53,89 +38,28 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 			}
 		}
 
-		outboxCacheMu.Lock()
-		if e, ok := outboxCache[pubkeyHex]; ok && time.Since(e.fetchedAt) < outboxCacheTTL {
-			outboxCacheMu.Unlock()
-			out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "read": e.read, "write": e.write})
-			return string(out), nil
-		}
-		outboxCacheMu.Unlock()
-
 		relays := opts.resolveRelays(toStringSlice(args["relays"]))
 		if len(relays) == 0 {
 			return "", fmt.Errorf("nostr_relay_hints: no relays configured")
 		}
-
-		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-
-		pk, err := nostr.PubKeyFromHex(pubkeyHex)
-		if err != nil {
+		if _, err := nostr.PubKeyFromHex(pubkeyHex); err != nil {
 			return "", fmt.Errorf("nostr_relay_hints: invalid pubkey: %w", err)
 		}
 
 		pool, releasePool := opts.AcquirePool("relay_hints done")
 		defer releasePool()
 
-		f := nostr.Filter{Kinds: []nostr.Kind{nip51.KindRelayList}, Authors: []nostr.PubKey{pk}, Limit: 1}
-		var best *nostr.Event
-		for re := range pool.FetchMany(ctx2, relays, f, nostr.SubscriptionOptions{}) {
-			ev := re.Event
-			if best == nil || ev.CreatedAt > best.CreatedAt {
-				cp := ev
-				best = &cp
-			}
-		}
-		if best == nil {
+		// With a valid pubkey and pool, FetchNIP65 fails only when no verified
+		// relay list was found.
+		list, err := nostruntime.FetchNIP65(ctx, pool, relays, pubkeyHex)
+		if err != nil {
 			out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "read": []string{}, "write": []string{}})
 			return string(out), nil
 		}
-
-		var readRelays, writeRelays []string
-		for _, tag := range best.Tags {
-			if len(tag) < 2 || tag[0] != "r" {
-				continue
-			}
-			relayURL := tag[1]
-			if len(tag) == 2 {
-				readRelays = append(readRelays, relayURL)
-				writeRelays = append(writeRelays, relayURL)
-			} else {
-				switch tag[2] {
-				case "read":
-					readRelays = append(readRelays, relayURL)
-				case "write":
-					writeRelays = append(writeRelays, relayURL)
-				}
-			}
-		}
-
-		outboxCacheMu.Lock()
-		outboxCache[pubkeyHex] = outboxCacheEntry{read: readRelays, write: writeRelays, fetchedAt: time.Now()}
-		outboxCacheMu.Unlock()
-
-		// Also populate the global NIP-65 relay selector cache.
-		if sel := GetRelaySelector(); sel != nil {
-			list := &nostruntime.NIP65RelayList{PubKey: pubkeyHex, EventID: best.ID.Hex(), CreatedAt: int64(best.CreatedAt)}
-			for _, tag := range best.Tags {
-				if len(tag) < 2 || tag[0] != "r" {
-					continue
-				}
-				entry := nostruntime.NIP65RelayEntry{URL: tag[1]}
-				if len(tag) == 2 {
-					entry.Read = true
-					entry.Write = true
-				} else if tag[2] == "read" {
-					entry.Read = true
-				} else if tag[2] == "write" {
-					entry.Write = true
-				}
-				list.Entries = append(list.Entries, entry)
-			}
+		if sel != nil {
 			sel.Put(list)
 		}
-
-		out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "read": readRelays, "write": writeRelays})
+		out, _ := json.Marshal(map[string]any{"pubkey": pubkeyHex, "read": list.ReadRelays(), "write": list.WriteRelays()})
 		return string(out), nil
 	}
 }
@@ -201,12 +125,7 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 			return "", nostrToolErr("nostr_relay_list_set", "publish_failed", lastErr.Error(), map[string]any{"kind": nip51.KindRelayList, "publish_relays": relays})
 		}
 
-		// Invalidate caches for this pubkey so subsequent relay_hints calls get fresh data
-		outboxCacheMu.Lock()
-		delete(outboxCache, evt.PubKey.Hex())
-		outboxCacheMu.Unlock()
-
-		// Invalidate the global NIP-65 relay selector cache if one is registered.
+		// Invalidate the NIP-65 relay selector cache so subsequent relay_hints calls get fresh data.
 		if sel := GetRelaySelector(); sel != nil {
 			sel.Invalidate(evt.PubKey.Hex())
 		}
@@ -224,53 +143,20 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 	}
 }
 
-// OutboxRelaysFor returns cached NIP-65 relays for a pubkey (union of read
-// and write).  Returns nil if no cached data is available.  Does NOT trigger
-// a network fetch — callers should use nostr_relay_hints or the relay selector
-// for that.
+// OutboxRelaysFor returns the relay selector's cached NIP-65 relays for a
+// pubkey (union of read and write), or nil if none are cached.  Does NOT
+// trigger a network fetch — callers should use nostr_relay_hints or the relay
+// selector for that.
 func OutboxRelaysFor(pubkeyHex string) []string {
-	// Check global relay selector first.
-	if sel := GetRelaySelector(); sel != nil {
-		if list := sel.Get(pubkeyHex); list != nil {
-			// Union of read + write relays, deduplicated.
-			seen := make(map[string]bool)
-			var out []string
-			for _, r := range list.WriteRelays() {
-				if !seen[r] {
-					seen[r] = true
-					out = append(out, r)
-				}
-			}
-			for _, r := range list.ReadRelays() {
-				if !seen[r] {
-					seen[r] = true
-					out = append(out, r)
-				}
-			}
-			return out
-		}
+	sel := GetRelaySelector()
+	if sel == nil {
+		return nil
 	}
-	// Fall back to local outbox cache (union of read + write).
-	outboxCacheMu.Lock()
-	defer outboxCacheMu.Unlock()
-	if e, ok := outboxCache[pubkeyHex]; ok && time.Since(e.fetchedAt) < outboxCacheTTL {
-		seen := make(map[string]bool)
-		var out []string
-		for _, r := range e.write {
-			if !seen[r] {
-				seen[r] = true
-				out = append(out, r)
-			}
-		}
-		for _, r := range e.read {
-			if !seen[r] {
-				seen[r] = true
-				out = append(out, r)
-			}
-		}
-		return out
+	list := sel.Get(pubkeyHex)
+	if list == nil {
+		return nil
 	}
-	return nil
+	return list.AllRelays()
 }
 
 func uniqueNonEmpty(in []string) []string {

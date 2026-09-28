@@ -16,32 +16,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
 	"metiq/internal/nostr/events"
-	nostruntime "metiq/internal/nostr/runtime"
 )
 
 // RegisterNIPTools registers additional NIP protocol tools.
 func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
-	var (
-		fallbackPool *nostr.Pool
-		poolOnce     sync.Once
-	)
-	getPool := func() *nostr.Pool {
-		if h := opts.hub(); h != nil {
-			return h.Pool()
-		}
-		poolOnce.Do(func() {
-			fallbackPool = nostruntime.NewPoolNIP42(opts.Keyer)
-		})
-		return fallbackPool
-	}
-
 	// Early validation: if no keyer, publishEvent will fail
 	// Tools that need signing should check opts.Keyer != nil
 
@@ -63,7 +47,9 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		published := false
 		var lastErr error
-		for result := range getPool().PublishMany(ctx, relays, evt) {
+		pool, releasePool := opts.AcquirePool("publish done")
+		defer releasePool()
+		for result := range pool.PublishMany(ctx, relays, evt) {
 			if result.Error == nil {
 				published = true
 			} else {
@@ -144,14 +130,14 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 			tags = append(tags, nostr.Tag{"p", pk})
 		}
 		evt := nostr.Event{
-			Kind:      1984,
+			Kind:      nostr.Kind(events.KindReport),
 			CreatedAt: nostr.Now(),
 			Tags:      tags,
 			Content:   reason,
 		}
 		evID, err := publishEvent(ctx, evt, relays)
 		if err != nil {
-			return "", mapNostrPublishErr("nostr_report", err, map[string]any{"kind": 1984})
+			return "", mapNostrPublishErr("nostr_report", err, map[string]any{"kind": int(events.KindReport)})
 		}
 		return nostrWriteSuccessEnvelope("nostr_report", evID, 1984, map[string]any{
 			"event_ids": eventIDs,
@@ -220,7 +206,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 
 		evt := nostr.Event{
-			Kind:      1111,
+			Kind:      nostr.Kind(events.KindComment),
 			CreatedAt: nostr.Now(),
 			Tags:      tags,
 			Content:   content,
@@ -284,14 +270,14 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 
 		evt := nostr.Event{
-			Kind:      30023,
+			Kind:      nostr.Kind(events.KindLongForm),
 			CreatedAt: nostr.Now(),
 			Tags:      tags,
 			Content:   content,
 		}
 		evID, err := publishEvent(ctx, evt, relays)
 		if err != nil {
-			return "", mapNostrPublishErr("nostr_article_publish", err, map[string]any{"kind": 30023, "d_tag": dTag})
+			return "", mapNostrPublishErr("nostr_article_publish", err, map[string]any{"kind": int(events.KindLongForm), "d_tag": dTag})
 		}
 		return nostrWriteSuccessEnvelope("nostr_article_publish", evID, 30023, map[string]any{
 			"d_tag": dTag,
@@ -321,7 +307,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 
 		filter := nostr.Filter{
-			Kinds: []nostr.Kind{30023},
+			Kinds: []nostr.Kind{nostr.Kind(events.KindLongForm)},
 			Limit: 1,
 		}
 		pk, err := nostr.PubKeyFromHex(author)
@@ -333,11 +319,13 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 			filter.Tags = nostr.TagMap{"d": []string{dTag}}
 		}
 
+		pool, releasePool := opts.AcquirePool("article_get done")
+		defer releasePool()
 		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
 		var best *nostr.Event
-		for re := range getPool().FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			if best == nil || re.Event.CreatedAt > best.CreatedAt {
 				ev := re.Event
 				best = &ev
@@ -384,12 +372,14 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		if v, ok := args["timeout_seconds"].(float64); ok && v > 0 {
 			timeoutSec = int(v)
 		}
+		pool, releasePool := opts.AcquirePool("search done")
+		defer releasePool()
 		ctx2, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 		defer cancel()
 
 		seen := make(map[string]bool)
 		var events []map[string]any
-		for re := range getPool().FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			id := re.Event.ID.Hex()
 			if seen[id] {
 				continue
@@ -464,11 +454,13 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 		filter.Authors = []nostr.PubKey{pk}
 
+		pool, releasePool := opts.AcquirePool("appdata_get done")
+		defer releasePool()
 		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
 		var best *nostr.Event
-		for re := range getPool().FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			if best == nil || re.Event.CreatedAt > best.CreatedAt {
 				ev := re.Event
 				best = &ev
@@ -518,7 +510,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		}
 
 		evt := nostr.Event{
-			Kind:      1063,
+			Kind:      nostr.Kind(events.KindFileMetadata),
 			CreatedAt: nostr.Now(),
 			Tags:      tags,
 			Content:   description,
@@ -530,8 +522,6 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 		out, _ := json.Marshal(map[string]any{"ok": true, "event_id": evID, "url": url})
 		return string(out), nil
 	}, NostrFileAnnounceDef)
-
-	_ = getPool // ensure getPool is used
 }
 
 // slugify converts a title to a URL-friendly d-tag.

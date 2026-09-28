@@ -1,6 +1,9 @@
 package events
 
-import cascadia "git.sharegap.net/cascadia/cascadia-go"
+import (
+	cascadia "git.sharegap.net/cascadia/cascadia-go"
+	"git.sharegap.net/cascadia/cascadia-go/catalog"
+)
 
 // Kind represents a Nostr event kind number.
 type Kind int
@@ -14,6 +17,13 @@ const (
 	KindSeal     Kind = 13
 	KindDMNIP44  Kind = 44
 	KindGiftWrap Kind = 1059
+
+	KindFileMetadata Kind = catalog.KindFileMetadata // NIP-94
+	KindComment      Kind = 1111                     // NIP-22
+	KindReport       Kind = 1984                     // NIP-56
+	KindLabel        Kind = 1985                     // NIP-32
+	KindDVMFeedback  Kind = 7000                     // NIP-90 job feedback
+	KindLongForm     Kind = 30023                    // NIP-23 long-form content
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Cascadia Canonical Kinds (CAS_*)

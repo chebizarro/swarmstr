@@ -19,6 +19,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
 	"metiq/internal/nostr/secure"
 )
@@ -178,7 +179,7 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 		}
 
 		filter := nostr.Filter{
-			Kinds:   []nostr.Kind{30078, 1},
+			Kinds:   []nostr.Kind{nostr.Kind(events.KindAppData), 1},
 			Authors: []nostr.PubKey{pk},
 			Limit:   limit,
 		}

@@ -13,6 +13,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	"metiq/internal/nostr/events"
 )
 
 // ─── Tool Definitions ────────────────────────────────────────────────────────
@@ -217,7 +218,7 @@ func NostrDVMRequestTool(opts NostrToolOpts) agent.ToolFunc {
 // referencing the given job ID, returning the first result event found.
 func pollDVMResult(ctx context.Context, pool *nostr.Pool, relays []string, jobID string, requestKind, timeoutSec int) (*nostr.Event, string, error) {
 	resultKind := nostr.Kind(requestKind + 1000) // 5000 → 6000
-	statusKind := nostr.Kind(7000)
+	statusKind := nostr.Kind(events.KindDVMFeedback)
 
 	pollCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
