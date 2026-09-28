@@ -212,10 +212,7 @@ func (p *BlueBubblesPlugin) Connect(
 
 // ─── Bot ──────────────────────────────────────────────────────────────────────
 
-const (
-	bbPollInterval  = 5 * time.Second
-	bbMaxReconnects = 20
-)
+const bbPollInterval = 5 * time.Second
 
 type bbBot struct {
 	channelID      string
@@ -247,8 +244,9 @@ func (b *bbBot) Close() {
 	}
 }
 
-// run seeds dedup state, then prefers the event-driven Socket.IO push transport.
-// REST polling runs only when Socket.IO is unavailable and allow_polling is set.
+// run seeds dedup state, then supervises the event-driven Socket.IO push
+// transport until ctx is cancelled. REST polling runs only when Socket.IO is
+// unavailable and allow_polling is set.
 func (b *bbBot) run(ctx context.Context) {
 	b.mu.Lock()
 	b.seenGUIDs = map[string]struct{}{}
@@ -264,17 +262,11 @@ func (b *bbBot) run(ctx context.Context) {
 		b.mu.Unlock()
 	}
 
-	if err := b.runSocket(ctx); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		if !b.allowPolling {
-			log.Printf("bluebubbles: channel=%s Socket.IO push unavailable (%v); REST polling fallback disabled (set allow_polling=true to opt in)", b.channelID, err)
-			return
-		}
-		log.Printf("bluebubbles: channel=%s Socket.IO push unavailable (%v); using explicitly enabled REST polling fallback (server=%s)", b.channelID, err, b.serverURL)
-		b.pollLoop(ctx)
+	var poll func(context.Context)
+	if b.allowPolling {
+		poll = b.pollLoop
 	}
+	channels.SuperviseReceiveStream(ctx, "bluebubbles: channel="+b.channelID, b.socketConnect, b.socketServe, poll)
 }
 
 // pollLoop is the REST polling fallback: a wait-and-check ticker over the
@@ -404,55 +396,6 @@ func (b *bbBot) socketURL() string {
 	return u + "/socket.io/?EIO=4&transport=websocket&password=" + url.QueryEscape(b.password)
 }
 
-// runSocket connects the Socket.IO client and serves events, reconnecting with
-// backoff. It returns an error only if the initial connection fails or
-// reconnection is exhausted; callers may then use an explicitly enabled fallback.
-func (b *bbBot) runSocket(ctx context.Context) error {
-	conn, err := b.socketConnect(ctx)
-	if err != nil {
-		return err
-	}
-	log.Printf("bluebubbles: channel=%s connected via Socket.IO push (server=%s)", b.channelID, b.serverURL)
-
-	backoff := time.Second
-	attempts := 0
-	for {
-		serr := b.socketServe(ctx, conn)
-		_ = conn.Close(websocket.StatusNormalClosure, "reconnect")
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-b.done:
-			return nil
-		default:
-		}
-		log.Printf("bluebubbles: channel=%s Socket.IO stream ended (%v); reconnecting", b.channelID, serr)
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-b.done:
-				return nil
-			case <-time.After(backoff):
-			}
-			attempts++
-			nc, derr := b.socketConnect(ctx)
-			if derr == nil {
-				conn = nc
-				backoff = time.Second
-				attempts = 0
-				break
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
-			}
-			if attempts >= bbMaxReconnects {
-				return fmt.Errorf("socket.io reconnect exhausted after %d attempts: %w", attempts, derr)
-			}
-		}
-	}
-}
-
 // socketConnect performs the Engine.IO v4 + Socket.IO handshake over WebSocket
 // and returns a connection ready to receive events.
 func (b *bbBot) socketConnect(ctx context.Context) (*websocket.Conn, error) {
@@ -505,8 +448,9 @@ func (b *bbBot) socketConnect(ctx context.Context) (*websocket.Conn, error) {
 }
 
 // socketServe reads Engine.IO/Socket.IO frames and dispatches "new-message"
-// events until the connection fails.
+// events until the connection fails. It owns closing conn.
 func (b *bbBot) socketServe(ctx context.Context, conn *websocket.Conn) error {
+	defer conn.Close(websocket.StatusNormalClosure, "")
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {

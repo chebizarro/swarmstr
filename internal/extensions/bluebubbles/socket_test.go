@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,9 +89,9 @@ func TestSocketIODeliversNewMessage(t *testing.T) {
 	}
 }
 
-// TestSocketConnectFailsWithoutSocketIO verifies the fallback signal: when the
-// server has no Socket.IO endpoint, socketConnect errors and run() falls back to
-// REST polling.
+// TestSocketConnectFailsWithoutSocketIO verifies that socketConnect errors when
+// the server has no Socket.IO endpoint, so the supervisor retries (or uses the
+// explicitly enabled REST polling fallback).
 func TestSocketConnectFailsWithoutSocketIO(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no socket.io", http.StatusNotFound)
@@ -101,5 +103,62 @@ func TestSocketConnectFailsWithoutSocketIO(t *testing.T) {
 	defer cancel()
 	if _, err := bot.socketConnect(ctx); err == nil {
 		t.Fatal("expected socketConnect to fail without a Socket.IO endpoint")
+	}
+}
+
+// TestRunRetriesAfterInitialDialFailure guards against the channel going
+// permanently deaf: a Socket.IO endpoint that is unavailable on the first dial
+// must be redialled until it comes up, without allow_polling.
+func TestRunRetriesAfterInitialDialFailure(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/socket.io/") {
+			http.NotFound(w, r) // history seed; failure is tolerated
+			return
+		}
+		if attempts.Add(1) == 1 {
+			http.Error(w, "server starting", http.StatusServiceUnavailable)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		ctx := r.Context()
+		_ = conn.Write(ctx, websocket.MessageText, []byte(`0{"pingInterval":25000,"pingTimeout":20000}`))
+		if _, d, err := conn.Read(ctx); err != nil || string(d) != "40" {
+			return
+		}
+		_ = conn.Write(ctx, websocket.MessageText, []byte(`40{"sid":"abc"}`))
+		payload, _ := json.Marshal([]any{"new-message", map[string]any{
+			"guid": "guid-retry", "text": "after retry", "handle": map[string]any{"address": "+15551234567"},
+		}})
+		_ = conn.Write(ctx, websocket.MessageText, append([]byte("42"), payload...))
+		_, _, _ = conn.Read(ctx) // hold open until the client goes away
+	}))
+	defer srv.Close()
+
+	delivered := make(chan sdk.InboundChannelMessage, 1)
+	bot := &bbBot{
+		channelID:  "bb-ch",
+		serverURL:  srv.URL,
+		password:   "pw",
+		chatGUID:   "iMessage;-;+15550000000",
+		done:       make(chan struct{}),
+		httpClient: srv.Client(),
+		onMessage:  func(m sdk.InboundChannelMessage) { delivered <- m },
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go bot.run(ctx)
+
+	select {
+	case m := <-delivered:
+		if m.Text != "after retry" {
+			t.Fatalf("unexpected text %q", m.Text)
+		}
+	case <-ctx.Done():
+		t.Fatalf("no delivery after initial dial failure (attempts=%d)", attempts.Load())
 	}
 }
