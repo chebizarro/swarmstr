@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"metiq/internal/secrets"
 )
@@ -184,22 +187,46 @@ func runSecretsGet(args []string) error {
 }
 
 func runSecretsSet(args []string) error {
+	return secretsSet(args, os.Stdin, os.Stdout)
+}
+
+// secretsSet stores a value in the daemon's protected gateway-store via
+// secrets.store.set. The value is read from stdin so it never appears in argv
+// or shell history.
+func secretsSet(args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet("secrets set", flag.ContinueOnError)
-	var adminAddr, adminToken, bootstrapPath string
-	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path")
-	fs.StringVar(&adminAddr, "admin-addr", "", "admin API address (host:port)")
-	fs.StringVar(&adminToken, "admin-token", "", "admin API bearer token")
+	var wsURL, wsToken, bootstrapPath, kind string
+	fs.StringVar(&bootstrapPath, "bootstrap", "", "bootstrap config path (supplies gateway_ws_listen_addr/gateway_ws_token)")
+	fs.StringVar(&wsURL, "ws-url", "", "gateway websocket URL, e.g. ws://127.0.0.1:8788/ws")
+	fs.StringVar(&wsToken, "ws-token", "", "gateway websocket token")
+	fs.StringVar(&kind, "kind", "secret", "entry kind: secret (resolved only through secret refs) or env")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: metiq secrets set <key> <value>")
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: metiq secrets set [--kind secret|env] <NAME> < value-file  (the value is read from stdin)")
 	}
-	key := fs.Arg(0)
-	value := fs.Arg(1)
-
-	_ = value
-	return fmt.Errorf("secrets set is not supported by the daemon API; set %q in your environment or .env and run `metiq secrets list` (reload)", key)
+	name := fs.Arg(0)
+	raw, err := io.ReadAll(stdin)
+	if err != nil {
+		return fmt.Errorf("read secret value from stdin: %w", err)
+	}
+	value := strings.TrimRight(string(raw), "\r\n")
+	if value == "" {
+		return fmt.Errorf("secret value is empty; pipe it on stdin")
+	}
+	url, token, err := resolveGatewayWSURL(wsURL, wsToken, bootstrapPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	params := map[string]any{"name": name, "value": value, "kind": kind}
+	if _, err := gatewayWSCall(ctx, url, token, "secrets.store.set", params); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "stored %s; reference it in config as {\"source\":\"store\",\"provider\":\"gateway-store\",\"id\":%q}\n", name, name)
+	return nil
 }
 
 func runSecretsMigrate(args []string) error {

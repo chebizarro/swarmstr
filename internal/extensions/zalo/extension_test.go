@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -478,13 +479,28 @@ func TestRefreshAccessToken_PersistFailureFailsRefreshButKeepsToken(t *testing.T
 }
 
 func TestRefreshAccessToken_LiteralRefreshTokenIsNotAnError(t *testing.T) {
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
 	writer := &recordingCredentialWriter{err: sdk.ErrCredentialNotWritable}
-	bot := &zaloBot{appID: "aid", appSecret: "asec", refreshToken: "old-rt", credentials: writer, httpClient: rotatingTokenClient()}
+	bot := &zaloBot{channelID: "zalo-oa", appID: "aid", appSecret: "asec", refreshToken: "old-rt", credentials: writer, httpClient: rotatingTokenClient()}
 	if err := bot.refreshAccessToken(context.Background()); err != nil {
 		t.Fatalf("refreshAccessToken: %v", err)
 	}
 	if bot.refreshToken != "new-rt" {
 		t.Fatalf("refreshToken = %q", bot.refreshToken)
+	}
+	// The warning must name the migration steps, not just the symptom.
+	for _, want := range []string{
+		"metiq secrets set ZALO_REFRESH_TOKEN",
+		`nostr_channels.zalo-oa.config.refresh_token to {"source":"store","provider":"gateway-store","id":"ZALO_REFRESH_TOKEN"}`,
+		"docs/channels/zalo.md",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("warning %q does not contain %q", logs.String(), want)
+		}
 	}
 }
 

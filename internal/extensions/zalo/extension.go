@@ -275,7 +275,9 @@ func (b *zaloBot) persistRefreshToken(ctx context.Context, token string) error {
 		err = b.credentials.PersistCredential(ctx, "refresh_token", token)
 	}
 	if errors.Is(err, sdk.ErrCredentialNotWritable) {
-		log.Printf("zalo: channel=%s refresh token rotated but refresh_token is not a gateway-store secret reference; the rotation will not survive a restart", b.channelID)
+		log.Printf("zalo: channel=%[1]s refresh token rotated but refresh_token is not a gateway-store secret reference; the rotation will not survive a restart. "+
+			"To fix: pipe a fresh refresh token into `metiq secrets set ZALO_REFRESH_TOKEN`, set nostr_channels.%[1]s.config.refresh_token to "+
+			`{"source":"store","provider":"gateway-store","id":"ZALO_REFRESH_TOKEN"}, and restart metiqd (docs/channels/zalo.md)`, b.channelID)
 		return nil
 	}
 	if err != nil {

@@ -37,6 +37,7 @@ external platforms into the `nostr_channels` pipeline. All channels share the sa
 | WhatsApp Web | Plugin  | [Unofficial linked device](/channels/whatsappweb); ban risk |
 | MS Teams   | Plugin    | App registration required                  |
 | MatterMost | Plugin    | Server URL + bot token                     |
+| Zalo       | Plugin    | [OA app](/channels/zalo); store the rotating refresh token as a secret ref |
 
 > **Warning:** The `whatsappweb` personal-account transport is unofficial,
 > may violate WhatsApp's terms, and may cause account restriction or permanent
