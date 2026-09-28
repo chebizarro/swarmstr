@@ -60,19 +60,35 @@ echo "  OpenClaw message: Send warning via OpenClaw itself"
 echo "Enter your phone number for alerts (or leave blank to skip):"
 read -r PHONE_NUMBER
 
-# Update service file
-SERVICE_FILE="$SCRIPT_DIR/systemd/openclaw-auth-monitor.service"
-if [ -n "$NTFY_TOPIC" ]; then
-    sed -i "s|# Environment=NOTIFY_NTFY=.*|Environment=NOTIFY_NTFY=$NTFY_TOPIC|" "$SERVICE_FILE"
+if [ -n "$NTFY_TOPIC" ] && [[ ! "$NTFY_TOPIC" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "Invalid ntfy topic (allowed: letters, digits, '_' and '-')." >&2
+    exit 1
 fi
-if [ -n "$PHONE_NUMBER" ]; then
-    sed -i "s|# Environment=NOTIFY_PHONE=.*|Environment=NOTIFY_PHONE=$PHONE_NUMBER|" "$SERVICE_FILE"
+if [ -n "$PHONE_NUMBER" ] && [[ ! "$PHONE_NUMBER" =~ ^\+?[0-9]+$ ]]; then
+    echo "Invalid phone number (allowed: optional '+' followed by digits)." >&2
+    exit 1
 fi
+
+# Write notification settings to the env file read by the (unmodified) unit.
+ENV_DIR="$HOME/.config/metiq"
+ENV_FILE="$ENV_DIR/auth-monitor.env"
+mkdir -p "$ENV_DIR"
+(
+    umask 077
+    {
+        echo "# Written by setup-auth-system.sh"
+        [ -n "$NTFY_TOPIC" ] && echo "NOTIFY_NTFY=$NTFY_TOPIC"
+        [ -n "$PHONE_NUMBER" ] && echo "NOTIFY_PHONE=$PHONE_NUMBER"
+        true
+    } > "$ENV_FILE"
+)
+chmod 600 "$ENV_FILE"
 
 # Install systemd units
 echo ""
 echo "Installing systemd timer..."
-mkdir -p ~/.config/systemd/user
+mkdir -p ~/.local/share/metiq ~/.config/systemd/user
+ln -sfn "$SCRIPT_DIR" ~/.local/share/metiq/scripts
 cp "$SCRIPT_DIR/systemd/openclaw-auth-monitor.service" ~/.config/systemd/user/
 cp "$SCRIPT_DIR/systemd/openclaw-auth-monitor.timer" ~/.config/systemd/user/
 systemctl --user daemon-reload

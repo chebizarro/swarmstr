@@ -4,11 +4,12 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/admin/metiq/scripts/auth-monitor.sh
-# Configure notification channels via environment
+# setup-auth-system.sh symlinks the repo's scripts/ directory here.
+ExecStart=%h/.local/share/metiq/scripts/auth-monitor.sh
 Environment=WARN_HOURS=2
-# Environment=NOTIFY_PHONE=+1234567890
-# Environment=NOTIFY_NTFY=metiq-alerts
+# NOTIFY_NTFY / NOTIFY_PHONE (and WARN_HOURS overrides) are written here by
+# setup-auth-system.sh; the leading '-' tolerates a missing file.
+EnvironmentFile=-%h/.config/metiq/auth-monitor.env
 
 [Install]
 WantedBy=default.target

@@ -38,7 +38,6 @@ ARG METIQ_TASK_VERSION=v3.50.0
 ARG GOLANG_IMAGE="golang:1.25-bookworm"
 ARG DEBIAN_BOOKWORM_IMAGE="debian:bookworm"
 ARG DEBIAN_BOOKWORM_SLIM_IMAGE="debian:bookworm-slim"
-ARG NODE_IMAGE="node:24-bookworm-slim"
 
 # ── Stage 1: Build ──────────────────────────────────────────────────────────────
 FROM ${GOLANG_IMAGE} AS builder
@@ -134,7 +133,6 @@ RUN --mount=type=cache,id=metiq-apt-cache,target=/var/cache/apt,sharing=locked \
 # ── Optional: Node.js (for JavaScript/TypeScript MCP servers) ───────────────────
 # Build with: docker build --build-arg METIQ_INSTALL_NODE=1 .
 ARG METIQ_INSTALL_NODE=""
-ARG NODE_IMAGE
 RUN if [ -n "$METIQ_INSTALL_NODE" ]; then \
       curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs && \
@@ -236,8 +234,7 @@ RUN groupadd -g 1000 metiq && \
 ENV HOME=/data
 VOLUME ["/data"]
 
-# Run entrypoint as root to fix permissions, then drop to metiq user
-# USER metiq
+# No USER directive: metiqd-entrypoint.sh starts as root to fix /data ownership, then drops to metiq via gosu.
 
 # ── Health check ────────────────────────────────────────────────────────────────
 # Admin API health endpoint (enabled via --admin-addr or admin_listen_addr).
