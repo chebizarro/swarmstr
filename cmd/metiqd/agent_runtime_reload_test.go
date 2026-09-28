@@ -40,7 +40,7 @@ func TestReprovisionChangedAgentRuntimes(t *testing.T) {
 	controlAgentRegistry = registry
 	controlAgentRuntime = defaultRT
 
-	seedAgentRuntimeReloadBaseline(cfgA)
+	seedAgentRuntimeReloadBaseline(cfgA, map[string]bool{"helper": true})
 
 	// Unchanged config → runtime instance preserved.
 	reprovisionChangedAgentRuntimes(cfgA)
@@ -96,7 +96,7 @@ func TestReprovisionChangedAgentRuntimesKeepsRuntimeOnBuildFailure(t *testing.T)
 	registry := agent.NewAgentRuntimeRegistry(initialRT)
 	registry.Set("helper", initialRT)
 	controlAgentRegistry = registry
-	seedAgentRuntimeReloadBaseline(cfgA)
+	seedAgentRuntimeReloadBaseline(cfgA, map[string]bool{"helper": true})
 
 	// New config names a provider that does not exist → rebuild fails and the
 	// previous runtime must be preserved.
@@ -134,7 +134,7 @@ func TestReprovisionChangedAgentRuntimesRetriesFailedRebuild(t *testing.T) {
 	registry := agent.NewAgentRuntimeRegistry(initialRT)
 	registry.Set("helper", initialRT)
 	controlAgentRegistry = registry
-	seedAgentRuntimeReloadBaseline(cfgA)
+	seedAgentRuntimeReloadBaseline(cfgA, map[string]bool{"helper": true})
 
 	cfgHTTP := state.ConfigDoc{Agents: []state.AgentConfig{{ID: "helper", Model: "http"}}}
 	t.Setenv("METIQ_AGENT_HTTP_URL", "")
@@ -154,5 +154,50 @@ func TestReprovisionChangedAgentRuntimesRetriesFailedRebuild(t *testing.T) {
 	reprovisionChangedAgentRuntimes(cfgHTTP)
 	if registry.Get("helper") != retried {
 		t.Fatal("once installed, re-applying the same config must not rebuild again")
+	}
+}
+
+// An agent whose runtime build failed at startup is left out of the seeded
+// baseline, so the next reload of the unchanged config retries it; agents that
+// did install at startup are not rebuilt.
+func TestReprovisionChangedAgentRuntimesRetriesStartupBuildFailure(t *testing.T) {
+	prevRegistry := controlAgentRegistry
+	prevRuntime := controlAgentRuntime
+	prevApplied := agentRuntimeReloadApplied
+	t.Cleanup(func() {
+		controlAgentRegistry = prevRegistry
+		controlAgentRuntime = prevRuntime
+		agentRuntimeReloadApplied = prevApplied
+	})
+
+	cfg := state.ConfigDoc{Agents: []state.AgentConfig{
+		{ID: "stable", Model: "echo"},
+		{ID: "flaky", Model: "http"},
+	}}
+	defaultRT, err := buildConfiguredAgentRuntime(cfg, state.AgentConfig{ID: "main", Model: "echo"}, nil)
+	if err != nil {
+		t.Fatalf("build default runtime: %v", err)
+	}
+	stableRT, err := buildConfiguredAgentRuntime(cfg, cfg.Agents[0], nil)
+	if err != nil {
+		t.Fatalf("build stable runtime: %v", err)
+	}
+	t.Setenv("METIQ_AGENT_HTTP_URL", "")
+	t.Setenv("METIQ_AGENT_HTTP_API_KEY", "")
+	if _, err := buildConfiguredAgentRuntime(cfg, cfg.Agents[1], nil); err == nil {
+		t.Fatal("expected flaky startup build to fail")
+	}
+	registry := agent.NewAgentRuntimeRegistry(defaultRT)
+	registry.Set("stable", stableRT)
+	controlAgentRegistry = registry
+	seedAgentRuntimeReloadBaseline(cfg, map[string]bool{"stable": true})
+
+	t.Setenv("METIQ_AGENT_HTTP_URL", "http://127.0.0.1:9")
+	reprovisionChangedAgentRuntimes(cfg)
+	if got := registry.Get("flaky"); got == defaultRT {
+		t.Fatal("agent that failed at startup must be provisioned on the next reload")
+	}
+	if registry.Get("stable") != stableRT {
+		t.Fatal("agent installed at startup must not be rebuilt by an unchanged reload")
 	}
 }

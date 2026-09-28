@@ -3131,6 +3131,9 @@ func main() {
 	// Config-declared agents take lower precedence: if an agent ID is already
 	// in the registry from a Nostr doc, its runtime is preserved.
 	// Provider overrides from cfg.Providers are applied when the agent names a provider.
+	// startupInstalledAgents records config agents with a working runtime so
+	// hot-reload retries the ones whose startup build failed.
+	startupInstalledAgents := make(map[string]bool)
 	if configAgents := configState.Get().Agents; len(configAgents) > 0 {
 		registeredIDs := make(map[string]bool)
 		for _, id := range agentRegistry.Registered() {
@@ -3155,6 +3158,7 @@ func main() {
 			isMain := agentID == "main"
 			if !isMain && registeredIDs[agentID] {
 				log.Printf("agent config: id=%s already loaded from Nostr docs, skipping auto-provision", agentID)
+				startupInstalledAgents[agentID] = true
 				continue
 			}
 			override := resolveModelProviderOverride(configState.Get(), agCfg, model)
@@ -3223,6 +3227,7 @@ func main() {
 			}
 
 			runtime := wrapRuntimeForSuspend(rt, controlSuspendCoordinator)
+			startupInstalledAgents[agentID] = true
 
 			if isMain {
 				// Update the registry default so all "main"/"" lookups use this runtime.
@@ -7186,7 +7191,7 @@ func main() {
 	controlConfigFilePath = configFilePath
 	controlServices.handlers.configFilePath = configFilePath
 	// Baseline for hot-reload agent-runtime diffing (swarmstr-v2uq).
-	seedAgentRuntimeReloadBaseline(configState.Get())
+	seedAgentRuntimeReloadBaseline(configState.Get(), startupInstalledAgents)
 
 	// configState.Set hook: apply live runtime side effects + WS event on every
 	// config mutation. Disk persistence is handled before successful Set() calls

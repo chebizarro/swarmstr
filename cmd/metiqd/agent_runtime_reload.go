@@ -29,18 +29,21 @@ var (
 	agentRuntimeReloadApplied map[string]string
 )
 
-// seedAgentRuntimeReloadBaseline records the config snapshot whose agents were
-// provisioned at startup so later hot-reloads only rebuild changed runtimes.
-func seedAgentRuntimeReloadBaseline(cfg state.ConfigDoc) {
+// seedAgentRuntimeReloadBaseline records the runtime fingerprints of the
+// agents whose runtime startup installed. Agents missing from installed (their
+// startup build failed) stay unapplied, so the next hot-reload retries them.
+func seedAgentRuntimeReloadBaseline(cfg state.ConfigDoc, installed map[string]bool) {
 	agentRuntimeReloadMu.Lock()
 	defer agentRuntimeReloadMu.Unlock()
-	agentRuntimeReloadApplied = agentRuntimeFingerprints(cfg)
+	agentRuntimeReloadApplied = agentRuntimeFingerprints(cfg, installed)
 }
 
-func agentRuntimeFingerprints(cfg state.ConfigDoc) map[string]string {
+// agentRuntimeFingerprints fingerprints the agents in cfg, restricted to the
+// IDs in only when only is non-nil.
+func agentRuntimeFingerprints(cfg state.ConfigDoc, only map[string]bool) map[string]string {
 	prints := make(map[string]string, len(cfg.Agents))
 	for _, ag := range cfg.Agents {
-		if id := strings.TrimSpace(ag.ID); id != "" {
+		if id := strings.TrimSpace(ag.ID); id != "" && (only == nil || only[id]) {
 			prints[id] = config.AgentRuntimeFingerprint(cfg, ag)
 		}
 	}
@@ -59,7 +62,7 @@ func reprovisionChangedAgentRuntimes(cfg state.ConfigDoc) {
 	if agentRuntimeReloadApplied == nil {
 		// No baseline yet (nothing was provisioned through startup): record
 		// this snapshot and treat it as already applied.
-		agentRuntimeReloadApplied = agentRuntimeFingerprints(cfg)
+		agentRuntimeReloadApplied = agentRuntimeFingerprints(cfg, nil)
 		return
 	}
 	registry := currentAgentRunController().agentRegistry
