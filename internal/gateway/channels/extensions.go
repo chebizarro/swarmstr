@@ -7,8 +7,8 @@
 //	   are created and no I/O occurs at this stage.
 //	2. extensions.RegisterConfigured(cfg) reads the live config, finds
 //	   matching constructors, and calls RegisterChannelPlugin(ctor()).
-//	3. ConnectExtensions() iterates registered plugins and calls
-//	   plugin.Connect().
+//	3. AccountRuntime.Start resolves each configured account (including
+//	   secret refs) and calls plugin.Connect().
 //	4. Messages from connected channels are forwarded to the DM bus via
 //	   the onMessage callback.
 //
@@ -20,7 +20,6 @@ package channels
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 
 	"metiq/internal/plugins/sdk"
@@ -80,77 +79,6 @@ func (e *ExtensionHandle) Send(ctx context.Context, text string) error {
 	return e.handle.Send(ctx, text)
 }
 func (e *ExtensionHandle) Close() { e.handle.Close() }
-
-// ─── Extension startup ────────────────────────────────────────────────────────
-
-// ExtensionConnectResult holds a connected extension channel.
-type ExtensionConnectResult struct {
-	PluginID  string
-	ChannelID string
-	Handle    Channel
-	// RawHandle is the underlying sdk.ChannelHandle returned by the plugin.
-	// Callers can perform interface assertions (e.g. sdk.TypingHandle) on it
-	// to access optional channel features.
-	RawHandle sdk.ChannelHandle
-	// Capabilities is the declared feature set for this channel instance.
-	// It is populated when the plugin implements sdk.ChannelPluginWithCapabilities.
-	Capabilities sdk.ChannelCapabilities
-}
-
-// ConnectExtensions reads the live config, finds nostr_channels entries whose
-// "kind" matches a registered plugin ID, and starts each one.
-// onMessage is called for each message received from any extension channel.
-func ConnectExtensions(
-	ctx context.Context,
-	cfg state.ConfigDoc,
-	onMessage func(sdk.InboundChannelMessage),
-) ([]ExtensionConnectResult, error) {
-	pluginMu.RLock()
-	defer pluginMu.RUnlock()
-
-	if len(pluginsByID) == 0 {
-		return nil, nil
-	}
-
-	var results []ExtensionConnectResult
-
-	for channelID, chanCfg := range cfg.NostrChannels {
-		plugin, ok := pluginsByID[chanCfg.Kind]
-		if !ok {
-			// Not a registered extension kind — handled by native channel code.
-			continue
-		}
-
-		// Serialize the NostrChannelConfig to a map so plugins get all fields.
-		entryCfg := channelConfigToMap(chanCfg)
-
-		log.Printf("connecting extension channel: %s (kind=%s)", channelID, chanCfg.Kind)
-		handle, err := plugin.Connect(ctx, channelID, entryCfg, onMessage)
-		if err != nil {
-			log.Printf("extension channel %s connect error: %v", channelID, err)
-			continue
-		}
-
-		var caps sdk.ChannelCapabilities
-		if cp, ok := plugin.(sdk.ChannelPluginWithCapabilities); ok {
-			caps = cp.Capabilities()
-			if err := sdk.ValidateChannelCapabilityContract(caps, handle); err != nil {
-				handle.Close()
-				log.Printf("extension channel %s capability contract error: %v", channelID, err)
-				continue
-			}
-		}
-		results = append(results, ExtensionConnectResult{
-			PluginID:     chanCfg.Kind,
-			ChannelID:    channelID,
-			Handle:       &ExtensionHandle{handle: handle},
-			RawHandle:    handle,
-			Capabilities: caps,
-		})
-	}
-
-	return results, nil
-}
 
 // channelConfigToMap serialises a NostrChannelConfig to a plain map
 // so it can be passed generically to channel plugins.
