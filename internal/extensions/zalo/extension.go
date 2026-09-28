@@ -11,7 +11,9 @@
 //	{
 //	  "app_id":          "...",   // required: Zalo App ID
 //	  "app_secret":      "...",   // required: Zalo App Secret
-//	  "refresh_token":   "...",   // required: long-lived refresh token
+//	  "refresh_token":   {"source": "store", "provider": "gateway-store", "id": "ZALO_REFRESH_TOKEN"},
+//	                            // required: refresh token; a gateway-store ref lets
+//	                            // rotated tokens persist across restarts
 //	  "oa_id":           "...",   // required: Official Account (OA) ID
 //	  "allowed_senders": []       // optional: allowlist of follower user IDs
 //	}
@@ -28,6 +30,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -63,8 +66,8 @@ func (p *ZaloPlugin) ConfigSchema() map[string]any {
 				"description": "Zalo application secret, used to verify inbound webhook signatures.",
 			},
 			"refresh_token": map[string]any{
-				"type":        "string",
-				"description": "Long-lived refresh token obtained from the Zalo OA Admin Portal OAuth flow.",
+				"type":        []string{"string", "object"},
+				"description": "Refresh token from the Zalo OA Admin Portal OAuth flow. Zalo rotates it on every refresh; configure a gateway-store secret reference ({\"source\":\"store\",\"provider\":\"gateway-store\",\"id\":\"NAME\"}) so rotated tokens survive restarts.",
 			},
 			"oa_id": map[string]any{
 				"type":        "string",
@@ -117,6 +120,7 @@ func (p *ZaloPlugin) Connect(
 		oaID:           oaID,
 		allowedSenders: allowedSenders,
 		onMessage:      onMessage,
+		credentials:    sdk.ChannelCredentialWriterFrom(ctx),
 		done:           make(chan struct{}),
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
 	}
@@ -162,6 +166,7 @@ type zaloBot struct {
 	oaID           string
 	allowedSenders map[string]bool
 	onMessage      func(sdk.InboundChannelMessage)
+	credentials    sdk.ChannelCredentialWriter
 	done           chan struct{}
 	httpClient     *http.Client
 
@@ -242,15 +247,40 @@ func (b *zaloBot) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("zalo token error=%d msg=%s", tr.Error, tr.Message)
 	}
 
+	// Zalo refresh tokens are single-use: once rotated, the old one is dead.
+	// Persist the new token before the refresh counts as complete, but adopt
+	// it in memory regardless so the running channel keeps working.
+	// The old token is already consumed, so persist even if ctx was just
+	// cancelled (e.g. shutdown racing an in-flight refresh).
+	var persistErr error
+	if tr.RefreshToken != "" && tr.RefreshToken != b.refreshToken {
+		persistErr = b.persistRefreshToken(context.WithoutCancel(ctx), tr.RefreshToken)
+	}
+
 	b.tokenMu.Lock()
 	b.accessToken = tr.AccessToken
 	if tr.RefreshToken != "" {
-		b.refreshToken = tr.RefreshToken // rolling refresh token
+		b.refreshToken = tr.RefreshToken
 	}
 	if tr.ExpiresIn > 0 {
 		b.tokenExpiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
 	}
 	b.tokenMu.Unlock()
+	return persistErr
+}
+
+func (b *zaloBot) persistRefreshToken(ctx context.Context, token string) error {
+	err := sdk.ErrCredentialNotWritable
+	if b.credentials != nil {
+		err = b.credentials.PersistCredential(ctx, "refresh_token", token)
+	}
+	if errors.Is(err, sdk.ErrCredentialNotWritable) {
+		log.Printf("zalo: channel=%s refresh token rotated but refresh_token is not a gateway-store secret reference; the rotation will not survive a restart", b.channelID)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("zalo: persist rotated refresh token: %w", err)
+	}
 	return nil
 }
 

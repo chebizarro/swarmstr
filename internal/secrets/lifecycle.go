@@ -144,6 +144,33 @@ func validateSecretRef(ref SecretRef) error {
 	return nil
 }
 
+// SecretRefFromConfig recognizes a SecretRef embedded in decoded JSON config:
+// an object with string "source" and "id" fields, an optional "provider", and
+// no other keys. Anything else is ordinary config and reports false.
+func SecretRefFromConfig(value any) (SecretRef, bool) {
+	object, ok := value.(map[string]any)
+	if !ok || len(object) < 2 || len(object) > 3 {
+		return SecretRef{}, false
+	}
+	fields := map[string]string{}
+	for key, raw := range object {
+		if key != "source" && key != "provider" && key != "id" {
+			return SecretRef{}, false
+		}
+		text, ok := raw.(string)
+		if !ok {
+			return SecretRef{}, false
+		}
+		fields[key] = text
+	}
+	source, hasSource := fields["source"]
+	_, hasID := fields["id"]
+	if !hasSource || !hasID {
+		return SecretRef{}, false
+	}
+	return SecretRef{Source: SecretRefSource(source), Provider: fields["provider"], ID: fields["id"]}, true
+}
+
 func (l *Lifecycle) ResolveRef(ctx context.Context, ref SecretRef) (string, error) {
 	if err := validateSecretRef(ref); err != nil {
 		return "", err

@@ -75,3 +75,37 @@ func TestStoredSecretRequiresProtectedBackendAndHidesInternalHandles(t *testing.
 		t.Fatalf("internal handles must not be listed: %+v", records)
 	}
 }
+
+func TestRotateStoredSecretRequiresExistingEntry(t *testing.T) {
+	store := NewStore(nil)
+	store.SetBackend(&protectedMemoryBackend{items: map[string]string{}})
+	if _, err := store.RotateStoredSecret("NOT_THERE", "value", "channel:x/y"); err == nil {
+		t.Fatal("rotating a missing entry must fail rather than create one")
+	}
+	if records, err := store.ListStoredSecrets(); err != nil || len(records) != 0 {
+		t.Fatalf("records = %+v, %v", records, err)
+	}
+}
+
+func TestSecretRefFromConfig(t *testing.T) {
+	ref, ok := SecretRefFromConfig(map[string]any{"source": "store", "provider": "gateway-store", "id": "ZALO_RT"})
+	if !ok || ref != StoredSecretRef("ZALO_RT") {
+		t.Fatalf("ref = %+v, %v", ref, ok)
+	}
+	if name, ok := StoredSecretName(ref); !ok || name != "ZALO_RT" {
+		t.Fatalf("stored name = %q, %v", name, ok)
+	}
+	if _, ok := StoredSecretName(SecretRef{Source: SecretRefEnv, ID: "ZALO_RT"}); ok {
+		t.Fatal("env refs are not gateway-store entries")
+	}
+	for _, value := range []any{
+		"literal",
+		map[string]any{"id": "X"},
+		map[string]any{"source": "store", "id": "X", "extra": "y"},
+		map[string]any{"source": "store", "id": 1},
+	} {
+		if _, ok := SecretRefFromConfig(value); ok {
+			t.Fatalf("%#v must not parse as a secret ref", value)
+		}
+	}
+}

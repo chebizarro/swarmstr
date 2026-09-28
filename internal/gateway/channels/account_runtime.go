@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"metiq/internal/plugins/sdk"
+	"metiq/internal/secrets"
 )
 
 // AccountState is derived from the real extension handle lifecycle.
@@ -63,6 +64,9 @@ type AccountRuntimeOptions struct {
 	OnMessage func(sdk.InboundChannelMessage)
 	OnStart   func(AccountSnapshot, AccountConnection)
 	OnStop    func(AccountSnapshot)
+	// Secrets resolves secret references in account config before connect and
+	// backs the sdk.ChannelCredentialWriter installed on the connect ctx.
+	Secrets *secrets.Store
 }
 
 // AccountRuntime owns real extension handles and serializes lifecycle changes
@@ -72,6 +76,7 @@ type AccountRuntime struct {
 	onMessage func(sdk.InboundChannelMessage)
 	onStart   func(AccountSnapshot, AccountConnection)
 	onStop    func(AccountSnapshot)
+	secrets   *secrets.Store
 
 	mu      sync.RWMutex
 	entries map[string]*accountRuntimeEntry
@@ -82,7 +87,7 @@ func NewAccountRuntime(opts AccountRuntimeOptions) *AccountRuntime {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	r := &AccountRuntime{ctx: ctx, onMessage: opts.OnMessage, onStart: opts.OnStart, onStop: opts.OnStop, entries: map[string]*accountRuntimeEntry{}}
+	r := &AccountRuntime{ctx: ctx, onMessage: opts.OnMessage, onStart: opts.OnStart, onStop: opts.OnStop, secrets: opts.Secrets, entries: map[string]*accountRuntimeEntry{}}
 	for _, account := range ConfiguredChannelAccounts() {
 		if _, ok := GetChannelPlugin(account.Provider); !ok {
 			continue
@@ -137,9 +142,25 @@ func (r *AccountRuntime) Start(ctx context.Context, provider, accountID string) 
 	entry.snapshot.State = AccountStarting
 	entry.snapshot.LastError = ""
 	entry.snapshot.LastTransitionAtMS = time.Now().UnixMilli()
+	fail := func(err error) (AccountSnapshot, error) {
+		entry.snapshot.State = AccountFailed
+		entry.snapshot.Running = false
+		entry.snapshot.LastError = err.Error()
+		entry.snapshot.LastTransitionAtMS = time.Now().UnixMilli()
+		return entry.snapshot, err
+	}
+	connectCfg, storedFields, err := resolveAccountSecrets(ctx, r.secrets, account.Config)
+	if err != nil {
+		return fail(fmt.Errorf("channel %s/%s: %w", account.Provider, account.ID, err))
+	}
 	entry.generation++
 	generation := entry.generation
 	accountCtx, cancel := context.WithCancel(r.ctx)
+	accountCtx = sdk.WithChannelCredentialWriter(accountCtx, accountCredentialWriter{
+		store:     r.secrets,
+		updatedBy: "channel:" + account.Provider + "/" + account.ID,
+		stored:    storedFields,
+	})
 	onMessage := func(msg sdk.InboundChannelMessage) {
 		if entry.activeGeneration.Load() == generation && r.onMessage != nil {
 			r.onMessage(msg)
@@ -148,17 +169,13 @@ func (r *AccountRuntime) Start(ctx context.Context, provider, accountID string) 
 	var handle sdk.ChannelHandle
 	var connectErr error
 	if lifecycle, ok := plugin.(AccountLifecyclePlugin); ok {
-		handle, connectErr = lifecycle.StartAccount(accountCtx, account.ID, cloneAccountParams(account.Config), onMessage)
+		handle, connectErr = lifecycle.StartAccount(accountCtx, account.ID, connectCfg, onMessage)
 	} else {
-		handle, connectErr = plugin.Connect(accountCtx, account.ID, cloneAccountParams(account.Config), onMessage)
+		handle, connectErr = plugin.Connect(accountCtx, account.ID, connectCfg, onMessage)
 	}
 	if connectErr != nil {
 		cancel()
-		entry.snapshot.State = AccountFailed
-		entry.snapshot.Running = false
-		entry.snapshot.LastError = connectErr.Error()
-		entry.snapshot.LastTransitionAtMS = time.Now().UnixMilli()
-		return entry.snapshot, connectErr
+		return fail(connectErr)
 	}
 	if handle == nil {
 		cancel()
@@ -171,11 +188,7 @@ func (r *AccountRuntime) Start(ctx context.Context, provider, accountID string) 
 		if err := sdk.ValidateChannelCapabilityContract(cp.Capabilities(), handle); err != nil {
 			cancel()
 			handle.Close()
-			entry.snapshot.State = AccountFailed
-			entry.snapshot.Running = false
-			entry.snapshot.LastError = err.Error()
-			entry.snapshot.LastTransitionAtMS = time.Now().UnixMilli()
-			return entry.snapshot, err
+			return fail(err)
 		}
 	}
 	connection := AccountConnection{Handle: &ExtensionHandle{handle: handle}, RawHandle: handle}

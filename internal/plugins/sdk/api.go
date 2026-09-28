@@ -21,6 +21,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -30,7 +31,10 @@ import (
 
 type contextKey string
 
-const channelReplyTargetContextKey contextKey = "channel-reply-target"
+const (
+	channelReplyTargetContextKey      contextKey = "channel-reply-target"
+	channelCredentialWriterContextKey contextKey = "channel-credential-writer"
+)
 
 // HostAPIVersion is the negotiated semver for the plugin-visible host surface.
 // It is shared with package manifest compatibility checks.
@@ -54,6 +58,37 @@ func ChannelReplyTarget(ctx context.Context) string {
 	}
 	v, _ := ctx.Value(channelReplyTargetContextKey).(string)
 	return v
+}
+
+// ErrCredentialNotWritable reports that the host cannot durably persist a
+// credential, e.g. because its config field holds a literal value rather than
+// a stored-secret reference.
+var ErrCredentialNotWritable = errors.New("channel credential is not writable")
+
+// ChannelCredentialWriter durably replaces credentials a channel rotates
+// itself (for example OAuth refresh tokens). The host installs one on the
+// Connect ctx. field is the channel config key the credential was read from;
+// only fields configured as stored-secret references are writable, others
+// fail with ErrCredentialNotWritable.
+type ChannelCredentialWriter interface {
+	PersistCredential(ctx context.Context, field, value string) error
+}
+
+// WithChannelCredentialWriter attaches the host credential writer to ctx.
+func WithChannelCredentialWriter(ctx context.Context, writer ChannelCredentialWriter) context.Context {
+	if ctx == nil || writer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, channelCredentialWriterContextKey, writer)
+}
+
+// ChannelCredentialWriterFrom returns the writer installed on ctx, or nil.
+func ChannelCredentialWriterFrom(ctx context.Context) ChannelCredentialWriter {
+	if ctx == nil {
+		return nil
+	}
+	writer, _ := ctx.Value(channelCredentialWriterContextKey).(ChannelCredentialWriter)
+	return writer
 }
 
 // ─── Host API namespaces ──────────────────────────────────────────────────────
