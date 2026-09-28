@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	nostr "fiatjaf.com/nostr"
 
@@ -27,6 +26,12 @@ type ContextVMToolOpts struct {
 	HubFunc func() *nostruntime.NostrHub
 	Keyer   nostr.Keyer
 	Relays  []string
+}
+
+// AcquirePool returns the hub pool (release is a no-op) or an ephemeral pool
+// that release closes.
+func (o ContextVMToolOpts) AcquirePool(reason string) (*nostr.Pool, func()) {
+	return NostrToolOpts{HubFunc: o.HubFunc, Keyer: o.Keyer}.AcquirePool(reason)
 }
 
 // ToolDefinitions for ContextVM tools.
@@ -149,22 +154,6 @@ var contextVMRawDef = agent.ToolDefinition{
 
 // RegisterContextVMTools registers ContextVM MCP-over-Nostr tools.
 func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
-	var (
-		fallbackPool *nostr.Pool
-		poolOnce     sync.Once
-	)
-	getPool := func() *nostr.Pool {
-		if opts.HubFunc != nil {
-			if h := opts.HubFunc(); h != nil {
-				return h.Pool()
-			}
-		}
-		poolOnce.Do(func() {
-			fallbackPool = nostruntime.NewPoolNIP42(opts.Keyer)
-		})
-		return fallbackPool
-	}
-
 	resolveKeyer := func(ctx context.Context) (nostr.Keyer, error) {
 		if opts.HubFunc != nil {
 			if h := opts.HubFunc(); h != nil {
@@ -188,7 +177,9 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			relays = opts.Relays
 		}
 
-		servers, err := contextvm.DiscoverServers(ctx, getPool(), relays, limit)
+		pool, releasePool := opts.AcquirePool("contextvm_discover done")
+		defer releasePool()
+		servers, err := contextvm.DiscoverServers(ctx, pool, relays, limit)
 		if err != nil {
 			return "", err
 		}
@@ -218,7 +209,9 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		}
 
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		tools2, err := contextvm.ListTools(ctx, getPool(), ks, relays, serverPubKey, encryption)
+		pool, releasePool := opts.AcquirePool("contextvm_tools_list done")
+		defer releasePool()
+		tools2, err := contextvm.ListTools(ctx, pool, ks, relays, serverPubKey, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -260,7 +253,9 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		}
 
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		result, err := contextvm.CallTool(ctx, getPool(), ks, relays, serverPubKey, toolName, toolArgs, encryption)
+		pool, releasePool := opts.AcquirePool("contextvm_call done")
+		defer releasePool()
+		result, err := contextvm.CallTool(ctx, pool, ks, relays, serverPubKey, toolName, toolArgs, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -296,7 +291,9 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			return "", fmt.Errorf("contextvm_resources_list: %w", err)
 		}
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		resources, err := contextvm.ListResources(ctx, getPool(), ks, relays, serverPubKey, encryption)
+		pool, releasePool := opts.AcquirePool("contextvm_resources_list done")
+		defer releasePool()
+		resources, err := contextvm.ListResources(ctx, pool, ks, relays, serverPubKey, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -323,7 +320,9 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			return "", fmt.Errorf("contextvm_resources_read: %w", err)
 		}
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		result, err := contextvm.ReadResource(ctx, getPool(), ks, relays, serverPubKey, uri, encryption)
+		pool, releasePool := opts.AcquirePool("contextvm_resources_read done")
+		defer releasePool()
+		result, err := contextvm.ReadResource(ctx, pool, ks, relays, serverPubKey, uri, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -345,7 +344,9 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			return "", fmt.Errorf("contextvm_prompts_list: %w", err)
 		}
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		prompts, err := contextvm.ListPrompts(ctx, getPool(), ks, relays, serverPubKey, encryption)
+		pool, releasePool := opts.AcquirePool("contextvm_prompts_list done")
+		defer releasePool()
+		prompts, err := contextvm.ListPrompts(ctx, pool, ks, relays, serverPubKey, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -379,7 +380,9 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 			return "", fmt.Errorf("contextvm_prompts_get: %w", err)
 		}
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		result, err := contextvm.GetPrompt(ctx, getPool(), ks, relays, serverPubKey, name, promptArgs, encryption)
+		pool, releasePool := opts.AcquirePool("contextvm_prompts_get done")
+		defer releasePool()
+		result, err := contextvm.GetPrompt(ctx, pool, ks, relays, serverPubKey, name, promptArgs, encryption)
 		if err != nil {
 			return "", err
 		}
@@ -414,7 +417,9 @@ func RegisterContextVMTools(tools *agent.ToolRegistry, opts ContextVMToolOpts) {
 		}
 
 		encryption := strings.TrimSpace(argString(args, "encryption"))
-		respRaw, err := contextvm.SendRaw(ctx, getPool(), ks, relays, serverPubKey, msg, encryption)
+		pool, releasePool := opts.AcquirePool("contextvm_raw done")
+		defer releasePool()
+		respRaw, err := contextvm.SendRaw(ctx, pool, ks, relays, serverPubKey, msg, encryption)
 		if err != nil {
 			return "", err
 		}

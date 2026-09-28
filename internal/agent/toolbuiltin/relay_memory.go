@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	nostr "fiatjaf.com/nostr"
@@ -34,24 +33,14 @@ type RelayMemoryToolOpts struct {
 	PublishGuard *secure.PublishGuard
 }
 
+// AcquirePool returns the hub pool (release is a no-op) or an ephemeral pool
+// that release closes.
+func (o RelayMemoryToolOpts) AcquirePool(reason string) (*nostr.Pool, func()) {
+	return NostrToolOpts{HubFunc: o.HubFunc, Keyer: o.Keyer}.AcquirePool(reason)
+}
+
 // RegisterRelayMemoryTools registers relay memory tools into the registry.
 func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpts) {
-	var (
-		fallbackPool *nostr.Pool
-		poolOnce     sync.Once
-	)
-	getPool := func() *nostr.Pool {
-		if opts.HubFunc != nil {
-			if h := opts.HubFunc(); h != nil {
-				return h.Pool()
-			}
-		}
-		poolOnce.Do(func() {
-			fallbackPool = nostruntime.NewPoolNIP42(opts.Keyer)
-		})
-		return fallbackPool
-	}
-
 	resolveKeyer := func() nostr.Keyer {
 		if opts.HubFunc != nil {
 			if h := opts.HubFunc(); h != nil {
@@ -133,7 +122,9 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 
 		published := false
 		var lastErr error
-		for result := range getPool().PublishMany(ctx, relays, evt) {
+		pool, releasePool := opts.AcquirePool("relay_remember done")
+		defer releasePool()
+		for result := range pool.PublishMany(ctx, relays, evt) {
 			if result.Error == nil {
 				published = true
 			} else {
@@ -213,7 +204,9 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 
 		var memories []map[string]any
 		seen := make(map[string]bool)
-		for re := range getPool().FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
+		pool, releasePool := opts.AcquirePool("relay_recall done")
+		defer releasePool()
+		for re := range pool.FetchMany(ctx2, relays, filter, nostr.SubscriptionOptions{}) {
 			id := re.Event.ID.Hex()
 			if seen[id] {
 				continue
@@ -274,7 +267,9 @@ func RegisterRelayMemoryTools(tools *agent.ToolRegistry, opts RelayMemoryToolOpt
 		}
 
 		published := false
-		for result := range getPool().PublishMany(ctx, relays, delEvt) {
+		pool, releasePool := opts.AcquirePool("relay_forget done")
+		defer releasePool()
+		for result := range pool.PublishMany(ctx, relays, delEvt) {
 			if result.Error == nil {
 				published = true
 			}
