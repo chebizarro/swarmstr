@@ -30,7 +30,7 @@ func TestResolveChannelAccountParamsNamedAndDefault(t *testing.T) {
 	t.Cleanup(func() { ConfigureChannelAccounts(nil) })
 
 	input := map[string]any{"text": "hello"}
-	resolved, err := ResolveChannelAccountParams("slack", input)
+	resolved, err := ResolveChannelAccountParams(context.Background(), nil, "slack", input)
 	if err != nil {
 		t.Fatalf("resolve default: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestResolveChannelAccountParamsNamedAndDefault(t *testing.T) {
 		t.Fatal("resolver mutated caller params")
 	}
 
-	resolved, err = ResolveChannelAccountParams("slack", map[string]any{
+	resolved, err = ResolveChannelAccountParams(context.Background(), nil, "slack", map[string]any{
 		"account_id": "alerts",
 		"account":    "+15551234567", // provider field, not an account selector
 		"channel_id": "COVERRIDE",
@@ -62,10 +62,10 @@ func TestResolveChannelAccountParamsErrorsAreUseful(t *testing.T) {
 	})
 	t.Cleanup(func() { ConfigureChannelAccounts(nil) })
 
-	if _, err := ResolveChannelAccountParams("telegram", map[string]any{"text": "hello"}); err == nil || !strings.Contains(err.Error(), "account is required") || !strings.Contains(err.Error(), "one, two") {
+	if _, err := ResolveChannelAccountParams(context.Background(), nil, "telegram", map[string]any{"text": "hello"}); err == nil || !strings.Contains(err.Error(), "account is required") || !strings.Contains(err.Error(), "one, two") {
 		t.Fatalf("expected deterministic ambiguous-account error, got %v", err)
 	}
-	if _, err := ResolveChannelAccountParams("telegram", map[string]any{"account_id": "missing"}); err == nil || !strings.Contains(err.Error(), "not configured") || !strings.Contains(err.Error(), "one, two") {
+	if _, err := ResolveChannelAccountParams(context.Background(), nil, "telegram", map[string]any{"account_id": "missing"}); err == nil || !strings.Contains(err.Error(), "not configured") || !strings.Contains(err.Error(), "one, two") {
 		t.Fatalf("expected useful missing-account error, got %v", err)
 	}
 }
@@ -73,7 +73,7 @@ func TestResolveChannelAccountParamsErrorsAreUseful(t *testing.T) {
 func TestResolveChannelAccountParamsLegacyWithoutConfiguredAccounts(t *testing.T) {
 	ConfigureChannelAccounts(nil)
 	input := map[string]any{"token": "legacy", "chat_id": "42"}
-	resolved, err := ResolveChannelAccountParams("telegram", input)
+	resolved, err := ResolveChannelAccountParams(context.Background(), nil, "telegram", input)
 	if err != nil {
 		t.Fatalf("legacy resolution: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestConfigureChannelAccountsNormalizesNextcloudAlias(t *testing.T) {
 		"default": {Kind: "nextcloud", Config: map[string]any{"token": "secret"}},
 	})
 	t.Cleanup(func() { ConfigureChannelAccounts(nil) })
-	resolved, err := ResolveChannelAccountParams("nextcloud-talk", nil)
+	resolved, err := ResolveChannelAccountParams(context.Background(), nil, "nextcloud-talk", nil)
 	if err != nil {
 		t.Fatalf("resolve alias: %v", err)
 	}

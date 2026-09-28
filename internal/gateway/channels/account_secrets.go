@@ -11,8 +11,8 @@ import (
 // resolveAccountSecrets returns a copy of cfg with every top-level SecretRef
 // (see secrets.SecretRefFromConfig) replaced by its resolved value, plus the
 // gateway-store entry name behind each such field so rotated values can be
-// written back. Unresolvable refs fail the connect rather than reaching the
-// plugin as a raw object.
+// written back. Unresolvable refs fail the connect or action rather than
+// reaching the plugin as a raw object.
 func resolveAccountSecrets(ctx context.Context, store *secrets.Store, cfg map[string]any) (map[string]any, map[string]string, error) {
 	resolved := cloneAccountParams(cfg)
 	stored := map[string]string{}
@@ -38,6 +38,20 @@ func resolveAccountSecrets(ctx context.Context, store *secrets.Store, cfg map[st
 		}
 	}
 	return resolved, stored, nil
+}
+
+type accountSecretsContextKey struct{}
+
+// WithAccountSecrets attaches the store that account-scoped gateway methods
+// resolve account-config secret references through. Without it, an action on
+// an account whose config holds a reference fails closed.
+func WithAccountSecrets(ctx context.Context, store *secrets.Store) context.Context {
+	return context.WithValue(ctx, accountSecretsContextKey{}, store)
+}
+
+func accountSecretsFrom(ctx context.Context) *secrets.Store {
+	store, _ := ctx.Value(accountSecretsContextKey{}).(*secrets.Store)
+	return store
 }
 
 // accountCredentialWriter lets one connected account rotate only the
