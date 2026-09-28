@@ -6987,7 +6987,7 @@ func main() {
 	}
 
 	availableKinds := extensions.AvailableKinds()
-	channelAccounts := extensions.NewConfiguredAccountRuntime(ctx, configState.Get(), func(msg sdk.InboundChannelMessage) {
+	channelAccounts := extensions.NewConfiguredAccountRuntime(ctx, configState.Get(), secretsStore, func(msg sdk.InboundChannelMessage) {
 		// Pairing is accepted only for accounts/messages that prove direct-message
 		// scope. The helper revalidates latest config and emits only after the
 		// pending request is durably committed.

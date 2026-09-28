@@ -53,6 +53,16 @@ func StoredSecretRef(name string) SecretRef {
 	return SecretRef{Source: SecretRefStore, Provider: gatewayStoreProvider, ID: strings.TrimSpace(name)}
 }
 
+// StoredSecretName reports the gateway-store entry name a ref points at, if
+// any. Only such refs can be rotated via RotateStoredSecret.
+func StoredSecretName(ref SecretRef) (string, bool) {
+	if ref.Source != SecretRefStore || strings.TrimSpace(ref.Provider) != gatewayStoreProvider {
+		return "", false
+	}
+	name := strings.TrimSpace(ref.ID)
+	return name, name != ""
+}
+
 func ValidateStoredSecretName(name string, allowInternal bool) error {
 	name = strings.TrimSpace(name)
 	if storedSecretNamePattern.MatchString(name) || (allowInternal && githubSetupHandlePattern.MatchString(name)) {
@@ -169,27 +179,74 @@ func (s *Store) SetStoredSecret(name, value string, kind StoredSecretKind, allow
 	if err != nil {
 		return StoredSecretMetadata{}, err
 	}
+	now := time.Now().UnixMilli()
+	metadata := StoredSecretMetadata{Name: name, Kind: kind, CreatedAtMS: now, UpdatedAtMS: now, UpdatedBy: strings.TrimSpace(updatedBy), AllowedHosts: allowedHosts}
+	if index := catalog.index(name); index >= 0 {
+		metadata.CreatedAtMS = catalog.Entries[index].CreatedAtMS
+		catalog.Entries[index] = metadata
+	} else {
+		catalog.Entries = append(catalog.Entries, metadata)
+	}
+	if err := commitStoredSecret(backend, catalog, name, value); err != nil {
+		return StoredSecretMetadata{}, err
+	}
+	return metadata, nil
+}
+
+// RotateStoredSecret atomically replaces the value of an existing entry,
+// preserving its kind and allowed hosts. It is the write-back path for
+// credentials a service rotates itself (for example OAuth refresh tokens).
+func (s *Store) RotateStoredSecret(name, value, updatedBy string) (StoredSecretMetadata, error) {
+	name = strings.TrimSpace(name)
+	if err := ValidateStoredSecretName(name, false); err != nil {
+		return StoredSecretMetadata{}, err
+	}
+	if value == "" || len(value) > MaxStoredSecretValue {
+		return StoredSecretMetadata{}, fmt.Errorf("secret value must be 1..%d bytes", MaxStoredSecretValue)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	backend, err := s.protectedGatewayBackendLocked()
+	if err != nil {
+		return StoredSecretMetadata{}, err
+	}
+	catalog, err := loadStoredSecretCatalog(backend)
+	if err != nil {
+		return StoredSecretMetadata{}, err
+	}
+	index := catalog.index(name)
+	if index < 0 {
+		return StoredSecretMetadata{}, fmt.Errorf("stored secret %q does not exist", name)
+	}
+	metadata := catalog.Entries[index]
+	metadata.UpdatedAtMS = time.Now().UnixMilli()
+	metadata.UpdatedBy = strings.TrimSpace(updatedBy)
+	catalog.Entries[index] = metadata
+	if err := commitStoredSecret(backend, catalog, name, value); err != nil {
+		return StoredSecretMetadata{}, err
+	}
+	return metadata, nil
+}
+
+func (c storedSecretCatalog) index(name string) int {
+	for i := range c.Entries {
+		if c.Entries[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// commitStoredSecret writes value and the updated catalog, restoring the prior
+// value if the catalog write fails. Callers hold s.mu.
+func commitStoredSecret(backend ProtectedSecretBackend, catalog storedSecretCatalog, name, value string) error {
 	key := storedSecretValueKey(name)
 	oldValue, oldFound, err := backend.Get(key)
 	if err != nil {
-		return StoredSecretMetadata{}, fmt.Errorf("read prior protected secret: %w", err)
-	}
-	now := time.Now().UnixMilli()
-	metadata := StoredSecretMetadata{Name: name, Kind: kind, CreatedAtMS: now, UpdatedAtMS: now, UpdatedBy: strings.TrimSpace(updatedBy), AllowedHosts: allowedHosts}
-	foundMetadata := false
-	for i := range catalog.Entries {
-		if catalog.Entries[i].Name == name {
-			metadata.CreatedAtMS = catalog.Entries[i].CreatedAtMS
-			catalog.Entries[i] = metadata
-			foundMetadata = true
-			break
-		}
-	}
-	if !foundMetadata {
-		catalog.Entries = append(catalog.Entries, metadata)
+		return fmt.Errorf("read prior protected secret: %w", err)
 	}
 	if err := backend.Set(key, value); err != nil {
-		return StoredSecretMetadata{}, fmt.Errorf("write protected secret: %w", err)
+		return fmt.Errorf("write protected secret: %w", err)
 	}
 	if err := saveStoredSecretCatalog(backend, catalog); err != nil {
 		if oldFound {
@@ -197,9 +254,9 @@ func (s *Store) SetStoredSecret(name, value string, kind StoredSecretKind, allow
 		} else {
 			_ = backend.Delete(key)
 		}
-		return StoredSecretMetadata{}, err
+		return err
 	}
-	return metadata, nil
+	return nil
 }
 
 func (s *Store) DeleteStoredSecret(name string) (bool, error) {

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -410,6 +411,80 @@ func TestRefreshAccessToken_ReturnsErrorOnAPIError(t *testing.T) {
 	err := bot.refreshAccessToken(context.Background())
 	if err == nil {
 		t.Fatal("expected error on API error")
+	}
+}
+
+type recordingCredentialWriter struct {
+	fields, values []string
+	err            error
+}
+
+func (w *recordingCredentialWriter) PersistCredential(_ context.Context, field, value string) error {
+	w.fields = append(w.fields, field)
+	w.values = append(w.values, value)
+	return w.err
+}
+
+func rotatingTokenClient() *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"new-at","refresh_token":"new-rt","expires_in":3600}`)),
+		}, nil
+	})}
+}
+
+func TestConnect_PicksUpCredentialWriterFromContext(t *testing.T) {
+	writer := &recordingCredentialWriter{}
+	ctx, cancel := context.WithCancel(sdk.WithChannelCredentialWriter(context.Background(), writer))
+	cancel() // keep the background refresh loop off the network
+	handle, err := (&ZaloPlugin{}).Connect(ctx, "zalo-writer", map[string]any{
+		"app_id": "a", "app_secret": "s", "refresh_token": "r", "oa_id": "o",
+	}, func(sdk.InboundChannelMessage) {})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer handle.Close()
+	if handle.(*zaloBot).credentials != writer {
+		t.Fatal("connect did not keep the host credential writer")
+	}
+}
+
+func TestRefreshAccessToken_PersistsRotatedRefreshToken(t *testing.T) {
+	writer := &recordingCredentialWriter{}
+	bot := &zaloBot{appID: "aid", appSecret: "asec", refreshToken: "old-rt", credentials: writer, httpClient: rotatingTokenClient()}
+	if err := bot.refreshAccessToken(context.Background()); err != nil {
+		t.Fatalf("refreshAccessToken: %v", err)
+	}
+	if len(writer.fields) != 1 || writer.fields[0] != "refresh_token" || writer.values[0] != "new-rt" {
+		t.Fatalf("write-back calls = %v %v", writer.fields, writer.values)
+	}
+	if bot.refreshToken != "new-rt" || bot.getToken() != "new-at" {
+		t.Fatalf("in-memory tokens = %q %q", bot.refreshToken, bot.getToken())
+	}
+}
+
+func TestRefreshAccessToken_PersistFailureFailsRefreshButKeepsToken(t *testing.T) {
+	writer := &recordingCredentialWriter{err: errors.New("backend down")}
+	bot := &zaloBot{appID: "aid", appSecret: "asec", refreshToken: "old-rt", credentials: writer, httpClient: rotatingTokenClient()}
+	if err := bot.refreshAccessToken(context.Background()); err == nil {
+		t.Fatal("refresh must not complete when the rotated token was not persisted")
+	}
+	// The old token is single-use, so the running channel must still adopt the new one.
+	if bot.refreshToken != "new-rt" || bot.getToken() != "new-at" {
+		t.Fatalf("in-memory tokens = %q %q", bot.refreshToken, bot.getToken())
+	}
+}
+
+func TestRefreshAccessToken_LiteralRefreshTokenIsNotAnError(t *testing.T) {
+	writer := &recordingCredentialWriter{err: sdk.ErrCredentialNotWritable}
+	bot := &zaloBot{appID: "aid", appSecret: "asec", refreshToken: "old-rt", credentials: writer, httpClient: rotatingTokenClient()}
+	if err := bot.refreshAccessToken(context.Background()); err != nil {
+		t.Fatalf("refreshAccessToken: %v", err)
+	}
+	if bot.refreshToken != "new-rt" {
+		t.Fatalf("refreshToken = %q", bot.refreshToken)
 	}
 }
 
