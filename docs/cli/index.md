@@ -370,8 +370,15 @@ Manage named secrets in the runtime config.
 ```bash
 metiq secrets list
 metiq secrets get ANTHROPIC_API_KEY
-metiq secrets set MY_TOKEN "value"
+printf '%s' "$VALUE" | metiq secrets set MY_TOKEN
 ```
+
+`secrets set` stores the value read from stdin in the daemon's protected
+gateway-store (`secrets.store.set`). It connects over the gateway WebSocket
+(`gateway_ws_listen_addr` / `gateway_ws_token` from bootstrap, or `--ws-url` /
+`--ws-token`), which is the only transport that accepts secret values. Reference
+the stored entry from config as
+`{"source":"store","provider":"gateway-store","id":"MY_TOKEN"}`.
 
 ## Approvals
 
