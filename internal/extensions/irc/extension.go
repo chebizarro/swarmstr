@@ -173,6 +173,10 @@ func (p *IRCPlugin) Connect(
 
 const ircMaxLineLen = 450
 
+// ircMaxReplyTargets bounds the per-sender origin map; a sender evicted past
+// this cap is answered by DM until they speak again.
+const ircMaxReplyTargets = 1024
+
 type ircBot struct {
 	mu             sync.Mutex
 	channelID      string
@@ -258,6 +262,19 @@ func (b *ircBot) resolveTarget(replyTarget string) string {
 		return origin
 	}
 	return replyTarget
+}
+
+func (b *ircBot) rememberReplyTarget(nick, target string) {
+	key := strings.ToLower(nick)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.replyTargets[key]; !ok && len(b.replyTargets) >= ircMaxReplyTargets {
+		for evict := range b.replyTargets {
+			delete(b.replyTargets, evict)
+			break
+		}
+	}
+	b.replyTargets[key] = target
 }
 
 func (b *ircBot) sendPrivmsg(target, text string) error {
@@ -425,9 +442,7 @@ func (b *ircBot) handleLine(line string, joined *bool) {
 		if !strings.HasPrefix(target, "#") && !strings.HasPrefix(target, "&") {
 			replyTo, threadID = senderNick, "dm:"+senderNick
 		}
-		b.mu.Lock()
-		b.replyTargets[strings.ToLower(senderNick)] = replyTo
-		b.mu.Unlock()
+		b.rememberReplyTarget(senderNick, replyTo)
 
 		b.onMessage(sdk.InboundChannelMessage{
 			ChannelID: b.channelID,

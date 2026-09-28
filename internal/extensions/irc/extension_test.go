@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -189,6 +190,22 @@ func TestHandleLine_PrivmsgDirect(t *testing.T) {
 	// handle and applies the account's AllowFrom policy.
 	if m.ChannelID != "irc-main" || m.ThreadID != "dm:alice" {
 		t.Fatalf("expected channelID=irc-main thread=dm:alice, got %q / %q", m.ChannelID, m.ThreadID)
+	}
+}
+
+// The per-sender origin map must stay bounded however many nicks speak.
+func TestHandleLine_ReplyTargetsCapped(t *testing.T) {
+	b, _ := newBot()
+	joined := true
+	for i := 0; i < ircMaxReplyTargets+50; i++ {
+		b.handleLine(fmt.Sprintf(":nick%d!u@host PRIVMSG #general :hi", i), &joined)
+	}
+	if got := len(b.replyTargets); got != ircMaxReplyTargets {
+		t.Fatalf("replyTargets size = %d, want cap %d", got, ircMaxReplyTargets)
+	}
+	last := fmt.Sprintf("nick%d", ircMaxReplyTargets+49)
+	if got := b.resolveTarget(last); got != "#general" {
+		t.Fatalf("latest sender resolved to %q, want #general", got)
 	}
 }
 
