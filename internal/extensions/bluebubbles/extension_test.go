@@ -377,7 +377,7 @@ func TestFetchMessages_HandlesHTTPError(t *testing.T) {
 			return errorResponse(500), nil
 		})},
 	}
-	_, err := bot.fetchMessages(context.Background(), 10)
+	_, err := bot.fetchMessages(context.Background(), 10, 0)
 	if err == nil {
 		t.Fatal("expected error on 500 response")
 	}

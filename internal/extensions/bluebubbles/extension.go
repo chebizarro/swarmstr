@@ -3,7 +3,9 @@
 // BlueBubbles is a self-hosted iMessage relay server.  This plugin receives new
 // messages event-driven via the BlueBubbles Socket.IO push endpoint
 // (Engine.IO v4 over WebSocket, "new-message" events) and sends replies via the
-// REST API. REST polling is disabled by default and requires allow_polling=true.
+// REST API. After every (re)connect it fetches, via REST, the messages that
+// arrived while the socket was down. REST polling is disabled by default and
+// requires allow_polling=true.
 //
 // Registration: import _ "metiq/internal/extensions/bluebubbles" in the
 // daemon main.go to include this plugin in the binary.
@@ -212,7 +214,11 @@ func (p *BlueBubblesPlugin) Connect(
 
 // ─── Bot ──────────────────────────────────────────────────────────────────────
 
-const bbPollInterval = 5 * time.Second
+const (
+	bbPollInterval = 5 * time.Second
+	// bbBackfillLimit bounds the per-reconnect catch-up fetch.
+	bbBackfillLimit = 100
+)
 
 type bbBot struct {
 	channelID      string
@@ -226,9 +232,10 @@ type bbBot struct {
 	cancel         context.CancelFunc
 	httpClient     *http.Client
 
-	mu          sync.Mutex
-	lastMsgGUID string // GUID of last seen message, for dedup
-	seenGUIDs   map[string]struct{}
+	mu         sync.Mutex
+	seenGUIDs  map[string]struct{}
+	seeded     bool  // seenGUIDs holds the chat's recent history
+	newestSeen int64 // newest dateCreated (epoch ms) seen: the backfill watermark
 }
 
 func (b *bbBot) ID() string { return b.channelID }
@@ -252,21 +259,73 @@ func (b *bbBot) run(ctx context.Context) {
 	b.seenGUIDs = map[string]struct{}{}
 	b.mu.Unlock()
 
-	// Seed seenGUIDs with the latest 25 messages so we don't replay history on
-	// startup (applies to both the Socket.IO and polling paths).
-	if msgs, err := b.fetchMessages(ctx, 25); err == nil {
-		b.mu.Lock()
-		for _, m := range msgs {
-			b.seenGUIDs[m.GUID] = struct{}{}
-		}
-		b.mu.Unlock()
-	}
+	// Seed before either the Socket.IO or polling path so startup never
+	// replays history.
+	b.seed(ctx)
 
 	var poll func(context.Context)
 	if b.allowPolling {
 		poll = b.pollLoop
 	}
-	channels.SuperviseReceiveStream(ctx, "bluebubbles: channel="+b.channelID, b.socketConnect, b.socketServe, poll)
+	channels.SuperviseReceiveStream(ctx, "bluebubbles: channel="+b.channelID, b.connectAndBackfill, b.socketServe, poll)
+}
+
+// seed marks the latest 25 messages as seen without delivering them.
+func (b *bbBot) seed(ctx context.Context) {
+	msgs, err := b.fetchMessages(ctx, 25, 0)
+	if err != nil {
+		log.Printf("bluebubbles: history seed failed channel=%s: %v", b.channelID, err)
+		return
+	}
+	b.mu.Lock()
+	for _, m := range msgs {
+		b.markSeenLocked(m)
+	}
+	b.seeded = true
+	b.mu.Unlock()
+}
+
+// connectAndBackfill is the supervisor's dial step, so it runs on every
+// (re)connect. After the handshake it fetches messages created since the newest
+// one seen, recovering what arrived while the socket was down. Pushes received
+// during the fetch wait on the socket until socketServe reads them, and GUID
+// dedup drops the overlap. A failed backfill is logged rather than failing the
+// dial, so a REST outage cannot hold a working socket down.
+func (b *bbBot) connectAndBackfill(ctx context.Context) (*websocket.Conn, error) {
+	conn, err := b.socketConnect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	b.backfill(ctx)
+	return conn, nil
+}
+
+func (b *bbBot) backfill(ctx context.Context) {
+	b.mu.Lock()
+	seeded, after := b.seeded, b.newestSeen
+	b.mu.Unlock()
+	if !seeded {
+		// Without a seeded history, fetching would replay it; seed instead.
+		b.seed(ctx)
+		return
+	}
+	if after > 0 {
+		// Overlap by 1ms so a message sharing the watermark's millisecond is
+		// not skipped; dedup drops the repeat.
+		after--
+	}
+	msgs, err := b.fetchMessages(ctx, bbBackfillLimit, after)
+	if err != nil {
+		log.Printf("bluebubbles: reconnect backfill failed channel=%s: %v", b.channelID, err)
+		return
+	}
+	if len(msgs) == bbBackfillLimit {
+		log.Printf("bluebubbles: reconnect backfill channel=%s hit the %d-message limit; older missed messages were not fetched", b.channelID, bbBackfillLimit)
+	}
+	// msgs is newest-first; deliver oldest first.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		b.deliverMessage(msgs[i])
+	}
 }
 
 // pollLoop is the REST polling fallback: a wait-and-check ticker over the
@@ -308,10 +367,14 @@ type bbMessagesResp struct {
 	Data   []bbMessage `json:"data"`
 }
 
-// fetchMessages retrieves the last `limit` messages from the chat via REST.
-func (b *bbBot) fetchMessages(ctx context.Context, limit int) ([]bbMessage, error) {
+// fetchMessages retrieves up to limit of the chat's newest messages via REST,
+// newest first. A positive after (epoch ms) keeps only messages created after it.
+func (b *bbBot) fetchMessages(ctx context.Context, limit int, after int64) ([]bbMessage, error) {
 	u := fmt.Sprintf("%s/api/v1/chat/%s/message?password=%s&limit=%d&sort=desc",
 		b.serverURL, url.PathEscape(b.chatGUID), url.QueryEscape(b.password), limit)
+	if after > 0 {
+		u += fmt.Sprintf("&after=%d", after)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -333,7 +396,7 @@ func (b *bbBot) fetchMessages(ctx context.Context, limit int) ([]bbMessage, erro
 
 // poll fetches recent messages and delivers any unseen ones.
 func (b *bbBot) poll(ctx context.Context) error {
-	msgs, err := b.fetchMessages(ctx, 10)
+	msgs, err := b.fetchMessages(ctx, 10, 0)
 	if err != nil {
 		return err
 	}
@@ -349,15 +412,11 @@ func (b *bbBot) poll(ctx context.Context) error {
 // polling fallback.
 func (b *bbBot) deliverMessage(m bbMessage) {
 	b.mu.Lock()
-	if b.seenGUIDs == nil {
-		b.seenGUIDs = map[string]struct{}{}
-	}
-	if _, seen := b.seenGUIDs[m.GUID]; seen {
-		b.mu.Unlock()
+	fresh := b.markSeenLocked(m)
+	b.mu.Unlock()
+	if !fresh {
 		return
 	}
-	b.seenGUIDs[m.GUID] = struct{}{}
-	b.mu.Unlock()
 
 	// Skip messages sent by the bot itself.
 	if m.IsFromMe {
@@ -381,6 +440,22 @@ func (b *bbBot) deliverMessage(m bbMessage) {
 		EventID:   m.GUID,
 		CreatedAt: m.DateCreated / 1000,
 	})
+}
+
+// markSeenLocked records m for dedup and advances the backfill watermark. It
+// reports whether m had not been seen before. b.mu must be held.
+func (b *bbBot) markSeenLocked(m bbMessage) bool {
+	if b.seenGUIDs == nil {
+		b.seenGUIDs = map[string]struct{}{}
+	}
+	if m.DateCreated > b.newestSeen {
+		b.newestSeen = m.DateCreated
+	}
+	if _, seen := b.seenGUIDs[m.GUID]; seen {
+		return false
+	}
+	b.seenGUIDs[m.GUID] = struct{}{}
+	return true
 }
 
 // ─── Socket.IO push (event-driven inbound) ────────────────────────────────
