@@ -372,8 +372,10 @@ func (b *telegramBot) SendWithReceipt(ctx context.Context, text string) (channel
 
 // SendMedia delivers the shared direct text/media outbound contract: each
 // media reference is validated against the central gateway limits and sent
-// with the Telegram method matching its media kind. The payload text rides as
-// the first item's caption; with no media it degrades to a plain send.
+// with the Telegram method matching its media kind. http(s) URLs are passed to
+// Telegram to fetch; staged local files are uploaded as multipart form data.
+// The payload text rides as the first item's caption; with no media it
+// degrades to a plain send.
 func (b *telegramBot) SendMedia(ctx context.Context, payload sdk.DirectTextMediaPayload) error {
 	if err := channelmedia.Validate(payload.Media, channels.MediaLimits{}); err != nil {
 		return fmt.Errorf("telegram %s: %w", b.channelID, err)
@@ -396,11 +398,27 @@ func (b *telegramBot) SendMedia(ctx context.Context, payload sdk.DirectTextMedia
 		if i == 0 {
 			caption = payload.Text
 		}
-		if err := sendTelegramMedia(ctx, client, b.token, chatID, telegramMediaKind(item), item.Path, caption); err != nil {
+		if err := sendTelegramMediaItem(ctx, client, b.token, chatID, item, caption); err != nil {
 			return fmt.Errorf("telegram %s: media[%d]: %w", b.channelID, i, err)
 		}
 	}
 	return nil
+}
+
+func sendTelegramMediaItem(ctx context.Context, client *http.Client, token, chatID string, item sdk.MediaPayloadInput, caption string) error {
+	kind := telegramMediaKind(item)
+	if channelmedia.IsHTTPURL(item.Path) {
+		return sendTelegramMedia(ctx, client, token, chatID, kind, item.Path, caption)
+	}
+	data, filename, _, err := channelmedia.ReadLocalFile(item, channels.DefaultMaxMediaBytes)
+	if err != nil {
+		return err
+	}
+	method, field, err := telegramMediaMethod(kind)
+	if err != nil {
+		return err
+	}
+	return sendTelegramUpload(ctx, client, token, chatID, method, field, filename, data, caption)
 }
 
 // telegramMediaKind maps a shared media kind onto Telegram's send methods.
@@ -948,33 +966,46 @@ func sendTelegramAudioBytes(ctx context.Context, httpClient *http.Client, token,
 	if len(audio) == 0 {
 		return fmt.Errorf("telegram sendAudio: audio bytes are required")
 	}
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
 	ext := strings.Trim(strings.TrimSpace(format), ".")
 	if ext == "" {
 		ext = "ogg"
 	}
+	return sendTelegramUpload(ctx, httpClient, token, chatID, "sendAudio", "audio", "audio."+ext, audio, "")
+}
+
+// sendTelegramUpload posts file bytes to a Telegram send method as multipart
+// form data, the only way the Bot API accepts a new file upload.
+func sendTelegramUpload(ctx context.Context, httpClient *http.Client, token, chatID, method, field, filename string, data []byte, caption string) error {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	_ = writer.WriteField("chat_id", chatID)
-	part, err := writer.CreateFormFile("audio", "audio."+ext)
+	if err := writer.WriteField("chat_id", chatID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(caption) != "" {
+		if err := writer.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	part, err := writer.CreateFormFile(field, filename)
 	if err != nil {
 		return err
 	}
-	if _, err := part.Write(audio); err != nil {
+	if _, err := part.Write(data); err != nil {
 		return err
 	}
 	if err := writer.Close(); err != nil {
 		return err
 	}
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendAudio", token)
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", token, method)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	return telegramDo(req, httpClient, "telegram sendAudio")
+	return telegramDo(req, httpClient, "telegram "+method)
 }
 
 func telegramPostJSON(ctx context.Context, httpClient *http.Client, token, method string, payload map[string]any) error {

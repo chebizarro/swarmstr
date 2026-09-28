@@ -113,6 +113,7 @@ func newBot(allowedNicks ...string) (*ircBot, *[]sdk.InboundChannelMessage) {
 		nick:           "swarmbot",
 		ircChannels:    []string{"#general"},
 		allowedSenders: allowed,
+		replyTargets:   map[string]string{},
 		done:           make(chan struct{}),
 	}
 	b.onMessage = func(m sdk.InboundChannelMessage) {
@@ -184,8 +185,38 @@ func TestHandleLine_PrivmsgDirect(t *testing.T) {
 		t.Fatalf("expected 1 message, got %d", len(*msgs))
 	}
 	m := (*msgs)[0]
-	if m.ChannelID != "irc-dm:alice" {
-		t.Fatalf("expected DM channelID, got %q", m.ChannelID)
+	// DMs must stay on the account channel ID so the daemon finds the reply
+	// handle and applies the account's AllowFrom policy.
+	if m.ChannelID != "irc-main" || m.ThreadID != "dm:alice" {
+		t.Fatalf("expected channelID=irc-main thread=dm:alice, got %q / %q", m.ChannelID, m.ThreadID)
+	}
+}
+
+// Replies must go back to where each sender's message came from, not always
+// to the first configured channel.
+func TestSend_RoutesReplyToOrigin(t *testing.T) {
+	b, _ := newBot()
+	b.ircChannels = []string{"#general", "#dev"}
+	buf := captureWriter(b)
+	joined := true
+	b.handleLine(":alice!alice@host PRIVMSG #dev :hi", &joined)
+	b.handleLine(":Bob!bob@host PRIVMSG swarmbot :psst", &joined)
+
+	cases := []struct{ replyTarget, want string }{
+		{"alice", "PRIVMSG #dev :ok\r\n"},
+		{"bob", "PRIVMSG Bob :ok\r\n"},     // DM, nick lookup is case-insensitive
+		{"carol", "PRIVMSG carol :ok\r\n"}, // no recorded origin: target used as-is
+		{"", "PRIVMSG #general :ok\r\n"},   // no target: first configured channel
+	}
+	for _, tc := range cases {
+		buf.Reset()
+		ctx := sdk.WithChannelReplyTarget(context.Background(), tc.replyTarget)
+		if err := b.Send(ctx, "ok"); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != tc.want {
+			t.Fatalf("reply target %q: got %q, want %q", tc.replyTarget, got, tc.want)
+		}
 	}
 }
 

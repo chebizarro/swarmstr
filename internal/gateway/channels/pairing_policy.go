@@ -44,7 +44,7 @@ func isDirectPairingMessage(config map[string]any, msg sdk.InboundChannelMessage
 		return true
 	}
 	thread := strings.ToLower(strings.TrimSpace(msg.ThreadID))
-	if strings.HasPrefix(thread, "dm:") || strings.HasPrefix(thread, "c2c:") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.ChannelID)), "irc-dm:") {
+	if strings.HasPrefix(thread, "dm:") || strings.HasPrefix(thread, "c2c:") {
 		return true
 	}
 	return false

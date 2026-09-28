@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,5 +85,47 @@ func TestTelegramSendMediaSharedContract(t *testing.T) {
 	})
 	if err == nil || len(calls) != 0 {
 		t.Fatalf("expected validation error with no API calls, got err=%v calls=%d", err, len(calls))
+	}
+}
+
+// Telegram's JSON photo/document fields accept only a URL or file_id, so a
+// staged local file must be uploaded as multipart form data.
+func TestTelegramSendMediaUploadsLocalFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chart.png")
+	if err := os.WriteFile(path, []byte("PNGDATA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var method, chatID, caption, filename, content string
+	bot := &telegramBot{
+		channelID:  "tg-main",
+		token:      "tok",
+		lastChatID: "555",
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			method = req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]
+			if err := req.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("expected multipart upload: %v", err)
+				return jsonResponse(req, `{"ok":true}`), nil
+			}
+			chatID, caption = req.FormValue("chat_id"), req.FormValue("caption")
+			file, header, err := req.FormFile("photo")
+			if err != nil {
+				t.Errorf("photo form file: %v", err)
+				return jsonResponse(req, `{"ok":true}`), nil
+			}
+			defer file.Close()
+			raw, _ := io.ReadAll(file)
+			filename, content = header.Filename, string(raw)
+			return jsonResponse(req, `{"ok":true}`), nil
+		})},
+	}
+	err := bot.SendMedia(context.Background(), sdk.DirectTextMediaPayload{
+		Text:  "look",
+		Media: []sdk.MediaPayloadInput{{Path: path, ContentType: "image/png"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != "sendPhoto" || chatID != "555" || caption != "look" || filename != "chart.png" || content != "PNGDATA" {
+		t.Fatalf("upload = method %q chat %q caption %q file %q content %q", method, chatID, caption, filename, content)
 	}
 }

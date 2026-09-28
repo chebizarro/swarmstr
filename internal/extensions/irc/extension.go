@@ -155,6 +155,7 @@ func (p *IRCPlugin) Connect(
 		password:       password,
 		ircChannels:    ircChannels,
 		allowedSenders: allowedSenders,
+		replyTargets:   map[string]string{},
 		onMessage:      onMessage,
 		done:           make(chan struct{}),
 	}
@@ -184,10 +185,13 @@ type ircBot struct {
 	password       string
 	ircChannels    []string
 	allowedSenders map[string]bool
-	onMessage      func(sdk.InboundChannelMessage)
-	conn           net.Conn
-	writer         *bufio.Writer
-	done           chan struct{}
+	// replyTargets maps a lowercased sender nick to the IRC target its most
+	// recent message arrived on: the channel name, or the nick itself for DMs.
+	replyTargets map[string]string
+	onMessage    func(sdk.InboundChannelMessage)
+	conn         net.Conn
+	writer       *bufio.Writer
+	done         chan struct{}
 }
 
 func (b *ircBot) ID() string { return b.channelID }
@@ -236,14 +240,24 @@ func (b *ircBot) send(line string) error {
 	return b.writer.Flush()
 }
 
+// Send replies where the reply-target sender last spoke (channel or DM). A
+// target with no recorded origin is used verbatim; with no target at all the
+// first configured channel is used.
 func (b *ircBot) Send(ctx context.Context, text string) error {
-	// Use channel_id as the IRC target (e.g. "#general").
-	// Determine target from the first configured IRC channel.
-	target := b.channelID
-	if len(b.ircChannels) > 0 {
-		target = b.ircChannels[0]
+	return b.sendPrivmsg(b.resolveTarget(sdk.ChannelReplyTarget(ctx)), text)
+}
+
+func (b *ircBot) resolveTarget(replyTarget string) string {
+	replyTarget = strings.TrimSpace(replyTarget)
+	if replyTarget == "" {
+		return b.ircChannels[0]
 	}
-	return b.sendPrivmsg(target, text)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if origin, ok := b.replyTargets[strings.ToLower(replyTarget)]; ok {
+		return origin
+	}
+	return replyTarget
 }
 
 func (b *ircBot) sendPrivmsg(target, text string) error {
@@ -404,16 +418,21 @@ func (b *ircBot) handleLine(line string, joined *bool) {
 			return
 		}
 
-		// Determine the metiq channel_id: use the IRC channel name if target
-		// is a channel, or the sender's nick for direct messages.
-		msgChannelID := b.channelID
+		// Replies go back to the channel the message arrived on, or to the
+		// sender for DMs. DMs carry a "dm:" thread so they get their own
+		// session and are recognised as direct scope for pairing.
+		replyTo, threadID := target, ""
 		if !strings.HasPrefix(target, "#") && !strings.HasPrefix(target, "&") {
-			msgChannelID = "irc-dm:" + senderNick
+			replyTo, threadID = senderNick, "dm:"+senderNick
 		}
+		b.mu.Lock()
+		b.replyTargets[strings.ToLower(senderNick)] = replyTo
+		b.mu.Unlock()
 
 		b.onMessage(sdk.InboundChannelMessage{
-			ChannelID: msgChannelID,
+			ChannelID: b.channelID,
 			SenderID:  senderNick,
+			ThreadID:  threadID,
 			Text:      text,
 		})
 	}
