@@ -520,3 +520,43 @@ func TestSignalTypingClearsAfterSend(t *testing.T) {
 		}
 	}
 }
+
+// A routed send must go out from the connected bot's account, even when the
+// caller supplies a different api_url/account; otherwise the route's target
+// ID names an account whose reactions the bot never receives.
+func TestSignalRoutedSendUsesConnectedBotCredentials(t *testing.T) {
+	var sentFrom string
+	srv, bot := newTestSignalServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req signalSendRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		sentFrom = req.Number
+		_, _ = w.Write([]byte(`{"timestamp":4242}`))
+	}))
+	defer srv.Close()
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("send went to caller-supplied sidecar %s", r.URL.Path)
+		_, _ = w.Write([]byte(`{"timestamp":1}`))
+	}))
+	defer other.Close()
+	registerSignalBot(bot.channelID, bot)
+	defer bot.Close()
+
+	method := signalSendGatewayMethod("signal.send_approval", "", "approval")
+	out, err := method.Handle(context.Background(), map[string]any{
+		"account_id": bot.channelID, "route_id": "r1",
+		"api_url": other.URL, "account": "+19990000000",
+		"to": "+15557654321", "text": "approve?",
+	})
+	if err != nil {
+		t.Fatalf("send_approval: %v", err)
+	}
+	if sentFrom != bot.account {
+		t.Fatalf("sent from %q, want connected bot account %q", sentFrom, bot.account)
+	}
+	if out["message_id"] != signalEventID(bot.account, 4242) {
+		t.Fatalf("unexpected message_id %v", out["message_id"])
+	}
+	if got := bot.routesByTarget[signalEventID(bot.account, 4242)]; got != "r1" {
+		t.Fatalf("route not registered against bot account target: %#v", bot.routesByTarget)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,5 +122,51 @@ func TestDialWSFailsWithoutWebSocket(t *testing.T) {
 	defer cancel()
 	if _, err := bot.dialWS(ctx); err == nil {
 		t.Fatal("expected dialWS to fail when server has no WebSocket endpoint")
+	}
+}
+
+// With polling disabled, run must keep redialing after the initial WebSocket
+// dial fails rather than returning and leaving the channel silently deaf.
+func TestRunRetriesAfterInitialDialFailure(t *testing.T) {
+	const chanID = "mmchan123"
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			http.Error(w, "server starting", http.StatusServiceUnavailable)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		var challenge map[string]any
+		if err := wsjson.Read(r.Context(), conn, &challenge); err != nil {
+			return
+		}
+		_ = wsjson.Write(r.Context(), conn, map[string]any{"event": "hello"})
+		postJSON, _ := json.Marshal(map[string]any{"id": "post-2", "user_id": "user-9", "message": "after retry", "channel_id": chanID})
+		_ = wsjson.Write(r.Context(), conn, map[string]any{
+			"event": "posted", "data": map[string]any{"post": string(postJSON)},
+			"broadcast": map[string]any{"channel_id": chanID},
+		})
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	delivered := make(chan sdk.InboundChannelMessage, 1)
+	bot := &mmBot{channelID: "metiq-ch", baseURL: srv.URL, token: "t", mmChannelID: chanID, done: make(chan struct{}),
+		onMessage: func(m sdk.InboundChannelMessage) { delivered <- m }}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go bot.run(ctx)
+
+	select {
+	case m := <-delivered:
+		if m.Text != "after retry" {
+			t.Fatalf("unexpected text %q", m.Text)
+		}
+	case <-ctx.Done():
+		t.Fatalf("no delivery after initial dial failure (attempts=%d)", attempts.Load())
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,5 +97,43 @@ func TestDialWSFailsWithoutWebSocket(t *testing.T) {
 	defer cancel()
 	if _, err := bot.dialWS(ctx); err == nil {
 		t.Fatal("expected dialWS failure without a WebSocket endpoint")
+	}
+}
+
+// With polling disabled, run must keep redialing after the initial WebSocket
+// dial fails rather than returning and leaving the channel silently deaf.
+func TestRunRetriesAfterInitialDialFailure(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			http.Error(w, "sidecar starting", http.StatusServiceUnavailable)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		_ = wsjson.Write(r.Context(), conn, map[string]any{"envelope": map[string]any{
+			"source": "+15551112222", "timestamp": 1, "dataMessage": map[string]any{"message": "after retry"},
+		}})
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	delivered := make(chan sdk.InboundChannelMessage, 1)
+	bot := &signalBot{channelID: "sig-ch", apiURL: srv.URL, account: "+15550000000", done: make(chan struct{}),
+		onMessage: func(m sdk.InboundChannelMessage) { delivered <- m }}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go bot.run(ctx)
+
+	select {
+	case m := <-delivered:
+		if m.Text != "after retry" {
+			t.Fatalf("unexpected text %q", m.Text)
+		}
+	case <-ctx.Done():
+		t.Fatalf("no delivery after initial dial failure (attempts=%d)", attempts.Load())
 	}
 }

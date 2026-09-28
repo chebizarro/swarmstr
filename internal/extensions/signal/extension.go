@@ -146,16 +146,12 @@ func signalSendGatewayMethod(name, description, routeKind string) sdk.GatewayMet
 		Handle: func(ctx context.Context, params map[string]any) (map[string]any, error) {
 			apiURL := strings.TrimRight(signalString(params, "api_url"), "/")
 			account := strings.TrimSpace(signalString(params, "account"))
-			to := strings.TrimSpace(firstSignalString(params, "to", "default_to"))
-			text := signalString(params, "text")
-			if apiURL == "" || account == "" || to == "" || strings.TrimSpace(text) == "" {
-				return nil, fmt.Errorf("%s: api_url, account, to/default_to, and text are required", name)
-			}
-			var accountID, routeID string
+			client := &http.Client{Timeout: 15 * time.Second}
+			var routeID string
 			var bot *signalBot
 			var choices map[string]string
 			if routeKind != "" {
-				accountID = strings.TrimSpace(signalString(params, "account_id"))
+				accountID := strings.TrimSpace(signalString(params, "account_id"))
 				routeID = strings.TrimSpace(signalString(params, "route_id"))
 				if accountID == "" || routeID == "" {
 					return nil, fmt.Errorf("%s: connected account_id and route_id are required", name)
@@ -164,13 +160,21 @@ func signalSendGatewayMethod(name, description, routeKind string) sdk.GatewayMet
 				if bot == nil {
 					return nil, fmt.Errorf("%s: account %q is not connected for reaction routing", name, accountID)
 				}
+				// The route is matched by the bot's receive stream, so the message
+				// must be sent from that bot's account, not caller-supplied overrides.
+				apiURL, account, client = bot.apiURL, bot.account, bot.httpClient
 				var err error
 				choices, err = signalRouteChoices(routeKind, params)
 				if err != nil {
 					return nil, fmt.Errorf("%s: invalid reaction route: %w", name, err)
 				}
 			}
-			result, err := sendSignalText(ctx, &http.Client{Timeout: 15 * time.Second}, apiURL, account, to, text)
+			to := strings.TrimSpace(firstSignalString(params, "to", "default_to"))
+			text := signalString(params, "text")
+			if apiURL == "" || account == "" || to == "" || strings.TrimSpace(text) == "" {
+				return nil, fmt.Errorf("%s: api_url, account, to/default_to, and text are required", name)
+			}
+			result, err := sendSignalText(ctx, client, apiURL, account, to, text)
 			if err != nil {
 				return nil, err
 			}
@@ -570,26 +574,14 @@ func (b *signalBot) deliverEnvelope(env signalEnvelope) {
 
 // ─── Event-driven receive (signal-cli JSON-RPC WebSocket) ─────────────────────
 
-const signalMaxReconnects = 10
-
-// run prefers the event-driven JSON-RPC WebSocket receive stream. REST polling
-// is available only with explicit allow_polling opt-in.
+// run supervises the event-driven JSON-RPC WebSocket receive stream until the
+// channel closes. REST polling is used only with explicit allow_polling opt-in.
 func (b *signalBot) run(ctx context.Context) {
-	conn, err := b.dialWS(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		if !b.allowPolling {
-			log.Printf("signal: channel=%s JSON-RPC WebSocket receive unavailable (%v); REST polling fallback disabled (set allow_polling=true to opt in)", b.channelID, err)
-			return
-		}
-		log.Printf("signal: channel=%s JSON-RPC WebSocket receive unavailable (%v); using explicitly enabled REST /v1/receive polling fallback (account=%s, sidecar=%s)", b.channelID, err, b.account, b.apiURL)
-		b.poll(ctx)
-		return
+	var poll func(context.Context)
+	if b.allowPolling {
+		poll = b.poll
 	}
-	log.Printf("signal: channel=%s connected to signal-cli JSON-RPC WebSocket receive (account=%s, sidecar=%s)", b.channelID, b.account, b.apiURL)
-	b.serveWS(ctx, conn)
+	channels.SuperviseReceiveStream(ctx, "signal: channel="+b.channelID, b.dialWS, b.readWS, poll)
 }
 
 func (b *signalBot) wsURL() string {
@@ -614,54 +606,6 @@ func (b *signalBot) dialWS(ctx context.Context) (*websocket.Conn, error) {
 	return conn, nil
 }
 
-// serveWS reads streamed envelopes, reconnecting with backoff. After
-// signalMaxReconnects failures it stops unless REST polling was explicitly enabled.
-func (b *signalBot) serveWS(ctx context.Context, conn *websocket.Conn) {
-	backoff := b.pollInterval
-	if backoff <= 0 {
-		backoff = 3 * time.Second
-	}
-	attempts := 0
-	for {
-		err := b.readWS(ctx, conn)
-		_ = conn.Close(websocket.StatusNormalClosure, "reconnect")
-		select {
-		case <-ctx.Done():
-			return
-		case <-b.done:
-			return
-		default:
-		}
-		log.Printf("signal: channel=%s WebSocket receive ended (%v); reconnecting", b.channelID, err)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-b.done:
-				return
-			case <-time.After(backoff):
-			}
-			attempts++
-			newConn, derr := b.dialWS(ctx)
-			if derr == nil {
-				conn = newConn
-				attempts = 0
-				break
-			}
-			log.Printf("signal: channel=%s WebSocket reconnect failed (%v)", b.channelID, derr)
-			if attempts >= signalMaxReconnects {
-				if !b.allowPolling {
-					log.Printf("signal: channel=%s giving up on WebSocket after %d attempts; REST polling fallback disabled", b.channelID, attempts)
-					return
-				}
-				log.Printf("signal: channel=%s giving up on WebSocket after %d attempts; using explicitly enabled REST /v1/receive polling fallback", b.channelID, attempts)
-				b.poll(ctx)
-				return
-			}
-		}
-	}
-}
-
 // signalWSFrame accepts both a bare envelope ({"envelope":{...}}) and a
 // signal-cli JSON-RPC notification ({"jsonrpc":"2.0","method":"receive",
 // "params":{"envelope":{...}}}).
@@ -672,6 +616,7 @@ type signalWSFrame struct {
 }
 
 func (b *signalBot) readWS(ctx context.Context, conn *websocket.Conn) error {
+	defer conn.Close(websocket.StatusNormalClosure, "")
 	for {
 		var frame signalWSFrame
 		if err := wsjson.Read(ctx, conn, &frame); err != nil {

@@ -509,26 +509,14 @@ func (b *mmBot) handlePost(post mmPost, senderUsername string) {
 	})
 }
 
-const mmMaxReconnects = 10
-
-// run prefers the event-driven WebSocket events API. REST polling requires
-// explicit allow_polling opt-in when the WebSocket endpoint cannot be reached.
+// run supervises the event-driven WebSocket events API until the channel
+// closes. REST polling is used only with explicit allow_polling opt-in.
 func (b *mmBot) run(ctx context.Context) {
-	conn, err := b.dialWS(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		if !b.allowPolling {
-			log.Printf("mattermost: channel=%s WebSocket events API unavailable (%v); REST polling fallback disabled (set allow_polling=true to opt in)", b.channelID, err)
-			return
-		}
-		log.Printf("mattermost: channel=%s WebSocket events API unavailable (%v); using explicitly enabled REST /posts polling fallback (team=%s, channel=%s)", b.channelID, err, b.teamName, b.channelName)
-		b.poll(ctx)
-		return
+	var poll func(context.Context)
+	if b.allowPolling {
+		poll = b.poll
 	}
-	log.Printf("mattermost: channel=%s connected to WebSocket events API (team=%s, channel=%s)", b.channelID, b.teamName, b.channelName)
-	b.serveWS(ctx, conn)
+	channels.SuperviseReceiveStream(ctx, "mattermost: channel="+b.channelID, b.dialWS, b.readWS, poll)
 }
 
 // mmWSFrame is a frame from the Mattermost WebSocket events API. Frames are
@@ -607,57 +595,9 @@ func (b *mmBot) dialWS(ctx context.Context) (*websocket.Conn, error) {
 	}
 }
 
-// serveWS reads events from conn, reconnecting with backoff on failure. After
-// mmMaxReconnects attempts it stops unless REST polling was explicitly enabled.
-func (b *mmBot) serveWS(ctx context.Context, conn *websocket.Conn) {
-	backoff := time.Second
-	attempts := 0
-	for {
-		err := b.readWS(ctx, conn)
-		_ = conn.Close(websocket.StatusNormalClosure, "reconnect")
-		select {
-		case <-ctx.Done():
-			return
-		case <-b.done:
-			return
-		default:
-		}
-		log.Printf("mattermost: channel=%s WebSocket read ended (%v); reconnecting", b.channelID, err)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-b.done:
-				return
-			case <-time.After(backoff):
-			}
-			attempts++
-			newConn, derr := b.dialWS(ctx)
-			if derr == nil {
-				conn = newConn
-				backoff = time.Second
-				attempts = 0
-				break
-			}
-			log.Printf("mattermost: channel=%s WebSocket reconnect failed (%v)", b.channelID, derr)
-			if backoff < 30*time.Second {
-				backoff *= 2
-			}
-			if attempts >= mmMaxReconnects {
-				if !b.allowPolling {
-					log.Printf("mattermost: channel=%s giving up on WebSocket after %d attempts; REST polling fallback disabled", b.channelID, attempts)
-					return
-				}
-				log.Printf("mattermost: channel=%s giving up on WebSocket after %d attempts; using explicitly enabled REST /posts polling fallback", b.channelID, attempts)
-				b.poll(ctx)
-				return
-			}
-		}
-	}
-}
-
 // readWS reads and dispatches WebSocket frames until an error occurs.
 func (b *mmBot) readWS(ctx context.Context, conn *websocket.Conn) error {
+	defer conn.Close(websocket.StatusNormalClosure, "")
 	for {
 		var frame mmWSFrame
 		if err := wsjson.Read(ctx, conn, &frame); err != nil {
