@@ -576,6 +576,14 @@ func (b *signalBot) deliverEnvelope(env signalEnvelope) {
 
 // run supervises the event-driven JSON-RPC WebSocket receive stream until the
 // channel closes. REST polling is used only with explicit allow_polling opt-in.
+//
+// Unlike BlueBubbles, there is no reconnect backfill: signal-cli-rest-api has
+// no message-history endpoint, and in json-rpc mode (the only mode serving
+// this WebSocket) GET /v1/receive is not implemented. The signal-cli daemon
+// receives and acknowledges messages from the Signal server as they arrive,
+// and the REST bridge drops any that arrive while no WebSocket client is
+// attached, so they are not re-queued for the next connection. Nothing is
+// left to fetch after a reconnect.
 func (b *signalBot) run(ctx context.Context) {
 	var poll func(context.Context)
 	if b.allowPolling {
