@@ -1,6 +1,7 @@
 package channelmedia
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,5 +94,27 @@ func TestToChannelInputsAndBuildPayload(t *testing.T) {
 	}
 	if ToChannelInputs(nil) != nil {
 		t.Fatal("expected nil passthrough")
+	}
+}
+
+func TestReadLocalFileAcceptsFileURI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "photo one.png")
+	if err := os.WriteFile(path, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	item := sdk.MediaPayloadInput{Path: uri}
+	if err := Validate([]sdk.MediaPayloadInput{item}, channels.MediaLimits{}); err != nil {
+		t.Fatalf("validator rejected file URI %q: %v", uri, err)
+	}
+	data, name, contentType, err := ReadLocalFile(item, 10)
+	if err != nil {
+		t.Fatalf("ReadLocalFile(%q): %v", uri, err)
+	}
+	if string(data) != "png" || name != "photo one.png" || contentType != "image/png" {
+		t.Fatalf("unexpected file URI media: data=%q name=%q contentType=%q", data, name, contentType)
+	}
+	if _, _, _, err := ReadLocalFile(sdk.MediaPayloadInput{Path: "file://fileserver/share/a.png"}, 10); err == nil || !strings.Contains(err.Error(), "not local") {
+		t.Fatalf("expected non-local file URI host rejection, got %v", err)
 	}
 }

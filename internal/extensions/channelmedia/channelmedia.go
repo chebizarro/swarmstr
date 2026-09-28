@@ -53,11 +53,19 @@ func BuildPayload(media []sdk.MediaPayloadInput, preserveMediaTypeCardinality bo
 }
 
 // ReadLocalFile reads one staged local media file with an enforced byte bound.
-// Channel extensions must not fetch remote URLs on behalf of outbound sends.
+// It accepts a plain filesystem path or a local file:// URI, matching what the
+// shared validator admits. Channel extensions must not fetch remote URLs on
+// behalf of outbound sends.
 func ReadLocalFile(item sdk.MediaPayloadInput, maxBytes int64) ([]byte, string, string, error) {
 	path := strings.TrimSpace(item.Path)
 	if IsHTTPURL(path) {
 		return nil, "", "", fmt.Errorf("remote media URLs are not supported; stage the file locally")
+	}
+	if u, err := url.Parse(path); err == nil && u.Scheme == "file" {
+		if u.Host != "" && u.Host != "localhost" {
+			return nil, "", "", fmt.Errorf("file URI host %q is not local; stage the file locally", u.Host)
+		}
+		path = filepath.FromSlash(u.Path)
 	}
 	if maxBytes <= 0 {
 		maxBytes = channels.DefaultMaxMediaBytes
