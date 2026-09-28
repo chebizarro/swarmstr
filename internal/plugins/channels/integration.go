@@ -29,7 +29,7 @@ func BridgesFromLoadResult(host *runtime.OpenClawPluginHost, result runtime.Open
 }
 
 // RegisterGatewayChannelBridges registers OpenClaw channel bridges with the
-// existing gateway channel plugin registry, so channels.ConnectExtensions can
+// existing gateway channel plugin registry, so channels.AccountRuntime can
 // connect configured OpenClaw channels exactly like native Go extensions.
 func RegisterGatewayChannelBridges(host *runtime.OpenClawPluginHost, result runtime.OpenClawLoadResult) (int, error) {
 	bridges, err := BridgesFromLoadResult(host, result)

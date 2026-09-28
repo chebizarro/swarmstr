@@ -6352,8 +6352,8 @@ func main() {
 	}
 
 	// ── Start built-in channel extensions ──────────────────────────────────────
-	// ConnectExtensions scans nostr_channels for entries whose "kind" matches
-	// a registered ChannelPlugin (telegram, discord, etc.).
+	// The channel AccountRuntime starts nostr_channels entries whose "kind"
+	// matches a registered ChannelPlugin (telegram, discord, etc.).
 	//
 	// All inbound channel messages are run through a per-(channel,sender)
 	// debouncer (500 ms window) before reaching the agent pipeline.  This
@@ -6368,8 +6368,8 @@ func main() {
 		}
 	}
 
-	// channelHandles maps channelID → Channel handle, populated after
-	// ConnectExtensions returns.  The debounce callback (which fires ≥500ms later)
+	// channelHandles maps channelID → Channel handle, populated as the
+	// AccountRuntime connects each channel.  The debounce callback (which fires ≥500ms later)
 	// can safely read from it by then.
 	var channelHandlesMu sync.RWMutex
 	channelHandles := map[string]channels.Channel{}
