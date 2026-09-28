@@ -203,10 +203,10 @@ func TestDispatchChannelMediaReplyNilHandle(t *testing.T) {
 }
 
 func TestMediaReplyFallbackText(t *testing.T) {
-	if got := mediaReplyFallbackText("/tmp/voice.mp3"); got != "[audio generated] /tmp/voice.mp3" {
+	if got := mediaReplyFallbackText("/tmp/voice.mp3"); got != "[audio generated] voice.mp3" {
 		t.Errorf("unexpected audio fallback: %q", got)
 	}
-	if got := mediaReplyFallbackText("/tmp/pic.png"); got != "[media generated] /tmp/pic.png" {
+	if got := mediaReplyFallbackText("/tmp/pic.png"); got != "[media generated] pic.png" {
 		t.Errorf("unexpected media fallback: %q", got)
 	}
 }

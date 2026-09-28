@@ -22,6 +22,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	"metiq/internal/nostr/events"
 	nostruntime "metiq/internal/nostr/runtime"
 )
 
@@ -417,7 +418,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 		dTag := appID + ":" + key
 		evt := nostr.Event{
-			Kind:      30078,
+			Kind:      nostr.Kind(events.KindAppData),
 			CreatedAt: nostr.Now(),
 			Tags:      nostr.Tags{{"d", dTag}},
 			Content:   value,
@@ -453,7 +454,7 @@ func RegisterNIPTools(tools *agent.ToolRegistry, opts NostrToolOpts) {
 
 		dTag := appID + ":" + key
 		filter := nostr.Filter{
-			Kinds: []nostr.Kind{30078},
+			Kinds: []nostr.Kind{nostr.Kind(events.KindAppData)},
 			Tags:  nostr.TagMap{"d": []string{dTag}},
 			Limit: 1,
 		}

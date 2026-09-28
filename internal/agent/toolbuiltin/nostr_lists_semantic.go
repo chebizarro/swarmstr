@@ -211,37 +211,37 @@ func resolveSemanticListTarget(args map[string]any) (kind int, dtag string, tag 
 	if kind == 0 {
 		switch listType {
 		case "follows", "follow":
-			kind = 3
+			kind = nip51.KindFollowList
 		case "mute", "mutes":
-			kind = 10000
+			kind = nip51.KindMuteList
 		case "pins", "pin":
-			kind = 10001
+			kind = nip51.KindPinList
 		case "relay", "relays":
-			kind = 10002
+			kind = nip51.KindRelayList
 		case "bookmarks", "bookmark":
-			kind = 10003
+			kind = nip51.KindBookmarks
 		case "categorized_bookmarks":
-			kind = 30001
+			kind = nip51.KindDeprecatedSet
 		case "people", "categorized_people":
-			kind = 30000
+			kind = nip51.KindPeopleList
 		case "allow", "allowlist":
-			kind = 30000
+			kind = nip51.KindPeopleList
 			if dtag == "" {
 				dtag = "allowlist"
 			}
 		case "block", "blocklist":
-			kind = 30000
+			kind = nip51.KindPeopleList
 			if dtag == "" {
 				dtag = "blocklist"
 			}
 		default:
-			kind = nip51.KindMuteList
+			return 0, "", "", fmt.Errorf("invalid list target: unknown list_type %q; pass a supported list_type or an explicit kind", listType)
 		}
 	}
 	if tag == "" {
 		tag = defaultListTag(kind)
 	}
-	if (kind == 30000 || kind == 30001) && dtag == "" {
+	if (kind == nip51.KindPeopleList || kind == nip51.KindDeprecatedSet) && dtag == "" {
 		dtag = listType
 	}
 	return kind, dtag, tag, nil
@@ -249,9 +249,9 @@ func resolveSemanticListTarget(args map[string]any) (kind int, dtag string, tag 
 
 func defaultListTag(kind int) string {
 	switch kind {
-	case 10001, 10003:
+	case nip51.KindPinList, nip51.KindBookmarks:
 		return "e"
-	case 10002:
+	case nip51.KindRelayList:
 		return "r"
 	default:
 		return "p"

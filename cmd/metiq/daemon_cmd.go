@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -14,6 +15,9 @@ import (
 )
 
 // ─── daemon ───────────────────────────────────────────────────────────────────
+
+// errDaemonNotRunning marks stop failures that restart may safely ignore.
+var errDaemonNotRunning = errors.New("daemon not running")
 
 // defaultPIDFile returns ~/.metiq/metiqd.pid.
 func defaultPIDFile() string {
@@ -148,8 +152,10 @@ func runDaemon(args []string) error {
 	case "stop":
 		return daemonStop(pidFile)
 	case "restart":
-		_ = daemonStop(pidFile) // ignore error: may already be down
-		time.Sleep(500 * time.Millisecond)
+		// daemonStop waits for confirmed exit; only "not running" is benign.
+		if err := daemonStop(pidFile); err != nil && !errors.Is(err, errDaemonNotRunning) {
+			return err
+		}
 		return daemonStart(bin, pidFile, logFile, bootstrapPath, sub[1:])
 	case "status":
 		return daemonStatus(pidFile, adminAddr, adminToken, bootstrapPath)
@@ -223,7 +229,7 @@ func daemonStop(pidFile string) error {
 		return err
 	}
 	if pid == 0 {
-		return fmt.Errorf("no pid file found at %s — daemon may not be running", pidFile)
+		return fmt.Errorf("%w: no pid file found at %s", errDaemonNotRunning, pidFile)
 	}
 	if !pidAlive(pid) {
 		fmt.Printf("daemon not running (stale pid=%d); removing pid file\n", pid)
@@ -288,7 +294,7 @@ func daemonInstallService(bin, pidFile, logFile, bootstrapPath string) error {
 	default:
 		return fmt.Errorf("daemon service install is not supported on %s", runtime.GOOS)
 	}
-	return nil
+	return errors.New("automatic service registration is not implemented; follow the instructions above")
 }
 
 func daemonUninstallService() error {
@@ -302,7 +308,7 @@ func daemonUninstallService() error {
 	default:
 		return fmt.Errorf("daemon service unregister is not supported on %s", runtime.GOOS)
 	}
-	return nil
+	return errors.New("automatic service unregistration is not implemented; follow the instructions above")
 }
 
 func daemonStatus(pidFile, adminAddr, adminToken, bootstrapPath string) error {

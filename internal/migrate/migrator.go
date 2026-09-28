@@ -1276,12 +1276,18 @@ func (m *Migrator) extractBootstrap(cfg *OpenClawConfig) map[string]any {
 		bootstrap["private_key"] = cfg.Auth.NostrPrivateKey
 	}
 
-	// Default relays (user should customize)
-	bootstrap["relays"] = []string{
-		"wss://relay.damus.io",
-		"wss://nos.lol",
-		"wss://relay.nostr.band",
-	}
+	// Relays are deliberately left unset: the source OpenClaw config carries no
+	// relay list, and injecting public defaults would silently publish to
+	// relays the operator never chose. metiqd reports the missing setting with
+	// a bootstrap.json hint; surface it as a manual-review issue too.
+	m.addIssue(Issue{
+		Severity:     SeverityWarning,
+		Phase:        PhaseApply,
+		Path:         "bootstrap.relays",
+		Message:      "no relays migrated; configure \"relays\" in bootstrap.json explicitly",
+		Suggestion:   "add e.g. \"relays\": [\"wss://your-relay.example\"] to bootstrap.json",
+		ManualReview: true,
+	})
 
 	// Gateway config
 	if cfg.Gateway != nil {

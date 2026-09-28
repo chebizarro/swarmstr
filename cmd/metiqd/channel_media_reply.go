@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -50,7 +49,7 @@ func dispatchChannelMediaReply(ctx context.Context, handle sdk.ChannelHandle, re
 	}
 	if channelmedia.Kind(sdk.MediaPayloadInput{Path: mediaPath}) == channelmedia.KindAudio {
 		if ah, ok := handle.(sdk.AudioHandle); ok {
-			audioData, readErr := os.ReadFile(filepath.FromSlash(mediaPath))
+			audioData, _, _, readErr := channelmedia.ReadLocalFile(sdk.MediaPayloadInput{Path: filepath.FromSlash(mediaPath)}, 0)
 			if readErr != nil {
 				errs = append(errs, fmt.Errorf("audio read: %w", readErr))
 			} else {
@@ -70,10 +69,11 @@ func dispatchChannelMediaReply(ctx context.Context, handle sdk.ChannelHandle, re
 }
 
 // mediaReplyFallbackText is the text-only placeholder sent when media delivery
-// is unsupported or failed. Audio keeps its historical wording.
+// is unsupported or failed. Only the base name is disclosed to the remote
+// channel; the full host filesystem path stays local.
 func mediaReplyFallbackText(mediaPath string) string {
 	if channelmedia.Kind(sdk.MediaPayloadInput{Path: mediaPath}) == channelmedia.KindAudio {
-		return fmt.Sprintf("[audio generated] %s", mediaPath)
+		return fmt.Sprintf("[audio generated] %s", filepath.Base(mediaPath))
 	}
-	return fmt.Sprintf("[media generated] %s", mediaPath)
+	return fmt.Sprintf("[media generated] %s", filepath.Base(mediaPath))
 }

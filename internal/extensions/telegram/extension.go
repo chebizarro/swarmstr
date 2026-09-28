@@ -566,7 +566,9 @@ func (b *telegramBot) processUpdate(update telegramUpdate) {
 	if update.CallbackQuery != nil && update.CallbackQuery.From != nil {
 		fromID = update.CallbackQuery.From.ID
 	}
-	if len(b.allowedUsers) > 0 && fromID != 0 {
+	// Fail closed: when an allowlist is configured, updates without a sender
+	// ID (fromID == 0) are rejected along with unlisted senders.
+	if len(b.allowedUsers) > 0 {
 		allowed := false
 		for _, uid := range b.allowedUsers {
 			if fromID == uid {

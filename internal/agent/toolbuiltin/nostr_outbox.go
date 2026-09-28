@@ -13,6 +13,7 @@ import (
 	nostr "fiatjaf.com/nostr"
 
 	"metiq/internal/agent"
+	"metiq/internal/nostr/nip51"
 	nostruntime "metiq/internal/nostr/runtime"
 )
 
@@ -76,7 +77,7 @@ func NostrRelayHintsTool(opts NostrToolOpts) agent.ToolFunc {
 		pool, releasePool := opts.AcquirePool("relay_hints done")
 		defer releasePool()
 
-		f := nostr.Filter{Kinds: []nostr.Kind{10002}, Authors: []nostr.PubKey{pk}, Limit: 1}
+		f := nostr.Filter{Kinds: []nostr.Kind{nip51.KindRelayList}, Authors: []nostr.PubKey{pk}, Limit: 1}
 		var best *nostr.Event
 		for re := range pool.FetchMany(ctx2, relays, f, nostr.SubscriptionOptions{}) {
 			ev := re.Event
@@ -169,12 +170,12 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 			tags = append(tags, nostr.Tag{"r", r, "write"})
 		}
 
-		evt := nostr.Event{Kind: 10002, CreatedAt: nostr.Now(), Tags: tags, Content: ""}
+		evt := nostr.Event{Kind: nip51.KindRelayList, CreatedAt: nostr.Now(), Tags: tags, Content: ""}
 		if err := opts.checkOutboundEvent(&evt); err != nil {
-			return "", nostrToolErr("nostr_relay_list_set", "content_blocked", err.Error(), map[string]any{"kind": 10002})
+			return "", nostrToolErr("nostr_relay_list_set", "content_blocked", err.Error(), map[string]any{"kind": nip51.KindRelayList})
 		}
 		if err := signFn(ctx, &evt); err != nil {
-			return "", nostrToolErr("nostr_relay_list_set", "sign_failed", err.Error(), map[string]any{"kind": 10002})
+			return "", nostrToolErr("nostr_relay_list_set", "sign_failed", err.Error(), map[string]any{"kind": nip51.KindRelayList})
 		}
 
 		ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -197,7 +198,7 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 			published++
 		}
 		if published == 0 && lastErr != nil {
-			return "", nostrToolErr("nostr_relay_list_set", "publish_failed", lastErr.Error(), map[string]any{"kind": 10002, "publish_relays": relays})
+			return "", nostrToolErr("nostr_relay_list_set", "publish_failed", lastErr.Error(), map[string]any{"kind": nip51.KindRelayList, "publish_relays": relays})
 		}
 
 		// Invalidate caches for this pubkey so subsequent relay_hints calls get fresh data
@@ -210,7 +211,7 @@ func NostrRelayListSetTool(opts NostrToolOpts) agent.ToolFunc {
 			sel.Invalidate(evt.PubKey.Hex())
 		}
 
-		return nostrWriteSuccessEnvelope("nostr_relay_list_set", evt.ID.Hex(), 10002, map[string]any{
+		return nostrWriteSuccessEnvelope("nostr_relay_list_set", evt.ID.Hex(), nip51.KindRelayList, map[string]any{
 			"read_relays":  readRelays,
 			"write_relays": writeRelays,
 			"both_relays":  bothRelays,

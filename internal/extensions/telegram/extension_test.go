@@ -306,6 +306,13 @@ func TestProcessUpdate_AllowedUsersFilter(t *testing.T) {
 			}{ID: 999},
 		},
 	})
+	// No sender ID: allowlist must fail closed.
+	bot.processUpdate(telegramUpdate{
+		UpdateID: 3,
+		Message: &telegramMessage{
+			MessageID: 3, Text: "anonymous", Date: 1002,
+		},
+	})
 	if len(delivered) != 1 {
 		t.Fatalf("expected 1 delivered, got %d", len(delivered))
 	}

@@ -214,21 +214,26 @@ func (b *ircBot) connect(ctx context.Context) error {
 
 	// Register with the server.
 	if b.password != "" {
-		b.send("PASS " + b.password)
+		if err := b.send("PASS " + b.password); err != nil {
+			return err
+		}
 	}
-	b.send(fmt.Sprintf("NICK %s", b.nick))
-	b.send(fmt.Sprintf("USER %s 0 * :%s", b.username, b.realname))
-	return nil
+	if err := b.send(fmt.Sprintf("NICK %s", b.nick)); err != nil {
+		return err
+	}
+	return b.send(fmt.Sprintf("USER %s 0 * :%s", b.username, b.realname))
 }
 
-func (b *ircBot) send(line string) {
+func (b *ircBot) send(line string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.writer == nil {
-		return
+		return fmt.Errorf("irc: not connected")
 	}
-	_, _ = fmt.Fprintf(b.writer, "%s\r\n", line)
-	_ = b.writer.Flush()
+	if _, err := fmt.Fprintf(b.writer, "%s\r\n", line); err != nil {
+		return err
+	}
+	return b.writer.Flush()
 }
 
 func (b *ircBot) Send(ctx context.Context, text string) error {
@@ -260,7 +265,9 @@ func (b *ircBot) sendPrivmsg(target, text string) error {
 		} else {
 			text = ""
 		}
-		b.send(prefix + chunk)
+		if err := b.send(prefix + chunk); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -357,7 +364,8 @@ func parsePrefix(prefix string) string {
 
 func (b *ircBot) handleLine(line string, joined *bool) {
 	if strings.HasPrefix(line, "PING") {
-		b.send("PONG" + strings.TrimPrefix(line, "PING"))
+		// A failed PONG write surfaces as a read error in serveConn's loop.
+		_ = b.send("PONG" + strings.TrimPrefix(line, "PING"))
 		return
 	}
 
@@ -373,7 +381,9 @@ func (b *ircBot) handleLine(line string, joined *bool) {
 		// The password was already sent as PASS, so NickServ may already be handled.
 		// Join configured channels.
 		for _, ch := range b.ircChannels {
-			b.send("JOIN " + ch)
+			if err := b.send("JOIN " + ch); err != nil {
+				log.Printf("irc: join %s failed for channel %s: %v", ch, b.channelID, err)
+			}
 		}
 		return
 	}

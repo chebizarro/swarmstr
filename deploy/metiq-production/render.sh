@@ -72,11 +72,12 @@ printf '%s\n' "$METIQ_SOURCE_COMMIT" >"$out/SOURCE_COMMIT"
 printf '%s\n' "$METIQ_IMAGE" >"$out/IMAGE_DIGEST"
 chmod 600 "$out"/*
 jq -e . "$out/bootstrap.json" "$out/config.json" >/dev/null
-if grep -Eni 'private_key|secret=' "$out/bootstrap.json" "$out/config.json"; then
+# Quiet matching: never echo rendered config lines (they may hold secrets).
+if grep -Eqi 'private_key|secret=' "$out/bootstrap.json" "$out/config.json"; then
   echo "rendered configuration contains forbidden identity material" >&2
   exit 2
 fi
-if grep -En '{{[^}]+}}' "$out"/*; then
+if grep -Eq '{{[^}]+}}' "$out"/*; then
   echo "rendered output contains an unresolved placeholder" >&2
   exit 2
 fi

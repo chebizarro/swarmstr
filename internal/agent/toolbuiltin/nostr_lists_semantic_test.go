@@ -30,6 +30,17 @@ func TestResolveSemanticListTarget_AllowList(t *testing.T) {
 	}
 }
 
+func TestResolveSemanticListTarget_UnknownListTypeErrors(t *testing.T) {
+	for _, args := range []map[string]any{
+		{"list_type": "mutee"}, // typo must not silently target the mute list
+		{},                     // missing target entirely
+	} {
+		if _, _, _, err := resolveSemanticListTarget(args); err == nil {
+			t.Fatalf("expected error for args %v, got nil", args)
+		}
+	}
+}
+
 func TestResolveSemanticListTarget_KindOverride(t *testing.T) {
 	kind, dtag, tag, err := resolveSemanticListTarget(map[string]any{"kind": float64(10002)})
 	if err != nil {
