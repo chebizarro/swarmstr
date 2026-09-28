@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -150,3 +151,73 @@ func TestAccountRuntimeFailsClosedOnUnresolvableSecretRef(t *testing.T) {
 type credentialTestPluginAlias struct{ *credentialTestPlugin }
 
 func (credentialTestPluginAlias) ID() string { return "credential-test-missing" }
+
+func TestAccountScopedGatewayMethodResolvesSecretRefFromContextStore(t *testing.T) {
+	store := newProtectedTestStore(t)
+	if _, err := store.SetStoredSecret("ACTION_BOT_TOKEN", "xoxb-resolved", secrets.StoredSecretKindSecret, nil, "operator"); err != nil {
+		t.Fatalf("seed stored secret: %v", err)
+	}
+	ref := secrets.StoredSecretRef("ACTION_BOT_TOKEN")
+	refValue := map[string]any{"source": string(ref.Source), "provider": ref.Provider, "id": ref.ID}
+	ConfigureChannelAccounts(state.NostrChannelsConfig{
+		"work": {Kind: "slack", Config: map[string]any{"bot_token": refValue}},
+	})
+	t.Cleanup(func() { ConfigureChannelAccounts(nil) })
+
+	var received map[string]any
+	methods := AccountScopedGatewayMethods("slack", []sdk.GatewayMethod{{
+		Method: "slack.test",
+		Handle: func(_ context.Context, params map[string]any) (map[string]any, error) {
+			received = params
+			return map[string]any{"ok": true}, nil
+		},
+	}})
+	// A caller-supplied ref is passed through verbatim, never dereferenced.
+	ctx := WithAccountSecrets(context.Background(), store)
+	if _, err := methods[0].Handle(ctx, map[string]any{"text": "hi", "note": refValue}); err != nil {
+		t.Fatalf("wrapped handle: %v", err)
+	}
+	if received["bot_token"] != "xoxb-resolved" {
+		t.Fatalf("handler got bot_token %#v, want resolved secret", received["bot_token"])
+	}
+	if _, isRef := received["note"].(map[string]any); !isRef {
+		t.Fatalf("caller-supplied ref was dereferenced: %#v", received["note"])
+	}
+	account, err := ResolveConfiguredChannelAccount("slack", "work")
+	if err != nil {
+		t.Fatalf("resolve account: %v", err)
+	}
+	if _, isRef := account.Config["bot_token"].(map[string]any); !isRef {
+		t.Fatalf("account registry kept resolved value instead of ref: %#v", account.Config["bot_token"])
+	}
+}
+
+func TestAccountScopedGatewayMethodFailsClosedOnUnresolvableSecretRef(t *testing.T) {
+	ConfigureChannelAccounts(state.NostrChannelsConfig{
+		"work": {Kind: "slack", Config: map[string]any{
+			"bot_token": map[string]any{"source": "store", "provider": "gateway-store", "id": "MISSING_SECRET"},
+		}},
+	})
+	t.Cleanup(func() { ConfigureChannelAccounts(nil) })
+
+	called := false
+	methods := AccountScopedGatewayMethods("slack", []sdk.GatewayMethod{{
+		Method: "slack.test",
+		Handle: func(context.Context, map[string]any) (map[string]any, error) {
+			called = true
+			return nil, nil
+		},
+	}})
+	for name, ctx := range map[string]context.Context{
+		"missing entry": WithAccountSecrets(context.Background(), newProtectedTestStore(t)),
+		"no store":      context.Background(),
+	} {
+		_, err := methods[0].Handle(ctx, map[string]any{"text": "hi"})
+		if err == nil || !strings.Contains(err.Error(), `config field "bot_token"`) {
+			t.Fatalf("%s: expected fail-closed secret ref error, got %v", name, err)
+		}
+	}
+	if called {
+		t.Fatal("handler ran with an unresolvable secret ref")
+	}
+}

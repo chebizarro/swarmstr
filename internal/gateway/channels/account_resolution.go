@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"metiq/internal/plugins/sdk"
+	"metiq/internal/secrets"
 	"metiq/internal/store/state"
 )
 
@@ -70,10 +71,12 @@ func ConfigureChannelAccounts(cfg state.NostrChannelsConfig) {
 }
 
 // ResolveChannelAccountParams merges a named/default configured account into
-// gateway action params. Caller-supplied action fields take precedence. When a
-// provider has no configured accounts, params are copied unchanged to preserve
-// legacy direct-credential invocations.
-func ResolveChannelAccountParams(provider string, params map[string]any) (map[string]any, error) {
+// gateway action params. Secret references in the account config are resolved
+// through store with the same fail-closed policy as account connect; caller
+// params are merged afterwards and never dereferenced. Caller-supplied action
+// fields take precedence. When a provider has no configured accounts, params
+// are copied unchanged to preserve legacy direct-credential invocations.
+func ResolveChannelAccountParams(ctx context.Context, store *secrets.Store, provider string, params map[string]any) (map[string]any, error) {
 	provider = normalizeChannelProvider(provider)
 	requested := requestedAccountID(params)
 
@@ -88,7 +91,10 @@ func ResolveChannelAccountParams(provider string, params map[string]any) (map[st
 		return cloneAccountParams(params), nil
 	}
 
-	resolved := cloneAccountParams(selected.Config)
+	resolved, _, err := resolveAccountSecrets(ctx, store, selected.Config)
+	if err != nil {
+		return nil, fmt.Errorf("channel %s/%s: %w", selected.Provider, selected.ID, err)
+	}
 	for key, value := range params {
 		if key == "accountId" || key == "account_id" {
 			continue
@@ -139,7 +145,8 @@ func ConfiguredChannelAccounts() []ResolvedChannelAccount {
 
 // AccountScopedGatewayMethods wraps channel gateway handlers with configured
 // account resolution. All built-in action-capable channel plugins use this
-// helper so account semantics remain consistent across providers.
+// helper so account semantics remain consistent across providers. The
+// dispatcher supplies the secret store on ctx via WithAccountSecrets.
 func AccountScopedGatewayMethods(provider string, methods []sdk.GatewayMethod) []sdk.GatewayMethod {
 	wrapped := make([]sdk.GatewayMethod, len(methods))
 	for i, method := range methods {
@@ -150,7 +157,7 @@ func AccountScopedGatewayMethods(provider string, methods []sdk.GatewayMethod) [
 		handle := method.Handle
 		methodName := method.Method
 		wrapped[i].Handle = func(ctx context.Context, params map[string]any) (map[string]any, error) {
-			resolved, err := ResolveChannelAccountParams(provider, params)
+			resolved, err := ResolveChannelAccountParams(ctx, accountSecretsFrom(ctx), provider, params)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", methodName, err)
 			}
