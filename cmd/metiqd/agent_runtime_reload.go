@@ -19,10 +19,14 @@ import (
 // parameters. reprovisionChangedAgentRuntimes closes that gap by rebuilding
 // only the runtimes whose runtime-affecting config actually changed.
 
+// agentRuntimeReloadMu serializes reloads end to end (diff, build, install,
+// baseline update) so overlapping reloads cannot install runtimes out of order.
+// agentRuntimeReloadApplied maps agent ID to the runtime fingerprint that is
+// actually installed; an entry advances only after its runtime installs, so a
+// failed build is retried on the next reload even if the config is unchanged.
 var (
-	agentRuntimeReloadMu     sync.Mutex
-	agentRuntimeReloadSeeded bool
-	agentRuntimeReloadLast   state.ConfigDoc
+	agentRuntimeReloadMu      sync.Mutex
+	agentRuntimeReloadApplied map[string]string
 )
 
 // seedAgentRuntimeReloadBaseline records the config snapshot whose agents were
@@ -30,44 +34,52 @@ var (
 func seedAgentRuntimeReloadBaseline(cfg state.ConfigDoc) {
 	agentRuntimeReloadMu.Lock()
 	defer agentRuntimeReloadMu.Unlock()
-	agentRuntimeReloadLast = cfg
-	agentRuntimeReloadSeeded = true
+	agentRuntimeReloadApplied = agentRuntimeFingerprints(cfg)
+}
+
+func agentRuntimeFingerprints(cfg state.ConfigDoc) map[string]string {
+	prints := make(map[string]string, len(cfg.Agents))
+	for _, ag := range cfg.Agents {
+		if id := strings.TrimSpace(ag.ID); id != "" {
+			prints[id] = config.AgentRuntimeFingerprint(cfg, ag)
+		}
+	}
+	return prints
 }
 
 // reprovisionChangedAgentRuntimes rebuilds agent runtimes whose
 // runtime-affecting parameters (model, provider, credentials, system prompt,
 // fallback chain, light-model routing, context/thinking/timeout settings)
-// changed since the last applied snapshot, and drops runtimes for agents
-// removed from the config. Build failures keep the previous runtime so a bad
-// reload never leaves an agent without a working runtime.
+// differ from the installed runtime, and drops runtimes for agents removed
+// from the config. Build failures keep the previous runtime so a bad reload
+// never leaves an agent without a working runtime.
 func reprovisionChangedAgentRuntimes(cfg state.ConfigDoc) {
 	agentRuntimeReloadMu.Lock()
-	if !agentRuntimeReloadSeeded {
+	defer agentRuntimeReloadMu.Unlock()
+	if agentRuntimeReloadApplied == nil {
 		// No baseline yet (nothing was provisioned through startup): record
 		// this snapshot and treat it as already applied.
-		agentRuntimeReloadLast = cfg
-		agentRuntimeReloadSeeded = true
-		agentRuntimeReloadMu.Unlock()
+		agentRuntimeReloadApplied = agentRuntimeFingerprints(cfg)
 		return
 	}
-	oldCfg := agentRuntimeReloadLast
-	agentRuntimeReloadLast = cfg
-	agentRuntimeReloadMu.Unlock()
-
-	changed, removed := config.ChangedAgentRuntimes(oldCfg, cfg)
-	if len(changed) == 0 && len(removed) == 0 {
-		return
-	}
-	controller := currentAgentRunController()
-	registry := controller.agentRegistry
+	registry := currentAgentRunController().agentRegistry
 	if registry == nil {
 		return
 	}
 	tools := controlToolRegistry
-	for _, agCfg := range changed {
+	present := make(map[string]struct{}, len(cfg.Agents))
+	for _, agCfg := range cfg.Agents {
 		agentID := strings.TrimSpace(agCfg.ID)
+		if agentID == "" {
+			continue
+		}
+		present[agentID] = struct{}{}
+		fingerprint := config.AgentRuntimeFingerprint(cfg, agCfg)
+		if agentRuntimeReloadApplied[agentID] == fingerprint {
+			continue
+		}
 		model := strings.TrimSpace(agCfg.Model)
-		if agentID == "" || model == "" {
+		if model == "" {
 			continue
 		}
 		rt, err := buildConfiguredAgentRuntime(cfg, agCfg, tools)
@@ -84,13 +96,15 @@ func reprovisionChangedAgentRuntimes(cfg state.ConfigDoc) {
 		} else {
 			registry.Set(agentID, rt)
 		}
+		agentRuntimeReloadApplied[agentID] = fingerprint
 		log.Printf("config reload: agent runtime reprovisioned id=%s model=%q provider=%q", agentID, model, agCfg.Provider)
 	}
-	for _, agentID := range removed {
-		if agentID == "main" {
+	for agentID := range agentRuntimeReloadApplied {
+		if _, ok := present[agentID]; ok || agentID == "main" {
 			continue
 		}
 		registry.Remove(agentID)
+		delete(agentRuntimeReloadApplied, agentID)
 		log.Printf("config reload: agent runtime removed id=%s", agentID)
 	}
 }

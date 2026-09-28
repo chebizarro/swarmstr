@@ -11,11 +11,11 @@ func TestReprovisionChangedAgentRuntimes(t *testing.T) {
 	// Snapshot and restore globals touched by the reload path.
 	prevRegistry := controlAgentRegistry
 	prevRuntime := controlAgentRuntime
-	prevSeeded, prevLast := agentRuntimeReloadSeeded, agentRuntimeReloadLast
+	prevApplied := agentRuntimeReloadApplied
 	t.Cleanup(func() {
 		controlAgentRegistry = prevRegistry
 		controlAgentRuntime = prevRuntime
-		agentRuntimeReloadSeeded, agentRuntimeReloadLast = prevSeeded, prevLast
+		agentRuntimeReloadApplied = prevApplied
 	})
 
 	cfgA := state.ConfigDoc{
@@ -78,11 +78,11 @@ func TestReprovisionChangedAgentRuntimes(t *testing.T) {
 func TestReprovisionChangedAgentRuntimesKeepsRuntimeOnBuildFailure(t *testing.T) {
 	prevRegistry := controlAgentRegistry
 	prevRuntime := controlAgentRuntime
-	prevSeeded, prevLast := agentRuntimeReloadSeeded, agentRuntimeReloadLast
+	prevApplied := agentRuntimeReloadApplied
 	t.Cleanup(func() {
 		controlAgentRegistry = prevRegistry
 		controlAgentRuntime = prevRuntime
-		agentRuntimeReloadSeeded, agentRuntimeReloadLast = prevSeeded, prevLast
+		agentRuntimeReloadApplied = prevApplied
 	})
 
 	cfgA := state.ConfigDoc{
@@ -107,5 +107,52 @@ func TestReprovisionChangedAgentRuntimesKeepsRuntimeOnBuildFailure(t *testing.T)
 	reprovisionChangedAgentRuntimes(cfgBad)
 	if registry.Get("helper") != initialRT {
 		t.Fatal("failed rebuild must keep the previous runtime")
+	}
+}
+
+// A rebuild that fails for reasons outside the config (here: a missing env
+// var) must be retried when the same config is reloaded again; the applied
+// baseline only advances once the runtime actually installs.
+func TestReprovisionChangedAgentRuntimesRetriesFailedRebuild(t *testing.T) {
+	prevRegistry := controlAgentRegistry
+	prevRuntime := controlAgentRuntime
+	prevApplied := agentRuntimeReloadApplied
+	t.Cleanup(func() {
+		controlAgentRegistry = prevRegistry
+		controlAgentRuntime = prevRuntime
+		agentRuntimeReloadApplied = prevApplied
+	})
+
+	cfgA := state.ConfigDoc{
+		Agents:    []state.AgentConfig{{ID: "helper", Model: "claude-sonnet-4"}},
+		Providers: map[string]state.ProviderEntry{"anthropic": {APIKey: "test-key"}},
+	}
+	initialRT, err := buildConfiguredAgentRuntime(cfgA, cfgA.Agents[0], nil)
+	if err != nil {
+		t.Fatalf("build initial runtime: %v", err)
+	}
+	registry := agent.NewAgentRuntimeRegistry(initialRT)
+	registry.Set("helper", initialRT)
+	controlAgentRegistry = registry
+	seedAgentRuntimeReloadBaseline(cfgA)
+
+	cfgHTTP := state.ConfigDoc{Agents: []state.AgentConfig{{ID: "helper", Model: "http"}}}
+	t.Setenv("METIQ_AGENT_HTTP_URL", "")
+	t.Setenv("METIQ_AGENT_HTTP_API_KEY", "")
+	reprovisionChangedAgentRuntimes(cfgHTTP)
+	if registry.Get("helper") != initialRT {
+		t.Fatal("failed rebuild must keep the previous runtime")
+	}
+
+	t.Setenv("METIQ_AGENT_HTTP_URL", "http://127.0.0.1:9")
+	reprovisionChangedAgentRuntimes(cfgHTTP)
+	retried := registry.Get("helper")
+	if retried == initialRT {
+		t.Fatal("reloading the same config after a failed rebuild must retry the rebuild")
+	}
+
+	reprovisionChangedAgentRuntimes(cfgHTTP)
+	if registry.Get("helper") != retried {
+		t.Fatal("once installed, re-applying the same config must not rebuild again")
 	}
 }

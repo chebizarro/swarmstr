@@ -6,44 +6,21 @@ import (
 	"metiq/internal/store/state"
 )
 
-func TestChangedAgentRuntimesDetectsParameterChanges(t *testing.T) {
-	oldCfg := state.ConfigDoc{
-		Agents: []state.AgentConfig{
-			{ID: "main", Model: "claude-sonnet-4", SystemPrompt: "be brief"},
-			{ID: "helper", Model: "gpt-5", ContextWindow: 8192},
-			{ID: "gone", Model: "gemini-pro"},
-		},
-		Providers: map[string]state.ProviderEntry{
-			"anthropic": {APIKey: "key-1"},
-		},
+func TestAgentRuntimeFingerprintStableForIdenticalConfig(t *testing.T) {
+	cfg := state.ConfigDoc{
+		Agents:    []state.AgentConfig{{ID: "main", Model: "claude-sonnet-4", SystemPrompt: "be brief"}},
+		Providers: map[string]state.ProviderEntry{"anthropic": {APIKey: "key-1"}, "openai": {APIKey: "key-2"}},
 	}
-
-	// No changes → nothing to rebuild.
-	changed, removed := ChangedAgentRuntimes(oldCfg, oldCfg)
-	if len(changed) != 0 || len(removed) != 0 {
-		t.Fatalf("identical config: changed=%v removed=%v", changed, removed)
+	clone := state.ConfigDoc{
+		Agents:    []state.AgentConfig{{ID: "main", Model: "claude-sonnet-4", SystemPrompt: "be brief"}},
+		Providers: map[string]state.ProviderEntry{"openai": {APIKey: "key-2"}, "anthropic": {APIKey: "key-1"}},
 	}
-
-	newCfg := state.ConfigDoc{
-		Agents: []state.AgentConfig{
-			{ID: "main", Model: "claude-sonnet-4", SystemPrompt: "be thorough"}, // system_prompt changed
-			{ID: "helper", Model: "gpt-5", ContextWindow: 8192},                 // unchanged
-			{ID: "fresh", Model: "grok-4"},                                      // added
-		},
-		Providers: map[string]state.ProviderEntry{
-			"anthropic": {APIKey: "key-1"},
-		},
-	}
-	changed, removed = ChangedAgentRuntimes(oldCfg, newCfg)
-	if len(changed) != 2 || changed[0].ID != "main" || changed[1].ID != "fresh" {
-		t.Fatalf("changed = %#v", changed)
-	}
-	if len(removed) != 1 || removed[0] != "gone" {
-		t.Fatalf("removed = %#v", removed)
+	if AgentRuntimeFingerprint(cfg, cfg.Agents[0]) != AgentRuntimeFingerprint(clone, clone.Agents[0]) {
+		t.Fatal("identical agent and provider config must fingerprint identically")
 	}
 }
 
-func TestChangedAgentRuntimesProviderTableChangeAffectsAllAgents(t *testing.T) {
+func TestAgentRuntimeFingerprintProviderTableChangeAffectsAllAgents(t *testing.T) {
 	base := state.ConfigDoc{
 		Agents: []state.AgentConfig{
 			{ID: "main", Model: "claude-sonnet-4"},
@@ -53,14 +30,17 @@ func TestChangedAgentRuntimesProviderTableChangeAffectsAllAgents(t *testing.T) {
 	}
 	rotated := base
 	rotated.Providers = map[string]state.ProviderEntry{"anthropic": {APIKey: "key-2"}}
-	changed, removed := ChangedAgentRuntimes(base, rotated)
-	if len(changed) != 2 || len(removed) != 0 {
-		t.Fatalf("expected all agents to rebuild on provider change: changed=%v removed=%v", changed, removed)
+	for _, ag := range base.Agents {
+		if AgentRuntimeFingerprint(base, ag) == AgentRuntimeFingerprint(rotated, ag) {
+			t.Fatalf("agent %s: provider table change must change the fingerprint", ag.ID)
+		}
 	}
 }
 
-func TestChangedAgentRuntimesRuntimeParameterFields(t *testing.T) {
-	base := state.ConfigDoc{Agents: []state.AgentConfig{{ID: "a", Model: "claude-sonnet-4"}}}
+func TestAgentRuntimeFingerprintRuntimeParameterFields(t *testing.T) {
+	base := state.AgentConfig{ID: "a", Model: "claude-sonnet-4"}
+	cfg := state.ConfigDoc{Agents: []state.AgentConfig{base}}
+	basePrint := AgentRuntimeFingerprint(cfg, base)
 	mutations := []func(*state.AgentConfig){
 		func(ag *state.AgentConfig) { ag.ContextWindow = 4096 },
 		func(ag *state.AgentConfig) { ag.MaxContextTokens = 2048 },
@@ -75,11 +55,10 @@ func TestChangedAgentRuntimesRuntimeParameterFields(t *testing.T) {
 		func(ag *state.AgentConfig) { ag.FallbackModels = []string{"gpt-5"} },
 	}
 	for i, mutate := range mutations {
-		next := state.ConfigDoc{Agents: []state.AgentConfig{{ID: "a", Model: "claude-sonnet-4"}}}
-		mutate(&next.Agents[0])
-		changed, _ := ChangedAgentRuntimes(base, next)
-		if len(changed) != 1 {
-			t.Fatalf("mutation %d: expected rebuild, got changed=%v", i, changed)
+		next := base
+		mutate(&next)
+		if AgentRuntimeFingerprint(cfg, next) == basePrint {
+			t.Fatalf("mutation %d: expected fingerprint change", i)
 		}
 	}
 }
