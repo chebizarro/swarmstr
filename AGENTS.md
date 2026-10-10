@@ -8,7 +8,7 @@
 ### Why bd?
 
 - Dependency-aware: Track blockers and relationships between issues
-- Git-friendly: Dolt-powered version control with native sync
+- Git-friendly: issues sync through git, so history travels with the repo
 - Agent-optimized: JSON output, ready work detection, discovered-from links
 - Prevents duplicate tracking systems and confusion
 
@@ -67,10 +67,10 @@ bd close bd-42 --reason "Completed" --json
 
 ### Auto-Sync
 
-bd automatically syncs via Dolt:
+bd automatically keeps issues in sync with git:
 
-- Each write auto-commits to Dolt history
-- Use `bd dolt push`/`bd dolt pull` for remote sync
+- Each write auto-exports to `.beads/issues.jsonl`, which travels with the repo
+- Use the normal `git pull` / `git push` to sync issues with everyone else
 - No manual export/import needed!
 
 ### Important Rules
@@ -182,3 +182,9 @@ cp scripts/hooks/pre-push .git/hooks/pre-push
 ```
 
 The hook runs: `go vet`, `go build`, `go test` — same as CI.
+
+## Git Worktree & Branch Hygiene
+
+- Once a feature branch's changes are merged into `main`/`master`, remove the worktree and delete the branch. Don't leave merged worktrees or stale branches lying around.
+- Before removing a worktree, run `git status` inside it to confirm there's nothing uncommitted you'd lose — commit, stash, or discard first.
+- Clean up with `git worktree remove <path>` and `git branch -d <branch>` (add `git push origin --delete <branch>` if the branch was pushed).
